@@ -1,0 +1,9 @@
+{
+    "terminal.integrated.cwd": "${workspaceFolder}",
+    "terminal.integrated.enablePersistentSessions": false,
+    "terminal.integrated.suggest.enabled": true,
+    "terminal.integrated.suggest.inlineSuggestion": "alwaysOnTopExceptExactMatch",
+
+    "python.defaultInterpreterPath": "${env:HOME}/.acados_env/bin/python",
+    "python.terminal.activateEnvironment": true,
+}   
