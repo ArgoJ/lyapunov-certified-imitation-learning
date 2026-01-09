@@ -170,3 +170,13 @@ if __name__ == "__main__":
         control_labels=["Acceleration"],
         plot_predictions=True
     )
+    
+    
+    lyap = lambda x: x.T @ info["P"] @ x
+    
+    lcil_utils.plot.plot_lyapunov(
+        dataset=dataset, 
+        lyapunov_func=lyap,
+        plot_3d=False,
+        limits=[[-12, 12], [-8, 8]]
+    )

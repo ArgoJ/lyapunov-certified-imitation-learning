@@ -1,6 +1,7 @@
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from typing import Callable
 
 from ..data_generation.mpc_data import MPCDataset
 
@@ -175,8 +176,8 @@ def plot_mpc_trajectories(
                     direction="left",
                     buttons=list([
                         dict(
-                            args=[{"visible": False}, prediction_indices],
-                            args2=[{"visible": True}, prediction_indices],
+                            args=[{"visible": True}, prediction_indices],
+                            args2=[{"visible": False}, prediction_indices],
                             label="Predictions",
                             method="restyle"
                         )
@@ -192,6 +193,217 @@ def plot_mpc_trajectories(
         )
     
     output_file = "mpc_trajectories.html"
+    fig.write_html(output_file)
+    print(f"Plot saved to {output_file}. Open this file in VS Code or your browser to view.")
+    
+    # fig.show()
+
+
+def plot_lyapunov(
+    dataset: MPCDataset,
+    lyapunov_func: Callable[[np.ndarray], np.ndarray],
+    state_indices: list = [0, 1],
+    limits: list = None,
+    resolution: int = 100,
+    plot_3d: bool = False,
+):
+    """Plot the Lyapunov function landscape and MPC trajectories in 2D or 3D.
+    Only two state dimensions can be visualized at once.
+
+    Parameters
+    ----------
+    dataset : MPCDataset
+        The dataset containing trajectories to plot.
+    lyapunov_func : Callable[[np.ndarray], np.ndarray]
+        A function that takes a state vector and returns the Lyapunov value.
+    state_indices : list, optional
+        Indices of the two state variables to plot (x, y axes). Default is [0, 1].
+    limits : list of tuples, optional
+        ((min_x, max_x), (min_y, max_y)). If None, inferred from data with padding.
+    resolution : int, optional
+        Grid resolution for the Lyapunov function contour plot.
+    plot_3d : bool, optional
+        If True, plot a 3D surface and 3D trajectories. Default is False.
+    """
+    if len(dataset) == 0:
+        print("Dataset is empty.")
+        return
+
+    # Infer dimensions
+    first_traj = dataset[0].trajectory
+    num_states = first_traj.states.shape[1]
+    
+    if len(state_indices) != 2:
+        raise ValueError("state_indices must contain exactly 2 indices.")
+
+    idx_x, idx_y = state_indices
+
+    # Determine limits if not provided
+    if limits is None:
+        all_states = np.vstack([d.trajectory.states for d in dataset])
+        min_x, max_x = all_states[:, idx_x].min(), all_states[:, idx_x].max()
+        min_y, max_y = all_states[:, idx_y].min(), all_states[:, idx_y].max()
+        
+        # Add some padding
+        pad_x = (max_x - min_x) * 0.2 if max_x != min_x else 1.0
+        pad_y = (max_y - min_y) * 0.2 if max_y != min_y else 1.0
+        
+        limits = [
+            (min_x - pad_x, max_x + pad_x),
+            (min_y - pad_y, max_y + pad_y)
+        ]
+
+    # Create grid for Lyapunov function
+    x_range = np.linspace(limits[0][0], limits[0][1], resolution)
+    y_range = np.linspace(limits[1][0], limits[1][1], resolution)
+    X, Y = np.meshgrid(x_range, y_range)
+    
+    # Prepare grid points for evaluation
+    grid_points = np.zeros((X.size, num_states))
+    grid_points[:, idx_x] = X.flatten()
+    grid_points[:, idx_y] = Y.flatten()
+    
+    # Evaluate Lyapunov function
+    try:
+        Z_flat = lyapunov_func(grid_points)
+    except Exception:
+        Z_flat = np.array([lyapunov_func(s) for s in grid_points])
+        
+    if hasattr(Z_flat, 'ndim') and Z_flat.ndim > 1:
+        Z_flat = Z_flat.flatten()
+    elif isinstance(Z_flat, list):
+        Z_flat = np.array(Z_flat)
+        
+    Z = Z_flat.reshape(X.shape)
+
+    fig = go.Figure()
+
+    # Plot Lyapunov Landscape
+    if plot_3d:
+        fig.add_trace(
+            go.Surface(
+                z=Z,
+                x=x_range,
+                y=y_range,
+                colorscale='Viridis',
+                name='Lyapunov Function',
+                opacity=0.8,
+                showscale=True
+            )
+        )
+    else:
+        fig.add_trace(
+            go.Contour(
+                z=Z,
+                x=x_range,
+                y=y_range,
+                colorscale='Viridis',
+                name='Lyapunov Function',
+                showscale=True,
+                contours=dict(
+                    coloring='heatmap',
+                    showlabels=True,
+                )
+            )
+        )
+
+    trajectory_indices = []
+    
+    # Plot MPC Trajectories
+    colors = [
+        '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+    ]
+
+    for idx in range(len(dataset)):
+        traj = dataset[idx].trajectory
+        color = colors[idx % len(colors)]
+        
+        if plot_3d:
+            try:
+                v_traj = lyapunov_func(traj.states)
+            except Exception:
+                v_traj = np.array([lyapunov_func(s) for s in traj.states])
+            
+            if hasattr(v_traj, 'ndim') and v_traj.ndim > 1:
+                v_traj = v_traj.flatten()
+            elif isinstance(v_traj, list):
+                v_traj = np.array(v_traj)
+
+            fig.add_trace(
+                go.Scatter3d(
+                    x=traj.states[:, idx_x],
+                    y=traj.states[:, idx_y],
+                    z=v_traj,
+                    mode='lines',
+                    name=f'Run {idx+1}',
+                    line=dict(color=color, width=4),
+                    showlegend=False
+                )
+            )
+        else:
+            fig.add_trace(
+                go.Scatter(
+                    x=traj.states[:, idx_x],
+                    y=traj.states[:, idx_y],
+                    mode='lines',
+                    name=f'Run {idx+1}',
+                    line=dict(color=color, width=2),
+                    opacity=0.7,
+                    showlegend=False
+                )
+            )
+        trajectory_indices.append(len(fig.data) - 1)
+
+    # Layout Configuration
+    if plot_3d:
+        fig.update_layout(
+            title_text=f"Lyapunov Landscape 3D (States {idx_x} vs {idx_y})",
+            scene=dict(
+                xaxis_title=f"State {idx_x}",
+                yaxis_title=f"State {idx_y}",
+                zaxis_title="V(x)",
+            ),
+            width=1000,
+            height=800,
+            autosize=True
+        )
+    else:
+        fig.update_layout(
+            title_text=f"Lyapunov Landscape (States {idx_x} vs {idx_y})",
+            xaxis_title=f"State {idx_x}",
+            yaxis_title=f"State {idx_y}",
+            yaxis=dict(
+                scaleanchor="x",
+                scaleratio=1,
+            )
+        )
+    
+    # Toggle Button for Trajectories
+    fig.update_layout(
+        updatemenus=[
+            dict(
+                type="buttons",
+                direction="left",
+                buttons=list([
+                    dict(
+                        args=[{"visible": True}, trajectory_indices],
+                        args2=[{"visible": False}, trajectory_indices],
+                        label="Trajectories",
+                        method="restyle"
+                    )
+                ]),
+                pad={"r": 10, "t": 10},
+                showactive=True,
+                x=1.0,
+                xanchor="right",
+                y=-0.05,
+                yanchor="top"
+            ),
+        ]
+    )
+
+    output_file = "lyapunov_landscape.html"
     fig.write_html(output_file)
     print(f"Plot saved to {output_file}. Open this file in VS Code or your browser to view.")
     
