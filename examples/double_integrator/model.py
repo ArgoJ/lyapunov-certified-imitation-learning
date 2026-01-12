@@ -11,8 +11,11 @@ from casadi import SX, vertcat
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 
 import lyapunov_certified_imitation_learning.utils as lcil_utils
-from lyapunov_certified_imitation_learning.data_generation.mpc_solve import solve_mpc_closed_loop
-from lyapunov_certified_imitation_learning.data_generation.mpc_data import MPCDataset
+from lyapunov_certified_imitation_learning.data_generation import ( 
+    MPCDataset,
+    solve_mpc_closed_loop,
+    generate_mpc_dataset,
+)
 
 
 
@@ -161,9 +164,16 @@ if __name__ == "__main__":
     print("Discrete B matrix:\n", info["B_d"])
     print("Terminal cost P matrix:\n", info["P"])
     
-    data = solve_mpc_closed_loop(solver, x0=np.array([10.0, 0.0]), N_sim=50)
+    dataset = generate_mpc_dataset(
+        solver, 
+        n_samples=1000, 
+        x0_lower_bound=np.array([-8.0, -5.0]),
+        x0_upper_bound=np.array([8.0, 5.0]),
+        N_sim=50, 
+        verbose=True,
+        # bound_type="percentage",
+    )
     
-    dataset = MPCDataset([data])
     lcil_utils.plot.plot_mpc_trajectories(
         dataset=dataset,
         state_labels=["Position", "Velocity"],
@@ -177,6 +187,8 @@ if __name__ == "__main__":
     lcil_utils.plot.plot_lyapunov(
         dataset=dataset, 
         lyapunov_func=lyap,
-        plot_3d=False,
+        plot_3d=True,
         limits=[[-12, 12], [-8, 8]]
     )
+    
+    
