@@ -214,3 +214,5 @@ __marimo__/
 
 # custom
 *.html
+.vscode/browse.*
+.vscode/c_cpp_properties.json
