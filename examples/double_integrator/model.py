@@ -174,7 +174,7 @@ if __name__ == "__main__":
         # bound_type="percentage",
     )
     
-    lcil_utils.plot.plot_mpc_trajectories(
+    lcil_utils.plot.mpc_trajectories(
         dataset=dataset,
         state_labels=["Position", "Velocity"],
         control_labels=["Acceleration"],
@@ -184,7 +184,7 @@ if __name__ == "__main__":
     
     lyap = lambda x: x.T @ info["P"] @ x
     
-    lcil_utils.plot.plot_lyapunov(
+    lcil_utils.plot.lyapunov(
         dataset=dataset, 
         lyapunov_func=lyap,
         plot_3d=True,

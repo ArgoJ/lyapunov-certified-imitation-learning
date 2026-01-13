@@ -6,7 +6,7 @@ from typing import Callable
 from ..data_generation.mpc_data import MPCDataset
 
 
-def plot_mpc_trajectories(
+def mpc_trajectories(
     dataset: MPCDataset,
     state_labels: list,
     control_labels: list,
@@ -199,7 +199,7 @@ def plot_mpc_trajectories(
     # fig.show()
 
 
-def plot_lyapunov(
+def lyapunov(
     dataset: MPCDataset,
     lyapunov_func: Callable[[np.ndarray], np.ndarray],
     state_indices: list = [0, 1],
