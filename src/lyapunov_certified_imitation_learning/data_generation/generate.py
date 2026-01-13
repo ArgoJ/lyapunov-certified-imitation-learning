@@ -5,7 +5,7 @@ from tqdm import tqdm
 
 from .mpc_solve import solve_mpc_closed_loop
 from .mpc_data import MPCDataset, MPCConstraints
-from ..utils.package_logger import PackageLogger
+from ..utils.package_logger import PackageLogger, DEFAULT_MODULE_NAME
 
 class MPCDataGenerator:
     """
@@ -162,7 +162,7 @@ class MPCDataGenerator:
                 dataset.add(mpc_data)
         finally:
             if tqdm_handler:
-                PackageLogger.restore_handlers("lyapunov_certified_imitation_learning", tqdm_handler, restored_handlers)
+                PackageLogger.restore_handlers(DEFAULT_MODULE_NAME, tqdm_handler, restored_handlers)
 
         return dataset
 

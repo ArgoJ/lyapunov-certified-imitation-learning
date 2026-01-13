@@ -2,8 +2,26 @@ import logging
 import sys
 from tqdm import tqdm
 
-_DEFAULT_LOGGER_NAME = "lcil"
-_DEFAULT_LOGGER_FORMAT = '[%(asctime)s] [%(name)s] [%(levelname)s] - %(message)s'
+DEFAULT_MODULE_NAME = "lyapunov_certified_imitation_learning"
+DEFAULT_SHORT_NAME = "lcil" 
+DEFAULT_LOGGER_FORMAT = '[%(asctime)s] [%(name)s] [%(levelname)s] - %(message)s'
+
+
+class ShortNameFormatter(logging.Formatter):
+    """
+    Formatter that replaces the long package name with 'lcil' in the log output
+    without breaking the logger hierarchy.
+    """
+    def format(self, record):
+        original_name = record.name
+        
+        if record.name.startswith(DEFAULT_MODULE_NAME):
+            record.name = record.name.replace(DEFAULT_MODULE_NAME, DEFAULT_SHORT_NAME)
+            
+        result = super().format(record)
+        record.name = original_name
+        return result
+
 
 class TqdmLoggingHandler(logging.Handler):
     """
@@ -19,12 +37,13 @@ class TqdmLoggingHandler(logging.Handler):
         except Exception:
             self.handleError(record)
 
+
 class PackageLogger:
     """
     Configuration utility for the package logger.
     """
     @staticmethod
-    def setup(package_name: str = _DEFAULT_LOGGER_NAME, level: int = logging.INFO) -> logging.Logger:
+    def setup(package_name: str = DEFAULT_MODULE_NAME, level: int = logging.INFO) -> logging.Logger:
         """
         Sets up the root logger for the package with a default StreamHandler.
         Resets existing handlers to ensure configuration updates are applied.
@@ -40,7 +59,7 @@ class PackageLogger:
         # Add the default handler
         handler = logging.StreamHandler(sys.stdout)
         handler.setLevel(level)
-        formatter = logging.Formatter(_DEFAULT_LOGGER_FORMAT)
+        formatter = ShortNameFormatter(DEFAULT_LOGGER_FORMAT)
         handler.setFormatter(formatter)
         logger.addHandler(handler)
             
@@ -49,23 +68,12 @@ class PackageLogger:
     @staticmethod
     def get_logger(name: str) -> logging.Logger:
         """
-        Parameters
-        ----------
-        name : str
-            The name of the module (e.g., __name__).
-        
-        Returns
-        -------
-        logging.Logger
-            A logger instance.
+        Retrieves a logger with the specified name within the package.
         """
-        if name.startswith("lyapunov_certified_imitation_learning"):
-            name = name.replace("lyapunov_certified_imitation_learning", _DEFAULT_LOGGER_NAME, 1)
-
         return logging.getLogger(name)
 
     @staticmethod
-    def add_tqdm_handler(package_name: str = _DEFAULT_LOGGER_NAME) -> logging.Handler:
+    def add_tqdm_handler(package_name: str = DEFAULT_MODULE_NAME) -> logging.Handler:
         """
         Adds a TqdmLoggingHandler to the package logger and removes other StreamHandlers 
         to prevent duplicate output. Returns the added handler.
@@ -73,7 +81,6 @@ class PackageLogger:
         logger = logging.getLogger(package_name)
         
         # Remove existing StreamHandlers (assuming they print to stdout/stderr)
-        # We keep FileHandlers etc.
         removed_handlers = []
         for h in list(logger.handlers):
             if isinstance(h, logging.StreamHandler) and not isinstance(h, TqdmLoggingHandler):
@@ -81,7 +88,7 @@ class PackageLogger:
                 removed_handlers.append(h)
         
         handler = TqdmLoggingHandler()
-        formatter = logging.Formatter(_DEFAULT_LOGGER_FORMAT)
+        formatter = ShortNameFormatter(DEFAULT_LOGGER_FORMAT)
         handler.setFormatter(formatter)
         logger.addHandler(handler)
         

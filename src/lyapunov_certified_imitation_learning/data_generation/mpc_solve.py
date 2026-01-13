@@ -48,7 +48,7 @@ def solve_mpc_closed_loop(
     nu = solver.acados_ocp.dims.nu
     
     # Initialize Trajectory container with NaNs
-    traj = MPCTrajectory.initialize(T_sim=N_sim, N=N_horizon, nx=nx, nu=nu, dt=dt if dt is not None else 0.1)
+    traj = MPCTrajectory.init(T_sim=N_sim, N=N_horizon, nx=nx, nu=nu, dt=dt if dt is not None else 0.1)
     
     # Set initial state
     traj.states[0, :] = x0
@@ -88,6 +88,7 @@ def solve_mpc_closed_loop(
         # Store predictions
         traj.solved_states[i, :, :] = pred_x
         traj.solved_inputs[i, :, :] = pred_u
+        traj.cost[i] = solver.get_cost()
         
         # Apply Control
         u_applied = pred_u[0, :].flatten()

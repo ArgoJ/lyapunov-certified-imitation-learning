@@ -4,17 +4,13 @@
 
 # %% General Imports
 import numpy as np
-from scipy.linalg import solve_discrete_are, block_diag, expm
-from casadi import SX, vertcat
+from scipy.linalg import solve_discrete_are, block_diag
+from casadi import SX
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 from typing import Optional, Tuple
 
 import lyapunov_certified_imitation_learning.utils as lcil_utils
-from lyapunov_certified_imitation_learning.data_generation import ( 
-    MPCDataset,
-    solve_mpc_closed_loop,
-    MPCDataGenerator,
-)
+from lyapunov_certified_imitation_learning.data_generation import MPCDataGenerator
 
 
 
@@ -178,7 +174,8 @@ if __name__ == "__main__":
         dataset=dataset,
         state_labels=["Position", "Velocity"],
         control_labels=["Acceleration"],
-        plot_predictions=True
+        plot_predictions=True,
+        html_path="double_integrator_mpc_trajectories.html",
     )
 
     lyap = lambda x: x.T @ info["P"] @ x
@@ -187,5 +184,6 @@ if __name__ == "__main__":
         dataset=dataset, 
         lyapunov_func=lyap,
         plot_3d=True,
-        limits=[[-12, 12], [-8, 8]]
+        limits=[[-12, 12], [-8, 8]],
+        html_path="double_integrator_lyapunov_landscape.html",
     )

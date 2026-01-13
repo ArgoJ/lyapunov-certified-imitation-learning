@@ -14,6 +14,7 @@ def mpc_trajectories(
     state_labels: list,
     control_labels: list,
     plot_predictions: bool = False,
+    html_path: str = None,
 ):
     """Plot MPC trajectories for states and controls using Plotly.
 
@@ -27,6 +28,8 @@ def mpc_trajectories(
         List of labels for each control variable.
     plot_predictions : bool, optional
         If True, plot the OCP predictions at each step. Default is False.
+    html_path : str, optional
+        If provided, saves the plot to the specified HTML file.
     """
     if len(dataset) == 0:
         __logger__.warning("Dataset is empty.")
@@ -69,12 +72,12 @@ def mpc_trajectories(
                     name=f'Run {idx+1} - {state_labels[i]}',
                     line=dict(color=color),
                     legendgroup=f'Run {idx+1}',
-                    showlegend=(i == 0) # Only show first occurrence in legend
+                    showlegend=(i == 0)
                 ),
                 row=row, col=1
             )
             
-            if plot_predictions:
+            if plot_predictions and traj.solved_states is not None and not np.all(np.isnan(traj.solved_states)):
                 dt = traj.time[1] - traj.time[0] if len(traj.time) > 1 else 0.1
                 
                 # Consolidate prediction lines into one trace with None gaps for performance
@@ -131,7 +134,7 @@ def mpc_trajectories(
                 row=row, col=1
             )
             
-            if plot_predictions:
+            if plot_predictions and traj.solved_inputs is not None and not np.all(np.isnan(traj.solved_inputs)):
                 dt = traj.time[1] - traj.time[0] if len(traj.time) > 1 else 0.1
                 
                 x_lines = []
@@ -195,11 +198,11 @@ def mpc_trajectories(
             ]
         )
     
-    output_file = "mpc_trajectories.html"
-    fig.write_html(output_file)
-    __logger__.info(f"Trajectories plot saved to {output_file}.")
-    
-    # fig.show()
+    if html_path is not None:
+        fig.write_html(html_path)
+        __logger__.info(f"Trajectories plot saved to {html_path}.")
+    else:   
+        fig.show()
 
 
 def lyapunov(
@@ -209,6 +212,7 @@ def lyapunov(
     limits: list = None,
     resolution: int = 100,
     plot_3d: bool = False,
+    html_path: str = None,
 ):
     """Plot the Lyapunov function landscape and MPC trajectories in 2D or 3D.
     Only two state dimensions can be visualized at once.
@@ -227,6 +231,8 @@ def lyapunov(
         Grid resolution for the Lyapunov function contour plot.
     plot_3d : bool, optional
         If True, plot a 3D surface and 3D trajectories. Default is False.
+    html_path : str, optional
+        If provided, saves the plot to the specified HTML file.
     """
     if len(dataset) == 0:
         __logger__.warning("Dataset is empty.")
@@ -406,8 +412,8 @@ def lyapunov(
         ]
     )
 
-    output_file = "lyapunov_landscape.html"
-    fig.write_html(output_file)
-    __logger__.info(f"Lyapunov landscape plot saved to {output_file}.")
-    
-    # fig.show()
+    if html_path is not None:
+        fig.write_html(html_path)
+        __logger__.info(f"Trajectories plot saved to {html_path}.")
+    else:   
+        fig.show()

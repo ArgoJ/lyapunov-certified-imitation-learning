@@ -31,12 +31,13 @@ class MPCTrajectory:
     states: np.ndarray          # (T, nx)
     inputs: np.ndarray          # (T, nu)
     time: np.ndarray            # (T,)
-    solved_states: np.ndarray   # (T, N+1, nx) - OCP predictions at each step
-    solved_inputs: np.ndarray   # (T, N, nu)   - OCP predictions at each step
+    cost: np.ndarray            # (T,)
+    solved_states: Optional[np.ndarray] = None   # (T, N+1, nx) - OCP predictions at each step
+    solved_inputs: Optional[np.ndarray] = None   # (T, N, nu)   - OCP predictions at each step
     feasible: bool = True
 
     @classmethod
-    def initialize(cls, T_sim: int, N: int, nx: int, nu: int, dt: float = 0.1) -> 'MPCTrajectory':
+    def init(cls, T_sim: int, N: int, nx: int, nu: int, dt: float = 0.1) -> 'MPCTrajectory':
         """
         Initialize the trajectory with NaNs.
         
@@ -56,6 +57,7 @@ class MPCTrajectory:
         states = np.full((T_sim + 1, nx), np.nan)
         inputs = np.full((T_sim, nu), np.nan)
         time = np.arange(T_sim + 1) * dt
+        cost = np.full((T_sim,), np.nan)
         solved_states = np.full((T_sim, N + 1, nx), np.nan)
         solved_inputs = np.full((T_sim, N, nu), np.nan)
         
@@ -63,6 +65,7 @@ class MPCTrajectory:
             states=states,
             inputs=inputs,
             time=time,
+            cost=cost,
             solved_states=solved_states,
             solved_inputs=solved_inputs,
             feasible=True
@@ -108,7 +111,7 @@ class MPCDataset:
         """Add to temporary memory buffer (for generation phase)."""
         self.memory_buffer.append(entry)
 
-    def save(self, path: str = None, mode: str = 'a'):
+    def save(self, path: str = None, mode: str = 'w', save_ocp_trajs: bool = False) -> None:
         """Flushes memory buffer to HDF5."""
         target_path = Path(path) if path else self.file_path
         if not target_path: 
@@ -126,8 +129,11 @@ class MPCDataset:
                 grp.create_dataset("states", data=t.states, compression="gzip")
                 grp.create_dataset("inputs", data=t.inputs, compression="gzip")
                 grp.create_dataset("time", data=t.time, compression="gzip")
-                grp.create_dataset("solved_states", data=t.solved_states, compression="gzip")
-                grp.create_dataset("solved_inputs", data=t.solved_inputs, compression="gzip")
+                grp.create_dataset("cost", data=t.cost, compression="gzip")
+
+                if save_ocp_trajs:
+                    grp.create_dataset("solved_states", data=t.solved_states, compression="gzip")
+                    grp.create_dataset("solved_inputs", data=t.solved_inputs, compression="gzip")
 
                 # Constraints
                 if entry.constraints:
@@ -167,11 +173,11 @@ class MPCDataset:
         """
         Reads from disk on-demand.
         """
-        # 1. Check memory buffer first (unsaved data)
+        # Check memory buffer first
         if idx < len(self.memory_buffer):
             return self.memory_buffer[idx]
         
-        # 2. Check File
+        # Check File
         # Calculate index relative to the file content
         file_idx = idx - len(self.memory_buffer)
         key = self._indices[file_idx]
@@ -182,12 +188,13 @@ class MPCDataset:
             states=grp["states"][:],
             inputs=grp["inputs"][:],
             time=grp["time"][:],
+            cost=grp["cost"][:],
             solved_states=grp["solved_states"][:] if "solved_states" in grp else None,
             solved_inputs=grp["solved_inputs"][:] if "solved_inputs" in grp else None,
             feasible=bool(grp.attrs["feasible"])
         )
 
-        # Read Metadata (Fast JSON decode)
+        # Read Metadata
         meta = MPCMeta(**json.loads(grp.attrs["meta_json"]))
         config = json.loads(grp.attrs["config_json"])
         
