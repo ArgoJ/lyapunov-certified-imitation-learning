@@ -4,7 +4,7 @@ from acados_template import AcadosOcpSolver
 from tqdm import tqdm
 
 from .mpc_solve import solve_mpc_closed_loop
-from .mpc_data import MPCDataset
+from .mpc_data import MPCDataset, MPCConstraints
 from ..utils.package_logger import PackageLogger
 
 class MPCDataGenerator:
@@ -14,8 +14,7 @@ class MPCDataGenerator:
     def __init__(
         self,
         solver: AcadosOcpSolver,
-        x0_lower_bound: np.ndarray,
-        x0_upper_bound: np.ndarray,
+        x0_bounds: np.ndarray,
         N_sim: int,
         break_on_infeasible: bool = True,
         seed: Optional[int] = None,
@@ -30,13 +29,10 @@ class MPCDataGenerator:
         ----------
         solver : AcadosOcpSolver
             The initialized Acados OCP solver instance.
-        x0_lower_bound : np.ndarray
-            Lower bound for initial state sampling (shape: (nx,)).
-            In 'percentage' mode this is the single percentage array (0-1) used to shrink the solver's
+        x0_bounds : np.ndarray
+            Bounds for initial state sampling (shape: (2, nx)) (lower_bounds, upper_bounds).
+            In 'percentage' mode this is the single (shape: (nx,))  percentage array (0-1) used to shrink the solver's
             state bounds toward their midpoint.
-        x0_upper_bound : np.ndarray
-            Upper bound for initial state sampling (shape: (nx,)).
-            Ignored when bound_type is 'percentage'.
         N_sim : int
             Number of simulation steps per trajectory.
         break_on_infeasible : bool
@@ -61,13 +57,38 @@ class MPCDataGenerator:
             np.random.seed(seed)
             
         nx = solver.acados_ocp.dims.nx
-        
-        # Validate bounds dimensions
-        if x0_lower_bound.shape[0] != nx or x0_upper_bound.shape[0] != nx:
-            raise ValueError(f"Bounds must have shape ({nx},). Got {x0_lower_bound.shape} and {x0_upper_bound.shape}.")
+        nu = solver.acados_ocp.dims.nu
 
+        # Extract constraints from solver
+        full_lbx = np.full(nx, -np.inf)
+        full_ubx = np.full(nx, np.inf)
+        full_lbu = np.full(nu, -np.inf)
+        full_ubu = np.full(nu, np.inf)
+
+        c = solver.acados_ocp.constraints
+
+        if hasattr(c, "idxbx") and np.size(c.idxbx) > 0:
+            idx = c.idxbx
+            if hasattr(c, "lbx") and c.lbx is not None:
+                full_lbx[idx] = c.lbx
+            if hasattr(c, "ubx") and c.ubx is not None:
+                full_ubx[idx] = c.ubx
+        
+        if hasattr(c, "idxbu") and np.size(c.idxbu) > 0:
+            idx = c.idxbu
+            if hasattr(c, "lbu") and c.lbu is not None:
+                full_lbu[idx] = c.lbu
+            if hasattr(c, "ubu") and c.ubu is not None:
+                full_ubu[idx] = c.ubu
+
+        self.mpc_constraints = MPCConstraints(
+            state_bounds=np.vstack((full_lbx, full_ubx)),
+            input_bounds=np.vstack((full_lbu, full_ubu)),
+            goal_state=None
+        )
+        
         if bound_type == "percentage":
-            percentages = x0_lower_bound
+            percentages = x0_bounds
 
             # Basic validation
             if percentages.shape[0] != nx:
@@ -75,27 +96,16 @@ class MPCDataGenerator:
             if np.any(percentages <= 0) or np.any(percentages > 1):
                 raise ValueError("Percentages must be in the interval (0, 1].")
 
-            # Pull state bounds from the solver
-            full_lbx = np.full(nx, -np.inf)
-            full_ubx = np.full(nx, np.inf)
-
-            c = solver.acados_ocp.constraints
-
-            if hasattr(c, "idxbx") and np.size(c.idxbx) > 0:
-                idx = c.idxbx
-                if hasattr(c, "lbx") and c.lbx is not None:
-                    full_lbx[idx] = c.lbx
-                if hasattr(c, "ubx") and c.ubx is not None:
-                    full_ubx[idx] = c.ubx
-
             if np.any(~np.isfinite(full_lbx)) or np.any(~np.isfinite(full_ubx)):
                 raise ValueError("Percentage mode requires finite lbx/ubx for all states.")
 
             self.sample_lb, self.sample_ub = self._calculate_percentage_bounds(full_lbx, full_ubx, percentages)
 
         elif bound_type == "absolute":
-            self.sample_lb = x0_lower_bound
-            self.sample_ub = x0_upper_bound
+            if x0_bounds.shape != (2, nx):
+                raise ValueError(f"Bounds must have shape (2, {nx}) for absolute mode. Got {x0_bounds.shape}.")
+            self.sample_lb = x0_bounds[0]
+            self.sample_ub = x0_bounds[1]
 
         else:
             raise ValueError(f"Unknown bound_type: {bound_type}. Use 'absolute' or 'percentage'.")
@@ -107,7 +117,7 @@ class MPCDataGenerator:
         Parameters
         ----------
         n_samples : int
-             Number of trajectories to generate.
+            Number of trajectories to generate.
 
         Returns
         -------
@@ -147,6 +157,7 @@ class MPCDataGenerator:
                     config=config,
                     break_on_infeasible=self.break_on_infeasible
                 )
+                mpc_data.constraints = self.mpc_constraints
 
                 dataset.add(mpc_data)
         finally:
@@ -154,6 +165,7 @@ class MPCDataGenerator:
                 PackageLogger.restore_handlers("lyapunov_certified_imitation_learning", tqdm_handler, restored_handlers)
 
         return dataset
+
 
     def _calculate_percentage_bounds(self, full_lbx: np.ndarray, full_ubx: np.ndarray, percentages: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Shrink bounds symmetrically around the midpoint using the provided percentages"""

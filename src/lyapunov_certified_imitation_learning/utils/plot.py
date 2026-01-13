@@ -4,6 +4,9 @@ from plotly.subplots import make_subplots
 from typing import Callable
 
 from ..data_generation.mpc_data import MPCDataset
+from .package_logger import PackageLogger
+
+__logger__ = PackageLogger.get_logger(__name__)
 
 
 def mpc_trajectories(
@@ -26,7 +29,7 @@ def mpc_trajectories(
         If True, plot the OCP predictions at each step. Default is False.
     """
     if len(dataset) == 0:
-        print("Dataset is empty.")
+        __logger__.warning("Dataset is empty.")
         return
 
     # Extract dimensions from the first trajectory
@@ -194,7 +197,7 @@ def mpc_trajectories(
     
     output_file = "mpc_trajectories.html"
     fig.write_html(output_file)
-    print(f"Plot saved to {output_file}. Open this file in VS Code or your browser to view.")
+    __logger__.info(f"Trajectories plot saved to {output_file}.")
     
     # fig.show()
 
@@ -226,7 +229,7 @@ def lyapunov(
         If True, plot a 3D surface and 3D trajectories. Default is False.
     """
     if len(dataset) == 0:
-        print("Dataset is empty.")
+        __logger__.warning("Dataset is empty.")
         return
 
     # Infer dimensions
@@ -405,6 +408,6 @@ def lyapunov(
 
     output_file = "lyapunov_landscape.html"
     fig.write_html(output_file)
-    print(f"Plot saved to {output_file}. Open this file in VS Code or your browser to view.")
+    __logger__.info(f"Lyapunov landscape plot saved to {output_file}.")
     
     # fig.show()

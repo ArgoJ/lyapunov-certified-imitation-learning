@@ -147,8 +147,8 @@ def get_ocp_solver(
 # %%  
 if __name__ == "__main__":
     # Continuous-time double integrator matrices
-    A_c = np.array([[0.2, 1.1],
-                    [0, 0.4]])
+    A_c = np.array([[0, 1],
+                    [0, 0]])
     B_c = np.array([[0],
                     [1]])
     
@@ -166,13 +166,14 @@ if __name__ == "__main__":
     
     generator = MPCDataGenerator(
         solver=solver, 
-        x0_lower_bound=np.array([-8.0, -5.0]),
-        x0_upper_bound=np.array([8.0, 5.0]),
+        x0_bounds=np.array([[-8.0, -5.0], [8.0, 5.0]]),
         N_sim=50, 
         verbose=True,
         reset_solver=True,
     )
     dataset = generator.generate(n_samples=1000)
+    dataset.validate()
+    dataset.save("double_integrator_mpc_data.zip")
     
     lcil_utils.plot.mpc_trajectories(
         dataset=dataset,
@@ -190,5 +191,3 @@ if __name__ == "__main__":
         plot_3d=True,
         limits=[[-12, 12], [-8, 8]]
     )
-    
-    
