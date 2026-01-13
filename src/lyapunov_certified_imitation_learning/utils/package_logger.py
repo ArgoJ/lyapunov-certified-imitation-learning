@@ -2,8 +2,8 @@ import logging
 import sys
 from tqdm import tqdm
 
-_DEFAULT_LOGGER_NAME = "lyapunov_certified_imitation_learning"
-_DEFAULT_LOGGER_FORMAT = '[%(asctime)s] [%(name)s] - [%(levelname)s] - %(message)s'
+_DEFAULT_LOGGER_NAME = "lcil"
+_DEFAULT_LOGGER_FORMAT = '[%(asctime)s] [%(name)s] [%(levelname)s] - %(message)s'
 
 class TqdmLoggingHandler(logging.Handler):
     """
@@ -59,6 +59,9 @@ class PackageLogger:
         logging.Logger
             A logger instance.
         """
+        if name.startswith("lyapunov_certified_imitation_learning"):
+            name = name.replace("lyapunov_certified_imitation_learning", _DEFAULT_LOGGER_NAME, 1)
+
         return logging.getLogger(name)
 
     @staticmethod

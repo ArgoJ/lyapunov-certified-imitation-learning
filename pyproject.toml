@@ -14,7 +14,8 @@ dependencies = [
     "matplotlib",
     "scipy",
     "pandas",
-    "plotly"
+    "plotly",
+    "tqdm"
 ]
 
 [tool.setuptools.package-dir]

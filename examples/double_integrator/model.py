@@ -3,12 +3,11 @@
 
 
 # %% General Imports
-from typing import Optional, Tuple
-
 import numpy as np
 from scipy.linalg import solve_discrete_are, block_diag, expm
 from casadi import SX, vertcat
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
+from typing import Optional, Tuple
 
 import lyapunov_certified_imitation_learning.utils as lcil_utils
 from lyapunov_certified_imitation_learning.data_generation import ( 
@@ -94,11 +93,11 @@ def get_ocp_solver(
     """
     nx = A_c.shape[0]
     nu = B_c.shape[1]
-    
+
     # Calculate DARE
     dt = T / N
     A_d, B_d = lcil_utils.linalg.c2d(A_c, B_c, dt)
-    
+
     if P is None:
         P = solve_discrete_are(A_d, B_d, Q, R)
 
@@ -113,7 +112,7 @@ def get_ocp_solver(
 
     # Cost setup
     ocp.cost.cost_type = "LINEAR_LS"
-    
+
     W = block_diag(Q, R)
     ocp.cost.W = W
     ocp.cost.Vx = np.vstack((np.eye(nx), np.zeros((nu, nx))))
@@ -128,19 +127,19 @@ def get_ocp_solver(
 
     # Constraints
     ocp.constraints.x0 = np.zeros((nx,))
-    
+
     ocp.constraints.lbu = np.array([-5.0])
     ocp.constraints.ubu = np.array([5.0])
     ocp.constraints.idxbu = np.array([0])
 
     solver = AcadosOcpSolver(ocp, json_file=f"{ocp.model.name}_ocp.json")
-    
+
     info = {
         "A_d": A_d,
         "B_d": B_d,
         "P": P,
     }
-    
+
     return solver, info
 
 
@@ -151,19 +150,19 @@ if __name__ == "__main__":
                     [0, 0]])
     B_c = np.array([[0],
                     [1]])
-    
+
     # Cost matrices
     Q = np.diag([1.0, 1.0])
     R = np.diag([0.1])
-    
+
     # Create OCP solver
     solver, info = get_ocp_solver(A_c, B_c, Q, R)
-    
+
     print("OCP solver created.")
     print("Discrete A matrix:\n", info["A_d"])
     print("Discrete B matrix:\n", info["B_d"])
     print("Terminal cost P matrix:\n", info["P"])
-    
+
     generator = MPCDataGenerator(
         solver=solver, 
         x0_bounds=np.array([[-8.0, -5.0], [8.0, 5.0]]),
@@ -173,18 +172,17 @@ if __name__ == "__main__":
     )
     dataset = generator.generate(n_samples=1000)
     dataset.validate()
-    dataset.save("double_integrator_mpc_data.zip")
-    
+    dataset.save("double_integrator_mpc_dataset.hdf5", mode="w")
+
     lcil_utils.plot.mpc_trajectories(
         dataset=dataset,
         state_labels=["Position", "Velocity"],
         control_labels=["Acceleration"],
         plot_predictions=True
     )
-    
-    
+
     lyap = lambda x: x.T @ info["P"] @ x
-    
+
     lcil_utils.plot.lyapunov(
         dataset=dataset, 
         lyapunov_func=lyap,

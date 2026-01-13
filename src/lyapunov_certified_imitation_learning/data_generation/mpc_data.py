@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Iterator
 from pathlib import Path
 
 from ..utils.package_logger import PackageLogger
@@ -102,7 +102,6 @@ class MPCDataset:
         # Open file in read mode if it exists
         if self.file_path and self.file_path.exists():
             self._h5_file = h5py.File(self.file_path, 'r')
-            # Sort keys to ensure deterministic ordering
             self._indices = sorted(list(self._h5_file.keys()), key=lambda x: int(x.split('_')[1]))
 
     def add(self, entry: MPCData):
@@ -127,8 +126,6 @@ class MPCDataset:
                 grp.create_dataset("states", data=t.states, compression="gzip")
                 grp.create_dataset("inputs", data=t.inputs, compression="gzip")
                 grp.create_dataset("time", data=t.time, compression="gzip")
-
-                # Optional: Only save solved predictions if needed to save space
                 grp.create_dataset("solved_states", data=t.solved_states, compression="gzip")
                 grp.create_dataset("solved_inputs", data=t.solved_inputs, compression="gzip")
 
@@ -168,7 +165,7 @@ class MPCDataset:
 
     def __getitem__(self, idx) -> MPCData:
         """
-        The Magic Method: Reads from disk on-demand.
+        Reads from disk on-demand.
         """
         # 1. Check memory buffer first (unsaved data)
         if idx < len(self.memory_buffer):
@@ -206,12 +203,19 @@ class MPCDataset:
 
         return MPCData(trajectory=traj, meta=meta, config=config, constraints=constraints)
 
+    def __iter__(self) -> Iterator[MPCData]:
+        """
+        Explicit iterator to help static analysis tools infer the type of elements.
+        """
+        for i in range(len(self)):
+            yield self[i]
+
     def to_dataframe(self) -> pd.DataFrame:
         """
         Fast Filtering: Reads ONLY the metadata attributes (tiny), ignores arrays (huge).
         """
         rows = []
-        # 1. From Memory
+        # From Memory
         for i, entry in enumerate(self.memory_buffer):
             row = entry.config.copy()
             row.update(asdict(entry.meta))
@@ -219,7 +223,7 @@ class MPCDataset:
             row['source'] = 'mem'
             rows.append(row)
 
-        # 2. From File (Fast Scan)
+        # From File
         for i, key in enumerate(self._indices):
             grp = self._h5_file[key]
             # ONLY reading attributes, extremely fast
