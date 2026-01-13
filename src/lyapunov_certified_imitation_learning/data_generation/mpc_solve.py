@@ -1,9 +1,12 @@
 import time
+import logging
 from typing import Dict, Optional, Any
 import numpy as np
 from acados_template import AcadosOcpSolver, AcadosSimSolver
 
 from .mpc_data import MPCData, MPCTrajectory, MPCMeta
+
+logger = logging.getLogger(__name__)
 
 
 def solve_mpc_closed_loop(
@@ -67,7 +70,7 @@ def solve_mpc_closed_loop(
         
         if status != 0:
             if break_on_infeasible:
-                print(f"Solver failed at step {i} with status {status}. Stopping.")
+                logger.warning(f"Solver failed at step {i} with status {status}. Stopping.")
                 is_feasible_run = False
                 break
         
@@ -97,7 +100,7 @@ def solve_mpc_closed_loop(
             
             status_sim = integrator.solve()
             if status_sim != 0:
-                print(f"Integrator failed at step {i} with status {status_sim}")
+                logger.error(f"Integrator failed at step {i} with status {status_sim}")
             
             current_x = integrator.get("x")
         else:

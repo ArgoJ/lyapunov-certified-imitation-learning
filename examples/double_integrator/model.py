@@ -14,7 +14,7 @@ import lyapunov_certified_imitation_learning.utils as lcil_utils
 from lyapunov_certified_imitation_learning.data_generation import ( 
     MPCDataset,
     solve_mpc_closed_loop,
-    generate_mpc_dataset,
+    MPCDataGenerator,
 )
 
 
@@ -147,8 +147,8 @@ def get_ocp_solver(
 # %%  
 if __name__ == "__main__":
     # Continuous-time double integrator matrices
-    A_c = np.array([[0, 1],
-                    [0, 0]])
+    A_c = np.array([[0.2, 1.1],
+                    [0, 0.4]])
     B_c = np.array([[0],
                     [1]])
     
@@ -164,15 +164,15 @@ if __name__ == "__main__":
     print("Discrete B matrix:\n", info["B_d"])
     print("Terminal cost P matrix:\n", info["P"])
     
-    dataset = generate_mpc_dataset(
-        solver, 
-        n_samples=1000, 
+    generator = MPCDataGenerator(
+        solver=solver, 
         x0_lower_bound=np.array([-8.0, -5.0]),
         x0_upper_bound=np.array([8.0, 5.0]),
         N_sim=50, 
         verbose=True,
-        # bound_type="percentage",
+        reset_solver=True,
     )
+    dataset = generator.generate(n_samples=1000)
     
     lcil_utils.plot.mpc_trajectories(
         dataset=dataset,
