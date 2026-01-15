@@ -93,6 +93,7 @@ def get_ocp_solver(
     # Calculate DARE
     dt = T / N
     A_d, B_d = lcil_utils.linalg.c2d(A_c, B_c, dt)
+    # TODO: try to find a function in acados that returns discrete Matrices
 
     if P is None:
         P = solve_discrete_are(A_d, B_d, Q, R)
@@ -166,7 +167,7 @@ if __name__ == "__main__":
         verbose=True,
         reset_solver=True,
     )
-    dataset = generator.generate(n_samples=1000)
+    dataset = generator.generate(n_samples=100)
     dataset.validate()
     dataset.save("double_integrator_mpc_dataset.hdf5", mode="w")
 
@@ -183,7 +184,7 @@ if __name__ == "__main__":
     lcil_utils.plot.lyapunov(
         dataset=dataset, 
         lyapunov_func=lyap,
-        plot_3d=True,
+        plot_3d=False,
         limits=[[-12, 12], [-8, 8]],
         html_path="double_integrator_lyapunov_landscape.html",
     )

@@ -150,6 +150,7 @@ class MPCDataGenerator:
                     "sim_length": self.N_sim
                 }
 
+                # TODO: add an epsilon band around the x_target
                 mpc_data = solve_mpc_closed_loop(
                     solver=self.solver,
                     x0=x0,
