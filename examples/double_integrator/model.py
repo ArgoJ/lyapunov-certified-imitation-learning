@@ -92,7 +92,7 @@ def get_ocp_solver(
 
     # Calculate DARE
     dt = T / N
-    A_d, B_d = lcil_utils.linalg.c2d(A_c, B_c, dt)
+    A_d, B_d = lcil_utils.linalg.c2d_rk4(A_c, B_c, dt)
     # TODO: try to find a function in acados that returns discrete Matrices
 
     if P is None:
@@ -104,8 +104,10 @@ def get_ocp_solver(
     # Solver options
     ocp.solver_options.N_horizon = N
     ocp.solver_options.tf = T
-    ocp.solver_options.integrator_type = "ERK"
     ocp.solver_options.qp_solver = "FULL_CONDENSING_HPIPM"
+    ocp.solver_options.integrator_type = 'ERK'
+    ocp.solver_options.hessian_approx = 'EXACT'
+    ocp.solver_options.nlp_solver_type = 'SQP'
 
     # Cost setup
     ocp.cost.cost_type = "LINEAR_LS"
