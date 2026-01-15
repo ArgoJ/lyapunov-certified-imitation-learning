@@ -1,68 +1,109 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List
 
+
+# --- ICNN ---
 class ICNN(nn.Module):
     """
-    Input Convex Neural Network (ICNN).
-    
-    Implementation ensures that the network output is convex with respect to the input.
-    Based on: Amos et al., "Input Convex Neural Networks", ICML 2017.
+    Input Convex Neural Network (ICNN) architecture.
     """
-    def __init__(self, input_dim: int, hidden_dims: List[int], output_dim: int = 1, activation=nn.Softplus()):
+    def __init__(self, input_dim: int, hidden_dim: list[int], activation: str = "relu", with_skip: bool = True):
         super(ICNN, self).__init__()
         
         self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.hidden_dims = hidden_dims
-        self.activation = activation
+        self.hidden_dim = hidden_dim
+        self.num_layers = len(hidden_dim)
         
-        # w_xs: Linear layers for input x injection (W^x)
-        # w_zs: Linear layers for hidden state propagation (W^z, must be non-negative)
-        self.w_xs = nn.ModuleList()
-        self.w_zs = nn.ModuleList()
-        
-        # First layer: z_0 = activation(W_0^x x + b_0)
-        if not hidden_dims:
-            raise ValueError("hidden_dims must strictly contain at least one hidden dimension.")
+        # --- Define Layers ---
+        if self.num_layers < 1:
+            raise ValueError("hidden_dim must contain at least one layer size.")
 
-        self.w_xs.append(nn.Linear(input_dim, hidden_dims[0]))
+        self.w0 = nn.Linear(input_dim, hidden_dim[0])
         
-        # Subsequent layers
-        for i in range(len(hidden_dims) - 1):
-            # Transformation from previous hidden layer z_i to z_{i+1}
-            # Weights will be effectively non-negative via softplus in forward()
-            self.w_zs.append(nn.Linear(hidden_dims[i], hidden_dims[i+1], bias=False))
-            
-            # Injection from input x to z_{i+1}
-            self.w_xs.append(nn.Linear(input_dim, hidden_dims[i+1]))
-            
-        # Output layer
-        self.final_w_z = nn.Linear(hidden_dims[-1], output_dim, bias=False)
-        self.final_w_x = nn.Linear(input_dim, output_dim)
+        # Hidden Layers
+        #    z_{k+1} = sigma( W_z * z_k + W_x * x + b )
+        self.w_z = nn.ModuleList([
+            nn.Linear(hidden_dim[i - 1], hidden_dim[i], bias=False)
+            for i in range(1, self.num_layers)
+        ])
+        self.final_w_z = nn.Linear(hidden_dim[-1], 1, bias=False)
+        
+        
+        if with_skip:
+            self.w_x = nn.ModuleList([
+                nn.Linear(input_dim, hidden_dim[i], bias=True)
+                for i in range(1, self.num_layers)
+            ])
+            self.final_w_x = nn.Linear(input_dim, 1, bias=True)
+        else:
+            self.w_x = None
+            self.final_w_x = None
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # First layer
-        z = self.activation(self.w_xs[0](x))
+        # --- Activation ---
+        if activation == "softplus":
+            self.act = F.softplus
+        else:
+            self.act = F.relu
+
+    def forward(self, x):
+        # Initial Layer
+        z = self.act(self.w0(x))
         
-        # Hidden layers
-        for i in range(len(self.w_zs)):
-            # Enforce non-negativity on recurrent weights W^z
-            u_weight = F.softplus(self.w_zs[i].weight)
+        # Hidden Layers
+        for i in range(self.num_layers - 1):
+            W_z_positive = F.softplus(self.w_z[i].weight)
             
-            # z_{i+1} = activation( z_i @ W^{z,T}_{i} + x @ W^{x,T}_{i+1} + b_{i+1} )
-            # nn.Linear(x) computes x @ W^T + b.
-            # F.linear(z, weight) computes z @ weight^T.
-            z_term = F.linear(z, u_weight)
-            x_term = self.w_xs[i+1](x) # Includes bias
+            # Positive weights: W_z * z
+            z_next = F.linear(z, W_z_positive)
             
-            z = self.activation(z_term + x_term)
+            # Skip connection: W_x * x + b
+            if self.w_x is not None:
+                z_next = z_next + self.w_x[i](x)
             
-        # Final layer
-        u_weight_final = F.softplus(self.final_w_z.weight)
-        z_term_final = F.linear(z, u_weight_final)
-        x_term_final = self.final_w_x(x) # Includes bias
+            # Activation
+            z = self.act(z_next)
+            
+        # Final Layer
+        W_z_final_pos = F.softplus(self.final_w_z.weight)
+        if self.final_w_x is not None:
+            y = F.linear(z, W_z_final_pos) + self.final_w_x(x)
+        else:
+            y = F.linear(z, W_z_final_pos)
         
-        out = z_term_final + x_term_final
-        return out
+        return y
+
+
+# --- Lyapunov Wrapper ---
+class NeuralLyapunov(nn.Module):
+    """
+    Wraps the ICNN to ensure strict Lyapunov properties:
+    V(0) = 0 and V(x) > 0.
+    """
+    def __init__(self, icnn_model, eps: float = 0.01):
+        super(NeuralLyapunov, self).__init__()
+        self.icnn = icnn_model
+        self.eps = eps
+        
+        # We handle V(0)=0 by subtracting the value at zero.
+        # However, computing ICNN(0) every forward pass is expensive.
+        # In practice, we often just train it to be 0 or subtract a cached bias.
+        # Here, we'll implement the mathematical definition directly for clarity.
+
+    def forward(self, x):
+        # V(x) = ICNN(x) - ICNN(0) + eps * ||x||^2
+        # The eps term ensures strict positive definiteness even if ICNN is flat.
+        
+        v_x = self.icnn(x)
+        
+        # Calculate ICNN(0) - In efficient training, you might detach this or 
+        # assume bias initialization handles it. 
+        # For strict correctness:
+        zeros = torch.zeros_like(x)
+        v_0 = self.icnn(zeros)
+        
+        # Add quadratic term for strict positivity (eps * x^T x)
+        # shape of x is (Batch, Dim) -> norm is (Batch, 1)
+        quadratic = self.eps * (x ** 2).sum(dim=1, keepdim=True)
+        
+        return v_x - v_0 + quadratic
