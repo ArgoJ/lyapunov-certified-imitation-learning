@@ -4,9 +4,9 @@ from typing import Dict, Optional, Any
 import numpy as np
 from acados_template import AcadosOcpSolver, AcadosSimSolver
 
-from .mpc_data import MPCData, MPCTrajectory, MPCMeta
+from .mpc_data import MPCData, MPCTrajectory, MPCMeta, MPCConfig
 
-logger = logging.getLogger(__name__)
+__logger__ = logging.getLogger(__name__)
 
 
 def solve_mpc_closed_loop(
@@ -15,7 +15,7 @@ def solve_mpc_closed_loop(
     N_sim: int,
     integrator: Optional[AcadosSimSolver] = None,
     dt: Optional[float] = None,
-    config: Optional[Dict[str, Any]] = None,
+    config: Optional[MPCConfig] = None,
     break_on_infeasible: bool = True
 ) -> MPCData:
     """
@@ -29,11 +29,11 @@ def solve_mpc_closed_loop(
         Initial state vector.
     N_sim : int
         Number of simulation steps.
-    dt : Optional[float]
+    dt : float, optional
         Sampling time (for time vector generation).
-    integrator : Optional[AcadosSimSolver]
+    integrator : AcadosSimSolver, optional
         Acados integrator for accurate simulation steps.
-    config : dict, optional
+    config : MPCConfig, optional
         Configuration dictionary to store in MPCData.
     break_on_infeasible : bool
         If True, stops simulation if the solver returns a non-zero status.
@@ -70,7 +70,7 @@ def solve_mpc_closed_loop(
         
         if status != 0:
             if break_on_infeasible:
-                logger.warning(f"Solver failed at step {i} with status {status}. Stopping.")
+                __logger__.warning(f"Solver failed at step {i} with status {status}. Stopping.")
                 is_feasible_run = False
                 break
         
@@ -101,7 +101,7 @@ def solve_mpc_closed_loop(
             
             status_sim = integrator.solve()
             if status_sim != 0:
-                logger.error(f"Integrator failed at step {i} with status {status_sim}")
+                __logger__.error(f"Integrator failed at step {i} with status {status_sim}")
             
             current_x = integrator.get("x")
         else:
@@ -126,7 +126,7 @@ def solve_mpc_closed_loop(
     )
     
     if config is None:
-        config = {}
+        config = MPCConfig()
         
     return MPCData(
         config=config,

@@ -4,7 +4,7 @@ from acados_template import AcadosOcpSolver
 from tqdm import tqdm
 
 from .mpc_solve import solve_mpc_closed_loop
-from .mpc_data import MPCDataset, MPCConstraints
+from .mpc_data import MPCDataset, MPCConfig
 from ..utils.package_logger import PackageLogger, DEFAULT_MODULE_NAME
 
 class MPCDataGenerator:
@@ -15,7 +15,7 @@ class MPCDataGenerator:
         self,
         solver: AcadosOcpSolver,
         x0_bounds: np.ndarray,
-        N_sim: int,
+        T_sim: int,
         break_on_infeasible: bool = True,
         seed: Optional[int] = None,
         verbose: bool = True,
@@ -33,7 +33,7 @@ class MPCDataGenerator:
             Bounds for initial state sampling (shape: (2, nx)) (lower_bounds, upper_bounds).
             In 'percentage' mode this is the single (shape: (nx,))  percentage array (0-1) used to shrink the solver's
             state bounds toward their midpoint.
-        N_sim : int
+        T_sim : int
             Number of simulation steps per trajectory.
         break_on_infeasible : bool
             Whether to stop simulation if the solver fails.
@@ -48,47 +48,119 @@ class MPCDataGenerator:
             If True, resets the solver states to zero before each simulation.
         """
         self.solver = solver
-        self.N_sim = N_sim
         self.break_on_infeasible = break_on_infeasible
         self.verbose = verbose
         self.reset_solver = reset_solver
+        self.bound_type = bound_type
+        self.x0_bounds = x0_bounds
+        self.T_sim = T_sim
+        
+        self.sample_lb = None
+        self.sample_ub = None
         
         if seed is not None:
             np.random.seed(seed)
             
-        nx = solver.acados_ocp.dims.nx
-        nu = solver.acados_ocp.dims.nu
+        self.extract_solver_config()
+        
+    
+    def extract_constraints(self, nx: int, nu: int, nx_e: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        full_bu = np.vstack((np.full(nu, -np.inf), np.full(nu, np.inf)))
+        full_bx = np.vstack((np.full(nx, -np.inf), np.full(nx, np.inf)))
+        full_bx_e = np.vstack((np.full(nx_e, -np.inf), np.full(nx_e, np.inf)))
 
-        # Extract constraints from solver
-        full_lbx = np.full(nx, -np.inf)
-        full_ubx = np.full(nx, np.inf)
-        full_lbu = np.full(nu, -np.inf)
-        full_ubu = np.full(nu, np.inf)
-
-        c = solver.acados_ocp.constraints
-
-        if hasattr(c, "idxbx") and np.size(c.idxbx) > 0:
-            idx = c.idxbx
-            if hasattr(c, "lbx") and c.lbx is not None:
-                full_lbx[idx] = c.lbx
-            if hasattr(c, "ubx") and c.ubx is not None:
-                full_ubx[idx] = c.ubx
+        c = self.solver.acados_ocp.constraints
         
         if hasattr(c, "idxbu") and np.size(c.idxbu) > 0:
             idx = c.idxbu
             if hasattr(c, "lbu") and c.lbu is not None:
-                full_lbu[idx] = c.lbu
+                full_bu[0, idx] = c.lbu
             if hasattr(c, "ubu") and c.ubu is not None:
-                full_ubu[idx] = c.ubu
+                full_bu[1, idx] = c.ubu
 
-        self.mpc_constraints = MPCConstraints(
-            state_bounds=np.vstack((full_lbx, full_ubx)),
-            input_bounds=np.vstack((full_lbu, full_ubu)),
-            goal_state=None
+        # State constraints
+        if hasattr(c, "idxbx") and np.size(c.idxbx) > 0:
+            idx = c.idxbx
+            if hasattr(c, "lbx") and c.lbx is not None:
+                full_bx[0, idx] = c.lbx
+            if hasattr(c, "ubx") and c.ubx is not None:
+                full_bx[1, idx] = c.ubx
+
+        # Terminal state constraints
+        if hasattr(c, "idxbx_e") and np.size(c.idxbx_e) > 0:
+            idx = c.idxbx_e
+            if hasattr(c, "lbx_e") and c.lbx_e is not None:
+                full_bx_e[0, idx] = c.lbx_e
+            if hasattr(c, "ubx_e") and c.ubx_e is not None:
+                full_bx_e[1, idx] = c.ubx_e
+        
+        return full_bu, full_bx, full_bx_e
+
+    def extract_cost_weights(self, nx: int, nu: int) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+        """Extract (Q, R, Qf) from the acados OCP cost matrices.
+
+        For the common LINEAR_LS setup with y = [x; u] and W = block_diag(Q, R),
+        this returns the intended Q and R blocks.
+        """
+        cost = self.solver.acados_ocp.cost
+
+        W = np.asarray(cost.W)
+        if W.ndim == 2 and W.shape == (nx + nu, nx + nu):
+            Q = W[:nx, :nx]
+            R = W[nx:, nx:]
+        else:
+            Q = W
+            R = W
+
+        Qf = None
+        if hasattr(cost, "W_e") and cost.W_e is not None:
+            Qf = np.asarray(cost.W_e)
+
+        return Q, R, Qf
+
+    def extract_goal_state(self, nx: int) -> Optional[np.ndarray]:
+        """Try to extract a goal state from yref_e/yref."""
+        cost = self.solver.acados_ocp.cost
+        if hasattr(cost, "yref_e") and cost.yref_e is not None:
+            yref_e = np.asarray(cost.yref_e).reshape(-1)
+            if yref_e.size >= nx:
+                return yref_e[:nx].copy()
+        if hasattr(cost, "yref") and cost.yref is not None:
+            yref = np.asarray(cost.yref).reshape(-1)
+            if yref.size >= nx:
+                return yref[:nx].copy()
+        return None
+        
+        
+    def extract_solver_config(self) -> None:
+        nx = self.solver.acados_ocp.dims.nx
+        nu = self.solver.acados_ocp.dims.nu
+        nx_e = self.solver.acados_ocp.dims.nbx_e
+        
+        N_horizon = self.solver.acados_ocp.solver_options.N_horizon
+        tf = float(self.solver.acados_ocp.solver_options.tf)
+        dt = tf / int(N_horizon)
+
+        full_bu, full_bx, full_bx_e = self.extract_constraints(nx, nu, nx_e)
+
+        Q, R, Qf = self.extract_cost_weights(nx, nu)
+        goal_state = self.extract_goal_state(nx)
+
+        self.mpc_config = MPCConfig(
+            Q=Q,
+            R=R,
+            Qf=Qf,
+            dt=dt,
+            N=int(N_horizon),
+            T_sim=self.T_sim,
+            state_bounds=full_bx,
+            input_bounds=full_bu,
+            terminal_state_bounds=full_bx_e,
+            goal_state=goal_state
         )
         
-        if bound_type == "percentage":
-            percentages = x0_bounds
+        if self.bound_type == "percentage":
+            percentages = self.x0_bounds
 
             # Basic validation
             if percentages.shape[0] != nx:
@@ -96,19 +168,19 @@ class MPCDataGenerator:
             if np.any(percentages <= 0) or np.any(percentages > 1):
                 raise ValueError("Percentages must be in the interval (0, 1].")
 
-            if np.any(~np.isfinite(full_lbx)) or np.any(~np.isfinite(full_ubx)):
+            if np.any(~np.isfinite(full_bx)):
                 raise ValueError("Percentage mode requires finite lbx/ubx for all states.")
 
-            self.sample_lb, self.sample_ub = self._calculate_percentage_bounds(full_lbx, full_ubx, percentages)
+            self.sample_lb, self.sample_ub = self._calculate_percentage_bounds(full_bx[0], full_bx[1], percentages)
 
-        elif bound_type == "absolute":
-            if x0_bounds.shape != (2, nx):
-                raise ValueError(f"Bounds must have shape (2, {nx}) for absolute mode. Got {x0_bounds.shape}.")
-            self.sample_lb = x0_bounds[0]
-            self.sample_ub = x0_bounds[1]
-
+        elif self.bound_type == "absolute":
+            if self.x0_bounds.shape != (2, nx):
+                raise ValueError(f"Bounds must have shape (2, {nx}) for absolute mode. Got {self.x0_bounds.shape}.")
+            self.sample_lb = self.x0_bounds[0]
+            self.sample_ub = self.x0_bounds[1]
         else:
-            raise ValueError(f"Unknown bound_type: {bound_type}. Use 'absolute' or 'percentage'.")
+            raise ValueError(f"Unknown bound_type: {self.bound_type}. Use 'absolute' or 'percentage'.")
+        
             
     def generate(self, n_samples: int) -> MPCDataset:
         """
@@ -137,28 +209,21 @@ class MPCDataGenerator:
             iterator = tqdm(iterator, desc="Generating Trajectories")
 
         try:
-            for i in iterator:
+            for _ in iterator:
                 x0 = np.random.uniform(self.sample_lb, self.sample_ub)
 
                 if self.reset_solver:
                     self.solver.reset()
 
-                # Run closed-loop simulation
-                config = {
-                    "generation_id": i,
-                    "x0_sampled": x0.tolist(),
-                    "sim_length": self.N_sim
-                }
-
                 # TODO: add an epsilon band around the x_target
                 mpc_data = solve_mpc_closed_loop(
                     solver=self.solver,
                     x0=x0,
-                    N_sim=self.N_sim,
-                    config=config,
+                    N_sim=self.T_sim,
+                    dt=self.mpc_config.dt,
+                    config=self.mpc_config,
                     break_on_infeasible=self.break_on_infeasible
                 )
-                mpc_data.constraints = self.mpc_constraints
 
                 dataset.add(mpc_data)
         finally:

@@ -11,6 +11,7 @@ from typing import Optional, Tuple
 
 import lyapunov_certified_imitation_learning.utils as lcil_utils
 from lyapunov_certified_imitation_learning.data_generation import MPCDataGenerator
+from lyapunov_certified_imitation_learning.lyapunov_verification import verify_mpc_asymptotic_stability
 
 
 
@@ -62,8 +63,9 @@ def get_ocp_solver(
     Q: np.ndarray, 
     R: np.ndarray,
     P: Optional[np.ndarray] = None,
-    T: float = 1.0, 
-    N: int = 20
+    dt: float = 0.1, 
+    N: int = 20,
+    tol: float = 1e-8
 ) -> Tuple[AcadosOcpSolver, dict]:
     """Create an acados OCP solver for a continuous-time linear system.
 
@@ -75,10 +77,12 @@ def get_ocp_solver(
         Stage cost matrices (x'Qx + u'Ru).
     P : np.ndarray, optional
         Terminal cost matrix (x_N' P x_N). If None, calculated via DARE on discretized system.
-    T : float
-        Prediction horizon length in seconds.
+    dt : float
+        Sampling time in seconds.
     N : int
         Number of control intervals.
+    tol : float
+        Solver tolerances for the QP solver.
 
     Returns
     -------
@@ -91,7 +95,6 @@ def get_ocp_solver(
     nu = B_c.shape[1]
 
     # Calculate DARE
-    dt = T / N
     A_d, B_d = lcil_utils.linalg.c2d_rk4(A_c, B_c, dt)
     # TODO: try to find a function in acados that returns discrete Matrices
 
@@ -103,11 +106,18 @@ def get_ocp_solver(
 
     # Solver options
     ocp.solver_options.N_horizon = N
-    ocp.solver_options.tf = T
+    ocp.solver_options.tf = dt * N
     ocp.solver_options.qp_solver = "FULL_CONDENSING_HPIPM"
     ocp.solver_options.integrator_type = 'ERK'
     ocp.solver_options.hessian_approx = 'EXACT'
     ocp.solver_options.nlp_solver_type = 'SQP'
+    ocp.solver_options.qp_solver_tol_stat = tol  # Gradienten-Check
+    ocp.solver_options.qp_solver_tol_eq   = tol  # Equality constraints
+    ocp.solver_options.qp_solver_tol_ineq = tol  # Inequality constraints
+    ocp.solver_options.qp_solver_tol_comp = tol  # Complementarity
+
+    # Erhöhe zur Sicherheit die maximalen Iterationen, falls er länger braucht
+    ocp.solver_options.qp_solver_iter_max = 100
 
     # Cost setup
     ocp.cost.cost_type = "LINEAR_LS"
@@ -129,7 +139,15 @@ def get_ocp_solver(
 
     ocp.constraints.lbu = np.array([-5.0])
     ocp.constraints.ubu = np.array([5.0])
-    ocp.constraints.idxbu = np.array([0])
+    ocp.constraints.idxbu = np.arange(nu)
+    
+    ocp.constraints.lbx = np.array([-10.0, -10.0])
+    ocp.constraints.ubx = np.array([10.0, 10.0])
+    ocp.constraints.idxbx = np.arange(nx)
+    
+    ocp.constraints.lbx_e = ocp.constraints.lbx
+    ocp.constraints.ubx_e = ocp.constraints.ubx
+    ocp.constraints.idxbx_e = np.arange(nx)
 
     solver = AcadosOcpSolver(ocp, json_file=f"{ocp.model.name}_ocp.json")
 
@@ -146,16 +164,16 @@ def get_ocp_solver(
 if __name__ == "__main__":
     # Continuous-time double integrator matrices
     A_c = np.array([[0, 1],
-                    [0, 0]])
+                    [0.2, 0.1]])
     B_c = np.array([[0],
                     [1]])
 
     # Cost matrices
-    Q = np.diag([1.0, 1.0])
+    Q = np.diag([15.0, 1.0])
     R = np.diag([0.1])
 
     # Create OCP solver
-    solver, info = get_ocp_solver(A_c, B_c, Q, R)
+    solver, info = get_ocp_solver(A_c, B_c, Q, R, N=15)
 
     print("OCP solver created.")
     print("Discrete A matrix:\n", info["A_d"])
@@ -164,14 +182,15 @@ if __name__ == "__main__":
 
     generator = MPCDataGenerator(
         solver=solver, 
-        x0_bounds=np.array([[-8.0, -5.0], [8.0, 5.0]]),
-        N_sim=50, 
+        x0_bounds=np.array([[-7.0, -5.0], [7.0, 5.0]]),
+        T_sim=50, 
         verbose=True,
         reset_solver=True,
     )
-    dataset = generator.generate(n_samples=100)
+    dataset = generator.generate(n_samples=50)
     dataset.validate()
-    dataset.save("double_integrator_mpc_dataset.hdf5", mode="w")
+    dataset.save("double_integrator_mpc_dataset.hdf5")
+    
 
     lcil_utils.plot.mpc_trajectories(
         dataset=dataset,
@@ -189,4 +208,11 @@ if __name__ == "__main__":
         plot_3d=False,
         limits=[[-12, 12], [-8, 8]],
         html_path="double_integrator_lyapunov_landscape.html",
+    )
+    
+    is_stable = verify_mpc_asymptotic_stability(
+        dataset=dataset,
+        Q=Q,
+        R=R,
+        mode="hybrid",
     )
