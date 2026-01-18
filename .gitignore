@@ -218,3 +218,5 @@ __marimo__/
 .vscode/c_cpp_properties.json
 *.zip
 *.hdf5
+
+data/**

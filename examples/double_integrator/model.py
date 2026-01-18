@@ -11,7 +11,7 @@ from typing import Optional, Tuple
 
 import lyapunov_certified_imitation_learning.utils as lcil_utils
 from lyapunov_certified_imitation_learning.data_generation import MPCDataGenerator
-from lyapunov_certified_imitation_learning.lyapunov_verification import verify_mpc_asymptotic_stability
+from lyapunov_certified_imitation_learning.lyapunov_verification import *
 
 
 
@@ -65,7 +65,10 @@ def get_ocp_solver(
     P: Optional[np.ndarray] = None,
     dt: float = 0.1, 
     N: int = 20,
-    tol: float = 1e-8
+    tol: float = 1e-8,
+    terminal_mode: str = "regional",
+    bounds_scale: float = 10.0,
+    terminal_box_halfwidth: float = 1.0,
 ) -> Tuple[AcadosOcpSolver, dict]:
     """Create an acados OCP solver for a continuous-time linear system.
 
@@ -98,7 +101,7 @@ def get_ocp_solver(
     A_d, B_d = lcil_utils.linalg.c2d_rk4(A_c, B_c, dt)
     # TODO: try to find a function in acados that returns discrete Matrices
 
-    if P is None:
+    if P is None and terminal_mode == "regional":
         P = solve_discrete_are(A_d, B_d, Q, R)
 
     ocp = AcadosOcp()
@@ -128,26 +131,43 @@ def get_ocp_solver(
     ocp.cost.Vu = np.vstack((np.zeros((nx, nu)), np.eye(nu)))
     ocp.cost.yref = np.zeros((nx + nu,))
 
-    # Terminal cost
+    # Terminal cost / ingredients
     ocp.cost.cost_type_e = "LINEAR_LS"
-    ocp.cost.W_e = P
+    if terminal_mode == "regional":
+        ocp.cost.W_e = P
+    else:
+        # For the "no terminal" scheme (and also for pure equilibrium terminal constraints),
+        # keep terminal weight at zero. Downstream code treats this as "no terminal cost".
+        ocp.cost.W_e = np.zeros((nx, nx))
     ocp.cost.Vx_e = np.eye(nx)
     ocp.cost.yref_e = np.zeros((nx,))
 
     # Constraints
     ocp.constraints.x0 = np.zeros((nx,))
 
-    ocp.constraints.lbu = np.array([-5.0])
-    ocp.constraints.ubu = np.array([5.0])
+    # (Large) box constraints, used for feasibility and for the LQR terminal certificate sizing.
+    ocp.constraints.lbu = -bounds_scale * np.ones((nu,))
+    ocp.constraints.ubu = bounds_scale * np.ones((nu,))
     ocp.constraints.idxbu = np.arange(nu)
-    
-    ocp.constraints.lbx = np.array([-10.0, -10.0])
-    ocp.constraints.ubx = np.array([10.0, 10.0])
+
+    ocp.constraints.lbx = -bounds_scale * np.ones((nx,))
+    ocp.constraints.ubx = bounds_scale * np.ones((nx,))
     ocp.constraints.idxbx = np.arange(nx)
-    
-    ocp.constraints.lbx_e = ocp.constraints.lbx
-    ocp.constraints.ubx_e = ocp.constraints.ubx
-    ocp.constraints.idxbx_e = np.arange(nx)
+
+    if terminal_mode == "regional":
+        # A small terminal box around the equilibrium (proxy for a local terminal set X_f).
+        hw = float(terminal_box_halfwidth)
+        ocp.constraints.lbx_e = -hw * np.ones((nx,))
+        ocp.constraints.ubx_e = hw * np.ones((nx,))
+        ocp.constraints.idxbx_e = np.arange(nx)
+    elif terminal_mode == "equilibrium":
+        # Exact equilibrium terminal constraint x(N) = 0.
+        ocp.constraints.lbx_e = np.zeros((nx,))
+        ocp.constraints.ubx_e = np.zeros((nx,))
+        ocp.constraints.idxbx_e = np.arange(nx)
+    else:
+        # No terminal bounds.
+        pass
 
     solver = AcadosOcpSolver(ocp, json_file=f"{ocp.model.name}_ocp.json")
 
@@ -155,6 +175,8 @@ def get_ocp_solver(
         "A_d": A_d,
         "B_d": B_d,
         "P": P,
+        "terminal_mode": terminal_mode,
+        "bounds_scale": bounds_scale,
     }
 
     return solver, info
@@ -162,9 +184,9 @@ def get_ocp_solver(
 
 # %%  
 if __name__ == "__main__":
-    # Continuous-time double integrator matrices
-    A_c = np.array([[0, 1],
-                    [0.2, 0.1]])
+    # Continuous-time double integrator matrices (standard)
+    A_c = np.array([[0.0, 1.0],
+                    [0.0, 0.0]])
     B_c = np.array([[0],
                     [1]])
 
@@ -172,47 +194,139 @@ if __name__ == "__main__":
     Q = np.diag([15.0, 1.0])
     R = np.diag([0.1])
 
-    # Create OCP solver
-    solver, info = get_ocp_solver(A_c, B_c, Q, R, N=15)
+    def run_case(
+        name: str,
+        terminal_mode: str,
+        N: int,
+        x0_bounds: np.ndarray,
+        T_sim: int = 30,
+        n_samples: int = 10,
+        bounds_scale: float = 10.0,
+        terminal_box_halfwidth: float = 1.0,
+    ) -> None:
+        print("\n" + "=" * 80)
+        print(f"CASE: {name} (terminal_mode={terminal_mode}, N={N})")
+        print("=" * 80)
 
-    print("OCP solver created.")
-    print("Discrete A matrix:\n", info["A_d"])
-    print("Discrete B matrix:\n", info["B_d"])
-    print("Terminal cost P matrix:\n", info["P"])
+        solver, info = get_ocp_solver(
+            A_c,
+            B_c,
+            Q,
+            R,
+            dt=0.1,
+            N=N,
+            tol=1e-8,
+            terminal_mode=terminal_mode,
+            bounds_scale=bounds_scale,
+            terminal_box_halfwidth=terminal_box_halfwidth,
+        )
 
-    generator = MPCDataGenerator(
-        solver=solver, 
-        x0_bounds=np.array([[-7.0, -5.0], [7.0, 5.0]]),
-        T_sim=50, 
-        verbose=True,
-        reset_solver=True,
+        generator = MPCDataGenerator(
+            solver=solver,
+            x0_bounds=x0_bounds,
+            T_sim=T_sim,
+            verbose=True,
+            reset_solver=True,
+        )
+        dataset = generator.generate(n_samples=n_samples)
+        dataset.validate()
+        dataset.save(f"data/double_integrator_{terminal_mode}_N{N}_data")
+
+        # 1) Empirical verifier aggregated over the dataset (more detailed drill-down)
+        emp_stats = EmpiricalStabilityVerifier.summarize_dataset(dataset, Q=Q, R=R, only_feasible=True)
+        print("EMPIRICAL VERIFIER (dataset aggregate):")
+        print(f"  n_total = {emp_stats.get('n_total')}")
+        print(f"  n_considered = {emp_stats.get('n_considered')}")
+        print(f"  n_valid = {emp_stats.get('n_valid')}")
+        print(f"  n_invalid = {emp_stats.get('n_invalid')}")
+        print(f"  stable_rate = {emp_stats.get('stable_rate')}")
+        print(f"  min_alpha_obs_global = {emp_stats.get('min_alpha_obs_global')}")
+        print(f"  avg_alpha_obs_mean = {emp_stats.get('avg_alpha_obs_mean')}")
+        print(f"  empirical_certified = {emp_stats.get('empirical_certified')}")
+        print(f"  grune_used = {emp_stats.get('grune_used')}")
+        print(f"  grune_applicability = {emp_stats.get('grune_applicability')}")
+        print(f"  alpha_N_estimate = {emp_stats.get('alpha_N_estimate')}")
+        print(f"  grune_condition_met = {emp_stats.get('grune_condition_met')}")
+        print(f"  performance_bound_rate = {emp_stats.get('performance_bound_rate')}")
+        print(f"  performance_ratio_mean = {emp_stats.get('performance_ratio_mean')}")
+        print(f"  avg_terminal_error_mean = {emp_stats.get('avg_terminal_error_mean')}")
+
+        # 2) Formal solver-side checks
+        formal = FormalStabilityVerifier(solver)
+        rep_eq = formal.prove_equilibrium_constraint()
+        rep_reg = formal.prove_regional_constraint()
+        rep_no = formal.prove_no_terminal_constraint()
+        print("FORMAL CHECKS:")
+        print(f"  equilibrium: {rep_eq.is_stable} ({rep_eq.message})")
+        print(f"  regional:    {rep_reg.is_stable} ({rep_reg.message})")
+        print(f"  no-terminal: {rep_no.is_stable} ({rep_no.message})")
+
+        # 3) LQR terminal certificate (regional terminal ingredients)
+        cert_ok = None
+        try:
+            cert = NMPCFormalCertificateGenerator(
+                A=info["A_d"],
+                B=info["B_d"],
+                Q=Q,
+                R=R,
+                x_bounds=(solver.acados_ocp.constraints.lbx, solver.acados_ocp.constraints.ubx),
+                u_bounds=(solver.acados_ocp.constraints.lbu, solver.acados_ocp.constraints.ubu),
+            ).compute_certificate()
+            cert_ok = bool(cert.lyapunov_decrease and cert.recursive_feasible)
+            print("LQR TERMINAL CERTIFICATE:")
+            print(f"  lyapunov_decrease = {cert.lyapunov_decrease}")
+            print(f"  recursive_feasible = {cert.recursive_feasible}")
+            print(f"  domain_of_attraction_rho = {cert.domain_of_attraction}")
+        except Exception as e:
+            print("LQR TERMINAL CERTIFICATE: skipped (error)")
+            print(f"  {e}")
+
+        # Expected pass conditions per case
+        if terminal_mode == "equilibrium":
+            assert rep_eq.is_stable, "Equilibrium terminal constraint proof should pass"
+        elif terminal_mode == "regional":
+            assert rep_reg.is_stable, "Regional terminal cost compatibility proof should pass"
+        elif terminal_mode == "none":
+            assert rep_no.is_stable, "No-terminal proof should pass"
+
+        assert bool(emp_stats.get("empirical_certified")), "Empirical dataset certification should pass"
+        if emp_stats.get("grune_used"):
+            assert bool(emp_stats.get("grune_condition_met")), "Grne condition should pass when applicable"
+        if cert_ok is not None:
+            assert cert_ok, "LQR terminal certificate should pass"
+
+    # Case 1: regional terminal cost + small terminal set (should pass regional proof + empirical)
+    run_case(
+        name="Regional terminal ingredients",
+        terminal_mode="regional",
+        N=20,
+        x0_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]]),
+        T_sim=25,
+        n_samples=200,
+        bounds_scale=10.0,
+        terminal_box_halfwidth=1.0,
     )
-    dataset = generator.generate(n_samples=50)
-    dataset.validate()
-    dataset.save("double_integrator_mpc_dataset.hdf5")
-    
 
-    lcil_utils.plot.mpc_trajectories(
-        dataset=dataset,
-        state_labels=["Position", "Velocity"],
-        control_labels=["Acceleration"],
-        plot_predictions=True,
-        html_path="double_integrator_mpc_trajectories.html",
+    # Case 2: equilibrium terminal constraint x(N)=0 (sample close so feasibility is easy)
+    run_case(
+        name="Equilibrium terminal constraint",
+        terminal_mode="equilibrium",
+        N=25,
+        x0_bounds=np.array([[-0.5, -0.5], [0.5, 0.5]]),
+        T_sim=20,
+        n_samples=200,
+        bounds_scale=10.0,
+        terminal_box_halfwidth=1.0,
     )
 
-    lyap = lambda x: x.T @ info["P"] @ x
-
-    lcil_utils.plot.lyapunov(
-        dataset=dataset, 
-        lyapunov_func=lyap,
-        plot_3d=False,
-        limits=[[-12, 12], [-8, 8]],
-        html_path="double_integrator_lyapunov_landscape.html",
-    )
-    
-    is_stable = verify_mpc_asymptotic_stability(
-        dataset=dataset,
-        Q=Q,
-        R=R,
-        mode="hybrid",
+    # Case 3: no terminal ingredients (zero terminal weight, no terminal bounds)
+    run_case(
+        name="No terminal ingredients (Grüne horizon condition)",
+        terminal_mode="none",
+        N=40,
+        x0_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]]),
+        T_sim=25,
+        n_samples=200,
+        bounds_scale=50.0,
+        terminal_box_halfwidth=1.0,
     )

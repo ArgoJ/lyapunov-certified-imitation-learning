@@ -64,7 +64,7 @@ class MPCDataGenerator:
         self.extract_solver_config()
         
     
-    def extract_constraints(self, nx: int, nu: int, nx_e: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def extract_constraints(self, nx: int, nu: int, nx_e: int) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
         full_bu = np.vstack((np.full(nu, -np.inf), np.full(nu, np.inf)))
         full_bx = np.vstack((np.full(nx, -np.inf), np.full(nx, np.inf)))
         full_bx_e = np.vstack((np.full(nx_e, -np.inf), np.full(nx_e, np.inf)))
@@ -94,6 +94,10 @@ class MPCDataGenerator:
             if hasattr(c, "ubx_e") and c.ubx_e is not None:
                 full_bx_e[1, idx] = c.ubx_e
         
+        # If no terminal bounds were specified (all +/- inf), treat as absent.
+        if not np.any(np.isfinite(full_bx_e)):
+            full_bx_e = None
+
         return full_bu, full_bx, full_bx_e
 
     def extract_cost_weights(self, nx: int, nu: int) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
@@ -114,7 +118,12 @@ class MPCDataGenerator:
 
         Qf = None
         if hasattr(cost, "W_e") and cost.W_e is not None:
-            Qf = np.asarray(cost.W_e)
+            Qf_candidate = np.asarray(cost.W_e)
+            # A zero terminal weight is effectively "no terminal cost".
+            if np.allclose(Qf_candidate, 0.0, atol=0.0, rtol=0.0):
+                Qf = None
+            else:
+                Qf = Qf_candidate
 
         return Q, R, Qf
 
