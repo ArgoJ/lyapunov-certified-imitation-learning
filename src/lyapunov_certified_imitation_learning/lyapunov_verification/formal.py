@@ -6,12 +6,11 @@ from typing import Optional, Dict, Tuple
 
 from acados_template import AcadosOcpSolver
 
-@dataclass
-class StabilityReport:
-    method: str
-    is_stable: bool
-    details: Dict[str, float]
-    message: str
+from .stability_report import StabilityReport
+from ..utils.package_logger import PackageLogger
+
+__logger__ = PackageLogger.get_logger(__name__)
+
 
 class FormalStabilityVerifier:
     """
@@ -158,15 +157,13 @@ class FormalStabilityVerifier:
                 "terminal_target_error": float("inf"),
             }
             return StabilityReport(
-                "Equilibrium Constraint",
-                False,
-                details,
-                "FAIL. No equilibrium terminal equality constraint detected.",
+                method="Equilibrium Constraint",
+                details=details,
+                message="No equilibrium terminal equality constraint detected.",
             )
 
-        has_equality_terminal = np.all(np.isfinite(lbx_e)) and np.all(np.isfinite(ubx_e)) and np.allclose(
-            lbx_e, ubx_e, atol=tol, rtol=0.0
-        )
+        has_equality_terminal = np.all(np.isfinite(lbx_e)) and np.all(np.isfinite(ubx_e)) and \
+            np.allclose(lbx_e, ubx_e, atol=tol, rtol=0.0)
         is_targeted = has_equality_terminal and np.allclose(lbx_e, self.x_star, atol=tol, rtol=0.0)
 
         details = {
@@ -176,13 +173,17 @@ class FormalStabilityVerifier:
         }
 
         if is_targeted and has_equality_terminal:
-            msg = "PASS. Equilibrium terminal constraint x(N)=x* detected (implies VN-1>=VN and relaxed DP with alpha=1)."
+            msg = "Equilibrium terminal constraint x(N)=x* detected (implies VN-1>=VN and relaxed DP with alpha=1)."
         elif has_equality_terminal:
-            msg = "WARN. Terminal equality constraint detected, but it does not match the extracted x*."
+            msg = "Terminal equality constraint detected, but it does not match the extracted x*."
         else:
-            msg = "FAIL. No equilibrium terminal equality constraint detected."
-
-        return StabilityReport("Equilibrium Constraint", bool(is_targeted), details, msg)
+            msg = "No equilibrium terminal equality constraint detected."
+        return StabilityReport(
+                method="Equilibrium Constraint",
+                is_stable=bool(is_targeted),
+                details=details,
+                message=msg,
+            )
 
     # =========================================================================
     # METHOD B: Regional Constraint & Terminal Cost (CLF)
@@ -197,7 +198,9 @@ class FormalStabilityVerifier:
         2. F(x) = x'Px is a Lyapunov function for the local control law.
         """
         if self.P is None:
-            return StabilityReport("Regional Constraint", False, {}, "FAIL. No terminal cost matrix P found.")
+            return StabilityReport(
+                method="Regional Constraint", 
+                message="No terminal cost matrix P found.")
 
         P_term = np.asarray(self.P)
         P_term = 0.5 * (P_term + P_term.T)
@@ -207,7 +210,9 @@ class FormalStabilityVerifier:
             P_dare = scipy.linalg.solve_discrete_are(self.A, self.B, self.Q, self.R)
             K_lqr = np.linalg.inv(self.R + self.B.T @ P_dare @ self.B) @ (self.B.T @ P_dare @ self.A)
         except Exception as e:
-            return StabilityReport("Regional Constraint", False, {}, f"FAIL. Could not compute DARE/LQR: {e}")
+            return StabilityReport(
+                method="Regional Constraint", 
+                message=f"Could not compute DARE/LQR: {e}")
 
         # Check compatibility inequality on the linearized closed loop:
         # F(A_cl x) - F(x) <= -l(x, -Kx)
@@ -250,17 +255,22 @@ class FormalStabilityVerifier:
         }
 
         if compatible:
-            msg = "PASS. Terminal cost F(x)=x^T P x is compatible with stage cost for local LQR (Lyapunov decrease holds)."
+            msg = "Terminal cost F(x)=x^T P x is compatible with stage cost for local LQR (Lyapunov decrease holds)."
             if invariant_box is False:
                 msg += " Terminal box invariance could not be verified (vertex test failed)."
-            return StabilityReport("Regional Constraint", True, details, msg)
+            return StabilityReport(
+                method="Regional Constraint", 
+                is_stable=True, 
+                applicability=True, 
+                details=details, 
+                message=msg)
 
         return StabilityReport(
-            "Regional Constraint",
-            False,
-            details,
-            "FAIL. Terminal cost is not compatible with stage cost (F(A_cl x)-F(x) <= -l(x,-Kx) violated).",
-        )
+            method="Regional Constraint",
+            is_stable=False,
+            applicability=True,
+            details=details,
+            message="Terminal cost is not compatible with stage cost (F(A_cl x)-F(x) <= -l(x,-Kx) violated).")
 
     # =========================================================================
     # METHOD C: No Terminal Constraints (Horizon Length)
@@ -278,23 +288,24 @@ class FormalStabilityVerifier:
         the corresponding alpha_N.
         """
         N = int(self.N)
+        details = {"current_horizon_N": int(N)}
 
         # If a terminal cost exists, then this method is not the right theorem.
         if self.P is not None:
             return StabilityReport(
-                "No Terminal Constraint",
-                False,
-                {"current_horizon_N": int(N)},
-                "NOT APPLICABLE. Terminal cost detected; use terminal-cost/terminal-set analysis instead.",
-            )
+                method="No Terminal Constraint",
+                is_stable=False,
+                applicability=False,
+                details=details,
+                message="Not applicable: Terminal cost detected; use terminal-cost/terminal-set analysis instead.")
 
         if N < 2:
             return StabilityReport(
-                "No Terminal Constraint",
-                False,
-                {"current_horizon_N": int(N)},
-                "FAIL. Need N>=2 for Grüne's alpha_N construction.",
-            )
+                method="No Terminal Constraint",
+                is_stable=False,
+                applicability=False,
+                details=details,
+                message="Not applicable: Need N>=2 for Grüne's alpha_N construction.")
 
         # Finite-horizon Riccati recursion with terminal cost 0
         Pk = np.zeros((self.nx, self.nx))
@@ -309,11 +320,11 @@ class FormalStabilityVerifier:
             Q_inv_sqrt = (V * (1.0 / np.sqrt(w))) @ V.T
         except Exception as e:
             return StabilityReport(
-                "No Terminal Constraint",
-                False,
-                {"current_horizon_N": int(N)},
-                f"FAIL. Could not compute Q^{-1/2} for gamma_k: {e}",
-            )
+                method="No Terminal Constraint",
+                is_stable=False,
+                applicability=False,
+                details=details,
+                message=f"Not applicable: Could not compute Q^{-1/2} for gamma_k: {e}")
 
         for k in range(1, N + 1):
             S = self.R + self.B.T @ Pk @ self.B
@@ -339,33 +350,62 @@ class FormalStabilityVerifier:
 
         is_stable = bool(alpha_N > 0.0)
 
-        details = {
-            "current_horizon_N": int(N),
+        details.update({
             "gamma_N": float(gamma_seq[N]),
-            "alpha_N": float(alpha_N),
+            "alpha_N": float(alpha_N)
+        })
+
+        msg = f"alpha_N={alpha_N:.4f} at horizon N={N} with gamma_N={gamma_seq[N]:.4f}."
+        return StabilityReport(
+                method="No Terminal Constraint",
+                is_stable=is_stable,
+                applicability=True,
+                details=details,
+                message=msg)
+
+    def prove(self):
+        """Runs all proofs.
+
+        Interpretation: the MPC is *formally certified stable* if at least one
+        proof method is both applicable and succeeds.
+        """
+        eq_const = self.prove_equilibrium_constraint()
+        reg_const = self.prove_regional_constraint()
+        no_term_const = self.prove_no_terminal_constraint()
+        
+        details = {
+            "equilibrium_constraint": eq_const,
+            "regional_constraint": reg_const,
+            "no_terminal_constraint": no_term_const,
         }
 
-        msg = "PASS." if is_stable else "FAIL."
-        msg += f" Computed alpha_N={alpha_N:.4f} from finite-horizon Riccati bounds (unconstrained LQ)."
-        return StabilityReport("No Terminal Constraint", is_stable, details, msg)
-
-    def prove_all(self):
-        """Runs all proofs and prints a report."""
-        reports = [
-            self.prove_equilibrium_constraint(),
-            self.prove_regional_constraint(),
-            self.prove_no_terminal_constraint()
+        proofs = [
+            ("equilibrium_constraint", eq_const),
+            ("regional_constraint", reg_const),
+            ("no_terminal_constraint", no_term_const),
         ]
-        
-        print("\n" + "="*60)
-        print(f"FORMAL STABILITY PROOF REPORT (Acados Solver)")
-        print("="*60)
-        
-        for r in reports:
-            status = "[PASS]" if r.is_stable else "[FAIL/WARN]"
-            print(f"\nMethod: {r.method}")
-            print(f"Status: {status}")
-            print(f"Details: {r.details}")
-            print(f"Conclusion: {r.message}")
-            
-        print("="*60 + "\n")
+        applicable = [(name, rep) for name, rep in proofs if bool(getattr(rep, "applicability", False))]
+        certified = [(name, rep) for name, rep in applicable if bool(rep.is_stable)]
+
+        overall_applicable = bool(applicable)
+        overall_stable = bool(certified)
+
+        details["applicable_methods"] = [name for name, _ in applicable]
+        details["certifying_methods"] = [name for name, _ in certified]
+
+        if not overall_applicable:
+            msg = "FAIL. No applicable formal proof method for this OCP configuration."
+        elif overall_stable:
+            methods = ", ".join(name for name, _ in certified)
+            msg = f"PASS. Certified by: {methods}."
+        else:
+            methods = ", ".join(name for name, _ in applicable)
+            msg = f"FAIL. Applicable methods did not certify: {methods}."
+
+        return StabilityReport(
+            method="Formal Verification",
+            is_stable=overall_stable,
+            applicability=overall_applicable,
+            details=details,
+            message=msg,
+        )

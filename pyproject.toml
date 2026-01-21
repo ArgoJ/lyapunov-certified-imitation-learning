@@ -15,7 +15,9 @@ dependencies = [
     "scipy",
     "pandas",
     "plotly",
-    "tqdm"
+    "tqdm",
+    "casadi",
+    "h5py"
 ]
 
 [tool.setuptools.package-dir]

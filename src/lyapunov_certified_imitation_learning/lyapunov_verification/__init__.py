@@ -1,10 +1,9 @@
 from .empirical import EmpiricalStabilityVerifier
 from .formal import FormalStabilityVerifier
-from .certificate import NMPCFormalCertificate, NMPCFormalCertificateGenerator
+from .stability_report import StabilityReport
 
 __all__ = [
 	"EmpiricalStabilityVerifier",
 	"FormalStabilityVerifier",
-	"NMPCFormalCertificate",
-	"NMPCFormalCertificateGenerator",
+	"StabilityReport",
 ]

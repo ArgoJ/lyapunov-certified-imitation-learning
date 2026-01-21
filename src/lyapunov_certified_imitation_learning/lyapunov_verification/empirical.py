@@ -1,9 +1,97 @@
 import numpy as np
-import pandas as pd
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Generator, Optional, List
+from dataclasses import dataclass, field
 
+
+from ..utils.package_logger import PackageLogger
+from .stability_report import StabilityReport
 from ..data_generation.mpc_data import MPCData, MPCConfig, MPCDataset
 
+
+__logger__ = PackageLogger.get_logger(__name__)
+    
+
+
+@dataclass
+class LyapunovDecreaseReport(StabilityReport):
+    method: str = "Lyapunov Decrease"
+    empirical_alpha: float = float("nan")
+    applicability: bool = True # Always applicable
+
+@dataclass
+class GrüneHorizonReport(StabilityReport):
+    method: str = "Grüne Horizon Condition"
+    gamma_estimate: float = float("nan")
+    alpha_N_estimate: float = float("nan")
+    required_horizon: float = float("nan")
+
+@dataclass
+class InfiniteHorizonPerformanceReport:
+    V_N_initial: float = float("nan")
+    J_closed_loop: float = float("nan")
+    performance_ratio: float = float("nan")
+    satisfied_bound: bool = False
+
+@dataclass
+class TerminalSetInvarianceReport:
+    terminal_dist: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=float))
+    is_terminal_set: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=bool))
+
+@dataclass
+class DistributionSummary:
+    n: int = 0
+    min: float = float("nan")
+    p05: float = float("nan")
+    p25: float = float("nan")
+    median: float = float("nan")
+    p75: float = float("nan")
+    p95: float = float("nan")
+    max: float = float("nan")
+    mean: float = float("nan")
+    
+    @classmethod
+    def from_stamples(cls, values: List[float]) -> None:
+        arr = np.asarray(values, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return cls()
+
+        q = np.percentile(arr, [0.0, 5.0, 25.0, 50.0, 75.0, 95.0, 100.0])
+        return cls(
+            n=int(arr.size),
+            min=float(q[0]),
+            p05=float(q[1]),
+            p25=float(q[2]),
+            median=float(q[3]),
+            p75=float(q[4]),
+            p95=float(q[5]),
+            max=float(q[6]),
+            mean=float(np.mean(arr))
+        )
+
+@dataclass
+class EmpiricalDatasetDetails:
+    # Counts
+    n_total: int = 0
+    n_feasible: int = 0
+    n_with_predictions: int = 0
+    n_used: int = 0
+    n_missing_predictions: int = 0
+
+    alpha_min: DistributionSummary = field(default_factory=DistributionSummary())
+    perf_ratio: DistributionSummary = field(default_factory=DistributionSummary())
+    terminal_last_dist: DistributionSummary = field(default_factory=DistributionSummary())
+    terminal_hit_frac: DistributionSummary = field(default_factory=DistributionSummary())
+
+    # Small diagnostic lists
+    example_missing_prediction_ids: List[int] = field(default_factory=list)
+    worst_alpha_ids: List[int] = field(default_factory=list)
+    worst_alpha_values: List[float] = field(default_factory=list)
+
+
+# ============================================
+# ======= EMPIRICAL STABILITY VERIFIER =======
+# ============================================
 class EmpiricalStabilityVerifier:
     """
     A tool to rigorously check stability and performance properties of NMPC trajectories
@@ -13,38 +101,99 @@ class EmpiricalStabilityVerifier:
     Lars Grüne, Nonlinear Model Predictive Control (2015)
     """
 
-    def __init__(self, entry: MPCData, Q: Optional[np.ndarray] = None, R: Optional[np.ndarray] = None):
+    def __init__(self, dataset: MPCDataset, Q: np.ndarray, R: np.ndarray):
+        """Create an empirical verifier over an entire dataset.
+
+        Parameters
+        ----------
+        dataset : MPCDataset
+            The dataset containing MPC trajectories and configurations.
+        Q : np.ndarray
+            State cost matrix used in the MPC cost function.
+        R : np.ndarray
+            Input cost matrix used in the MPC cost function.
         """
-        Initialize with a single dataset entry containing trajectory and config.
-        """
+        self.dataset = dataset
+        self.Q_global = np.asarray(Q)
+        self.R_global = np.asarray(R)
+
+        self._active_entry: Optional[MPCData] = None
+
+        # These are set by _bind_entry before any per-trajectory computation.
+        self.traj = None
+        self.cfg = None
+        self.meta = None
+        self.Q = None
+        self.R = None
+        self.x_star = None
+        self.valid = False
+
+    def __getitem__(self, index: int) -> MPCData:
+        return self.dataset[index]
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __iter__(self) -> Generator[MPCData, None, None]:
+        for entry in self.dataset:
+            yield entry
+
+
+    # --- INTERNAL HELPERS ---
+    def _bind_entry(self, entry: MPCData) -> bool:
+        """Bind internal state to a specific trajectory entry."""
+        self._active_entry = entry
+
         self.traj = entry.trajectory
         self.cfg = entry.config
         self.meta = entry.meta
 
-        # Optional overrides (used by dataset-level certification helpers)
-        self.Q = np.asarray(Q) if Q is not None else self.cfg.Q
-        self.R = np.asarray(R) if R is not None else self.cfg.R
-        
+        cfg_Q = np.asarray(self.cfg.Q)
+        cfg_R = np.asarray(self.cfg.R)
+        if cfg_Q.shape != self.Q_global.shape or not np.allclose(cfg_Q, self.Q_global, rtol=0.0, atol=0.0):
+            raise ValueError(
+                "Entry Q does not match verifier Q_global. "
+                "This verifier assumes a single (Q,R) pair for the entire dataset."
+            )
+        if cfg_R.shape != self.R_global.shape or not np.allclose(cfg_R, self.R_global, rtol=0.0, atol=0.0):
+            raise ValueError(
+                "Entry R does not match verifier R_global. "
+                "This verifier assumes a single (Q,R) pair for the entire dataset."
+            )
+
+        # Use consistent Q/R across the dataset for empirical claims.
+        self.Q = self.Q_global
+        self.R = self.R_global
+
         # Ensure goal state is defined (default to zero origin)
         self.x_star = self.cfg.goal_state if self.cfg.goal_state is not None else np.zeros(self.traj.states.shape[1])
-        
-        # Pre-compute metrics for analysis
+
         self.valid = self._validate_data_integrity()
+        
+        return self.valid
+
+    def _require_bound_entry(self) -> None:
+        if self._active_entry is None or self.traj is None or self.cfg is None:
+            raise ValueError(
+                "No active entry is bound (internal error). Dataset-level methods must bind an entry before calling per-trajectory helpers."
+            )
 
     def _validate_data_integrity(self) -> bool:
         """Check if OCP predictions (solved_states) are available for Lyapunov calculation."""
+        self._require_bound_entry()
         if self.traj.solved_states is None or self.traj.solved_inputs is None:
+            __logger__.warning(f"Entry ID {getattr(self.meta, 'id', 'unknown')} missing OCP predictions (solved_states/solved_inputs).")
             return False
         return True
 
+
+    # --- COST CALCULATIONS ---
     def _stage_cost(self, x: np.ndarray, u: np.ndarray) -> float:
         """
         Computes l(x, u). Assumes Quadratic Cost standard in linear MPC.
         l(x,u) = ||x - x_*||^2_Q + ||u||^2_R[cite: 1823].
         """
         dx = x - self.x_star
-        # In the provided OCP setup, u is minimized directly (not u - u_ref), 
-        # usually assuming u_ref=0 for regulation.
         du = u 
         
         # J = x'Qx + u'Ru
@@ -53,7 +202,7 @@ class EmpiricalStabilityVerifier:
 
     def _terminal_cost(self, x: np.ndarray) -> float:
         """
-        Computes F(x) or V_f(x).
+        Computes V_f(x).
         Used for terminal cost calculation if Qf/P is provided[cite: 2210].
         """
         Qf = self._effective_terminal_cost_matrix(self.cfg.Qf)
@@ -62,6 +211,11 @@ class EmpiricalStabilityVerifier:
         
         dx = x - self.x_star
         return float(dx.T @ Qf @ dx)
+    
+    def _l_star(self, x: np.ndarray, x_star: np.ndarray) -> float:
+        """Stage cost with no input (u=0)"""
+        dx = x - x_star
+        return float(dx.T @ self.Q_global @ dx)
 
     @staticmethod
     def _effective_terminal_cost_matrix(Qf: Optional[np.ndarray]) -> Optional[np.ndarray]:
@@ -92,10 +246,9 @@ class EmpiricalStabilityVerifier:
 
         # Non-zero solver status codes indicate failure
         if entry.meta is not None and getattr(entry.meta, "status_codes", None):
-            try:
-                if any(int(c) != 0 for c in entry.meta.status_codes):
-                    return False
-            except Exception:
+            if any(int(c) != 0 for c in entry.meta.status_codes):
+                __logger__.warning(f"Entry ID {getattr(entry.meta, 'id', 'unknown')} indicates non-zero solver status codes. "
+                                   f"Status Codes: {np.unique(entry.meta.status_codes).tolist()}")
                 return False
 
         # NaNs in key arrays indicate an invalid run
@@ -104,12 +257,55 @@ class EmpiricalStabilityVerifier:
             return False
         return True
 
-    def min_observed_alpha(self, tolerance: float = 1e-5) -> Optional[float]:
-        """Return the minimum observed $\alpha$ along the closed loop.
+    def iter_binded_entries(self, require_feasibility: bool = True) -> Generator[MPCData, None, None]:
+        """Iterator over dataset entries with optional filtering/binding.
+        
+        Parameters
+        ----------
+        require_feasibility : bool
+            Whether to only yield feasible entries.
+            
+        Yields
+        -------
+        Generator[MPCData, None, None]
+            The next entry in the dataset.
+        """
+        for entry in self:
+            if require_feasibility and (not self._is_entry_feasible(entry)):
+                continue
+            
+            self._bind_entry(entry)
+            yield entry
 
-        Computes
-            \alpha_obs(n) = (V_N(x(n)) - V_N(x(n+1))) / l(x(n), u(n))
-        over all timesteps with non-trivial stage cost.
+    def get_feasible_dataset(self) -> MPCDataset:
+        """Extract a feasible-only subset of the dataset."""
+        feasible_entries: List[MPCData] = []
+        for entry in self.dataset:
+            if self._is_entry_feasible(entry):
+                feasible_entries.append(entry)
+        return MPCDataset(data_buffer=feasible_entries)
+
+    def min_observed_alpha(self, tolerance: float = 1e-5) -> Optional[float]:
+        """Verifies the Lyapunov decrease condition for the MPC closed loop.
+
+        Grüne relaxed DP / Lyapunov inequality along the closed loop:
+            V_N(x(n+1)) <= V_N(x(n)) - alpha * l(x(n), u(n))
+        where alpha in (0,1].
+
+        This implementation estimates the *observed* alpha at each step as
+            alpha_obs(n) = (V_N(x(n)) - V_N(x(n+1))) / l(x(n), u(n))
+        and checks alpha_obs(n) >= alpha_min up to numerical tolerance.
+
+        Parameters
+        ----------
+        tolerance : float
+            Numerical tolerance for stage cost to avoid division by zero.
+
+        Returns
+        -------
+        Optional[float]
+            The minimum observed alpha over the trajectory, or None if no valid 
+            observations were found.
         """
         if not self.valid:
             return None
@@ -137,249 +333,38 @@ class EmpiricalStabilityVerifier:
 
         return float(min_alpha) if found else None
 
-    @classmethod
-    def verify_mpc_asymptotic_stability(
-        cls,
-        dataset: MPCDataset,
-        Q: np.ndarray,
-        R: np.ndarray,
-        mode: str = "empirical",
-        alpha_threshold: float = 1e-4,
-        tol: float = 1e-6,
-        min_cost_threshold: float = 1e-3,
-    ) -> Dict[str, Any]:
-        """Dataset-level certification (no duplicate logic).
-
-        This is the canonical implementation and is re-exported from
-        `lyapunov_certified_imitation_learning.lyapunov_verification`.
-
-        Returns a dict compatible with the old `verify_mpc_asymptotic_stability` output.
-        """
-        results: Dict[str, Any] = {"certified": False, "details": {}}
-
-        # 1) Feasibility filtering
-        infeasible_ids: List[int] = []
-        feasible_entries: List[MPCData] = []
-        for entry in dataset:
-            entry_id = int(getattr(entry.meta, "id", -1))
-            if cls._is_entry_feasible(entry):
-                feasible_entries.append(entry)
-            else:
-                infeasible_ids.append(entry_id)
-
-        results["details"]["n_total"] = int(len(dataset))
-        results["details"]["n_infeasible"] = int(len(infeasible_ids))
-        results["details"]["infeasible_ids"] = infeasible_ids
-        results["details"]["n_feasible"] = int(len(feasible_entries))
-        results["details"]["feasibility"] = bool(len(feasible_entries) > 0)
-        if not feasible_entries:
-            return results
-
-        feasible_dataset = MPCDataset(data_buffer=feasible_entries)
-
-        # 2) Relaxed DP / Lyapunov decrease (empirical)
-        alpha_values: List[float] = []
-        for entry in feasible_dataset:
-            verifier = cls(entry, Q=Q, R=R)
-            min_alpha = verifier.min_observed_alpha(tolerance=tol)
-            if min_alpha is None:
-                continue
-            alpha_values.append(float(min_alpha))
-
-        if not alpha_values:
-            results["details"]["empirical_alpha"] = 0.0
-            results["details"]["lyapunov_stable"] = False
-            empirical_ok = False
-            empirical_alpha = 0.0
-        else:
-            empirical_alpha = float(np.min(alpha_values))
-            empirical_ok = bool(empirical_alpha > 0.0)
-            results["details"]["empirical_alpha"] = empirical_alpha
-            results["details"]["lyapunov_stable"] = empirical_ok
-
-        # 3) Grüne horizon condition (only for the basic scheme w/o terminal ingredients)
-        cfg0 = feasible_entries[0].config
-        has_terminal_cost = cls._effective_terminal_cost_matrix(cfg0.Qf) is not None
-        has_terminal_bounds = cls._has_terminal_bounds(cfg0)
-
-        applicability = "applicable"
-        if has_terminal_cost or has_terminal_bounds:
-            applicability = "not_applicable: dataset includes terminal cost/bounds; no-terminal theorem does not directly apply"
-
-        N = int(cfg0.N)
-
-        def l_star(x: np.ndarray, x_star: np.ndarray) -> float:
-            dx = x - x_star
-            return float(dx.T @ Q @ dx)
-
-        gamma_values: List[float] = []
-        for entry in feasible_dataset:
-            verifier = cls(entry, Q=Q, R=R)
-            if not verifier.valid:
-                continue
-
-            x0 = np.asarray(entry.trajectory.states[0], dtype=float)
-            if not np.all(np.isfinite(x0)):
-                continue
-            v0 = verifier.compute_optimal_value_function(0)
-            if not np.isfinite(v0):
-                continue
-
-            l0 = l_star(x0, verifier.x_star)
-            if not np.isfinite(l0) or l0 <= min_cost_threshold:
-                continue
-            gamma_values.append(float(v0 / l0))
-
-        if not gamma_values:
-            gamma = 0.0
-            alpha_N = 0.0
-            N_req = 0.0
-            grune_passed = False
-            grune_note = "insufficient_data"
-        else:
-            gamma = float(np.max(gamma_values))
-            if N < 2:
-                alpha_N = 0.0
-                N_req = 0.0
-                grune_passed = False
-                grune_note = "not_applicable: N<2"
-            elif gamma <= 1.0 + 1e-10:
-                alpha_N = 1.0
-                N_req = 1.0
-                grune_passed = True
-                grune_note = applicability
-            else:
-                denom = (gamma ** (N - 1)) - ((gamma - 1.0) ** (N - 1))
-                if denom <= 0.0 or not np.isfinite(denom):
-                    alpha_N = 0.0
-                    N_req = float("inf")
-                    grune_passed = False
-                    grune_note = "numerical_failure"
-                else:
-                    alpha_N = float(1.0 - (((gamma - 1.0) ** N) / denom))
-
-                    numerator = float(np.log(gamma - 1.0))
-                    denominator = float(np.log(gamma) - np.log(gamma - 1.0))
-                    N_req = float(2.0 + (numerator / denominator)) if denominator > 0 else float("inf")
-                    grune_passed = bool(alpha_N > 0.0)
-                    grune_note = applicability
-
-        results["details"]["grune_applicability"] = grune_note
-        results["details"]["grune_used"] = bool(grune_note == "applicable")
-        results["details"]["gamma_estimate"] = float(gamma)
-        results["details"]["alpha_N_estimate"] = float(alpha_N)
-        results["details"]["required_horizon"] = float(N_req)
-        results["details"]["grune_condition_met"] = bool(grune_passed)
-
-        # Final certification logic
-        grune_effective = bool(grune_passed or (grune_note != "applicable"))
-        if mode == "empirical":
-            results["certified"] = bool(empirical_ok and (empirical_alpha > alpha_threshold))
-        elif mode == "theoretical":
-            results["certified"] = bool(grune_passed and (grune_note == "applicable"))
-        else:
-            results["certified"] = bool(empirical_ok and grune_effective and (empirical_alpha > alpha_threshold))
-
-        return results
-
     def compute_optimal_value_function(self, time_step: int) -> float:
-        """
-        Reconstructs V_N(x(n)) from the OCP predictions stored in the dataset.
-        
-        V_N(x_0) := inf sum(l(x_u(k), u(k)))[cite: 1956].
-        
+        """Reconstructs V_N(x(n)) from the OCP predictions stored in the dataset.
+        V_N(x_0) := inf sum(l(x_u(k), u(k))).
+
         Parameters
         ----------
         time_step : int
             The closed-loop simulation step 'n'.
-            
+
         Returns
         -------
-        float : The value of the cost function at this step.
+        float
+            The value of the cost function at this step.
         """
         if not self.valid:
             return np.nan
 
-        # Extract predictions for the horizon N at time_step
-        # solved_states shape: (T, N+1, nx)
-        # solved_inputs shape: (T, N, nu)
         pred_x = self.traj.solved_states[time_step] 
         pred_u = self.traj.solved_inputs[time_step]
-        
-        # Calculate V_N manually to ensure consistency with Python Q/R matrices
-        # vs potentially different scaling in Acados solver cost output.
+
         V_N = 0.0
         N = self.cfg.N
-        
+
         for k in range(N):
             V_N += self._stage_cost(pred_x[k], pred_u[k])
-            
+
         # Add terminal cost F(x(N)) [cite: 2210]
         V_N += self._terminal_cost(pred_x[N])
-        
+
         return V_N
 
-    def check_lyapunov_decrease(self, tolerance: float = 1e-5, alpha_min: float = 0.0) -> pd.DataFrame:
-        """
-        Verifies the Lyapunov decrease condition for the MPC closed loop.
-        
-        Grüne relaxed DP / Lyapunov inequality along the closed loop:
-            V_N(x(n+1)) <= V_N(x(n)) - alpha * l(x(n), u(n))
-        where alpha in (0,1].
-        
-        This implementation estimates the *observed* alpha at each step as
-            alpha_obs(n) = (V_N(x(n)) - V_N(x(n+1))) / l(x(n), u(n))
-        and checks alpha_obs(n) >= alpha_min up to numerical tolerance.
-        
-        Returns
-        -------
-        pd.DataFrame : Analysis per timestep.
-        """
-        if not self.valid:
-            return pd.DataFrame()
-
-        results = []
-        T_sim = self.traj.inputs.shape[0]
-
-        for n in range(T_sim - 1): # Can't calc V_N for the very last state if inputs missing
-            
-            # 1. Get Value Function at current step n
-            V_curr = self.compute_optimal_value_function(n)
-            
-            # 2. Get Value Function at next step n+1 (closed loop)
-            # This represents V_N(x^+) in the notation [cite: 1926]
-            V_next = self.compute_optimal_value_function(n + 1)
-            
-            # 3. Calculate actual stage cost incurred l(x(n), u(n))
-            l_curr = self._stage_cost(self.traj.states[n], self.traj.inputs[n])
-            
-            # 4. Compute observed alpha and check relaxed decrease
-            if l_curr <= tolerance:
-                alpha_obs = np.nan
-                is_decaying = True  # near equilibrium / tiny stage cost
-            else:
-                alpha_obs = (V_curr - V_next) / l_curr
-                # V_next - V_curr + alpha*l_curr <= 0  <=> alpha <= (V_curr - V_next)/l
-                # We require the observed alpha to be >= alpha_min.
-                is_decaying = (alpha_obs + 0.0) >= (alpha_min - 1e-12)
-            
-            # Check if we are essentially at the goal (Lyapunov decay not required at equilibrium)
-            dist_to_goal = np.linalg.norm(self.traj.states[n] - self.x_star)
-            at_equilibrium = dist_to_goal < 1e-3
-
-            results.append({
-                "time_step": n,
-                "V_curr": V_curr,
-                "V_next": V_next,
-                "stage_cost": l_curr,
-                "alpha_obs": float(alpha_obs) if np.isfinite(alpha_obs) else np.nan,
-                "is_decaying": bool(is_decaying or at_equilibrium),
-                "dist_to_goal": dist_to_goal
-            })
-            
-        return pd.DataFrame(results)
-
-    def check_infinite_horizon_performance(self) -> Dict[str, float]:
+    def check_infinite_horizon_performance(self) -> InfiniteHorizonPerformanceReport:
         """
         Estimates the Infinite Horizon Performance.
         
@@ -389,13 +374,19 @@ class EmpiricalStabilityVerifier:
         For alpha=1 we obtain J_inf_cl(x0, mu_N) <= V_N(x0).
         Here we approximate J_inf_cl by the *realized* sum of stage costs along the
         simulated closed loop (finite-time truncation).
+        
+        Returns
+        -------
+        InfiniteHorizonPerformanceReport
+            A report containing initial value function, closed-loop cost,
+            performance ratio, and whether the bound is satisfied.
         """
         if not self.valid:
-            return {}
+            return InfiniteHorizonPerformanceReport()
 
         # Initial predicted cost
         V_0 = self.compute_optimal_value_function(0)
-        
+
         # Realized closed-loop cost (sum of stage costs over simulation)
         J_cl = 0.0
         for k in range(self.traj.inputs.shape[0]):
@@ -404,247 +395,303 @@ class EmpiricalStabilityVerifier:
             if not (np.all(np.isfinite(x_k)) and np.all(np.isfinite(u_k))):
                 break
             J_cl += self._stage_cost(x_k, u_k)
-        
-        # If simulation was cut short, J_cl is a lower bound on infinite horizon
-        return {
-            "V_N_initial": V_0,
-            "J_closed_loop": J_cl,
-            "performance_ratio": J_cl / V_0 if V_0 > 1e-6 else 1.0,
-            "satisfied_bound": J_cl <= V_0 * 1.05 # 5% tolerance
-        }
 
-    def check_terminal_set_invariance(self, tolerance: float = 0.1) -> pd.DataFrame:
-        """
-        Checks if the end of the predicted horizon lands in the terminal set.
-        For MPC with terminal constraints x(N) = x_*, or x(N) in X_0[cite: 2119, 2209].
-        
-        In this linear setup, we often assume a terminal set X_f (level set of P).
-        We check if the predicted final state is close to x_star.
+        # If simulation was cut short, J_cl is a lower bound on infinite horizon
+        return InfiniteHorizonPerformanceReport(
+            V_N_initial=V_0,
+            J_closed_loop=J_cl,
+            performance_ratio=J_cl / V_0 if V_0 > 1e-6 else 1.0,
+            satisfied_bound=J_cl <= V_0 * 1.05 # 5% tolerance
+        )
+
+    def check_terminal_set_invariance(self, tolerance: float = 0.1) -> TerminalSetInvarianceReport:
+        """Check whether predicted terminal states lie in the terminal set.
+
+        Parameters
+        ----------
+        tolerance : float
+            Distance tolerance to consider the terminal state as being in the goal set.
+
+        Returns
+        -------
+        TerminalSetInvarianceReport
+            A report containing distances to the goal and boolean flags indicating terminal set membership.
         """
         if not self.valid:
-            return pd.DataFrame()
-            
+            return TerminalSetInvarianceReport()
+
         N = self.cfg.N
-        T_sim = self.traj.inputs.shape[0]
-        results = []
+        T_sim = self.cfg.T_sim
+        terminal_dist = np.full((T_sim,), np.nan, dtype=float)
+        is_terminal_set = np.zeros((T_sim,), dtype=bool)
 
         for n in range(T_sim):
             pred_terminal_x = self.traj.solved_states[n][N]
             dist_terminal = np.linalg.norm(pred_terminal_x - self.x_star)
-            
-            results.append({
-                "time_step": n,
-                "terminal_dist": dist_terminal,
-                "in_terminal_set": dist_terminal < tolerance
-            })
-            
-        return pd.DataFrame(results)
+            terminal_dist[n] = float(dist_terminal)
+            is_terminal_set[n] = bool(dist_terminal < tolerance)
 
-    def summary(self) -> Dict[str, Any]:
-        """
-        Aggregates all checks into a final stability report.
-        """
-        if not self.valid:
-            return {"status": "INVALID_DATA"}
-            
-        lyap_df = self.check_lyapunov_decrease()
-        perf = self.check_infinite_horizon_performance()
-        term = self.check_terminal_set_invariance()
-        
-        # Decay violation rate (ignoring very small numbers close to zero)
-        decay_violations = lyap_df[~lyap_df["is_decaying"]]
-        
-        is_practically_stable = (
-            lyap_df["dist_to_goal"].iloc[-1] < 1e-1  # Final state near goal
-            and 
-            len(decay_violations) / len(lyap_df) < 0.1 # Less than 10% non-decreasing steps
+        return TerminalSetInvarianceReport(
+            terminal_dist=terminal_dist,
+            is_terminal_set=is_terminal_set
         )
 
-        return {
-            "is_stable": is_practically_stable,
-            "avg_alpha_obs": float(lyap_df["alpha_obs"].mean()) if (not lyap_df.empty and "alpha_obs" in lyap_df) else None,
-            "min_alpha_obs": float(lyap_df["alpha_obs"].min()) if (not lyap_df.empty and "alpha_obs" in lyap_df) else None,
-            "performance_bound_satisfied": perf.get("satisfied_bound", False),
-            "performance_ratio": perf.get("performance_ratio", 0.0),
-            "avg_terminal_error": term["terminal_dist"].mean(),
-            "initial_V_N": perf.get("V_N_initial", 0.0),
-            "final_dist": lyap_df["dist_to_goal"].iloc[-1] if not lyap_df.empty else None
-        }
 
-    @classmethod
-    def summarize_dataset(
-        cls,
-        dataset: MPCDataset,
-        Q: Optional[np.ndarray] = None,
-        R: Optional[np.ndarray] = None,
-        only_feasible: bool = True,
-        alpha_threshold: float = 1e-4,
-        min_cost_threshold: float = 1e-3,
-    ) -> Dict[str, Any]:
-        """Run the empirical checker over an entire dataset and aggregate results.
+    # -- Certification methods ---
+    def lyapunov_decrease(self, tol: float = 1e-6) -> LyapunovDecreaseReport:
+        """Dataset-level empirical Lyapunov decrease certification.
+        Using the minimum observed alpha over all feasible trajectories.
+        min(alpha_obs(n) = (V_N(x(n)) - V_N(x(n+1))) / l(x(n), u(n)))
 
-        This is intended as a *diagnostic* companion to
-        `EmpiricalStabilityVerifier.verify_mpc_asymptotic_stability`, providing
-        richer statistics (rates/means/minima) across trajectories.
+        Parameters
+        ----------
+        feasible_dataset : MPCDataset
+            A dataset containing only feasible trajectories.
+        tol : float
+            Numerical tolerance for stage cost to avoid division by zero.
+
+        Returns
+        -------
+        LyapunovDecreaseReport
+            A report indicating the empirical alpha and whether the decrease condition is satisfied.
         """
-        n_total = int(len(dataset))
+        alpha_values: List[float] = []
+        for _ in self.iter_binded_entries():
+            min_alpha = self.min_observed_alpha(tolerance=tol)
+            if min_alpha is None:
+                continue
+            alpha_values.append(float(min_alpha))
 
-        # Determine Grüne applicability (based on configuration of first considered entry)
-        cfg0: Optional[MPCConfig] = None
+        if not alpha_values:
+            empirical_ok = False
+            empirical_alpha = 0.0
+        else:
+            empirical_alpha = float(np.min(alpha_values))
+            empirical_ok = bool(empirical_alpha > 0.0)
 
-        n_considered = 0
-        n_invalid = 0
-        n_stable = 0
-        n_perf_bound_ok = 0
+        return LyapunovDecreaseReport(
+            empirical_alpha=empirical_alpha,
+            is_stable=empirical_ok,
+            message=f"{'Satisfied' if empirical_ok else 'Not satisfied'} with minimum observed alpha={empirical_alpha:.4e}."
+        )
 
-        avg_alpha_vals: List[float] = []
-        min_alpha_vals: List[float] = []
-        perf_ratio_vals: List[float] = []
-        terminal_err_vals: List[float] = []
-        final_dist_vals: List[float] = []
+    def grüne_horizon_condition(self, min_cost_threshold: float = 0.1) -> GrüneHorizonReport:
+        """Dataset-level Grüne horizon condition certification.
 
-        infeasible_ids: List[int] = []
+        Parameters
+        ----------
+        min_cost_threshold : float
+            Minimum stage cost l*(x0) to consider a data point valid for gamma estimation.
 
-        for entry in dataset:
-            if only_feasible and not cls._is_entry_feasible(entry):
-                infeasible_ids.append(int(getattr(entry.meta, "id", -1)))
+        Returns
+        -------
+        GrüneHorizonReport
+            A report indicating applicability and estimates of gamma, alpha_N, and required horizon.
+        """
+        cfg0 = self.dataset[0].config
+        has_terminal_cost = self._effective_terminal_cost_matrix(cfg0.Qf) is not None
+        has_terminal_bounds = self._has_terminal_bounds(cfg0)
+
+        if has_terminal_cost or has_terminal_bounds:
+            return GrüneHorizonReport(
+                applicability=False,
+                message="Not applicable: Dataset includes terminal cost/bounds; no-terminal theorem does not directly apply")
+
+        N = int(cfg0.N)
+        if N < 2:
+            return GrüneHorizonReport(
+                applicability=False,
+                message="Not applicable: N<2")
+
+        gamma_values: List[float] = []
+        
+        for entry in self.iter_binded_entries():
+            x0 = np.asarray(entry.trajectory.states[0], dtype=float)
+            if not np.all(np.isfinite(x0)):
+                continue
+            v0 = self.compute_optimal_value_function(0)
+            if not np.isfinite(v0):
                 continue
 
-            if cfg0 is None:
-                cfg0 = entry.config
-
-            n_considered += 1
-            verifier = cls(entry, Q=Q, R=R)
-            rep = verifier.summary()
-            if rep.get("status") == "INVALID_DATA":
-                n_invalid += 1
+            l0 = self._l_star(x0, self.x_star)
+            if not np.isfinite(l0) or l0 <= min_cost_threshold:
                 continue
+            gamma_values.append(float(v0 / l0))
 
-            if bool(rep.get("is_stable", False)):
-                n_stable += 1
-            if bool(rep.get("performance_bound_satisfied", False)):
-                n_perf_bound_ok += 1
+        
+        if not gamma_values:
+            return GrüneHorizonReport(
+                applicability=False,
+                message="Not applicable: insufficient data")
+        
+        gamma = float(np.max(gamma_values))
+        
+        if gamma <= 1.0 + 1e-10:
+            return GrüneHorizonReport(
+                applicability=True,
+                gamma_estimate=gamma,
+                alpha_N_estimate=1.0,
+                required_horizon=1.0,
+                is_stable=True,
+                message=f"Trivially satisfied Grüne condition with gamma={gamma:.4f} <= 1.0")
 
-            avg_alpha = rep.get("avg_alpha_obs")
-            if avg_alpha is not None and np.isfinite(avg_alpha):
-                avg_alpha_vals.append(float(avg_alpha))
+        denom = (gamma ** (N - 1)) - ((gamma - 1.0) ** (N - 1))
+        
+        if denom <= 0.0 or not np.isfinite(denom):
+            return GrüneHorizonReport(
+                applicability=False,
+                gamma_estimate=gamma,
+                alpha_N_estimate=0.0,
+                required_horizon=float("inf"),
+                is_stable=False,
+                message="Not applicable: invalid denominator in Grüne condition calculation.")
+           
+           
+        alpha_N = float(1.0 - (((gamma - 1.0) ** N) / denom))
+        numerator = float(np.log(gamma - 1.0))
+        denominator = float(np.log(gamma) - np.log(gamma - 1.0))
+        
+        return GrüneHorizonReport(
+            applicability=True,
+            gamma_estimate=gamma,
+            alpha_N_estimate=alpha_N,
+            required_horizon=float(2.0 + (numerator / denominator)) if denominator > 0 else float("inf"),
+            is_stable=bool(alpha_N > 0.0),
+            message=f"Grüne condition estimated with gamma={gamma:.4f}, alpha_N={alpha_N:.4f}.")
 
-            min_alpha = rep.get("min_alpha_obs")
-            if min_alpha is not None and np.isfinite(min_alpha):
-                min_alpha_vals.append(float(min_alpha))
 
-            pr = rep.get("performance_ratio")
-            if pr is not None and np.isfinite(pr):
-                perf_ratio_vals.append(float(pr))
+    # --- Certification Interface ---
+    def verify(
+        self,
+        alpha_threshold: float = 1e-4,
+        tol: float = 1e-6,
+        min_cost_threshold: float = 1e-3,
+        more_details: bool = False
+    ) -> StabilityReport:
+        """Dataset-level certification using the optimal value function as a Lyapunov candidate.
+        
+        Parameters
+        ----------
+        alpha_threshold : float
+            Minimum empirical alpha required for certification.
+        tol : float
+            Numerical tolerance for stage cost to avoid division by zero.
+        min_cost_threshold : float
+            Minimum stage cost l*(x0) to consider a data point valid for gamma estimation.
 
-            te = rep.get("avg_terminal_error")
-            if te is not None and np.isfinite(te):
-                terminal_err_vals.append(float(te))
+        Returns
+        -------
+        StabilityReport
+            `is_stable` is interpreted as "certified".
+        """
+        # Empirical tests
+        lyap_report = self.lyapunov_decrease(tol=tol)
+        grune_report = self.grüne_horizon_condition(min_cost_threshold=min_cost_threshold)
 
-            fd = rep.get("final_dist")
-            if fd is not None and np.isfinite(fd):
-                final_dist_vals.append(float(fd))
+        certified = bool(lyap_report.is_stable and \
+            (grune_report.is_stable or grune_report.applicability) \
+            and (lyap_report.empirical_alpha > alpha_threshold))
+        
+        
+        if certified:
+            msg = (
+                f"PASS. Certified with empirical_alpha={lyap_report.empirical_alpha:.3e} "
+                f"and alpha_threshold={alpha_threshold:.3e}.")
+        else:
+            msg = (
+                f"FAIL. Not certified with empirical_alpha={lyap_report.empirical_alpha:.3e}, "
+                f"alpha_threshold={alpha_threshold:.3e}, grune_applicability='{grune_report.message}'.")
 
-        n_valid = n_considered - n_invalid
-
-        def _safe_mean(values: List[float]) -> Optional[float]:
-            return float(np.mean(values)) if values else None
-
-        def _safe_min(values: List[float]) -> Optional[float]:
-            return float(np.min(values)) if values else None
-
-        def _safe_max(values: List[float]) -> Optional[float]:
-            return float(np.max(values)) if values else None
-
-        empirical_alpha_global = _safe_min(min_alpha_vals)
-        empirical_certified = bool(empirical_alpha_global is not None and empirical_alpha_global > alpha_threshold)
-
-        grune_applicability = "insufficient_data"
-        grune_used = False
-        gamma_estimate: Optional[float] = None
-        alpha_N_estimate: Optional[float] = None
-        grune_condition_met: Optional[bool] = None
-
-        if cfg0 is not None:
-            has_terminal_cost = cls._effective_terminal_cost_matrix(cfg0.Qf) is not None
-            has_terminal_bounds = cls._has_terminal_bounds(cfg0)
-            if has_terminal_cost or has_terminal_bounds:
-                grune_applicability = (
-                    "not_applicable: dataset includes terminal cost/bounds; no-terminal theorem does not directly apply"
-                )
-            else:
-                grune_applicability = "applicable"
-                grune_used = True
-
-                # Estimate gamma via V_N(x0) / l*(x0) using stored predictions.
-                # We only consider entries that have valid predictions.
-                gamma_values: List[float] = []
-                Q_use = np.asarray(Q) if Q is not None else np.asarray(cfg0.Q)
-
-                for entry in dataset:
-                    if only_feasible and not cls._is_entry_feasible(entry):
-                        continue
-
-                    verifier = cls(entry, Q=Q_use, R=R)
-                    if not verifier.valid:
-                        continue
-
-                    x0 = np.asarray(entry.trajectory.states[0], dtype=float)
-                    if not np.all(np.isfinite(x0)):
-                        continue
-
-                    v0 = verifier.compute_optimal_value_function(0)
-                    if not np.isfinite(v0):
-                        continue
-
-                    dx0 = x0 - verifier.x_star
-                    l0 = float(dx0.T @ Q_use @ dx0)
-                    if not np.isfinite(l0) or l0 <= min_cost_threshold:
-                        continue
-
-                    gamma_values.append(float(v0 / l0))
-
-                N = int(cfg0.N)
-                if gamma_values and N >= 2:
-                    gamma_estimate = float(np.max(gamma_values))
-                    gamma = float(gamma_estimate)
-
-                    if gamma <= 1.0 + 1e-10:
-                        alpha_N_estimate = 1.0
-                        grune_condition_met = True
-                    else:
-                        denom = (gamma ** (N - 1)) - ((gamma - 1.0) ** (N - 1))
-                        if denom > 0.0 and np.isfinite(denom):
-                            alpha_N_estimate = float(1.0 - (((gamma - 1.0) ** N) / denom))
-                            grune_condition_met = bool(alpha_N_estimate > 0.0)
-                        else:
-                            alpha_N_estimate = None
-                            grune_condition_met = False
-                else:
-                    gamma_estimate = None
-                    alpha_N_estimate = None
-                    grune_condition_met = False
-
-        return {
-            "n_total": n_total,
-            "n_considered": int(n_considered),
-            "n_valid": int(n_valid),
-            "n_invalid": int(n_invalid),
-            "n_skipped_infeasible": int(len(infeasible_ids)),
-            "skipped_infeasible_ids": infeasible_ids,
-            "stable_rate": (float(n_stable) / float(n_valid)) if n_valid > 0 else None,
-            "performance_bound_rate": (float(n_perf_bound_ok) / float(n_valid)) if n_valid > 0 else None,
-            "avg_alpha_obs_mean": _safe_mean(avg_alpha_vals),
-            "min_alpha_obs_global": _safe_min(min_alpha_vals),
-            "empirical_certified": bool(empirical_certified),
-            "grune_used": bool(grune_used),
-            "grune_applicability": grune_applicability,
-            "gamma_estimate": gamma_estimate,
-            "alpha_N_estimate": alpha_N_estimate,
-            "grune_condition_met": grune_condition_met,
-            "performance_ratio_mean": _safe_mean(perf_ratio_vals),
-            "avg_terminal_error_mean": _safe_mean(terminal_err_vals),
-            "avg_terminal_error_max": _safe_max(terminal_err_vals),
-            "final_dist_mean": _safe_mean(final_dist_vals),
-            "final_dist_max": _safe_max(final_dist_vals),
+        details = {
+            "lyapunov_decrease_report": lyap_report,
+            "grune_report": grune_report
         }
+        
+        if more_details:
+            details["more_details"] = self.details()
+    
+        return StabilityReport(
+            method=f"Empirical Verification",
+            is_stable=certified,
+            details=details,
+            message=msg)
+        
+        
+    def details(self) -> EmpiricalDatasetDetails:
+        """Return compressed, dataset-level diagnostics as a flat dict.
+
+        Returns
+        -------
+        EmpiricalDatasetDetails
+            A flat summary of empirical checks across the dataset.
+        """
+        max_examples = 10
+
+        n_feasible = 0
+        n_with_predictions = 0
+        n_missing_predictions = 0
+
+        alpha_min_values: List[float] = []
+        alpha_min_by_id: List[tuple[int, float]] = []
+
+        perf_ratio_values: List[float] = []
+
+        terminal_last_dist_values: List[float] = []
+        terminal_hit_frac_values: List[float] = []
+
+        missing_prediction_ids: List[int] = []
+
+        for idx, entry in enumerate(self):
+            entry_id = int(getattr(getattr(entry, "meta", None), "id", f"unknown_{idx}"))
+
+            if not self._is_entry_feasible(entry):
+                continue
+            n_feasible += 1
+
+            # Bind and check predictions
+            has_predictions = self._bind_entry(entry)
+            if not has_predictions:
+                n_missing_predictions += 1
+                if len(missing_prediction_ids) < max_examples:
+                    missing_prediction_ids.append(entry_id)
+                continue
+
+            n_with_predictions += 1
+
+            # Lyapunov decrease margin (per-trajectory)
+            min_alpha = self.min_observed_alpha(tolerance=1e-6)
+            if min_alpha is not None and np.isfinite(min_alpha):
+                alpha_min_values.append(float(min_alpha))
+                alpha_min_by_id.append((entry_id, float(min_alpha)))
+
+            # Infinite-horizon performance proxy
+            perf = self.check_infinite_horizon_performance()
+            if np.isfinite(perf.performance_ratio):
+                perf_ratio_values.append(float(perf.performance_ratio))
+
+            # Terminal set invariance proxy
+            term = self.check_terminal_set_invariance(tolerance=0.1)
+            td = np.asarray(term.terminal_dist, dtype=float)
+            it = np.asarray(term.is_terminal_set, dtype=bool)
+            if td.size > 0 and np.isfinite(td[-1]):
+                terminal_last_dist_values.append(float(td[-1]))
+            if it.size > 0:
+                terminal_hit_frac_values.append(float(np.mean(it.astype(float))))
+
+        worst = sorted(alpha_min_by_id, key=lambda t: t[1])[:max_examples]
+
+        return EmpiricalDatasetDetails(
+            n_total=int(len(self)),
+            n_feasible=int(n_feasible),
+            n_with_predictions=int(n_with_predictions),
+            n_used=int(n_with_predictions),
+            n_missing_predictions=int(n_missing_predictions),
+            alpha_min=DistributionSummary.from_stamples(alpha_min_values),
+            perf_ratio=DistributionSummary.from_stamples(perf_ratio_values),
+            terminal_last_dist=DistributionSummary.from_stamples(terminal_last_dist_values),
+            terminal_hit_frac=DistributionSummary.from_stamples(terminal_hit_frac_values),
+            example_missing_prediction_ids=missing_prediction_ids,
+            worst_alpha_ids=[int(i) for i, _ in worst],
+            worst_alpha_values=[float(a) for _, a in worst]
+        )
+        
