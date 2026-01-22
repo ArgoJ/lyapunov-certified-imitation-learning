@@ -48,14 +48,20 @@ class StabilityVerifier:
         self.A, self.B = self._extract_discretized_dynamics(self.x_star, self.u_star)
         self.Q, self.R, self.P = self._extract_cost_matrices()
         
+        self._use_recomputed_value: bool = False
+        self._stage_cost_scale: float = self.dt
+        self._terminal_cost_scale: float = 1.0
+        self._ls_cost_prefactor: float = 0.5 # for LINEAR_LS and NONLINEAR_LS cost definition
+        
+        self._extract_linear_ls_cost_structure()
+        
         # Extract Constraints
         self.x_bounds = (self.ocp.constraints.lbx, self.ocp.constraints.ubx)
         self.u_bounds = (self.ocp.constraints.lbu, self.ocp.constraints.ubu)
         self.term_x_bounds = (self.ocp.constraints.lbx_e, self.ocp.constraints.ubx_e)
 
+        # Bindable entry 
         self._active_entry: Optional[MPCData] = None
-
-        # These are set by _bind_entry before any per-trajectory computation.
         self.traj = None
         self.cfg = None
         self.meta = None
@@ -71,7 +77,7 @@ class StabilityVerifier:
         for entry in self.dataset:
             yield entry
 
-    
+
     # --- EXTRACTION HELPERS ---
     def _extract_reference(self) -> tuple[np.ndarray, np.ndarray]:
         """Best-effort extraction of (x*, u*) from yref/yref_e.
@@ -143,6 +149,30 @@ class StabilityVerifier:
             
         return Q, R, P
 
+    def _extract_linear_ls_cost_structure(self) -> None:
+        """Extract the exact LINEAR_LS cost structure used by the OCP.
+
+        This is the authoritative definition for the stage and terminal costs:
+            l(x,u) = || Vx x + Vu u - yref ||^2_W
+            Vf(x)  = || Vx_e x - yref_e ||^2_{W_e}
+        """
+        cost = self.ocp.cost
+
+        self.W = np.asarray(cost.W)
+        self.Vx = np.asarray(cost.Vx)
+        self.Vu = np.asarray(cost.Vu)
+        self.yref = np.asarray(cost.yref).reshape(-1)
+
+        self.W_e = None
+        self.Vx_e = None
+        self.yref_e = None
+        if hasattr(cost, "W_e") and cost.W_e is not None:
+            self.W_e = np.asarray(cost.W_e)
+        if hasattr(cost, "Vx_e") and cost.Vx_e is not None:
+            self.Vx_e = np.asarray(cost.Vx_e)
+        if hasattr(cost, "yref_e") and cost.yref_e is not None:
+            self.yref_e = np.asarray(cost.yref_e).reshape(-1)
+
 
     # --- INTERNAL HELPERS ---
     def _bind_entry(self, entry: MPCData) -> bool:
@@ -173,9 +203,13 @@ class StabilityVerifier:
                 "This verifier assumes a single terminal cost P for the entire dataset."
             )
 
-        # Ensure goal state is defined (default to zero origin)
-        self.x_star = self.cfg.goal_state if self.cfg.goal_state is not None else np.zeros(self.traj.states.shape[1])
-        # self.u_star = self.cfg.goal_input if self.cfg.goal_input is not None else np.zeros(self.traj.inputs.shape[1])
+        # Goal state is for downstream interpretation/metrics; cost uses OCP's yref/yref_e.
+        self.x_goal = self.cfg.goal_state if self.cfg.goal_state is not None else self.x_star
+        if self.cfg.goal_state is not None and (not np.allclose(np.asarray(self.cfg.goal_state).reshape(-1), self.x_star.reshape(-1), atol=1e-10, rtol=0.0)):
+            __logger__.warning(
+                "Entry goal_state differs from OCP reference x*: "
+                "verification uses OCP yref/yref_e for costs; goal_state is used only for interpretation."
+            )
         self.valid = self._validate_data_integrity()
         
         return self.valid
@@ -196,41 +230,112 @@ class StabilityVerifier:
         if self.cfg.dt != self.dt:
             __logger__.warning(f"Entry ID {getattr(self.meta, 'id', 'unknown')} has mismatched dt (dataset dt={self.cfg.dt}, verifier dt={self.dt}).")
             return False
+
+        self._use_recomputed_value = False
+        self._audit_value_function()
         return True
+
+    def _audit_value_function(self, max_steps: int = 3, rtol: float = 1e-3, atol: float = 1e-6) -> None:
+        """Compare stored traj.cost with recomputed V_N from OCP predictions."""
+        self._require_bound_entry()
+        if self.traj.solved_states is None or self.traj.solved_inputs is None:
+            return
+
+        T_sim = min(self.cfg.T_sim, int(self.traj.cost.shape[0]))
+        n_check = min(int(max_steps), max(0, T_sim))
+        if n_check <= 0:
+            return
+
+        mismatch_count = 0
+        error_sum = 0.0
+        for n in range(n_check):
+            stored = float(self.traj.cost[n])
+            if not np.isfinite(stored):
+                continue
+
+            # Compare against the recomputation using the currently extracted scaling conventions.
+            recomputed = float(self._V_from_predictions(n))
+            if not np.isfinite(recomputed):
+                continue
+            if not np.isclose(stored, recomputed, rtol=rtol, atol=atol):
+                mismatch_count += 1
+            error_sum += float(abs(stored - recomputed))
+
+        if mismatch_count > 0:
+            self._use_recomputed_value = True
+            __logger__.warning(
+                f"Detected {mismatch_count} mismatches between stored cost and recomputed V_N from predictions, "
+                f"avg_abs_error={error_sum/max(1, n_check):.3e}); switching to recomputed V_N for verification."
+            )
 
 
     # --- COST CALCULATIONS ---
     def _stage_cost(self, x: np.ndarray, u: np.ndarray) -> float:
-        """
-        Computes l(x, u). Assumes Quadratic Cost standard in linear MPC.
-        l(x,u) = ||x - x_*||^2_Q + ||u - u_*||^2_R. 
-        """
-        dx = x - self.x_star
-        du = u - self.u_star
-        cost = dx.T @ self.Q @ dx + du.T @ self.R @ du
-        return float(cost)
+        """Raw LINEAR_LS stage cost without any global prefactors."""
+        x = np.asarray(x, dtype=float).reshape(-1)
+        u = np.asarray(u, dtype=float).reshape(-1)
+        y = self.Vx @ x + self.Vu @ u
+        e = (y - self.yref).reshape(-1)
+        return float(self._ls_cost_prefactor) * float(e.T @ self.W @ e)
 
     def _terminal_cost(self, x: np.ndarray) -> float:
-        """
-        Computes V_f(x).
-        Used for terminal cost calculation if Qf/P is provided.
-        """
-        if not self.cfg.has_terminal_cost():
+        """Raw LINEAR_LS terminal cost without any global prefactors."""
+        if self.W_e is None:
             return 0.0
-        
-        dx = x - self.x_star
-        Qf = np.asarray(self.cfg.Qf)
-        return float(dx.T @ Qf @ dx)
+        x = np.asarray(x, dtype=float).reshape(-1)
+
+        Vx_e = self.Vx_e if self.Vx_e is not None else np.eye(x.size)
+        yref_e = self.yref_e if self.yref_e is not None else np.zeros((Vx_e.shape[0],), dtype=float)
+        y_e = Vx_e @ x
+        e = (y_e - yref_e).reshape(-1)
+        return float(self._ls_cost_prefactor) * float(e.T @ self.W_e @ e)
     
     def _l_star(self, x: np.ndarray) -> float:
-        """Optimal Stage cost"""
-        u_opt = self.u_star
+        """Lower bound on l*(x) := min_u l(x,u) via unconstrained minimization.
 
-        u_min, u_max = self.u_bounds
-        if u_min is not None and u_max is not None:
-            u_opt = np.clip(self.u_star, u_min, u_max)
+        This ignores input constraints, yielding a conservative (small) lower bound on l*(x)
+        for constrained problems. In Grüne's gamma estimate, this makes V/l* larger (safer).
+        """
+        x = np.asarray(x, dtype=float).reshape(-1)
 
-        return self._stage_cost(x, u_opt)
+        a = (self.Vx @ x - self.yref).reshape(-1)  # y = a + Vu u
+        H = self.Vu.T @ self.W @ self.Vu
+        H = 0.5 * (H + H.T)
+        g = (self.Vu.T @ self.W @ a).reshape(-1)
+
+        if H.size == 0:
+            return float(a.T @ self.W @ a)
+
+        try:
+            u_star = -np.linalg.solve(H, g)
+        except np.linalg.LinAlgError:
+            u_star = -np.linalg.lstsq(H, g, rcond=None)[0]
+
+        return float(self._stage_cost(x, u_star))
+
+    def _V_from_predictions(self, step_index: int) -> float:
+        """Recompute V_N(x) from stored OCP predictions at a simulation step."""
+        self._require_bound_entry()
+        if self.traj.solved_states is None or self.traj.solved_inputs is None:
+            raise ValueError("Missing OCP predictions for V_N recomputation.")
+
+        x_pred = np.asarray(self.traj.solved_states[step_index], dtype=float)
+        u_pred = np.asarray(self.traj.solved_inputs[step_index], dtype=float)
+        if x_pred.shape[0] != (self.N + 1) or u_pred.shape[0] != self.N:
+            raise ValueError("Predicted trajectory shapes do not match horizon.")
+
+        total = 0.0
+        for k in range(self.N):
+            total += float(self._stage_cost_scale) * float(self._stage_cost(x_pred[k], u_pred[k]))
+        total += float(self._terminal_cost_scale) * float(self._terminal_cost(x_pred[self.N]))
+        return float(total)
+
+    def _V(self, step_index: int) -> float:
+        """Get V_N(x_step) using the selected value-function source."""
+        self._require_bound_entry()
+        if self._use_recomputed_value:
+            return float(self._V_from_predictions(step_index))
+        return float(self.traj.cost[step_index])
 
 
     # --- DATASET ITERATORS ---
@@ -292,18 +397,25 @@ class StabilityVerifier:
 
         T_sim = min(self.cfg.T_sim, len(self.traj.states), len(self.traj.cost))
         for n in range(T_sim - 1):
-            V_curr = self.traj.cost[n]
-            V_next = self.traj.cost[n+1]
+            V_curr = self._V(n)
+            V_next = self._V(n + 1)
             if not (np.isfinite(V_curr) and np.isfinite(V_next)):
                 __logger__.debug(f"Skipping step {n} due to non-finite value function V_N(x): V_curr={V_curr:.4e}, V_next={V_next:.4e}")
                 continue
 
-            # acados stage cost is scaled with dt by default.
+            # Stage-cost scaling must match the value-function scaling used in V_N.
             l_unscaled = self._stage_cost(self.traj.states[n], self.traj.inputs[n])
-            l_curr = float(self.dt) * float(l_unscaled)
+            l_curr = float(self._stage_cost_scale) * float(l_unscaled)
 
             if not np.isfinite(l_curr) or l_curr <= min_cost_threshold:
-                __logger__.debug(f"Skipping step {n} due to small stage cost l(x,u)={l_curr:.4e} <= tol={min_cost_threshold:.4e}")
+                # Near-equilibrium regime: alpha_obs is ill-conditioned, but we still want to
+                # detect increases in V_N.
+                eps = 1e-10 + 1e-8 * max(1.0, abs(V_curr))
+                residual = float(V_next - V_curr)
+                violation = max(0.0, residual - eps)
+                max_violation = max(max_violation, violation)
+                min_residual = min(min_residual, residual)
+                n_used += 1
                 continue
 
             alpha_obs = (V_curr - V_next) / l_curr
@@ -322,6 +434,9 @@ class StabilityVerifier:
 
         if n_used == 0:
             return AlphaViolationStats()
+
+        if min_alpha == float("inf"):
+            min_alpha = float("nan")
 
         return AlphaViolationStats(
             min_alpha=float(min_alpha), 
@@ -351,9 +466,10 @@ class StabilityVerifier:
 
         for _ in self.iter_binded_entries():
             stats = self.alpha_and_max_violation(alpha_required=alpha_required, min_cost_threshold=min_cost_threshold)
-            if stats.min_alpha is None:
+            if stats.n_used == 0:
                 continue
-            alphas.append(float(stats.min_alpha))
+            if np.isfinite(stats.min_alpha):
+                alphas.append(float(stats.min_alpha))
             violations.append(float(stats.max_violation))
             used += 1
 
@@ -362,7 +478,7 @@ class StabilityVerifier:
             max_violation = float("inf")
             empirical_ok = False
         else:
-            min_alpha = float(np.min(alphas))
+            min_alpha = float(np.min(alphas)) if alphas else 0.0
             max_violation = float(np.max(violations))
 
         empirical_ok = bool((min_alpha >= alpha_required) and (max_violation <= 0.0))
@@ -392,14 +508,14 @@ class StabilityVerifier:
                 __logger__.debug(f"Skipping step {n} due to non-finite state x={x}")
                 continue
 
-            Vn = float(self.traj.cost[n])
+            Vn = float(self._V(n))
             if not np.isfinite(Vn):
                 __logger__.debug(f"Skipping step {n} due to non-finite cost Vn={Vn:.4e}")
                 continue
 
             # l*(x) := min_u l(x,u)
             lstar_unscaled = float(self._l_star(x))
-            lstar = float(self.cfg.dt) * lstar_unscaled  # match acados default scaling
+            lstar = float(self._stage_cost_scale) * lstar_unscaled
 
             if (not np.isfinite(lstar)) or (lstar <= min_cost_threshold):
                 __logger__.debug(f"Skipping step {n} due to small stage cost l(x,u)={lstar:.4e} <= tol={min_cost_threshold:.4e}")
@@ -525,18 +641,24 @@ class StabilityVerifier:
         lyap_report = self.lyapunov_decrease(alpha_required=alpha_required, min_cost_threshold=min_cost_threshold)
         grune_report = self.grüne_horizon_condition(min_cost_threshold=min_cost_threshold)
 
-        certified = bool((lyap_report.is_stable and (lyap_report.min_alpha > alpha_required)) \
-            or (grune_report.is_stable or grune_report.applicability))
+        certified = bool(
+            lyap_report.is_stable
+            or (grune_report.applicability and grune_report.is_stable)
+        )
         
         
         if certified:
-            msg = (
-                f"PASS. Certified with min_alpha={lyap_report.min_alpha:.3e} "
-                f"and alpha_required={alpha_required:.3e}.")
+            if lyap_report.is_stable:
+                msg = (
+                    f"PASS. Certified by Lyapunov decrease with min_alpha={lyap_report.min_alpha:.3e} "
+                    f"and alpha_required={alpha_required:.3e}.")
+            else:
+                msg = (
+                    f"PASS. Certified by Grüne horizon condition with gamma={grune_report.gamma_estimate:.3e} "
+                    f"and required_horizon={grune_report.required_horizon}.")
         else:
             msg = (
-                f"FAIL. Not certified with min_alpha={lyap_report.min_alpha:.3e}, "
-                f"alpha_required={alpha_required:.3e}, grune_applicability='{grune_report.message}'.")
+                f"FAIL. Not certified: lyapunov='{lyap_report.message}', grune='{grune_report.message}'.")
 
         details = {
             "lyapunov_decrease_report": lyap_report,
