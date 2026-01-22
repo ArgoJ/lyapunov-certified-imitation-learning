@@ -39,11 +39,27 @@ class MPCConfig:
     terminal_state_bounds: Optional[np.ndarray] = None  # Shape (2, nx)
     input_bounds: Optional[np.ndarray] = None  # Shape (2, nu)
 
+    @staticmethod
+    def _is_defined_array(arr: Optional[np.ndarray]) -> bool:
+        """Check if an array is defined and non-empty."""
+        if arr is None:
+            return False
+        arr = np.asarray(arr)
+        if arr.size == 0:
+            return False
+        return True 
+
+    def has_terminal_cost(self) -> bool:
+        """Check if a terminal cost is defined."""
+        return self._is_defined_array(self.Qf)
+    
+    def has_terminal_bounds(self) -> bool:
+        """Check if terminal state bounds are defined."""
+        return self._is_defined_array(self.terminal_state_bounds)
+
     @classmethod
     def from_hdf5(cls, grp: h5py.Group) -> "MPCConfig":
-        """
-        Load config from a trajectory group (expects a `config` subgroup).
-        """
+        """Load config from a trajectory group (expects a `config` subgroup)."""
         cfg_grp = grp.get("config", None)
         if cfg_grp is None:
             raise ValueError("No 'config' group found in the provided HDF5 group.")
@@ -133,6 +149,60 @@ class MPCData:
     trajectory: MPCTrajectory
     meta: MPCMeta = field(default_factory=MPCMeta)
     config: MPCConfig = field(default_factory=MPCConfig)
+
+    def verify(self) -> bool:
+        """Verify internal consistency of the data entry."""
+        T_sim = self.config.T_sim
+        nx = self.trajectory.states.shape[1]
+        nu = self.trajectory.inputs.shape[1]
+
+        if self.trajectory.states.shape != (T_sim + 1, nx):
+            __logger__.error(f"Trajectory states shape mismatch: expected {(T_sim + 1, nx)}, got {self.trajectory.states.shape}")
+            return False
+        if self.trajectory.inputs.shape != (T_sim, nu):
+            __logger__.error(f"Trajectory inputs shape mismatch: expected {(T_sim, nu)}, got {self.trajectory.inputs.shape}")
+            return False
+        if self.trajectory.time.shape != (T_sim + 1,):
+            __logger__.error(f"Trajectory time shape mismatch: expected {(T_sim + 1,)}, got {self.trajectory.time.shape}")
+            return False
+        if self.trajectory.cost.shape != (T_sim,):
+            __logger__.error(f"Trajectory cost shape mismatch: expected {(T_sim,)}, got {self.trajectory.cost.shape}")
+            return False
+        if self.trajectory.solved_states is not None:
+            N = self.config.N
+            if self.trajectory.solved_states.shape != (T_sim, N + 1, nx):
+                __logger__.error(f"Solved states shape mismatch: expected {(T_sim, N + 1, nx)}, got {self.trajectory.solved_states.shape}")
+                return False
+        if self.trajectory.solved_inputs is not None:
+            N = self.config.N
+            if self.trajectory.solved_inputs.shape != (T_sim, N, nu):
+                __logger__.error(f"Solved inputs shape mismatch: expected {(T_sim, N, nu)}, got {self.trajectory.solved_inputs.shape}")
+                return False
+        if len(self.meta.status_codes) != T_sim:
+            __logger__.error(f"Meta status codes length mismatch: expected {T_sim}, got {len(self.meta.status_codes)}")
+            return False
+        if not self.is_feasible() and self.trajectory.feasible:
+            self.trajectory.feasible = False
+        return True
+
+    def is_feasible(self) -> bool:
+        """Check if the trajectory is feasible."""
+        # Prefer explicit feasibility flag if present
+        if hasattr(self.trajectory, "feasible") and (self.trajectory.feasible is False):
+            return False
+
+        # Non-zero solver status codes indicate failure
+        if self.meta is not None and getattr(self.meta, "status_codes", None):
+            if any(int(c) != 0 for c in self.meta.status_codes):
+                __logger__.warning(f"Entry ID {getattr(self.meta, 'id', 'unknown')} indicates non-zero solver status codes. "
+                                   f"Status Codes: {np.unique(self.meta.status_codes).tolist()}")
+                return False
+
+        # NaNs in key arrays indicate an invalid run
+        t = self.trajectory
+        if np.isnan(t.states).any() or np.isnan(t.inputs).any() or np.isnan(t.cost).any():
+            return False
+        return True
 
 
 class MPCDataset:

@@ -12,7 +12,7 @@ from typing import Optional, Tuple
 import lyapunov_certified_imitation_learning.utils as lcil_utils
 from lyapunov_certified_imitation_learning.data_generation import MPCDataGenerator
 from lyapunov_certified_imitation_learning.lyapunov_verification import *
-from lyapunov_certified_imitation_learning.lyapunov_verification.render import EmpiricalVerificationRender, FormalVerificationRender
+from lyapunov_certified_imitation_learning.lyapunov_verification.render import VerificationRender
 
 
 
@@ -100,15 +100,14 @@ def get_ocp_solver(
     nx = A_c.shape[0]
     nu = B_c.shape[1]
 
+    ocp = AcadosOcp()
+    ocp.model = get_model(A_c, B_c)
+
     # Calculate DARE
-    A_d, B_d = lcil_utils.linalg.c2d_rk4(A_c, B_c, dt)
-    # TODO: try to find a function in acados that returns discrete Matrices
+    A_d, B_d = lcil_utils.linalg.lin_c2d_rk4(A_c, B_c, dt, num_steps=1)
 
     if P is None and terminal_mode == "regional":
         P = solve_discrete_are(A_d, B_d, Q, R)
-
-    ocp = AcadosOcp()
-    ocp.model = get_model(A_c, B_c)
 
     # Solver options
     ocp.solver_options.N_horizon = N
@@ -188,8 +187,8 @@ def get_ocp_solver(
 # %%  
 if __name__ == "__main__":
     # Continuous-time double integrator matrices (standard)
-    A_c = np.array([[0.0, 1.0],
-                    [0.0, 0.0]])
+    A_c = np.array([[0, 1],
+                    [0, 0]])
     B_c = np.array([[0],
                     [1]])
 
@@ -236,26 +235,10 @@ if __name__ == "__main__":
         dataset.save(f"data/double_integrator_{terminal_mode}_N{N}_data")
 
         # 1) Empirical verifier aggregated over the dataset
-        emp_verifier = EmpiricalStabilityVerifier(dataset, Q=Q, R=R)
+        emp_verifier = StabilityVerifier(dataset, solver)
         emp_stats = emp_verifier.verify()
-        EmpiricalVerificationRender(emp_stats).render()
+        VerificationRender(emp_stats).render()
 
-        # 2) Formal solver-side checks
-        formal = FormalStabilityVerifier(solver)
-        formal_stats = formal.prove()
-        FormalVerificationRender(formal_stats).render()
-        
-        # Expected pass conditions per case
-        # if terminal_mode == "equilibrium":
-        #     assert rep_eq.is_stable, "Equilibrium terminal constraint proof should pass"
-        # elif terminal_mode == "regional":
-        #     assert rep_reg.is_stable, "Regional terminal cost compatibility proof should pass"
-        # elif terminal_mode == "none":
-        #     assert rep_no.is_stable, "No-terminal proof should pass"
-
-        # assert emp_stats.is_stable, "Empirical dataset certification should pass"
-        # if emp_stats.details["grune_horizon_condition"].applicability == "applicable":
-        #     assert bool(emp_stats.details["grune_horizon_condition"].grune_condition_met), "Grüne condition should pass when applicable"
 
     # Case 1: regional terminal cost + small terminal set (should pass regional proof + empirical)
     run_case(
