@@ -5,17 +5,15 @@ import numpy as np
 from acados_template import AcadosOcpSolver, AcadosSimSolver
 
 from .mpc_data import MPCData, MPCTrajectory, MPCMeta, MPCConfig
+from .extractor import MPCConfigExtractor
 
 __logger__ = logging.getLogger(__name__)
 
 
 def solve_mpc_closed_loop(
     solver: AcadosOcpSolver,
-    x0: np.ndarray,
-    N_sim: int,
     integrator: Optional[AcadosSimSolver] = None,
-    dt: Optional[float] = None,
-    config: Optional[MPCConfig] = None,
+    cfg: Optional[MPCConfig] = None,
     break_on_infeasible: bool = True
 ) -> MPCData:
     """
@@ -25,15 +23,9 @@ def solve_mpc_closed_loop(
     ----------
     solver : AcadosOcpSolver
         The initialized Acados OCP solver.
-    x0 : np.ndarray
-        Initial state vector.
-    N_sim : int
-        Number of simulation steps.
-    dt : float, optional
-        Sampling time (for time vector generation).
     integrator : AcadosSimSolver, optional
         Acados integrator for accurate simulation steps.
-    config : MPCConfig, optional
+    cfg : MPCConfig, optional
         Configuration dictionary to store in MPCData.
     break_on_infeasible : bool
         If True, stops simulation if the solver returns a non-zero status.
@@ -43,25 +35,24 @@ def solve_mpc_closed_loop(
     MPCData
         The collected data from the closed-loop run.
     """
-    N_horizon = solver.acados_ocp.solver_options.N_horizon
-    nx = solver.acados_ocp.dims.nx
-    nu = solver.acados_ocp.dims.nu
     
     # Initialize Trajectory container with NaNs
-    traj = MPCTrajectory.init(T_sim=N_sim, N=N_horizon, nx=nx, nu=nu, dt=dt if dt is not None else 0.1)
+    if cfg is None:
+        cfg = MPCConfigExtractor.get_cfg(solver)
+    traj = MPCTrajectory.init(T_sim=cfg.T_sim, N=cfg.N, nx=cfg.nx, nu=cfg.nu, dt=cfg.dt)
     
     # Set initial state
-    traj.states[0, :] = x0
+    traj.states[0, :] = cfg.x0
     
     solve_times = []
     status_codes = []
     
-    current_x = x0.copy()
+    current_x = cfg.x0.copy()
     is_feasible_run = True
 
     sim_start_time = time.time()
 
-    for i in range(N_sim):
+    for i in range(cfg.T_sim):
         solver.set(0, "lbx", current_x)
         solver.set(0, "ubx", current_x)
         
@@ -77,12 +68,12 @@ def solve_mpc_closed_loop(
         solve_times.append(solver.get_stats("time_tot"))
                 
         # Retrieve Predictions
-        pred_x = np.zeros((N_horizon + 1, nx))
-        for k in range(N_horizon + 1):
+        pred_x = np.zeros((cfg.N + 1, cfg.nx))
+        for k in range(cfg.N + 1):
             pred_x[k, :] = solver.get(k, "x")
             
-        pred_u = np.zeros((N_horizon, nu))
-        for k in range(N_horizon):
+        pred_u = np.zeros((cfg.N, cfg.nu))
+        for k in range(cfg.N):
             pred_u[k, :] = solver.get(k, "u")
             
         # Store predictions
@@ -124,12 +115,9 @@ def solve_mpc_closed_loop(
         steps_simulated=len(status_codes),
         status_codes=status_codes
     )
-    
-    if config is None:
-        config = MPCConfig()
         
     return MPCData(
-        config=config,
+        config=cfg,
         trajectory=traj,
         meta=meta
     )

@@ -1,7 +1,3 @@
-# %% [markdown] 
-# # Double Integrator Example
-
-
 # %% General Imports
 import numpy as np
 from scipy.linalg import solve_discrete_are, block_diag
@@ -10,9 +6,6 @@ from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 from typing import Optional, Tuple
 
 import lyapunov_certified_imitation_learning.utils as lcil_utils
-from lyapunov_certified_imitation_learning.data_generation import *
-
-
 
 
 
@@ -182,109 +175,33 @@ def get_ocp_solver(
     return solver, info
 
 
-# %%  
-if __name__ == "__main__":
-    # Continuous-time double integrator matrices (standard)
+def get_basic_double_integrator_ocp_solver() -> Tuple[AcadosOcpSolver, dict]:
+    """Get a basic double integrator OCP solver with default parameters.
+
+    Returns
+    -------
+    solver : AcadosOcpSolver
+        Configured acados OCP solver for the double integrator.
+    info : dict
+        Useful information about the problem (A_d, B_d, P used).
+    """
     A_c = np.array([[0, 1],
                     [0, 0]])
     B_c = np.array([[0],
                     [1]])
-
-    # Cost matrices
-    Q = np.diag([15.0, 1.0])
+    Q = np.diag([1.0, 1.0])
     R = np.diag([0.1])
 
-    def run_case(
-        name: str,
-        terminal_mode: str,
-        N: int,
-        x0_bounds: np.ndarray,
-        T_sim: int = 30,
-        n_samples: int = 10,
-        bounds_scale: float = 10.0,
-        terminal_box_halfwidth: float = 1.0,
-    ) -> None:
-        print("\n" + "=" * 80)
-        print(f"CASE: {name} (terminal_mode={terminal_mode}, N={N})")
-        print("=" * 80)
-
-        solver, info = get_ocp_solver(
-            A_c,
-            B_c,
-            Q,
-            R,
-            dt=0.1,
-            N=N,
-            tol=1e-8,
-            terminal_mode=terminal_mode,
-            bounds_scale=bounds_scale,
-            terminal_box_halfwidth=terminal_box_halfwidth,
-        )
-
-        generator = MPCDataGenerator(
-            solver=solver,
-            x0_bounds=x0_bounds,
-            T_sim=T_sim,
-            verbose=True,
-            reset_solver=True,
-        )
-        dataset = generator.generate(n_samples=n_samples)
-        dataset.validate()
-        dataset.save(f"data/double_integrator_{terminal_mode}_N{N}_data")
-
-        # 1) Empirical verifier aggregated over the dataset
-        cert_stats = StabilityCertifier.certify(solver)
-        veri_stats = StabilityVerifier.verify(dataset, solver, alpha_required=1e-4)
-        VerificationRender(cert_stats).render()
-        VerificationRender(veri_stats).render()
-        
-        
-        subdataset = dataset[:min(50, n_samples)]
-        lcil_utils.plot.mpc_trajectories(
-            dataset=subdataset,
-            state_labels=["Position", "Velocity"],
-            control_labels=["Acceleration"],
-            html_path=f"plots/double_integrator_{terminal_mode}_N{N}_trajectories.html",)
-        
-        if info["P"] is not None:
-            lcil_utils.plot.lyapunov(
-                dataset=subdataset,
-                lyapunov_func=lambda x: x.T @ info["P"] @ x,
-                html_path=f"plots/double_integrator_{terminal_mode}_N{N}_lyapunov.html",)
-        
-
-    # Case 1: regional terminal cost + small terminal set (should pass regional proof + empirical)
-    run_case(
-        name="Regional terminal ingredients",
-        terminal_mode="regional",
+    solver, info = get_ocp_solver(
+        A_c=A_c,
+        B_c=B_c,
+        Q=Q,
+        R=R,
+        dt=0.1,
         N=20,
-        x0_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]]),
-        T_sim=25,
-        n_samples=200,
+        terminal_mode="regional",
         bounds_scale=10.0,
         terminal_box_halfwidth=1.0,
     )
 
-    # Case 2: equilibrium terminal constraint x(N)=0 (sample close so feasibility is easy)
-    run_case(
-        name="Equilibrium terminal constraint",
-        terminal_mode="equilibrium",
-        N=25,
-        x0_bounds=np.array([[-0.5, -0.5], [0.5, 0.5]]),
-        T_sim=20,
-        n_samples=200,
-        bounds_scale=10.0,
-        terminal_box_halfwidth=1.0,
-    )
-
-    # Case 3: no terminal ingredients (zero terminal weight, no terminal bounds)
-    run_case(
-        name="No terminal ingredients (Grüne horizon condition)",
-        terminal_mode="none",
-        N=40,
-        x0_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]]),
-        T_sim=25,
-        n_samples=200,
-        bounds_scale=50.0,
-        terminal_box_halfwidth=1.0,
-    )
+    return solver, info

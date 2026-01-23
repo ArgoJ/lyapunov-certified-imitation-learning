@@ -17,7 +17,8 @@ dependencies = [
     "plotly",
     "tqdm",
     "casadi",
-    "h5py"
+    "h5py",
+    "rich"
 ]
 
 [tool.setuptools.package-dir]

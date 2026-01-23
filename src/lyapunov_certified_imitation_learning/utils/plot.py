@@ -1,4 +1,5 @@
 import numpy as np
+import os
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from typing import Callable
@@ -199,6 +200,7 @@ def mpc_trajectories(
         )
     
     if html_path is not None:
+        os.makedirs(os.path.dirname(html_path), exist_ok=True)
         fig.write_html(html_path)
         __logger__.info(f"Trajectories plot saved to {html_path}.")
     else:   
@@ -413,6 +415,7 @@ def lyapunov(
     )
 
     if html_path is not None:
+        os.makedirs(os.path.dirname(html_path), exist_ok=True)
         fig.write_html(html_path)
         __logger__.info(f"Trajectories plot saved to {html_path}.")
     else:   

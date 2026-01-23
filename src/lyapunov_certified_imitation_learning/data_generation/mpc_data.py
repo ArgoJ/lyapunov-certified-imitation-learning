@@ -22,19 +22,28 @@ class MPCMeta:
     sim_duration_wall: float = 0.0
     steps_simulated: int = 0
     status_codes: List[int] = field(default_factory=list)
-     
+    
+@dataclass
+class LinearSystem:
+    """Linearized system matrices."""
+    A: np.ndarray
+    B: np.ndarray
+    gd: np.ndarray
 
 @dataclass
 class MPCConfig:
     """Configuration used for the MPC problem."""
     T_sim: int = 0                  # Simulation steps
-    N: int = 10                     # Prediction horizon
+    N: int = 0                      # Prediction horizon
+    nx: int = 0                     # State dimension
+    nu: int = 0                     # Input dimension
     dt: float = 0.1                 # Sampling time
-    Q: np.ndarray = field(default_factory=lambda: np.eye(2))  # State cost
-    R: np.ndarray = field(default_factory=lambda: np.eye(1))  # Input cost
+    Q: np.ndarray = field(default_factory=lambda: np.array([[]]))  # State cost
+    R: np.ndarray = field(default_factory=lambda: np.array([[]]))  # Input cost
     Qf: Optional[np.ndarray] = None  # Terminal state cost
     x0: Optional[np.ndarray] = None  # Initial state
-    goal_state: Optional[np.ndarray] = None  # Target state
+    x_ref: Optional[np.ndarray] = None  # Target state
+    u_ref: Optional[np.ndarray] = None  # Target input
     state_bounds: Optional[np.ndarray] = None  # Shape (2, nx)
     terminal_state_bounds: Optional[np.ndarray] = None  # Shape (2, nx)
     input_bounds: Optional[np.ndarray] = None  # Shape (2, nu)
@@ -66,17 +75,22 @@ class MPCConfig:
 
         t_sim = int(cfg_grp.attrs.get("T_sim", 0))
         n_horizon = int(cfg_grp.attrs.get("N", 10))
+        nx = int(cfg_grp.attrs.get("nx", 2))
+        nu = int(cfg_grp.attrs.get("nu", 1))
         dt = float(cfg_grp.attrs.get("dt", 0.1))
 
         return cls(
             T_sim=t_sim,
             N=n_horizon,
+            nx=nx,
+            nu=nu,
             dt=dt,
             Q=cfg_grp["Q"][:],
             R=cfg_grp["R"][:],
             Qf=cfg_grp["Qf"][:] if "Qf" in cfg_grp else None,
             x0=cfg_grp["x0"][:] if "x0" in cfg_grp else None,
-            goal_state=cfg_grp["goal_state"][:] if "goal_state" in cfg_grp else None,
+            x_ref=cfg_grp["x_ref"][:] if "x_ref" in cfg_grp else None,
+            u_ref=cfg_grp["u_ref"][:] if "u_ref" in cfg_grp else None,
             state_bounds=cfg_grp["state_bounds"][:] if "state_bounds" in cfg_grp else None,
             terminal_state_bounds=cfg_grp["terminal_state_bounds"][:] if "terminal_state_bounds" in cfg_grp else None,
             input_bounds=cfg_grp["input_bounds"][:] if "input_bounds" in cfg_grp else None,
@@ -93,6 +107,18 @@ class MPCTrajectory:
     solved_states: Optional[np.ndarray] = None   # (T, N+1, nx) - OCP predictions at each step
     solved_inputs: Optional[np.ndarray] = None   # (T, N, nu)   - OCP predictions at each step
     feasible: bool = True
+    
+    @property
+    def length(self) -> int:
+        """Get the simulation length in steps."""
+        return self.states.shape[0] - 1
+    
+    @property
+    def horizon(self) -> Optional[int]:
+        """Get the prediction horizon length (if available)."""
+        if self.solved_states is not None:
+            return self.solved_states.shape[1] - 1
+        return None
 
     @classmethod
     def from_hdf5(cls, grp: h5py.Group) -> "MPCTrajectory":
@@ -246,6 +272,8 @@ class MPCDataset:
                 cfg_grp = grp.create_group("config")
                 cfg_grp.attrs["T_sim"] = int(cfg.T_sim)
                 cfg_grp.attrs["N"] = int(cfg.N)
+                cfg_grp.attrs["nx"] = int(cfg.nx)
+                cfg_grp.attrs["nu"] = int(cfg.nu)
                 cfg_grp.attrs["dt"] = float(cfg.dt)
                 cfg_grp.create_dataset("Q", data=np.asarray(cfg.Q), compression="gzip")
                 cfg_grp.create_dataset("R", data=np.asarray(cfg.R), compression="gzip")
@@ -253,8 +281,10 @@ class MPCDataset:
                     cfg_grp.create_dataset("Qf", data=np.asarray(cfg.Qf), compression="gzip")
                 if cfg.x0 is not None:
                     cfg_grp.create_dataset("x0", data=np.asarray(cfg.x0), compression="gzip")
-                if cfg.goal_state is not None:
-                    cfg_grp.create_dataset("goal_state", data=np.asarray(cfg.goal_state), compression="gzip")
+                if cfg.x_ref is not None:
+                    cfg_grp.create_dataset("x_ref", data=np.asarray(cfg.x_ref), compression="gzip")
+                if cfg.u_ref is not None:
+                    cfg_grp.create_dataset("u_ref", data=np.asarray(cfg.u_ref), compression="gzip")
                 if cfg.state_bounds is not None:
                     cfg_grp.create_dataset("state_bounds", data=np.asarray(cfg.state_bounds), compression="gzip")
                 if cfg.terminal_state_bounds is not None:
@@ -298,10 +328,18 @@ class MPCDataset:
     def __len__(self) -> int:
         return len(self.memory_buffer) + len(self._indices)
 
-    def __getitem__(self, idx) -> MPCData:
+    def __getitem__(self, idx):
         """
         Reads from disk on-demand.
+        Supports both integer indexing and slicing.
         """
+        # Handle slice objects
+        if isinstance(idx, slice):
+            start, stop, step = idx.indices(len(self))
+            subset_data = [self[i] for i in range(start, stop, step or 1)]
+            return MPCDataset(data_buffer=subset_data)
+        
+        # Handle integer indexing
         # Check memory buffer first
         if idx < len(self.memory_buffer):
             return self.memory_buffer[idx]
@@ -340,6 +378,8 @@ class MPCDataset:
             row = {
                 "T_sim": int(entry.config.T_sim),
                 "N": int(entry.config.N),
+                "nx" : int(entry.config.nx),
+                "nu" : int(entry.config.nu),
                 "dt": float(entry.config.dt),
             }
             row.update(asdict(entry.meta))
@@ -357,6 +397,8 @@ class MPCDataset:
                 row.update({
                     "T_sim": int(cfg_grp.attrs.get("T_sim", 0)),
                     "N": int(cfg_grp.attrs.get("N", 10)),
+                    "nx": int(cfg_grp.attrs.get("nx", 2)),
+                    "nu": int(cfg_grp.attrs.get("nu", 1)),
                     "dt": float(cfg_grp.attrs.get("dt", 0.1)),
                 })
                 
@@ -380,7 +422,7 @@ class MPCDataset:
         self,
         x_bounds: Optional[np.ndarray] = None,
         u_bounds: Optional[np.ndarray] = None,
-        goal_state: Optional[np.ndarray] = None,
+        x_ref: Optional[np.ndarray] = None,
         tol_constraints: float = 1e-4,
         tol_stability: float = 1e-2
     ) -> pd.DataFrame:
@@ -404,7 +446,7 @@ class MPCDataset:
             # Determine effective constraints (Priority: function arg > dataset entry > None)
             eff_x_bounds = x_bounds if x_bounds is not None else cfg.state_bounds
             eff_u_bounds = u_bounds if u_bounds is not None else cfg.input_bounds
-            eff_goal = goal_state if goal_state is not None else cfg.goal_state
+            eff_goal = x_ref if x_ref is not None else cfg.x_ref
 
             eff_x_terminal_bounds = cfg.terminal_state_bounds
             if eff_x_terminal_bounds is None:

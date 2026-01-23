@@ -4,22 +4,39 @@ import casadi as ca
 from scipy.linalg import expm, solve_discrete_are
 from typing import Tuple
 
+def as_vec(x: np.ndarray, n: int, name: str) -> np.ndarray:
+    x = np.asarray(x, dtype=float).reshape(-1)
+    if x.shape != (n,):
+        raise ValueError(f"{name} must have shape ({n},), got {x.shape}.")
+    return x
+
+def as_mat(M: np.ndarray, shape: tuple[int, int], name: str) -> np.ndarray:
+    M = np.asarray(M, dtype=float)
+    if M.shape != shape:
+        raise ValueError(f"{name} must have shape {shape}, got {M.shape}.")
+    return M
+
+def sym(M: np.ndarray) -> np.ndarray:
+    """Return the symmetric part of matrix M."""
+    return 0.5 * (M + M.T)
+
+def min_pd_eig(M: np.ndarray) -> float:
+    """Compute the minimum eigenvalue of a symmetric matrix M."""
+    M = sym(M)
+    eig = np.linalg.eigvalsh(M)
+    return np.min(eig)
 
 def is_psd(M: np.ndarray, tol: float = 1e-12) -> bool:
     """Check if matrix M is positive semi-definite."""
-    M = 0.5*(M + M.T)
-    eig = np.linalg.eigvalsh(M)
-    return bool(np.min(eig) >= -tol)
+    return bool(min_pd_eig(M) >= -tol)
 
 def is_pd(M: np.ndarray, tol: float = 1e-12) -> bool:
     """Check if matrix M is positive definite."""
-    M = 0.5*(M + M.T)
-    eig = np.linalg.eigvalsh(M)
-    return bool(np.min(eig) > tol)
+    return bool(min_pd_eig(M) > tol)
 
 def sqrt_psd(M: np.ndarray, tol: float = 1e-12) -> np.ndarray:
     """Compute the principal square root of a PSD matrix M."""
-    M = 0.5*(M + M.T)
+    M = sym(M)
     w, V = np.linalg.eigh(M)
     w = np.clip(w, 0.0, None)
     return (V * np.sqrt(w)) @ V.T   # V diag(sqrt(w)) V^T
@@ -61,6 +78,7 @@ def dare_residual(A: np.ndarray, B: np.ndarray, Q: np.ndarray, R: np.ndarray, P:
 
 
 def rk4_step(x, u, f_fun, h):
+    """Runge-Kutta 4th order integration step."""
     k1 = f_fun(x, u)
     k2 = f_fun(x + 0.5*h*k1, u)
     k3 = f_fun(x + 0.5*h*k2, u)
@@ -80,27 +98,21 @@ def discretize_and_linearize_rk4(
 
     Parameters
     ----------
-    x_sym : ca.SX
-        Symbolic state variable.
-    u_sym : ca.SX
-        Symbolic input variable.
+    x_sym, u_sym : ca.SX
+        Symbolic state and input variable.
     f_expl_expr : ca.SX
         Symbolic expression of continuous-time dynamics (x_dot = f_expl_expr).
     dt : float
         Discretization time step.
-    x_lin : np.ndarray
-        State around which to linearize.
-    u_lin : np.ndarray
-        Input around which to linearize.
+    x_lin, u_lin : np.ndarray
+        State and input around which to linearize.
     num_steps : int, optional
         Number of RK4 steps within dt, by default 1.
 
     Returns
     -------
-    Ad : ndarray
-        Discrete-time state matrix.
-    Bd : ndarray
-        Discrete-time input matrix.
+    Ad, Bd : ndarray
+        Discrete-time state and input matrix.
     gd : ndarray
         Discretization offset term.
     """
@@ -130,12 +142,19 @@ def discretize_and_linearize_rk4(
 def lin_c2d_rk4(A: np.ndarray, B: np.ndarray, dt: float, num_steps: int = 1) -> Tuple[np.ndarray, np.ndarray]:
     """Discretize linear system x_dot = A x + B u using RK4 method.
 
+    Parameters
+    ----------
+    A, B : ndarray
+        Continuous-time state and input matrix.
+    dt : float
+        Discretization time step.
+    num_steps : int, optional
+        Number of RK4 steps within dt, by default 1.
+
     Returns
     -------
-    Ad : ndarray
-        Discrete-time state matrix.
-    Bd : ndarray
-        Discrete-time input matrix.
+    Ad, Bd : ndarray
+        Discrete-time state and input matrix.
     """
     n = A.shape[0]
     m = B.shape[1]

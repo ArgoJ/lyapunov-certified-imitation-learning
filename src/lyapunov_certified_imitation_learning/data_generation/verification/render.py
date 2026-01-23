@@ -6,7 +6,7 @@ from .reports import StabilityReport
 
 class VerificationRender(Table):
     def __init__(self, report: StabilityReport):
-        super().__init__(title="Stability Verification")
+        super().__init__(title=report.method + " Report")
         self.add_column("Check")
         self.add_column("Result")
         self.add_column("Details")

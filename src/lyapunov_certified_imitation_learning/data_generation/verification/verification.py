@@ -1,15 +1,21 @@
 import numpy as np
 import casadi as ca
 
-from typing import Dict, Any, Generator, Optional, List
-from dataclasses import dataclass, field
-from acados_template import AcadosOcpSolver
+from typing import Dict, Any, Generator, Optional, List, Tuple
+
+try:
+    from acados_template import AcadosOcpSolver
+except Exception:
+    raise ImportError(
+        "StabilityVerifier requires `acados_template` (acados Python interface). "
+        "Install it and ensure it is importable."
+    )
 
 
 from .reports import *
-from ..utils.package_logger import PackageLogger
-from ..utils.linalg import discretize_and_linearize_rk4
-from ..data_generation.mpc_data import MPCData, MPCDataset
+from ..extractor import MPCConfigExtractor, LinearSystemExtractor
+from ..mpc_data import MPCData, MPCDataset
+from ...utils.package_logger import PackageLogger
 
 
 __logger__ = PackageLogger.get_logger(__name__)
@@ -24,48 +30,39 @@ class StabilityVerifier:
     Lars Grüne, Nonlinear Model Predictive Control (2015)
     """
 
-    def __init__(self, dataset: MPCDataset, solver: AcadosOcpSolver):
+    def __init__(self, dataset: MPCDataset, solver: Optional[AcadosOcpSolver] = None):
         """Create a linear stability verifier over an entire dataset.
 
         Parameters
         ----------
         dataset : MPCDataset
             The dataset containing MPC trajectories and configurations.
-        solver : AcadosOcpSolver
+        solver : AcadosOcpSolver, optional
             The Acados OCP solver instance used for linear stability verification.
         """
         self.dataset = dataset
-        self.solver = solver
-        self.ocp = solver.acados_ocp
         
         # Extract Dimensions and Horizon
-        self.N = self.ocp.solver_options.N_horizon
-        self.nx = self.ocp.model.x.size()[0]
-        self.nu = self.ocp.model.u.size()[0]
-        self.dt = float(self.ocp.solver_options.tf) / float(self.N)
-
-        self.x_star, self.u_star = self._extract_reference()
-        self.A, self.B = self._extract_discretized_dynamics(self.x_star, self.u_star)
-        self.Q, self.R, self.P = self._extract_cost_matrices()
-        
         self._use_recomputed_value: bool = False
-        self._stage_cost_scale: float = self.dt
-        self._terminal_cost_scale: float = 1.0
-        self._ls_cost_prefactor: float = 0.5 # for LINEAR_LS and NONLINEAR_LS cost definition
-        
-        self._extract_linear_ls_cost_structure()
-        
-        # Extract Constraints
-        self.x_bounds = (self.ocp.constraints.lbx, self.ocp.constraints.ubx)
-        self.u_bounds = (self.ocp.constraints.lbu, self.ocp.constraints.ubu)
-        self.term_x_bounds = (self.ocp.constraints.lbx_e, self.ocp.constraints.ubx_e)
 
         # Bindable entry 
         self._active_entry: Optional[MPCData] = None
         self.traj = None
-        self.cfg = None
         self.meta = None
         self.valid = False
+        
+        self.cfg = None
+        self.sys = None
+        self.ocp = None
+        if isinstance(solver, AcadosOcpSolver):
+            self.ocp = solver.acados_ocp
+            self.cfg = MPCConfigExtractor.get_cfg(solver)
+            self.cfg.T_sim = dataset[0].config.T_sim
+            self.sys = LinearSystemExtractor.get_system(solver)
+        else:
+            raise NotImplementedError(
+                "StabilityVerifier currently only supports verification with AcadosOcpSolver instances."
+            )
 
     def __getitem__(self, index: int) -> MPCData:
         return self.dataset[index]
@@ -77,139 +74,51 @@ class StabilityVerifier:
         for entry in self.dataset:
             yield entry
 
-
-    # --- EXTRACTION HELPERS ---
-    def _extract_reference(self) -> tuple[np.ndarray, np.ndarray]:
-        """Best-effort extraction of (x*, u*) from yref/yref_e.
-
-        For the regulation case used throughout Grüne's Part A, one typically has
-        (x*, u*) = (0, 0) after shifting coordinates.
-        """
-        x_star = np.zeros(self.nx)
-        u_star = np.zeros(self.nu)
-
-        cost = self.ocp.cost
-        if hasattr(cost, "yref") and cost.yref is not None:
-            yref = np.asarray(cost.yref).reshape(-1)
-            if yref.size >= (self.nx + self.nu):
-                x_star = yref[: self.nx].copy()
-                u_star = yref[self.nx : self.nx + self.nu].copy()
-
-        if hasattr(cost, "yref_e") and cost.yref_e is not None:
-            yref_e = np.asarray(cost.yref_e).reshape(-1)
-            if yref_e.size >= self.nx:
-                x_star = yref_e[: self.nx].copy()
-
-        return x_star, u_star
-        
-    def _extract_discretized_dynamics(self, x_lin: np.ndarray, u_lin: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Computes the discrete-time  (A, B)."""
-        if self.ocp.solver_options.integrator_type != "ERK" or self.ocp.model.f_expl_expr is None:
-            raise NotImplementedError("Only explicit ODE models are supported in this verifier.")
-
-        if self.ocp.solver_options.sim_method_num_stages is not None and np.any(self.ocp.solver_options.sim_method_num_stages != 4):
-            raise NotImplementedError("Only RK4 integration is supported in this verifier.")
-        
-        if self.ocp.solver_options.sim_method_num_steps is not None and np.any(self.ocp.solver_options.sim_method_num_steps < 1):
-            raise NotImplementedError("Number of integration steps must be at least 1.")
-
-        x = self.ocp.model.x
-        u = self.ocp.model.u
-        f_expr = self.ocp.model.f_expl_expr
-
-        Ad, Bd, _ = discretize_and_linearize_rk4(
-            x, u, f_expr, self.dt, x_lin, u_lin)
-        return Ad, Bd
-
-    def _extract_cost_matrices(self) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
-        """Extracts Q, R, and P from the cost configuration."""
-        if self.ocp.cost.cost_type != 'LINEAR_LS' and self.ocp.cost.cost_type_e != 'LINEAR_LS':
-            raise NotImplementedError("Only LINEAR_LS cost type is supported in this verifier.")
-        
-        # Stage cost
-        W = np.asarray(self.ocp.cost.W)
-        Vx = np.asarray(self.ocp.cost.Vx)
-        Vu = np.asarray(self.ocp.cost.Vu)
-
-        Q = Vx.T @ W @ Vx
-        R = Vu.T @ W @ Vu
-        
-        # Terminal cost
-        P = None
-        if hasattr(self.ocp.cost, 'W_e') and self.ocp.cost.W_e is not None:
-            W_e = np.asarray(self.ocp.cost.W_e)
-            if hasattr(self.ocp.cost, 'Vx_e') and self.ocp.cost.Vx_e is not None:
-                Vx_e = np.asarray(self.ocp.cost.Vx_e)
-                P_candidate = Vx_e.T @ W_e @ Vx_e
-            else:
-                P_candidate = W_e
-
-            if not np.allclose(P_candidate, 0.0, atol=0.0, rtol=0.0):
-                P = P_candidate
-            
-        return Q, R, P
-
-    def _extract_linear_ls_cost_structure(self) -> None:
-        """Extract the exact LINEAR_LS cost structure used by the OCP.
-
-        This is the authoritative definition for the stage and terminal costs:
-            l(x,u) = || Vx x + Vu u - yref ||^2_W
-            Vf(x)  = || Vx_e x - yref_e ||^2_{W_e}
-        """
-        cost = self.ocp.cost
-
-        self.W = np.asarray(cost.W)
-        self.Vx = np.asarray(cost.Vx)
-        self.Vu = np.asarray(cost.Vu)
-        self.yref = np.asarray(cost.yref).reshape(-1)
-
-        self.W_e = None
-        self.Vx_e = None
-        self.yref_e = None
-        if hasattr(cost, "W_e") and cost.W_e is not None:
-            self.W_e = np.asarray(cost.W_e)
-        if hasattr(cost, "Vx_e") and cost.Vx_e is not None:
-            self.Vx_e = np.asarray(cost.Vx_e)
-        if hasattr(cost, "yref_e") and cost.yref_e is not None:
-            self.yref_e = np.asarray(cost.yref_e).reshape(-1)
-
-
     # --- INTERNAL HELPERS ---
     def _bind_entry(self, entry: MPCData) -> bool:
         """Bind internal state to a specific trajectory entry."""
         self._active_entry = entry
 
         self.traj = entry.trajectory
-        self.cfg = entry.config
         self.meta = entry.meta
+        local_cfg = entry.config
+        
+        if self.cfg is None:
+            self.cfg = local_cfg
 
-        cfg_Q = np.asarray(self.cfg.Q)
-        cfg_R = np.asarray(self.cfg.R)
-        cfg_P = np.asarray(self.cfg.Qf) if self.cfg.has_terminal_cost() else None
-
-        if cfg_Q.shape != self.Q.shape or not np.allclose(cfg_Q, self.Q, rtol=0.0, atol=0.0):
+        if local_cfg.dt != self.cfg.dt:
             raise ValueError(
-                "Entry Q does not match solver Q. "
-                "This verifier assumes a single (Q,R) pair for the entire dataset."
+                "Entry dt does not match solver dt. "
+                "This verifier assumes a single dt for the entire dataset."
             )
-        if cfg_R.shape != self.R.shape or not np.allclose(cfg_R, self.R, rtol=0.0, atol=0.0):
+        if local_cfg.N != self.cfg.N:
             raise ValueError(
-                "Entry R does not match solver R. "
-                "This verifier assumes a single (Q,R) pair for the entire dataset."
+                "Entry horizon N does not match solver N. "
+                "This verifier assumes a single horizon N for the entire dataset."
             )
-        if self.P is not None and (cfg_P is None or cfg_P.shape != self.P.shape or not np.allclose(cfg_P, self.P, rtol=0.0, atol=0.0)):
+        if local_cfg.x_ref.shape != self.cfg.x_ref.shape or not np.allclose(local_cfg.x_ref, self.cfg.x_ref, rtol=0.0, atol=0.0):
             raise ValueError(
-                "Entry P does not match solver P. "
-                "This verifier assumes a single terminal cost P for the entire dataset."
+                "Entry x_ref does not match solver x_ref. "
+                "This verifier assumes a single (x_ref, u_ref) pair for the entire dataset."
             )
-
-        # Goal state is for downstream interpretation/metrics; cost uses OCP's yref/yref_e.
-        self.x_goal = self.cfg.goal_state if self.cfg.goal_state is not None else self.x_star
-        if self.cfg.goal_state is not None and (not np.allclose(np.asarray(self.cfg.goal_state).reshape(-1), self.x_star.reshape(-1), atol=1e-10, rtol=0.0)):
+        if local_cfg.u_ref.shape != self.cfg.u_ref.shape or not np.allclose(local_cfg.u_ref, self.cfg.u_ref, rtol=0.0, atol=0.0):
+            raise ValueError(
+                "Entry u_ref does not match solver u_ref. "
+                "This verifier assumes a single (x_ref, u_ref) pair for the entire dataset."
+            )
+        if self.cfg.T_sim != local_cfg.T_sim:
             __logger__.warning(
-                "Entry goal_state differs from OCP reference x*: "
-                "verification uses OCP yref/yref_e for costs; goal_state is used only for interpretation."
+                f"Entry T_sim ({local_cfg.T_sim}) does not match configuration T_sim ({self.cfg.T_sim}). "
+                "Using dataset T_sim for verification."
             )
+            self.cfg.T_sim = local_cfg.T_sim
+            
+        if self.cfg.T_sim > self.traj.length:
+            raise ValueError(
+                "Entry T_sim exceeds trajectory length. T_sim must be <= trajectory length."
+                f"{self.cfg.T_sim} > {self.traj.length}"
+            )
+            
         self.valid = self._validate_data_integrity()
         
         return self.valid
@@ -223,13 +132,20 @@ class StabilityVerifier:
     def _validate_data_integrity(self) -> bool:
         """Check if OCP predictions (solved_states) are available for Lyapunov calculation."""
         self._require_bound_entry()
+        # Empirical verification only requires stored value function and trajectories.
+        if self.traj.cost is None or len(self.traj.cost) == 0:
+            __logger__.warning(
+                f"Entry ID {getattr(self.meta, 'id', 'unknown')} missing stored cost; cannot verify Lyapunov decrease."
+            )
+            return False
+
         if self.traj.solved_states is None or self.traj.solved_inputs is None:
-            __logger__.warning(f"Entry ID {getattr(self.meta, 'id', 'unknown')} missing OCP predictions (solved_states/solved_inputs).")
-            return False
-        
-        if self.cfg.dt != self.dt:
-            __logger__.warning(f"Entry ID {getattr(self.meta, 'id', 'unknown')} has mismatched dt (dataset dt={self.cfg.dt}, verifier dt={self.dt}).")
-            return False
+            __logger__.warning(
+                f"Entry ID {getattr(self.meta, 'id', 'unknown')} missing OCP predictions (solved_states/solved_inputs); "
+                "using stored cost for verification."
+            )
+            self._use_recomputed_value = False
+            return True
 
         self._use_recomputed_value = False
         self._audit_value_function()
@@ -274,21 +190,21 @@ class StabilityVerifier:
         """Raw LINEAR_LS stage cost without any global prefactors."""
         x = np.asarray(x, dtype=float).reshape(-1)
         u = np.asarray(u, dtype=float).reshape(-1)
-        y = self.Vx @ x + self.Vu @ u
-        e = (y - self.yref).reshape(-1)
-        return float(self._ls_cost_prefactor) * float(e.T @ self.W @ e)
+        y = self.ocp.cost.Vx @ x + self.ocp.cost.Vu @ u
+        e = (y - self.ocp.cost.yref).reshape(-1)
+        return 0.5 * float(e.T @ self.ocp.cost.W @ e)
 
     def _terminal_cost(self, x: np.ndarray) -> float:
         """Raw LINEAR_LS terminal cost without any global prefactors."""
-        if self.W_e is None:
+        if self.ocp.cost.W_e is None:
             return 0.0
         x = np.asarray(x, dtype=float).reshape(-1)
 
-        Vx_e = self.Vx_e if self.Vx_e is not None else np.eye(x.size)
-        yref_e = self.yref_e if self.yref_e is not None else np.zeros((Vx_e.shape[0],), dtype=float)
+        Vx_e = self.ocp.cost.Vx_e if self.ocp.cost.Vx_e is not None else np.eye(x.size)
+        yref_e = self.ocp.cost.yref_e if self.ocp.cost.yref_e is not None else np.zeros((Vx_e.shape[0],), dtype=float)
         y_e = Vx_e @ x
         e = (y_e - yref_e).reshape(-1)
-        return float(self._ls_cost_prefactor) * float(e.T @ self.W_e @ e)
+        return 0.5 * float(e.T @ self.ocp.cost.W_e @ e)
     
     def _l_star(self, x: np.ndarray) -> float:
         """Lower bound on l*(x) := min_u l(x,u) via unconstrained minimization.
@@ -298,13 +214,13 @@ class StabilityVerifier:
         """
         x = np.asarray(x, dtype=float).reshape(-1)
 
-        a = (self.Vx @ x - self.yref).reshape(-1)  # y = a + Vu u
-        H = self.Vu.T @ self.W @ self.Vu
+        a = (self.ocp.cost.Vx @ x - self.ocp.cost.yref).reshape(-1)  # y = a + Vu u
+        H = self.ocp.cost.Vu.T @ self.ocp.cost.W @ self.ocp.cost.Vu
         H = 0.5 * (H + H.T)
-        g = (self.Vu.T @ self.W @ a).reshape(-1)
+        g = (self.ocp.cost.Vu.T @ self.ocp.cost.W @ a).reshape(-1)
 
         if H.size == 0:
-            return float(a.T @ self.W @ a)
+            return float(a.T @ self.ocp.cost.W @ a)
 
         try:
             u_star = -np.linalg.solve(H, g)
@@ -321,13 +237,15 @@ class StabilityVerifier:
 
         x_pred = np.asarray(self.traj.solved_states[step_index], dtype=float)
         u_pred = np.asarray(self.traj.solved_inputs[step_index], dtype=float)
-        if x_pred.shape[0] != (self.N + 1) or u_pred.shape[0] != self.N:
+        if x_pred.shape[0] - 1 != u_pred.shape[0]:
             raise ValueError("Predicted trajectory shapes do not match horizon.")
 
+
         total = 0.0
-        for k in range(self.N):
-            total += float(self._stage_cost_scale) * float(self._stage_cost(x_pred[k], u_pred[k]))
-        total += float(self._terminal_cost_scale) * float(self._terminal_cost(x_pred[self.N]))
+        for k in range(self.cfg.N):
+            # Stage cost as in acados with dt scaled
+            total += self.cfg.dt * float(self._stage_cost(x_pred[k], u_pred[k]))
+        total += float(self._terminal_cost(x_pred[self.cfg.N]))
         return float(total)
 
     def _V(self, step_index: int) -> float:
@@ -405,7 +323,7 @@ class StabilityVerifier:
 
             # Stage-cost scaling must match the value-function scaling used in V_N.
             l_unscaled = self._stage_cost(self.traj.states[n], self.traj.inputs[n])
-            l_curr = float(self._stage_cost_scale) * float(l_unscaled)
+            l_curr = self.cfg.dt * float(l_unscaled)
 
             if not np.isfinite(l_curr) or l_curr <= min_cost_threshold:
                 # Near-equilibrium regime: alpha_obs is ill-conditioned, but we still want to
@@ -515,7 +433,7 @@ class StabilityVerifier:
 
             # l*(x) := min_u l(x,u)
             lstar_unscaled = float(self._l_star(x))
-            lstar = float(self._stage_cost_scale) * lstar_unscaled
+            lstar = self.cfg.dt * lstar_unscaled
 
             if (not np.isfinite(lstar)) or (lstar <= min_cost_threshold):
                 __logger__.debug(f"Skipping step {n} due to small stage cost l(x,u)={lstar:.4e} <= tol={min_cost_threshold:.4e}")
@@ -618,56 +536,57 @@ class StabilityVerifier:
 
 
     # --- Certification Interface ---
+    @classmethod
     def verify(
-        self,
+        cls,
+        dataset: MPCDataset,
+        solver: AcadosOcpSolver,
         alpha_required: float = 1e-4,
-        min_cost_threshold: float = 1e-3
+        min_cost_threshold: float = 1e-3,
     ) -> StabilityReport:
-        """Dataset-level certification using the optimal value function as a Lyapunov candidate.
+        """Dataset-level verification using the optimal value function as a Lyapunov candidate.
         
         Parameters
         ----------
+        dataset : MPCDataset
+            The dataset containing MPC trajectories and configurations.
+        solver : AcadosOcpSolver
+            The Acados OCP solver instance used for linear stability verification.
         alpha_required : float
-            Minimum empirical alpha required for certification.
+            Minimum empirical alpha required for verification.
         min_cost_threshold : float
             Minimum stage cost l*(x0) to consider a data point valid for gamma estimation.
 
         Returns
         -------
         StabilityReport
-            `is_stable` is interpreted as "certified".
+            Stability report indicating whether the dataset passes empirical checks.
         """
-        # Empirical tests
-        lyap_report = self.lyapunov_decrease(alpha_required=alpha_required, min_cost_threshold=min_cost_threshold)
-        grune_report = self.grüne_horizon_condition(min_cost_threshold=min_cost_threshold)
+        verifier = StabilityVerifier(dataset, solver)
+        lyap_report = verifier.lyapunov_decrease(alpha_required=alpha_required, min_cost_threshold=min_cost_threshold)
+        grune_report = verifier.grüne_horizon_condition(min_cost_threshold=min_cost_threshold)
 
-        certified = bool(
-            lyap_report.is_stable
-            or (grune_report.applicability and grune_report.is_stable)
-        )
-        
-        
-        if certified:
-            if lyap_report.is_stable:
-                msg = (
-                    f"PASS. Certified by Lyapunov decrease with min_alpha={lyap_report.min_alpha:.3e} "
-                    f"and alpha_required={alpha_required:.3e}.")
-            else:
-                msg = (
-                    f"PASS. Certified by Grüne horizon condition with gamma={grune_report.gamma_estimate:.3e} "
-                    f"and required_horizon={grune_report.required_horizon}.")
+        gruene_pass = bool(grune_report.applicability and grune_report.is_stable)
+        lyap_pass = bool(lyap_report.is_stable)
+
+        if lyap_pass:
+            msg = (
+                f"PASS. Lyapunov decrease observed with min_alpha={lyap_report.min_alpha:.3e} "
+                f"and alpha_required={alpha_required:.3e}.")
+        elif gruene_pass:
+            msg = (
+                f"PASS. Grüne horizon condition estimated with gamma={grune_report.gamma_estimate:.3e} "
+                f"and required_horizon={grune_report.required_horizon}.")
         else:
             msg = (
-                f"FAIL. Not certified: lyapunov='{lyap_report.message}', grune='{grune_report.message}'.")
+                f"FAIL. lyapunov='{lyap_report.message}', grune='{grune_report.message}'.")
 
-        details = {
-            "lyapunov_decrease_report": lyap_report,
-            "grune_report": grune_report
-        }
-    
         return StabilityReport(
-            method=f"Empirical Verification",
-            is_stable=certified,
-            details=details,
-            message=msg)
-    
+            method="Empirical Verification",
+            is_stable=bool(gruene_pass or lyap_pass),
+            details={
+                "lyapunov_decrease_report": lyap_report,
+                "grune_report": grune_report,
+            },
+            message=msg,
+        )
