@@ -18,7 +18,6 @@ dependencies = [
     "tqdm",
     "casadi",
     "h5py",
-    "rich"
 ]
 
 [tool.setuptools.package-dir]
