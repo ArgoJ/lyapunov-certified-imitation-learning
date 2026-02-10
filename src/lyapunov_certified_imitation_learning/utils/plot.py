@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from typing import Callable
 
-from ..data_generation.mpc_data import MPCDataset
+from mpc_datagen.mpc_data import MPCDataset
 from .package_logger import PackageLogger
 
 __logger__ = PackageLogger.get_logger(__name__)
