@@ -39,7 +39,7 @@ def compute_bounds(
     model: nn.Module,
     x_L: torch.Tensor,
     x_U: torch.Tensor,
-    method: str = "CROWN-Optimized",
+    method: str = "IBP+backward",
     device: str = "cpu",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
@@ -50,8 +50,9 @@ def compute_bounds(
     model : nn.Module
     x_L, x_U : Tensor, shape ``(1, dim)`` or ``(dim,)``
     method : str
-        ``'IBP'``, ``'backward'`` (CROWN), or
-        ``'CROWN-Optimized'`` (alpha-CROWN, tighter but slower).
+        ``'IBP'``, ``'IBP+backward'`` (IBP intermediates + CROWN output),
+        ``'backward'`` (CROWN), or
+        ``'CROWN-Optimized'`` (alpha-CROWN, may fail on complex graphs).
     device : str
 
     Returns
@@ -72,7 +73,12 @@ def compute_bounds(
     ptb = PerturbationLpNorm(norm=float("inf"), x_L=x_L, x_U=x_U)
     bounded_x = BoundedTensor(x, ptb)
 
-    lb, ub = lirpa_model.compute_bounds(x=(bounded_x,), method=method)
+    try:
+        lb, ub = lirpa_model.compute_bounds(x=(bounded_x,), method=method)
+    except RuntimeError:
+        # Fall back to plain IBP for graphs with complex bivariate ops
+        logger.debug("Method '%s' failed, falling back to IBP", method)
+        lb, ub = lirpa_model.compute_bounds(x=(bounded_x,), method="IBP")
     return lb, ub
 
 
@@ -88,11 +94,14 @@ class LyapunovVerifier:
     ----------
     device : str
     method : str
-        Bound-propagation method (default ``'CROWN-Optimized'``).
+        Bound-propagation method (default ``'IBP+backward'``).
+        Use ``'IBP+backward'`` for models with bivariate nonlinearities
+        (e.g. sin/cos * state).  ``'CROWN-Optimized'`` can fail on such
+        graphs due to intermediate-bound batching.
     """
 
     def __init__(self, device: str = "cpu",
-                 method: str = "CROWN-Optimized"):
+                 method: str = "IBP+backward"):
         self.device = device
         self.method = method
 

@@ -17,7 +17,7 @@ from docplex.mp.model import Model
 
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
-import auto_LiRPA.operators.nonlinear as NonLinear
+from auto_LiRPA.operators import BoundSin
 
 import math
 import warnings
@@ -51,7 +51,7 @@ UB_CONST_GLOBAL_theta_d = train_diameter
 err_origin = 0.1
 CONST_C = 0.12
 
-BoundSin_fun = NonLinear.BoundSin(None, None, None, None)
+BoundSin_fun = BoundSin(None, None, None, None)
 
 class PolicyNet(nn.Module):
     def __init__(self):
@@ -878,6 +878,10 @@ def pre_train(lyap_model, policy_model, args):
 def train_lyapunov(args):  # noqa: C901
 
     seed_num = args.seed
+
+    if seed_num is None:
+        seed_num = random.randint(1, 10000)
+
     random.seed(seed_num)
     th.manual_seed(seed_num)  
     np.random.seed(seed_num)
