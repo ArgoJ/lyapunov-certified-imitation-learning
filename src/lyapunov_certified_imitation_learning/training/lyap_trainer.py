@@ -10,10 +10,27 @@ from tqdm import tqdm
 
 from .lyapunov_config import LyapunovTrainingConfig
 from ..utils.package_logger import DEFAULT_MODULE_NAME, PackageLogger
-from ..verification.counterexample import find_counter_examples, lyap_diff_calculation
+from ..verification.counterexample import find_counter_examples
 from ..verification.abcrown_wrapper import certify_list_all
 
 __logger__ = PackageLogger.get_logger(__name__)
+
+
+def lyap_diff_calculation(
+    policy_model: nn.Module,
+    lyap_model: nn.Module,
+    dyn_model: nn.Module,
+    state: th.Tensor,
+    reg_clamp_max: float = 5e-4,
+) -> tuple[th.Tensor, th.Tensor]:
+    """Berechnet die Lyapunov-Differenz für den Training Loop."""
+    lyap_value = lyap_model(state)
+    action = policy_model(state)
+    state_next = dyn_model(state, action)
+    lyap_value_next = lyap_model(state_next)
+    lyap_value_diff = lyap_value_next - lyap_value
+    reg = th.norm(state, dim=1, keepdim=True)
+    return lyap_value_diff, th.clamp(reg, max=reg_clamp_max)
 
 
 def train_lyapunov(
@@ -64,54 +81,54 @@ def train_lyapunov(
     tqdm_handler = None
     restored_handlers = []
     tqdm_handler, restored_handlers = PackageLogger.add_tqdm_handler()
+    pbar = tqdm(range(config.outer_epochs), desc="Epochs", unit="epoch")
     try:
-        with tqdm(range(config.outer_epochs), desc="Epochs", unit="epoch") as pbar:
-            for epoch in pbar:
-                running_loss = 0.0
-                for step in range(config.steps_per_epoch):
-                    batch_size = min(x_all.size(0), config.batch_size)
-                    batch_indices = np.random.choice(x_all.size(0), batch_size, replace=False)
-                    x_batch = x_all[batch_indices]
+        for epoch in pbar:
+            running_loss = 0.0
+            for step in range(config.steps_per_epoch):
+                batch_size = min(x_all.size(0), config.batch_size)
+                batch_indices = np.random.choice(x_all.size(0), batch_size, replace=False)
+                x_batch = x_all[batch_indices]
 
-                    dv, reg = lyap_diff_calculation(
+                dv, reg = lyap_diff_calculation(
+                    policy_model,
+                    lyap_model,
+                    dyn_model,
+                    x_batch,
+                    reg_clamp_max=config.reg_clamp_max,
+                )
+                v_val = lyap_model(x_batch)
+                v_0 = lyap_model(th.zeros(1, config.state_dim, device=device))
+
+                loss_stab = F.relu(dv + config.reg_scale * reg).mean()
+                loss_pos = F.relu(
+                    -v_val + config.pos_scale * th.norm(x_batch, dim=1, keepdim=True)
+                ).mean()
+                loss_origin = v_0.pow(2).sum()
+
+                loss = loss_stab + loss_pos + loss_origin
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                running_loss += loss.item()
+                if (step + 1) % config.counterexample_every == 0 or step == 0:
+                    avg_loss = running_loss / (step + 1)
+                    pbar.set_postfix({"loss": f"{avg_loss:.4f}"})
+
+                if step % config.counterexample_every == 0:
+                    new_cex = find_counter_examples(
                         policy_model,
                         lyap_model,
                         dyn_model,
-                        x_batch,
-                        reg_clamp_max=config.reg_clamp_max,
+                        config,
+                        device=device,
                     )
-                    v_val = lyap_model(x_batch)
-                    v_0 = lyap_model(th.zeros(1, config.state_dim, device=device))
-
-                    loss_stab = F.relu(dv + config.reg_scale * reg).mean()
-                    loss_pos = F.relu(
-                        -v_val + config.pos_scale * th.norm(x_batch, dim=1, keepdim=True)
-                    ).mean()
-                    loss_origin = v_0.pow(2).sum()
-
-                    loss = loss_stab + loss_pos + loss_origin
-
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-
-                    running_loss += loss.item()
-                    if (step + 1) % config.counterexample_every == 0 or step == 0:
-                        avg_loss = running_loss / (step + 1)
-                        pbar.set_postfix({"loss": f"{avg_loss:.4f}"})
-
-                    if step % config.counterexample_every == 0:
-                        new_cex = find_counter_examples(
-                            policy_model,
-                            lyap_model,
-                            dyn_model,
-                            config,
-                            device=device,
-                        )
-                        if len(new_cex) > 0:
-                            x_all = th.cat((x_all, new_cex), dim=0)
-                            if x_all.size(0) > config.max_buffer:
-                                x_all = x_all[-config.max_buffer :]
+                    if len(new_cex) > 0:
+                        x_all = th.cat((x_all, new_cex), dim=0)
+                        if x_all.size(0) > config.max_buffer:
+                            x_all = x_all[-config.max_buffer :]
     finally:
         if tqdm_handler:
             PackageLogger.restore_handlers(DEFAULT_MODULE_NAME, tqdm_handler, restored_handlers)
