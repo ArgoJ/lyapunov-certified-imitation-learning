@@ -39,8 +39,9 @@ def main() -> None:
 		state_bounds=(2.0, 2.0),
 		sample_size=1000,
 		batch_size=512,
-		outer_epochs=100,
-		steps_per_epoch=300,
+		outer_epochs=500,
+		steps_per_epoch=10,
+		counterexample_every=10,
 		learning_rate=1e-2,
 		seed=5912354,
 		run_certification=True,
@@ -52,7 +53,7 @@ def main() -> None:
 		dyn_model,
 		config,
 		device=device,
-		output_prefix="results/models/double_integrator_lyap",
+		models_prefix="results/models/double_integrator_lyap",
 		results_path="results/double_integrator_crown_result.txt",
 	)
 

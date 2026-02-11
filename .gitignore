@@ -220,3 +220,5 @@ __marimo__/
 *.hdf5
 
 data/**
+plots/**
+results/**
