@@ -28,7 +28,7 @@ from ..verification.counterexample import find_counterexamples, lyap_diff
 from ..verification.abcrown_wrapper import LyapunovVerifier
 from ..utils.package_logger import PackageLogger
 
-logger = PackageLogger.get_logger(__name__)
+__logger__ = PackageLogger.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants matching the paper
@@ -87,7 +87,7 @@ def pre_train(
     to penalise negative Lyapunov values, and PGD counterexamples
     for the decrease condition.
     """
-    logger.info("Starting pre-training")
+    __logger__.info("Starting pre-training")
     N = 500
     optimizer = torch.optim.Adam(list(lyap_model.parameters()), lr=lr)
 
@@ -125,7 +125,7 @@ def pre_train(
                 policy_model, lyap_model, device, bounds=bound.squeeze(0)
             )
             if len(ce) > 0:
-                logger.debug("Iter %d: %d counterexamples", it, ce.size(0))
+                __logger__.debug("Iter %d: %d counterexamples", it, ce.size(0))
 
             idx = np.random.choice(x_all.size(0), size=min(x_all.size(0), 512))
             x = torch.cat((ce, x_all[idx]), dim=0) if len(ce) else x_all[idx]
@@ -134,7 +134,7 @@ def pre_train(
         if it % 10 == 0 and loss.item() == 0:
             break
 
-    logger.info("Pre-training done (%d iters, loss=%.6f)", it + 1, loss.item())
+    __logger__.info("Pre-training done (%d iters, loss=%.6f)", it + 1, loss.item())
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@ def lyap_train_main(
     ce_diffs : list[float]
         Lyapunov-difference values at the new counterexamples.
     """
-    logger.info("Training round  CONST_C=%.4f  lr=%.6f", const_c, lr)
+    __logger__.info("Training round  CONST_C=%.4f  lr=%.6f", const_c, lr)
     N = 500
     optimizer = torch.optim.Adam(
         list(policy_model.parameters()) + list(lyap_model.parameters()),
@@ -209,7 +209,7 @@ def lyap_train_main(
                 policy_model, lyap_model, device, bounds=bound.squeeze(0)
             )
             if len(ce) > 0:
-                logger.debug("Iter %d: %d counterexamples", it, ce.size(0))
+                __logger__.debug("Iter %d: %d counterexamples", it, ce.size(0))
 
             idx = np.random.choice(x_all.size(0), size=min(x_all.size(0), 512))
             x = torch.cat((ce, x_all[idx]), dim=0) if len(ce) else x_all[idx]
@@ -220,7 +220,7 @@ def lyap_train_main(
         if it % 10 == 0 and loss.item() == 0:
             break
 
-    logger.info("Training done (%d iters, loss=%.6f)", it + 1, loss.item())
+    __logger__.info("Training done (%d iters, loss=%.6f)", it + 1, loss.item())
 
     # --- Certification ---------------------------------------------------
     verifier = LyapunovVerifier(device=device)
@@ -264,7 +264,7 @@ def train_main(
     while not success:
         num_trains += 1
         lr = 0.00625
-        logger.info("=== Round %d  CONST_C=%.4f ===", num_trains, const_c)
+        __logger__.info("=== Round %d  CONST_C=%.4f ===", num_trains, const_c)
 
         (certify_counter_examples, failed_regions,
          success, ce_diffs) = lyap_train_main(
@@ -283,7 +283,7 @@ def train_main(
         # LR-decay retries on the failed sub-regions
         for retry in range(10):
             lr *= 0.9
-            logger.info("  Retry %d/10  lr=%.6f  CONST_C=%.4f",
+            __logger__.info("  Retry %d/10  lr=%.6f  CONST_C=%.4f",
                          retry + 1, lr, const_c)
             (certify_counter_examples, _, success,
              ce_diffs) = lyap_train_main(

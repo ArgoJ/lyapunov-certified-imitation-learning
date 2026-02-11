@@ -29,7 +29,7 @@ from auto_LiRPA.perturbations import PerturbationLpNorm
 
 from ..utils.package_logger import PackageLogger
 
-logger = PackageLogger.get_logger(__name__)
+__logger__ = PackageLogger.get_logger(__name__)
 
 
 # ======================================================================
@@ -77,7 +77,7 @@ def compute_bounds(
         lb, ub = lirpa_model.compute_bounds(x=(bounded_x,), method=method)
     except RuntimeError:
         # Fall back to plain IBP for graphs with complex bivariate ops
-        logger.debug("Method '%s' failed, falling back to IBP", method)
+        __logger__.debug("Method '%s' failed, falling back to IBP", method)
         lb, ub = lirpa_model.compute_bounds(x=(bounded_x,), method="IBP")
     return lb, ub
 
@@ -175,7 +175,7 @@ class LyapunovVerifier:
         # 1. Decrease
         dec_ok, dec_ub = self.verify_decrease(closed_loop_model, x_L, x_U)
         if not dec_ok:
-            logger.debug("Decrease not verified: ub=%.6f", dec_ub)
+            __logger__.debug("Decrease not verified: ub=%.6f", dec_ub)
             return False, dec_ub
 
         # 2. Positivity (skip if region overlaps the origin ball)
@@ -188,7 +188,7 @@ class LyapunovVerifier:
         if not near_origin:
             pos_ok, pos_lb = self.verify_positivity(lyap_model, x_L, x_U)
             if not pos_ok:
-                logger.debug("Positivity not verified: lb=%.6f", pos_lb)
+                __logger__.debug("Positivity not verified: lb=%.6f", pos_lb)
                 return False, pos_lb
 
         return True, dec_ub
@@ -286,10 +286,10 @@ class LyapunovVerifier:
             if not verified:
                 failed_regions.append(element)
                 counterexamples.append(((lb + ub) / 2.0).unsqueeze(0))
-                logger.info("Region %d / %d FAILED", idx, len(certify_list))
+                __logger__.info("Region %d / %d FAILED", idx, len(certify_list))
             else:
                 if (idx + 1) % 50 == 0:
-                    logger.info(
+                    __logger__.info(
                         "Region %d / %d verified", idx + 1, len(certify_list)
                     )
 

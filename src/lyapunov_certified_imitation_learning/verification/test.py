@@ -1,5 +1,6 @@
 import argparse
 import sys
+import inspect
 
 import numpy as np
 import torch as th
@@ -52,6 +53,15 @@ err_origin = 0.1
 CONST_C = 0.12
 
 BoundSin_fun = BoundSin(None, None, None, None)
+
+def bound_relax_sin(lb, ub):
+    bound_sig = inspect.signature(BoundSin_fun.bound_relax_impl)
+    param_count = len(bound_sig.parameters)
+    if param_count == 3:
+        return BoundSin_fun.bound_relax_impl(lb, ub)
+    if param_count == 4:
+        return BoundSin_fun.bound_relax_impl(lb, ub, th.cos)
+    return BoundSin_fun.bound_relax_impl(lb, ub, th.sin, th.cos)
 
 class PolicyNet(nn.Module):
     def __init__(self):
@@ -164,7 +174,7 @@ def FindCounterExamples(policy_model, lyap_model, device):
     return min_state_return1
 
 def BoundCos_fun(LB, UB):
-    lower_slope, lower_bias, upper_slope, upper_bias = BoundSin_fun.bound_relax_impl(LB + 0.5 * th.pi, UB + 0.5 * th.pi)
+    lower_slope, lower_bias, upper_slope, upper_bias = bound_relax_sin(LB + 0.5 * th.pi, UB + 0.5 * th.pi)
     return lower_slope, lower_slope * (0.5 * th.pi) + lower_bias, upper_slope, upper_slope * (0.5 * th.pi) + upper_bias
 
 def weighted_bound(layer, prev_upper, prev_lower):
@@ -325,7 +335,7 @@ def bound_func_sin(lb_x, ub_x, lb_theta, ub_theta): # only applies to [-pi/2, pi
     sintheta_min = np.sin(lb_theta_func)
     sintheta_max = np.sin(ub_theta_func)
     
-    lower_slope_sin, lower_bias_sin, upper_slope_sin, upper_bias_sin = BoundSin_fun.bound_relax_impl(th.FloatTensor([lb_theta_func]),th.FloatTensor([ub_theta_func]))
+    lower_slope_sin, lower_bias_sin, upper_slope_sin, upper_bias_sin = bound_relax_sin(th.FloatTensor([lb_theta_func]),th.FloatTensor([ub_theta_func]))
 
     coef = sp.symbols('coef')
     func1_sp_lb = coef * (lb_x_func * (lower_slope_sin * theta_sp + lower_bias_sin))  + (1 - coef) * (x_sp * sintheta_min)
@@ -554,7 +564,7 @@ def certify(policy_model, lyap_model, element):
     vx_thd_lb_slope_vx, vx_thd_lb_slope_thetad, vx_thd_ub_slope_vx, vx_thd_ub_slope_thetad = bound_func_xy(lb_x_d, ub_x_d, lb_theta_d, ub_theta_d)
     vy_thd_lb_slope_vy, vy_thd_lb_slope_thetad, vy_thd_ub_slope_vy, vy_thd_ub_slope_thetad = bound_func_xy(lb_y_d, ub_y_d, lb_theta_d, ub_theta_d)
 
-    lower_slope_sin, lower_bias_sin, upper_slope_sin, upper_bias_sin = BoundSin_fun.bound_relax_impl(th.FloatTensor([lb_theta]),th.FloatTensor([ub_theta]))
+    lower_slope_sin, lower_bias_sin, upper_slope_sin, upper_bias_sin = bound_relax_sin(th.FloatTensor([lb_theta]),th.FloatTensor([ub_theta]))
     lower_slope_cos, lower_bias_cos, upper_slope_cos, upper_bias_cos = BoundCos_fun(th.FloatTensor([lb_theta]),th.FloatTensor([ub_theta]))
 
     lower_slope_sin = lower_slope_sin.item()

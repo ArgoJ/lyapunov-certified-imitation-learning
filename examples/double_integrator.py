@@ -4,8 +4,8 @@ PVTOL Lyapunov verification example using auto_LiRPA / alpha-beta-CROWN.
 This reimplements the CPLEX-based Lyapunov verification from the paper
 using neural-network bound-propagation methods:
 
-* **auto_LiRPA**   – CROWN / alpha-CROWN for fast (incomplete) bounds.
-* **Domain splitting** – recursive bisection (BaB-style) for complete
+* **auto_LiRPA**   - CROWN / alpha-CROWN for fast (incomplete) bounds.
+* **Domain splitting** - recursive bisection (BaB-style) for complete
   certification.
 
 The PVTOL (Planar Vertical Take-Off and Landing) system has 6-D state::
