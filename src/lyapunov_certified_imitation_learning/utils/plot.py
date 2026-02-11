@@ -200,7 +200,9 @@ def mpc_trajectories(
         )
     
     if html_path is not None:
-        os.makedirs(os.path.dirname(html_path), exist_ok=True)
+        dir_path = os.path.dirname(html_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
         fig.write_html(html_path)
         __logger__.info(f"Trajectories plot saved to {html_path}.")
     else:   
@@ -415,8 +417,96 @@ def lyapunov(
     )
 
     if html_path is not None:
-        os.makedirs(os.path.dirname(html_path), exist_ok=True)
+        dir_path = os.path.dirname(html_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
         fig.write_html(html_path)
         __logger__.info(f"Trajectories plot saved to {html_path}.")
     else:   
+        fig.show()
+
+
+def certified_regions_2d(
+    certified_regions: list[tuple[list[float], list[float]]],
+    uncertified_regions: list[tuple[list[float], list[float]]],
+    state_labels: list[str] | None = None,
+    bounds: list[tuple[float, float]] | None = None,
+    html_path: str | None = None,
+):
+    """Plot certified vs uncertified 2D regions as rectangles.
+
+    Parameters
+    ----------
+    certified_regions : list of (lb, ub)
+        Certified boxes in state space.
+    uncertified_regions : list of (lb, ub)
+        Uncertified boxes in state space.
+    state_labels : list of str, optional
+        Axis labels for the two states. Defaults to ["State 0", "State 1"].
+    bounds : list of tuples, optional
+        ((min_x, max_x), (min_y, max_y)). If None, inferred from regions.
+    html_path : str, optional
+        If provided, saves the plot to the specified HTML file.
+    """
+    if not certified_regions and not uncertified_regions:
+        __logger__.warning("No regions provided for plotting.")
+        return
+
+    if state_labels is None:
+        state_labels = ["State 0", "State 1"]
+
+    all_regions = certified_regions + uncertified_regions
+    if bounds is None:
+        x_min = min(lb[0] for lb, _ in all_regions)
+        x_max = max(ub[0] for _, ub in all_regions)
+        y_min = min(lb[1] for lb, _ in all_regions)
+        y_max = max(ub[1] for _, ub in all_regions)
+        bounds = [(x_min, x_max), (y_min, y_max)]
+
+    fig = go.Figure()
+
+    def add_regions(regions: list[tuple[list[float], list[float]]], color: str, name: str):
+        for lb, ub in regions:
+            fig.add_shape(
+                type="rect",
+                x0=lb[0],
+                y0=lb[1],
+                x1=ub[0],
+                y1=ub[1],
+                line=dict(color=color, width=1),
+                fillcolor=color,
+                opacity=0.3,
+            )
+        # Legend entry
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="markers",
+                marker=dict(size=10, color=color),
+                name=name,
+                showlegend=True,
+            )
+        )
+
+    if certified_regions:
+        add_regions(certified_regions, "#2ca02c", "Certified")
+    if uncertified_regions:
+        add_regions(uncertified_regions, "#d62728", "Uncertified")
+
+    fig.update_layout(
+        title="Certified Regions",
+        xaxis_title=state_labels[0],
+        yaxis_title=state_labels[1],
+        xaxis=dict(range=[bounds[0][0], bounds[0][1]]),
+        yaxis=dict(range=[bounds[1][0], bounds[1][1]], scaleanchor="x", scaleratio=1),
+    )
+
+    if html_path is not None:
+        dir_path = os.path.dirname(html_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+        fig.write_html(html_path)
+        __logger__.info("Certified region plot saved to %s.", html_path)
+    else:
         fig.show()

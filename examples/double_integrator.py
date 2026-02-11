@@ -3,6 +3,11 @@ import torch.nn as nn
 
 from lyapunov_certified_imitation_learning.models import ICNN, MLP
 from lyapunov_certified_imitation_learning.training import train_lyapunov, LyapunovTrainingConfig
+import lyapunov_certified_imitation_learning.utils.plot as lcil_plt
+
+# from lyapunov_certified_imitation_learning.utils.package_logger import PackageLogger
+# import logging
+# PackageLogger.setup(level=logging.DEBUG)
 
 
 class DoubleIntegratorDynamics(nn.Module):
@@ -25,8 +30,8 @@ class DoubleIntegratorDynamics(nn.Module):
 def main() -> None:
 	device = th.device("cpu")
 
-	policy_model = MLP([2, 64, 64, 1], ["tanh", "tanh", "identity"]).to(device)
-	lyap_model = ICNN([2, 64, 64, 1], ["relu", "relu", "identity"]).to(device)
+	policy_model = MLP([2, 16, 16, 1], ["tanh", "tanh", "identity"]).to(device)
+	lyap_model = ICNN([2, 32, 1], ["relu", "identity"]).to(device)
 	dyn_model = DoubleIntegratorDynamics(dt=0.1).to(device)
 
 	config = LyapunovTrainingConfig(
@@ -34,8 +39,8 @@ def main() -> None:
 		state_bounds=(2.0, 2.0),
 		sample_size=1000,
 		batch_size=512,
-		outer_epochs=10,
-		steps_per_epoch=200,
+		outer_epochs=100,
+		steps_per_epoch=300,
 		learning_rate=1e-2,
 		seed=5912354,
 		run_certification=True,
@@ -47,8 +52,15 @@ def main() -> None:
 		dyn_model,
 		config,
 		device=device,
-		output_prefix="double_integrator_lyap",
-		results_path="double_integrator_crown_result.txt",
+		output_prefix="results/models/double_integrator_lyap",
+		results_path="results/double_integrator_crown_result.txt",
+	)
+
+	lcil_plt.certified_regions_2d(
+		results["certified_regions"],
+		results["failed_regions"],
+		state_labels=["x", "v"],
+		html_path="plots/certified_regions.html",
 	)
 
 

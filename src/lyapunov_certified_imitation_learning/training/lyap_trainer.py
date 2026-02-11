@@ -10,27 +10,10 @@ from tqdm import tqdm
 
 from .lyapunov_config import LyapunovTrainingConfig
 from ..utils.package_logger import DEFAULT_MODULE_NAME, PackageLogger
-from ..verification.counterexample import find_counter_examples
+from ..verification.counterexample import find_counter_examples, lyap_diff_calculation
 from ..verification.abcrown_wrapper import certify_list_all
 
 __logger__ = PackageLogger.get_logger(__name__)
-
-
-def lyap_diff_calculation(
-    policy_model: nn.Module,
-    lyap_model: nn.Module,
-    dyn_model: nn.Module,
-    state: th.Tensor,
-    reg_clamp_max: float = 5e-4,
-) -> tuple[th.Tensor, th.Tensor]:
-    """Berechnet die Lyapunov-Differenz für den Training Loop."""
-    lyap_value = lyap_model(state)
-    action = policy_model(state)
-    state_next = dyn_model(state, action)
-    lyap_value_next = lyap_model(state_next)
-    lyap_value_diff = lyap_value_next - lyap_value
-    reg = th.norm(state, dim=1, keepdim=True)
-    return lyap_value_diff, th.clamp(reg, max=reg_clamp_max)
 
 
 def train_lyapunov(
@@ -145,7 +128,7 @@ def train_lyapunov(
     if config.run_certification:
         __logger__.info("Starting Certification...")
         try:
-            cex_list, failed_regions, success = certify_list_all(
+            cex_list, failed_regions, certified_regions, success = certify_list_all(
                 policy_model,
                 lyap_model,
                 dyn_model,
@@ -154,6 +137,7 @@ def train_lyapunov(
             )
             results["counter_examples"] = cex_list
             results["failed_regions"] = failed_regions
+            results["certified_regions"] = certified_regions
             results["success"] = success
             __logger__.info("Certification Success: %s", success)
             __logger__.info("Number of uncertified sub-regions: %d", len(failed_regions))
@@ -177,7 +161,8 @@ def train_lyapunov(
         with open(results_path, "a", encoding="utf-8") as handle:
             handle.write(
                 f"Seed: {seed_value}, Success: {results['success']}, "
-                f"Failed_Regions: {len(results['failed_regions'])}\n"
+                f"Failed Regions: {len(results['failed_regions'])}, "
+                f"Certified Regions: {len(results['certified_regions'])}\n"
             )
 
     return results

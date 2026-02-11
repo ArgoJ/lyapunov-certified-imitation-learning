@@ -19,37 +19,49 @@ def certify_with_crown(
     UB_box: list[float],
     device: th.device = th.device("cpu"),
 ) -> tuple[bool, np.ndarray]:
-    # 1. Definition der Eingabeschranken (Perturbation)
+    __logger__.debug(
+        "CROWN certify call with bounds: lb=%s, ub=%s, device=%s",
+        LB_box,
+        UB_box,
+        device,
+    )
+    # Define input bounds (Perturbation)
     lb = th.tensor(LB_box, device=device, dtype=th.float32).unsqueeze(0)
     ub = th.tensor(UB_box, device=device, dtype=th.float32).unsqueeze(0)
     
-    # Mittelpunkt für die Initialisierung
+    # Center for initialization
     center = (lb + ub) / 2
     
-    # Perturbation definieren (L-infinity Norm / Box Constraints)
+    # Define perturbation (L-infinity Norm / Box Constraints)
     ptb = PerturbationLpNorm(norm=float("inf"), x_L=lb, x_U=ub)
     bounded_input = BoundedTensor(center, ptb)
     
-    # 2. Initialisierung des BoundedModules (nur beim ersten Aufruf nötig, aber hier stateless für Einfachheit)
-    # bound_opts={'relu': 'adaptive'} aktiviert alpha-CROWN Optimierungen für ReLUs
+    # Initialization of the BoundedModule (only needed on first call, but stateless here for simplicity)
+    # bound_opts={'relu': 'adaptive'} enables alpha-CROWN optimizations for ReLUs
     lirpa_model = BoundedModule(verifier_module, center, device=device, verbose=False)
     
-    # 3. Berechnung der Bounds (CROWN Methode)
-    # Wir wollen die OBERE Schranke von V_next - V_curr wissen.
+    # Compute bounds (CROWN method)
+    # We want the UPPER bound of V_next - V_curr.
     with th.no_grad():
-        # method='CROWN' (schnell, lineare Bounds) oder 'alpha-CROWN' (genauer, iterativ)
-        # Für schnelle Iteration nehmen wir CROWN-IBP oder CROWN.
+        # method='CROWN' (fast, linear bounds) or 'alpha-CROWN' (more accurate, iterative)
+        # FFor quick iteration, we use CROWN-IBP or CROWN.
         lb_out, ub_out = lirpa_model.compute_bounds(x=(bounded_input,), method='CROWN')
     
-    # 4. Überprüfung
-    # Die Bedingung ist zertifiziert, wenn die obere Schranke < 0 ist (inkl. Toleranz)
-    # Toleranz entspricht -0.00001 im Originalcode
+    # Verification
+    # The condition is certified if the upper bound < 0 (including tolerance)
+    # Tolerance corresponds to -0.00001 in the original code
     max_violation = ub_out.max().item()
     is_certified = max_violation < -1e-5
+    __logger__.debug(
+        "CROWN bounds result: lb_max=%.6f, ub_max=%.6f, certified=%s",
+        lb_out.max().item(),
+        max_violation,
+        is_certified,
+    )
     
-    # Falls nicht zertifiziert, geben wir einen "Worst-Case" Punkt zurück (Mittelpunkt oder über Gradienten refinebar)
-    # CROWN liefert keine exakten Counter-Examples, sondern garantiert Bounds.
-    # Wir nutzen den Mittelpunkt als Proxy für die Subdivision.
+    # If not certified, return a "worst-case" point (center or refinable via gradients)
+    # CROWN does not provide exact counter-examples, but guarantees bounds.
+    # We use the center as a proxy for subdivision.
     counter_example = center.squeeze(0).cpu().numpy()
     
     return is_certified, counter_example
@@ -61,7 +73,12 @@ def certify_list_all(
     dyn_model: nn.Module,
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),
-) -> tuple[list[th.Tensor], list[tuple[list[float], list[float]]], bool]:
+) -> tuple[
+    list[th.Tensor],
+    list[tuple[list[float], list[float]]],
+    list[tuple[list[float], list[float]]],
+    bool,
+]:
     """Run CROWN certification on a grid of state-space boxes."""
     if config.state_dim != 2:
         raise ValueError("certify_list_all currently supports state_dim == 2.")
@@ -91,15 +108,22 @@ def certify_list_all(
             regions_to_check.append(([theta, theta_d], [theta+step, theta_d+step]))
 
     not_certified_regions = []
+    certified_regions = []
     certify_counter_example = []
     
-    __logger__.info("Start certification with CROWN on %d regions...", len(regions_to_check))
+    __logger__.debug(
+        "Certification config: step=%.6f, origin_exclusion=%.6f, bounds=%s",
+        step,
+        err_origin,
+        config.state_bounds,
+    )
     
     for lb, ub in regions_to_check:
         is_safe, cex = certify_with_crown(verifier, lb, ub, device)
         
         if not is_safe:
-            # If CROWN fails, subdivide (Subdivision / Branching)
+            __logger__.debug("Region not certified, subdividing: lb=%s, ub=%s", lb, ub)
+            # If alpha-CROWN fails, subdivide (Subdivision / Branching)
             # Simple heuristic: split box into 4 sub-boxes
             mid = (np.array(lb) + np.array(ub)) / 2
             sub_regions = [
@@ -115,6 +139,20 @@ def certify_list_all(
                 if not safe_sub:
                     not_certified_regions.append((l_sub, u_sub))
                     certify_counter_example.append(th.FloatTensor(cex_sub))
+                    __logger__.debug(
+                        "Sub-region not certified: lb=%s, ub=%s",
+                        l_sub,
+                        u_sub,
+                    )
+                else:
+                    certified_regions.append((l_sub, u_sub))
+        else:
+            certified_regions.append((lb, ub))
     
     success = len(not_certified_regions) == 0
-    return certify_counter_example, not_certified_regions, success
+    __logger__.info(
+        "Certification done: success=%s, failed_regions=%d",
+        success,
+        len(not_certified_regions),
+    )
+    return certify_counter_example, not_certified_regions, certified_regions, success

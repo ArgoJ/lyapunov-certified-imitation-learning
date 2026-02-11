@@ -2,7 +2,23 @@ import torch as th
 import torch.nn as nn
 
 from ..training.lyapunov_config import LyapunovTrainingConfig
-from ..training.lyap_trainer import lyap_diff_calculation
+
+
+def lyap_diff_calculation(
+    policy_model: nn.Module,
+    lyap_model: nn.Module,
+    dyn_model: nn.Module,
+    state: th.Tensor,
+    reg_clamp_max: float = 5e-4,
+) -> tuple[th.Tensor, th.Tensor]:
+    """Calculate the Lyapunov difference for the training loop."""
+    lyap_value = lyap_model(state)
+    action = policy_model(state)
+    state_next = dyn_model(state, action)
+    lyap_value_next = lyap_model(state_next)
+    lyap_value_diff = lyap_value_next - lyap_value
+    reg = th.norm(state, dim=1, keepdim=True)
+    return lyap_value_diff, th.clamp(reg, max=reg_clamp_max)
 
 
 def find_counter_examples(
