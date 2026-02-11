@@ -1,70 +1,294 @@
+from __future__ import annotations
+
 import numpy as np
 import torch as th
 import torch.nn as nn
 
-# Auto_LiRPA Imports für CROWN
+from dataclasses import dataclass
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
 
-from ..models.lyapunov import ClosedLoopLyapunovVerifier
-from ..training.lyapunov_config import LyapunovTrainingConfig
+from ..models.lyapunov import ClosedLoopLyapunovConditionVerifier
 from ..utils.package_logger import PackageLogger
+from ..training.lyapunov_config import LyapunovTrainingConfig
 
 __logger__ = PackageLogger.get_logger(__name__)
 
 
+@dataclass(frozen=True)
+class RegionCertificationResult:
+    """Result container for a full-region certification pass."""
+
+    success: bool
+    counter_examples: list[th.Tensor]
+    failed_regions: list[tuple[list[float], list[float]]]
+    certified_regions: list[tuple[list[float], list[float]]]
+
+
 def certify_with_crown(
     verifier_module: nn.Module,
-    LB_box: list[float],
-    UB_box: list[float],
+    lb_box: list[float],
+    ub_box: list[float],
+    method: str = "alpha-crown",
+    tolerance: float = 1e-6,
     device: th.device = th.device("cpu"),
-) -> tuple[bool, np.ndarray]:
-    __logger__.debug(
-        "CROWN certify call with bounds: lb=%s, ub=%s, device=%s",
-        LB_box,
-        UB_box,
-        device,
-    )
-    # Define input bounds (Perturbation)
-    lb = th.tensor(LB_box, device=device, dtype=th.float32).unsqueeze(0)
-    ub = th.tensor(UB_box, device=device, dtype=th.float32).unsqueeze(0)
-    
-    # Center for initialization
+) -> tuple[bool, np.ndarray, float]:
+    """Certify that verifier output <= tolerance on a single axis-aligned box."""
+    lb = th.tensor(lb_box, device=device, dtype=th.float32).unsqueeze(0)
+    ub = th.tensor(ub_box, device=device, dtype=th.float32).unsqueeze(0)
     center = (lb + ub) / 2
-    
-    # Define perturbation (L-infinity Norm / Box Constraints)
+
     ptb = PerturbationLpNorm(norm=float("inf"), x_L=lb, x_U=ub)
     bounded_input = BoundedTensor(center, ptb)
-    
-    # Initialization of the BoundedModule (only needed on first call, but stateless here for simplicity)
-    # bound_opts={'relu': 'adaptive'} enables alpha-CROWN optimizations for ReLUs
     lirpa_model = BoundedModule(verifier_module, center, device=device, verbose=False)
-    
-    # Compute bounds (CROWN method)
-    # We want the UPPER bound of V_next - V_curr.
+
     with th.no_grad():
-        # method='CROWN' (fast, linear bounds) or 'alpha-CROWN' (more accurate, iterative)
-        # FFor quick iteration, we use CROWN-IBP or CROWN.
-        lb_out, ub_out = lirpa_model.compute_bounds(x=(bounded_input,), method='CROWN')
-    
-    # Verification
-    # The condition is certified if the upper bound < 0 (including tolerance)
-    # Tolerance corresponds to -0.00001 in the original code
-    max_violation = ub_out.max().item()
-    is_certified = max_violation < -1e-5
-    __logger__.debug(
-        "CROWN bounds result: lb_max=%.6f, ub_max=%.6f, certified=%s",
-        lb_out.max().item(),
-        max_violation,
-        is_certified,
+        _, ub_out = lirpa_model.compute_bounds(x=(bounded_input,), method=method)
+
+    max_upper = ub_out.max().item()
+    is_certified = max_upper <= tolerance
+    counter_example = center.squeeze(0).detach().cpu().numpy()
+    return is_certified, counter_example, max_upper
+
+
+def _build_regions(
+    config: LyapunovTrainingConfig,
+) -> list[tuple[list[float], list[float]]]:
+    if config.state_dim != 2:
+        raise ValueError("certification currently supports state_dim == 2.")
+    if len(config.state_bounds) != config.state_dim:
+        raise ValueError("state_bounds must match state_dim.")
+
+    step = config.cert_step
+    if step <= 0:
+        raise ValueError("cert_step must be positive.")
+
+    train_diameter = max(config.state_bounds)
+    if config.cert_origin_exclusion is None:
+        origin_exclusion = min(train_diameter * 0.01, 0.1)
+    else:
+        origin_exclusion = config.cert_origin_exclusion
+
+    regions: list[tuple[list[float], list[float]]] = []
+    x_bound, y_bound = config.state_bounds[0], config.state_bounds[1]
+    for x in np.arange(-x_bound, x_bound, step):
+        for y in np.arange(-y_bound, y_bound, step):
+            if abs(x) < origin_exclusion and abs(y) < origin_exclusion:
+                continue
+            regions.append(([x, y], [x + step, y + step]))
+    return regions
+
+
+def _certify_regions(
+    verifier: nn.Module,
+    regions: list[tuple[list[float], list[float]]],
+    method: str,
+    tolerance: float,
+    device: th.device,
+    collect_details: bool,
+) -> RegionCertificationResult:
+    failed_regions: list[tuple[list[float], list[float]]] = []
+    certified_regions: list[tuple[list[float], list[float]]] = []
+    counter_examples: list[th.Tensor] = []
+
+    for lb, ub in regions:
+        safe, cex, _ = certify_with_crown(
+            verifier_module=verifier,
+            lb_box=lb,
+            ub_box=ub,
+            method=method,
+            tolerance=tolerance,
+            device=device,
+        )
+        if safe:
+            if collect_details:
+                certified_regions.append((lb, ub))
+            continue
+
+        # One-level subdivision to tighten bounds in hard regions.
+        mid = ((np.array(lb) + np.array(ub)) / 2.0).tolist()
+        sub_regions = [
+            ([lb[0], lb[1]], [mid[0], mid[1]]),
+            ([mid[0], lb[1]], [ub[0], mid[1]]),
+            ([lb[0], mid[1]], [mid[0], ub[1]]),
+            ([mid[0], mid[1]], [ub[0], ub[1]]),
+        ]
+
+        region_failed = False
+        for sub_lb, sub_ub in sub_regions:
+            sub_safe, sub_cex, _ = certify_with_crown(
+                verifier_module=verifier,
+                lb_box=sub_lb,
+                ub_box=sub_ub,
+                method=method,
+                tolerance=tolerance,
+                device=device,
+            )
+            if not sub_safe:
+                region_failed = True
+                if collect_details:
+                    failed_regions.append((sub_lb, sub_ub))
+                    counter_examples.append(th.tensor(sub_cex, dtype=th.float32))
+            elif collect_details:
+                certified_regions.append((sub_lb, sub_ub))
+
+        if region_failed and not collect_details:
+            return RegionCertificationResult(
+                success=False,
+                counter_examples=[],
+                failed_regions=[],
+                certified_regions=[],
+            )
+
+        if not region_failed and collect_details:
+            certified_regions.append((lb, ub))
+
+        if region_failed and collect_details and not counter_examples:
+            counter_examples.append(th.tensor(cex, dtype=th.float32))
+
+    return RegionCertificationResult(
+        success=len(failed_regions) == 0,
+        counter_examples=counter_examples,
+        failed_regions=failed_regions,
+        certified_regions=certified_regions,
     )
-    
-    # If not certified, return a "worst-case" point (center or refinable via gradients)
-    # CROWN does not provide exact counter-examples, but guarantees bounds.
-    # We use the center as a proxy for subdivision.
-    counter_example = center.squeeze(0).cpu().numpy()
-    
-    return is_certified, counter_example
+
+
+def _is_rho_certified(
+    verifier: ClosedLoopLyapunovConditionVerifier,
+    rho: float,
+    regions: list[tuple[list[float], list[float]]],
+    method: str,
+    tolerance: float,
+    device: th.device,
+) -> bool:
+    verifier.set_rho(rho)
+    result = _certify_regions(
+        verifier=verifier,
+        regions=regions,
+        method=method,
+        tolerance=tolerance,
+        device=device,
+        collect_details=False,
+    )
+    return result.success
+
+
+def certify_rho_max(
+    policy_model: nn.Module,
+    lyap_model: nn.Module,
+    dyn_model: nn.Module,
+    config: LyapunovTrainingConfig,
+    rho_estimate: float,
+    device: th.device = th.device("cpu"),
+) -> tuple[float, RegionCertificationResult]:
+    """Find the largest certified rho using scaling and bisection."""
+    bounds = th.tensor(config.state_bounds, dtype=th.float32, device=device)
+    verifier = ClosedLoopLyapunovConditionVerifier(
+        policy_model=policy_model,
+        lyap_model=lyap_model,
+        dyn_model=dyn_model,
+        bounds=bounds,
+        kappa=config.kappa,
+        invariance_weight=config.invariance_weight,
+        rho=max(config.rho_min, rho_estimate),
+    ).to(device)
+    verifier.eval()
+
+    regions = _build_regions(config)
+    method = config.cert_method.strip().lower()
+    tolerance = config.condition_tolerance
+    rho_scale = max(config.cert_rho_scaling, 1.01)
+
+    initial_rho = max(config.rho_min, float(rho_estimate))
+    initial_ok = _is_rho_certified(
+        verifier=verifier,
+        rho=initial_rho,
+        regions=regions,
+        method=method,
+        tolerance=tolerance,
+        device=device,
+    )
+
+    if initial_ok:
+        rho_lo = initial_rho
+        rho_up = initial_rho
+        found_upper_failure = False
+        for _ in range(config.cert_max_scale_steps):
+            trial = rho_up * rho_scale
+            if _is_rho_certified(verifier, trial, regions, method, tolerance, device):
+                rho_lo = trial
+                rho_up = trial
+            else:
+                rho_up = trial
+                found_upper_failure = True
+                break
+        if not found_upper_failure:
+            verifier.set_rho(rho_lo)
+            details = _certify_regions(
+                verifier=verifier,
+                regions=regions,
+                method=method,
+                tolerance=tolerance,
+                device=device,
+                collect_details=True,
+            )
+            return rho_lo, details
+    else:
+        rho_up = initial_rho
+        rho_lo: float | None = None
+        trial = initial_rho
+        for _ in range(config.cert_max_scale_steps):
+            trial = max(config.rho_min, trial / rho_scale)
+            if _is_rho_certified(verifier, trial, regions, method, tolerance, device):
+                rho_lo = trial
+                break
+            rho_up = trial
+            if trial <= config.rho_min:
+                break
+
+        if rho_lo is None:
+            rho_min_ok = _is_rho_certified(
+                verifier=verifier,
+                rho=config.rho_min,
+                regions=regions,
+                method=method,
+                tolerance=tolerance,
+                device=device,
+            )
+            if not rho_min_ok:
+                verifier.set_rho(config.rho_min)
+                details = _certify_regions(
+                    verifier=verifier,
+                    regions=regions,
+                    method=method,
+                    tolerance=tolerance,
+                    device=device,
+                    collect_details=True,
+                )
+                return config.rho_min, details
+            rho_lo = config.rho_min
+            rho_up = max(rho_up, initial_rho)
+
+    for _ in range(config.cert_max_bisection_steps):
+        if rho_up - rho_lo <= config.cert_bisection_tol:
+            break
+        rho_mid = 0.5 * (rho_lo + rho_up)
+        if _is_rho_certified(verifier, rho_mid, regions, method, tolerance, device):
+            rho_lo = rho_mid
+        else:
+            rho_up = rho_mid
+
+    verifier.set_rho(rho_lo)
+    details = _certify_regions(
+        verifier=verifier,
+        regions=regions,
+        method=method,
+        tolerance=tolerance,
+        device=device,
+        collect_details=True,
+    )
+    return rho_lo, details
 
 
 def certify_list_all(
@@ -79,80 +303,24 @@ def certify_list_all(
     list[tuple[list[float], list[float]]],
     bool,
 ]:
-    """Run CROWN certification on a grid of state-space boxes."""
-    if config.state_dim != 2:
-        raise ValueError("certify_list_all currently supports state_dim == 2.")
-    if len(config.state_bounds) != config.state_dim:
-        raise ValueError("state_bounds must match state_dim.")
-
-    # Create Verifier
-    verifier = ClosedLoopLyapunovVerifier(policy_model, lyap_model, dyn_model).to(device)
-    verifier.eval()
-    
-    # Initial Regions
-    regions_to_check = []
-    
-    step = config.cert_step
-    train_diameter = max(config.state_bounds)
-    if config.cert_origin_exclusion is None:
-        err_origin = min(train_diameter * 0.01, 0.1)
-    else:
-        err_origin = config.cert_origin_exclusion
-
-    theta_bound, theta_d_bound = config.state_bounds[0], config.state_bounds[1]
-    for theta in np.arange(-theta_bound, theta_bound, step):
-        for theta_d in np.arange(-theta_d_bound, theta_d_bound, step):
-            # Ignore region around origin
-            if abs(theta) < err_origin and abs(theta_d) < err_origin:
-                continue
-            regions_to_check.append(([theta, theta_d], [theta+step, theta_d+step]))
-
-    not_certified_regions = []
-    certified_regions = []
-    certify_counter_example = []
-    
-    __logger__.debug(
-        "Certification config: step=%.6f, origin_exclusion=%.6f, bounds=%s",
-        step,
-        err_origin,
-        config.state_bounds,
+    """Backward-compatible certification call using rho_min as initial estimate."""
+    rho_max, details = certify_rho_max(
+        policy_model=policy_model,
+        lyap_model=lyap_model,
+        dyn_model=dyn_model,
+        config=config,
+        rho_estimate=config.rho_min,
+        device=device,
     )
-    
-    for lb, ub in regions_to_check:
-        is_safe, cex = certify_with_crown(verifier, lb, ub, device)
-        
-        if not is_safe:
-            __logger__.debug("Region not certified, subdividing: lb=%s, ub=%s", lb, ub)
-            # If alpha-CROWN fails, subdivide (Subdivision / Branching)
-            # Simple heuristic: split box into 4 sub-boxes
-            mid = (np.array(lb) + np.array(ub)) / 2
-            sub_regions = [
-                ([lb[0], lb[1]], [mid[0], mid[1]]),
-                ([mid[0], lb[1]], [ub[0], mid[1]]),
-                ([lb[0], mid[1]], [mid[0], ub[1]]),
-                ([mid[0], mid[1]], [ub[0], ub[1]])
-            ]
-            
-            for l_sub, u_sub in sub_regions:
-                # Recursive or iterative check (here simply flat for demo)
-                safe_sub, cex_sub = certify_with_crown(verifier, l_sub, u_sub, device)
-                if not safe_sub:
-                    not_certified_regions.append((l_sub, u_sub))
-                    certify_counter_example.append(th.FloatTensor(cex_sub))
-                    __logger__.debug(
-                        "Sub-region not certified: lb=%s, ub=%s",
-                        l_sub,
-                        u_sub,
-                    )
-                else:
-                    certified_regions.append((l_sub, u_sub))
-        else:
-            certified_regions.append((lb, ub))
-    
-    success = len(not_certified_regions) == 0
     __logger__.info(
-        "Certification done: success=%s, failed_regions=%d",
-        success,
-        len(not_certified_regions),
+        "Certification done: success=%s, failed_regions=%d, rho_max=%.6f",
+        details.success,
+        len(details.failed_regions),
+        rho_max,
     )
-    return certify_counter_example, not_certified_regions, certified_regions, success
+    return (
+        details.counter_examples,
+        details.failed_regions,
+        details.certified_regions,
+        details.success,
+    )

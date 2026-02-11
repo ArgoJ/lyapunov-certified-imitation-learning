@@ -1,7 +1,7 @@
 import torch as th
 import torch.nn as nn
 
-from lyapunov_certified_imitation_learning.models import ICNN, MLP
+from lyapunov_certified_imitation_learning.models import ICNN, MLP, NeuralLyapunovCandidate
 from lyapunov_certified_imitation_learning.training import train_lyapunov, LyapunovTrainingConfig
 import lyapunov_certified_imitation_learning.utils.plot as lcil_plt
 
@@ -31,7 +31,12 @@ def main() -> None:
 	device = th.device("cpu")
 
 	policy_model = MLP([2, 16, 16, 1], ["tanh", "tanh", "identity"]).to(device)
-	lyap_model = ICNN([2, 32, 1], ["relu", "identity"]).to(device)
+	lyap_feature = ICNN([2, 32, 1], ["relu", "identity"]).to(device)
+	lyap_model = NeuralLyapunovCandidate(
+		feature_net=lyap_feature,
+		state_dim=2,
+		epsilon=1e-3,
+	).to(device)
 	dyn_model = DoubleIntegratorDynamics(dt=0.1).to(device)
 
 	config = LyapunovTrainingConfig(
@@ -44,6 +49,11 @@ def main() -> None:
 		counterexample_every=10,
 		learning_rate=1e-2,
 		seed=5912354,
+		kappa=0.05,
+		invariance_weight=1.0,
+		rho_growth_gamma=1.1,
+		roa_weight=0.1,
+		l1_weight=1e-6,
 		run_certification=True,
 	)
 
@@ -67,5 +77,4 @@ def main() -> None:
 
 if __name__ == "__main__":
 	main()
-
 
