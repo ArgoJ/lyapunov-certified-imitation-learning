@@ -1,50 +1,58 @@
-"""
-Lyapunov network for PVTOL Lyapunov verification.
-
-Architecture from the paper:
-    Linear(6, 32, bias=False) -> ReLU
-    -> Linear(32, 32, bias=False) -> ReLU
-    -> Linear(32, 1, bias=False)
-
-Properties:
-    - V(0) = 0 by construction (no bias + ReLU).
-    - V(x) >= 0 for all x (enforced by training).
-    - auto_LiRPA / alpha-beta-CROWN compatible (only standard layers).
-"""
 import torch
 import torch.nn as nn
 
-STATE_DIM = 6
-HIDDEN_DIM = 32
+from .base_models import ICNN, MLP
 
 
 class LyapunovNet(nn.Module):
-    """
-    Lyapunov candidate V(x).
+    """Lyapunov function approximator using ICNN or MLP.
 
-    Three-layer ReLU network with no biases, so V(0) = 0 automatically.
-    Positivity (V(x) > 0 for x != 0) is enforced during training
-    via auto_LiRPA lower-bound penalties.
+    Parameters
+    ----------
+    layer_dims : list[int]
+        Layer sizes including input and output dimensions.
+    activations : list[str]
+        Activation names for each layer transition.
+    use_icnn : bool
+        Whether to use an ICNN (convex) or a plain MLP.
     """
 
-    def __init__(self, state_dim: int = STATE_DIM, hidden_dim: int = HIDDEN_DIM):
+    def __init__(
+        self,
+        layer_dims: list[int],
+        activations: list[str],
+        use_icnn: bool = True,
+    ):
         super().__init__()
-        self.lyapunov = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim, bias=False),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim, bias=False),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1, bias=False),
-        )
+        if use_icnn:
+            self.net = ICNN(layer_dims, activations)
+        else:
+            self.net = MLP(layer_dims, activations)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Parameters
-        ----------
-        x : Tensor, shape (batch, state_dim)
+        return self.net(x)
 
-        Returns
-        -------
-        V : Tensor, shape (batch, 1)
-        """
-        return self.lyapunov(x)
+
+class ClosedLoopLyapunovVerifier(nn.Module):
+    """
+    Dieses Modul repräsentiert den Graphen, der verifiziert werden soll.
+    Output: V(f(x, pi(x))) - V(x)
+    Ziel: Beweisen, dass der Output < 0 ist (Upper Bound < 0).
+    """
+    def __init__(
+        self, 
+        policy_model: nn.Module, 
+        lyap_model: nn.Module, 
+        dyn_model: nn.Module
+    ):
+        super(ClosedLoopLyapunovVerifier, self).__init__()
+        self.policy = policy_model
+        self.lyap = lyap_model
+        self.dyn = dyn_model
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        v_curr = self.lyap(x)
+        u = self.policy(x)
+        x_next = self.dyn(x, u)
+        v_next = self.lyap(x_next)
+        return v_next - v_curr

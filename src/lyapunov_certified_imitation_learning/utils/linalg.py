@@ -1,9 +1,6 @@
 import numpy as np
 import casadi as ca
 
-from scipy.linalg import expm, solve_discrete_are
-from typing import Tuple
-
 def as_vec(x: np.ndarray, n: int, name: str) -> np.ndarray:
     x = np.asarray(x, dtype=float).reshape(-1)
     if x.shape != (n,):
@@ -93,7 +90,7 @@ def discretize_and_linearize_rk4(
     x_lin: np.ndarray,
     u_lin: np.ndarray,
     num_steps: int = 1,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Discretize and linearize continuous-time dynamics using RK4 method.
 
     Parameters
@@ -139,7 +136,7 @@ def discretize_and_linearize_rk4(
     return Ad, Bd, gd
 
 
-def lin_c2d_rk4(A: np.ndarray, B: np.ndarray, dt: float, num_steps: int = 1) -> Tuple[np.ndarray, np.ndarray]:
+def lin_c2d_rk4(A: np.ndarray, B: np.ndarray, dt: float, num_steps: int = 1) -> tuple[np.ndarray, np.ndarray]:
     """Discretize linear system x_dot = A x + B u using RK4 method.
 
     Parameters

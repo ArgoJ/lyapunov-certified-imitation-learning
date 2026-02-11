@@ -1,122 +1,58 @@
-"""
-PVTOL Lyapunov verification example using auto_LiRPA / alpha-beta-CROWN.
+import torch as th
+import torch.nn as nn
 
-This reimplements the CPLEX-based Lyapunov verification from the paper
-using neural-network bound-propagation methods:
-
-* **auto_LiRPA**   - CROWN / alpha-CROWN for fast (incomplete) bounds.
-* **Domain splitting** - recursive bisection (BaB-style) for complete
-  certification.
-
-The PVTOL (Planar Vertical Take-Off and Landing) system has 6-D state::
-
-    [x, y, theta, x_dot, y_dot, theta_dot]
-
-and a pre-computed LQR controller with 2-D output (thrust biases).
-
-Usage::
-
-    python examples/double_integrator.py --seed 42 --device cpu
-"""
-import argparse
-import random
-import time
-
-import numpy as np
-import torch
-
-from lyapunov_certified_imitation_learning.models.policy import PolicyNet
-from lyapunov_certified_imitation_learning.models.lyapunov import LyapunovNet
-from lyapunov_certified_imitation_learning.models.dynamics import PVTOLClosedLoop
-from lyapunov_certified_imitation_learning.training.lyap_trainer import (
-    pre_train,
-    train_main,
-    build_certify_list,
-)
-from lyapunov_certified_imitation_learning.verification.abcrown_wrapper import (
-    LyapunovVerifier,
-)
+from lyapunov_certified_imitation_learning.models import ICNN, MLP
+from lyapunov_certified_imitation_learning.training import train_lyapunov, LyapunovTrainingConfig
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="PVTOL Lyapunov verification with alpha-beta-CROWN"
-    )
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--lr", type=float, default=0.00625)
-    args = parser.parse_args()
+class DoubleIntegratorDynamics(nn.Module):
+	"""Discrete-time double integrator dynamics."""
 
-    # --- reproducibility ------------------------------------------------
-    random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+	def __init__(self, dt: float = 0.1):
+		super().__init__()
+		self.dt = dt
 
-    print(f"Seed: {args.seed}  |  Device: {args.device}")
+	def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+		if u.ndim == 1:
+			u = u.unsqueeze(1)
+		x_pos = x[:, 0:1]
+		x_vel = x[:, 1:2]
+		x_next_pos = x_pos + self.dt * x_vel
+		x_next_vel = x_vel + self.dt * u
+		return th.cat([x_next_pos, x_next_vel], dim=1)
 
-    # --- models ---------------------------------------------------------
-    policy_model = PolicyNet().to(args.device)
-    lyap_model = LyapunovNet().to(args.device)
-    closed_loop = PVTOLClosedLoop(policy_model, lyap_model).to(args.device)
 
-    # --- pre-train ------------------------------------------------------
-    t0 = time.time()
-    pre_train(lyap_model, policy_model, args.device)
+def main() -> None:
+	device = th.device("cpu")
 
-    # --- certification grid (512 sub-regions, matching the paper) -------
-    certify_list = build_certify_list()
-    print(f"Certifying over {len(certify_list)} sub-regions")
+	policy_model = MLP([2, 64, 64, 1], ["tanh", "tanh", "identity"]).to(device)
+	lyap_model = ICNN([2, 64, 64, 1], ["relu", "relu", "identity"]).to(device)
+	dyn_model = DoubleIntegratorDynamics(dt=0.1).to(device)
 
-    # --- main training + certification loop -----------------------------
-    certify_counter_examples: list[torch.Tensor] = []
-    num_trains = train_main(
-        policy_model,
-        lyap_model,
-        closed_loop,
-        certify_list,
-        certify_counter_examples,
-        args.device,
-    )
+	config = LyapunovTrainingConfig(
+		state_dim=2,
+		state_bounds=(2.0, 2.0),
+		sample_size=1000,
+		batch_size=512,
+		outer_epochs=10,
+		steps_per_epoch=200,
+		learning_rate=1e-2,
+		seed=5912354,
+		run_certification=True,
+	)
 
-    total_time = time.time() - t0
-    print(f"\nTraining complete!")
-    print(f"  Rounds : {num_trains}")
-    print(f"  Time   : {total_time:.1f}s")
-
-    # --- save models ----------------------------------------------------
-    torch.save(
-        {"model_state_dict": lyap_model.state_dict()},
-        f"pvtol_lyapunov_seed{args.seed}.pt",
-    )
-    torch.save(
-        {"model_state_dict": policy_model.state_dict()},
-        f"pvtol_policy_seed{args.seed}.pt",
-    )
-    print("Models saved.")
-
-    # --- final demonstration verification -------------------------------
-    print("\n--- Final Verification (sample regions) ---")
-    verifier = LyapunovVerifier(device=args.device)
-
-    for i, element in enumerate(certify_list[:5]):
-        lb = torch.tensor(
-            [element[0], element[2], element[4],
-             element[6], element[8], element[10]],
-            dtype=torch.float32,
-        )
-        ub = torch.tensor(
-            [element[1], element[3], element[5],
-             element[7], element[9], element[11]],
-            dtype=torch.float32,
-        )
-
-        verified, ub_val = verifier.verify_decrease(closed_loop, lb, ub)
-        tag = "VERIFIED" if verified else f"FAILED (ub={ub_val:.6f})"
-        print(f"  Region {i}: {tag}")
+	results = train_lyapunov(
+		policy_model,
+		lyap_model,
+		dyn_model,
+		config,
+		device=device,
+		output_prefix="double_integrator_lyap",
+		results_path="double_integrator_crown_result.txt",
+	)
 
 
 if __name__ == "__main__":
-    main()
+	main()
+
 

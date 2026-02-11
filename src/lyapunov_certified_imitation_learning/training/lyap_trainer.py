@@ -1,307 +1,166 @@
-"""
-Lyapunov training loop with counterexample augmentation.
-
-Matches the paper's pipeline:
-
-1. **Pre-train** the Lyapunov network using auto_LiRPA positivity bounds
-   plus PGD-found counterexamples for the decrease condition.
-2. **Main training** alternates gradient updates with formal certification
-   (via ``LyapunovVerifier``).  Failed regions produce counterexamples
-   that are fed back into the next training round.
-3. **Outer loop** with learning-rate decay and re-certification until
-   all sub-regions are verified.
-"""
-from __future__ import annotations
-
+import logging
 import time
-from typing import Sequence
+from typing import Any
 
 import numpy as np
-import torch
+import torch as th
+import torch.nn as nn
 import torch.nn.functional as F
+from tqdm import tqdm
 
-from auto_LiRPA import BoundedModule, BoundedTensor
-from auto_LiRPA.perturbations import PerturbationLpNorm
-
-from ..models.dynamics import STATE_DIM
-from ..verification.counterexample import find_counterexamples, lyap_diff
-from ..verification.abcrown_wrapper import LyapunovVerifier
-from ..utils.package_logger import PackageLogger
+from .lyapunov_config import LyapunovTrainingConfig
+from ..utils.package_logger import DEFAULT_MODULE_NAME, PackageLogger
+from ..verification.counterexample import find_counter_examples, lyap_diff_calculation
+from ..verification.abcrown_wrapper import certify_list_all
 
 __logger__ = PackageLogger.get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants matching the paper
-# ---------------------------------------------------------------------------
-TRAIN_DIAMETER = 1.0
-CONST_C_DEFAULT = 0.12
 
+def train_lyapunov(
+    policy_model: nn.Module,
+    lyap_model: nn.Module,
+    dyn_model: nn.Module,
+    config: LyapunovTrainingConfig,
+    device: th.device = th.device("cpu"),
+    output_prefix: str = "lyap_crown",
+    results_path: str = "lyap_crown_result.txt",
+) -> dict[str, Any]:
+    """Train a Lyapunov network and optionally certify it.
 
-# ---------------------------------------------------------------------------
-# Build the grid of verification sub-regions
-# ---------------------------------------------------------------------------
-def build_certify_list(train_diameter: float = TRAIN_DIAMETER) -> list[list[float]]:
+    Parameters
+    ----------
+    policy_model : nn.Module
+        Policy network mapping state to action.
+    lyap_model : nn.Module
+        Lyapunov function approximator.
+    dyn_model : nn.Module
+        Dynamics model mapping (state, action) to next state.
+    config : LyapunovTrainingConfig
+        Training and certification configuration.
+    device : th.device
+        Torch device.
+    output_prefix : str
+        Prefix for checkpoint filename.
+    results_path : str
+        Path to append certification results.
     """
-    Build the verification sub-regions matching the paper's grid.
+    if len(config.state_bounds) != config.state_dim:
+        raise ValueError("state_bounds must match state_dim.")
 
-    Returns a list of 512 elements, each a 12-element list::
+    if config.seed is not None:
+        th.manual_seed(config.seed)
+        np.random.seed(config.seed)
 
-        [lb_x, ub_x, lb_y, ub_y, lb_theta, ub_theta,
-         lb_xd, ub_xd, lb_yd, ub_yd, lb_thetad, ub_thetad]
-    """
-    split_vel = [-1.0, -0.5, 0.0, 0.5, 1.0]
-    split_theta = [-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0]
-
-    certify_list: list[list[float]] = []
-    d = train_diameter
-    for ii in range(len(split_theta) - 1):
-        for jj in range(len(split_vel) - 1):
-            for kk in range(len(split_vel) - 1):
-                for ll in range(len(split_vel) - 1):
-                    certify_list.append([
-                        -d, d,                                 # x
-                        -d, d,                                 # y
-                        split_theta[ii], split_theta[ii + 1],  # theta
-                        split_vel[jj],   split_vel[jj + 1],   # x_dot
-                        split_vel[kk],   split_vel[kk + 1],   # y_dot
-                        split_vel[ll],   split_vel[ll + 1],    # theta_dot
-                    ])
-    return certify_list
-
-
-# ---------------------------------------------------------------------------
-# Pre-training
-# ---------------------------------------------------------------------------
-def pre_train(
-    lyap_model: torch.nn.Module,
-    policy_model: torch.nn.Module,
-    device: str,
-    max_iters: int = 1000,
-    lr: float = 0.00625,
-    const_c: float = CONST_C_DEFAULT,
-) -> None:
-    """
-    Pre-train the Lyapunov network (policy weights are frozen).
-
-    Uses auto_LiRPA CROWN lower bound on V(x) over the full domain
-    to penalise negative Lyapunov values, and PGD counterexamples
-    for the decrease condition.
-    """
-    __logger__.info("Starting pre-training")
-    N = 500
-    optimizer = torch.optim.Adam(list(lyap_model.parameters()), lr=lr)
-
-    bound = torch.tensor(
-        [[TRAIN_DIAMETER] * STATE_DIM], dtype=torch.float32
-    ).to(device)
-
-    x = (torch.zeros(N, STATE_DIM).uniform_(-1, 1) * bound.squeeze(0)).to(device)
-    x_all = x.clone()
-    x_0 = torch.zeros([1, STATE_DIM]).to(device)
-
-    for it in range(max_iters):
-        # --- auto_LiRPA lower bound on V --------------------------------
-        model_bound = BoundedModule(lyap_model, x_0)
-        ptb = PerturbationLpNorm(norm=np.inf, x_L=-bound, x_U=bound)
-        state_range = BoundedTensor(x_0, ptb)
-        lyap_lb, _ = model_bound.compute_bounds(
-            x=(state_range,), method="backward"
-        )
-
-        # --- sample-based decrease --------------------------------------
-        diff, _ = lyap_diff(policy_model, lyap_model, x)
-
-        loss = (
-            F.relu(-lyap_lb) + 1.2 * F.relu(diff + const_c)
-        ).mean()
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        # --- periodic PGD counter-example search -------------------------
-        if it % 10 == 0:
-            ce = find_counterexamples(
-                policy_model, lyap_model, device, bounds=bound.squeeze(0)
-            )
-            if len(ce) > 0:
-                __logger__.debug("Iter %d: %d counterexamples", it, ce.size(0))
-
-            idx = np.random.choice(x_all.size(0), size=min(x_all.size(0), 512))
-            x = torch.cat((ce, x_all[idx]), dim=0) if len(ce) else x_all[idx]
-            x_all = torch.cat((ce, x_all), dim=0) if len(ce) else x_all
-
-        if it % 10 == 0 and loss.item() == 0:
-            break
-
-    __logger__.info("Pre-training done (%d iters, loss=%.6f)", it + 1, loss.item())
-
-
-# ---------------------------------------------------------------------------
-# Main Lyapunov training iteration
-# ---------------------------------------------------------------------------
-def lyap_train_main(
-    policy_model: torch.nn.Module,
-    lyap_model: torch.nn.Module,
-    closed_loop_model: torch.nn.Module,
-    certify_counter_examples: list[torch.Tensor],
-    certify_list: Sequence[list[float]],
-    lr: float,
-    device: str,
-    const_c: float = CONST_C_DEFAULT,
-    max_iters: int = 1000,
-) -> tuple[list[torch.Tensor], list, bool, list[float]]:
-    """
-    One round of Lyapunov training + certification.
-
-    Returns
-    -------
-    certify_counter_examples : list[Tensor]
-        Updated list (may have new entries).
-    failed_regions : list[list[float]]
-        Sub-regions that failed certification.
-    all_verified : bool
-    ce_diffs : list[float]
-        Lyapunov-difference values at the new counterexamples.
-    """
-    __logger__.info("Training round  CONST_C=%.4f  lr=%.6f", const_c, lr)
-    N = 500
-    optimizer = torch.optim.Adam(
+    optimizer = th.optim.Adam(
         list(policy_model.parameters()) + list(lyap_model.parameters()),
-        lr=lr,
+        lr=config.learning_rate,
     )
 
-    bound = torch.tensor(
-        [[TRAIN_DIAMETER] * STATE_DIM], dtype=torch.float32
-    ).to(device)
+    bounds = th.tensor(config.state_bounds, device=device)
+    x_all = th.zeros(config.sample_size, config.state_dim).uniform_(-1, 1).to(device)
+    x_all = x_all * bounds
 
-    x = (torch.zeros(N, STATE_DIM).uniform_(-1, 1) * bound.squeeze(0)).to(device)
-    if certify_counter_examples:
-        ce_t = torch.cat(certify_counter_examples, dim=0).to(device)
-        x = torch.cat((x, ce_t), dim=0)
+    start_time = time.time()
+    tqdm_handler = None
+    restored_handlers = []
+    tqdm_handler, restored_handlers = PackageLogger.add_tqdm_handler()
+    try:
+        with tqdm(range(config.outer_epochs), desc="Epochs", unit="epoch") as pbar:
+            for epoch in pbar:
+                running_loss = 0.0
+                for step in range(config.steps_per_epoch):
+                    batch_size = min(x_all.size(0), config.batch_size)
+                    batch_indices = np.random.choice(x_all.size(0), batch_size, replace=False)
+                    x_batch = x_all[batch_indices]
+
+                    dv, reg = lyap_diff_calculation(
+                        policy_model,
+                        lyap_model,
+                        dyn_model,
+                        x_batch,
+                        reg_clamp_max=config.reg_clamp_max,
+                    )
+                    v_val = lyap_model(x_batch)
+                    v_0 = lyap_model(th.zeros(1, config.state_dim, device=device))
+
+                    loss_stab = F.relu(dv + config.reg_scale * reg).mean()
+                    loss_pos = F.relu(
+                        -v_val + config.pos_scale * th.norm(x_batch, dim=1, keepdim=True)
+                    ).mean()
+                    loss_origin = v_0.pow(2).sum()
+
+                    loss = loss_stab + loss_pos + loss_origin
+
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+
+                    running_loss += loss.item()
+                    if (step + 1) % config.counterexample_every == 0 or step == 0:
+                        avg_loss = running_loss / (step + 1)
+                        pbar.set_postfix({"loss": f"{avg_loss:.4f}"})
+
+                    if step % config.counterexample_every == 0:
+                        new_cex = find_counter_examples(
+                            policy_model,
+                            lyap_model,
+                            dyn_model,
+                            config,
+                            device=device,
+                        )
+                        if len(new_cex) > 0:
+                            x_all = th.cat((x_all, new_cex), dim=0)
+                            if x_all.size(0) > config.max_buffer:
+                                x_all = x_all[-config.max_buffer :]
+    finally:
+        if tqdm_handler:
+            PackageLogger.restore_handlers(DEFAULT_MODULE_NAME, tqdm_handler, restored_handlers)
+
+    train_time = time.time() - start_time
+    __logger__.info("Training finished in %.2fs", train_time)
+
+    results: dict[str, Any] = {
+        "counter_examples": [],
+        "failed_regions": [],
+        "success": None,
+    }
+
+    if config.run_certification:
+        __logger__.info("Starting Certification...")
+        try:
+            cex_list, failed_regions, success = certify_list_all(
+                policy_model,
+                lyap_model,
+                dyn_model,
+                config,
+                device=device,
+            )
+            results["counter_examples"] = cex_list
+            results["failed_regions"] = failed_regions
+            results["success"] = success
+            __logger__.info("Certification Success: %s", success)
+            __logger__.info("Number of uncertified sub-regions: %d", len(failed_regions))
+        except Exception as exc:
+            __logger__.warning("Certification failed: %s", exc)
     else:
-        ce_t = None
+        __logger__.info("Certification skipped by config.")
 
-    x_all = x.clone()
-    x_0 = torch.zeros([1, STATE_DIM]).to(device)
-
-    for it in range(max_iters):
-        # Lower bound on V via CROWN
-        model_bound = BoundedModule(lyap_model, x_0)
-        ptb = PerturbationLpNorm(norm=np.inf, x_L=-bound, x_U=bound)
-        state_range = BoundedTensor(x_0, ptb)
-        lyap_lb, _ = model_bound.compute_bounds(
-            x=(state_range,), method="backward"
-        )
-
-        diff, _ = lyap_diff(policy_model, lyap_model, x)
-        loss = F.relu(-lyap_lb).mean() + 1.2 * F.relu(diff + const_c).mean()
-
-        optimizer.zero_grad()
-        loss.backward()
-        # Gradient clipping on policy (matching the paper)
-        for param in policy_model.policy.parameters():
-            param.grad.data.clamp_(-1, 1)
-        optimizer.step()
-
-        if it % 10 == 0:
-            ce = find_counterexamples(
-                policy_model, lyap_model, device, bounds=bound.squeeze(0)
-            )
-            if len(ce) > 0:
-                __logger__.debug("Iter %d: %d counterexamples", it, ce.size(0))
-
-            idx = np.random.choice(x_all.size(0), size=min(x_all.size(0), 512))
-            x = torch.cat((ce, x_all[idx]), dim=0) if len(ce) else x_all[idx]
-            if ce_t is not None:
-                x = torch.cat((x, ce_t), dim=0)
-            x_all = torch.cat((ce, x_all), dim=0) if len(ce) else x_all
-
-        if it % 10 == 0 and loss.item() == 0:
-            break
-
-    __logger__.info("Training done (%d iters, loss=%.6f)", it + 1, loss.item())
-
-    # --- Certification ---------------------------------------------------
-    verifier = LyapunovVerifier(device=device)
-    all_verified, failed_regions, new_ce = verifier.certify_all_regions(
-        closed_loop_model, lyap_model, certify_list
+    seed_suffix = f"_{config.seed}" if config.seed is not None else ""
+    th.save(
+        {"model_state_dict": lyap_model.state_dict()},
+        f"{output_prefix}{seed_suffix}.pt",
     )
 
-    ce_diffs: list[float] = []
-    if len(new_ce) > 0:
-        with torch.no_grad():
-            for i in range(new_ce.size(0)):
-                d, _ = lyap_diff(
-                    policy_model, lyap_model, new_ce[i : i + 1].to(device)
-                )
-                ce_diffs.append(d.item())
-                certify_counter_examples.append(new_ce[i : i + 1])
+    if results["success"] is not None:
+        status_msg = "rigorously certified" if results["success"] else "not certified"
+        __logger__.info("Model is %s.", status_msg)
 
-    return certify_counter_examples, failed_regions, all_verified, ce_diffs
-
-
-# ---------------------------------------------------------------------------
-# Outer training loop (with LR decay + re-certification)
-# ---------------------------------------------------------------------------
-def train_main(
-    policy_model: torch.nn.Module,
-    lyap_model: torch.nn.Module,
-    closed_loop_model: torch.nn.Module,
-    certify_list: Sequence[list[float]],
-    certify_counter_examples: list[torch.Tensor],
-    device: str,
-    const_c: float = CONST_C_DEFAULT,
-) -> int:
-    """
-    Outer loop: train, certify, decay LR, repeat until success.
-
-    Returns the number of training rounds needed.
-    """
-    num_trains = 0
-    success = False
-
-    while not success:
-        num_trains += 1
-        lr = 0.00625
-        __logger__.info("=== Round %d  CONST_C=%.4f ===", num_trains, const_c)
-
-        (certify_counter_examples, failed_regions,
-         success, ce_diffs) = lyap_train_main(
-            policy_model, lyap_model, closed_loop_model,
-            certify_counter_examples, certify_list, lr, device, const_c,
-        )
-
-        if ce_diffs:
-            const_c = max(0.12, -min(ce_diffs) + 0.01)
-        else:
-            const_c = 0.12
-
-        if success:
-            return num_trains
-
-        # LR-decay retries on the failed sub-regions
-        for retry in range(10):
-            lr *= 0.9
-            __logger__.info("  Retry %d/10  lr=%.6f  CONST_C=%.4f",
-                         retry + 1, lr, const_c)
-            (certify_counter_examples, _, success,
-             ce_diffs) = lyap_train_main(
-                policy_model, lyap_model, closed_loop_model,
-                certify_counter_examples, failed_regions, lr, device, const_c,
-            )
-            if ce_diffs:
-                const_c = max(0.12, -min(ce_diffs) + 0.01)
-            else:
-                const_c = 0.12
-            if success:
-                break
-
-        if success:
-            # Re-certify on the *full* region list
-            verifier = LyapunovVerifier(device=device)
-            success, _, _ = verifier.certify_all_regions(
-                closed_loop_model, lyap_model, certify_list
+    if results_path and results["success"] is not None:
+        seed_value = config.seed if config.seed is not None else -1
+        with open(results_path, "a", encoding="utf-8") as handle:
+            handle.write(
+                f"Seed: {seed_value}, Success: {results['success']}, "
+                f"Failed_Regions: {len(results['failed_regions'])}\n"
             )
 
-    return num_trains
+    return results

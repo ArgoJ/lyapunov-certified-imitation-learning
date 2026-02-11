@@ -50,6 +50,7 @@ class PackageLogger:
         """
         logger = logging.getLogger(package_name)
         logger.setLevel(level)
+        logger.propagate = False
         
         # Remove existing handlers to ensure fresh configuration
         if logger.handlers:
