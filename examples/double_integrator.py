@@ -2,7 +2,8 @@ import torch as th
 import torch.nn as nn
 
 from lyapunov_certified_imitation_learning.models import ICNN, MLP, NeuralLyapunovCandidate
-from lyapunov_certified_imitation_learning.training import train_lyapunov, LyapunovTrainingConfig
+from lyapunov_certified_imitation_learning.training import LyapunovTrainingConfig, train_lyapunov
+from lyapunov_certified_imitation_learning.verification import LyapunovCertificationConfig, certify_lyapunov
 import lyapunov_certified_imitation_learning.utils.plot as lcil_plt
 
 # from lyapunov_certified_imitation_learning.utils.package_logger import PackageLogger
@@ -39,13 +40,13 @@ def main() -> None:
 	).to(device)
 	dyn_model = DoubleIntegratorDynamics(dt=0.1).to(device)
 
-	config = LyapunovTrainingConfig(
+	training_config = LyapunovTrainingConfig(
 		state_dim=2,
 		state_bounds=(2.0, 2.0),
 		sample_size=1000,
 		batch_size=512,
-		outer_epochs=500,
-		steps_per_epoch=10,
+		outer_epochs=10,
+		steps_per_epoch=5,
 		counterexample_every=10,
 		learning_rate=1e-2,
 		seed=5912354,
@@ -54,22 +55,40 @@ def main() -> None:
 		rho_growth_gamma=1.1,
 		roa_weight=0.1,
 		l1_weight=1e-6,
-		run_certification=True,
 	)
 
-	results = train_lyapunov(
+	certification_config = LyapunovCertificationConfig.from_training_config(
+		training_config,
+		cert_step=1.0,
+		cert_origin_exclusion=None,
+		cert_rho_scaling=1.2,
+		cert_bisection_tol=1e-3,
+		cert_max_scale_steps=20,
+		cert_max_bisection_steps=40,
+		cert_method="crown",
+	)
+
+	train_results = train_lyapunov(
 		policy_model,
 		lyap_model,
 		dyn_model,
-		config,
+		training_config,
 		device=device,
 		models_prefix="results/models/double_integrator_lyap",
-		results_path="results/double_integrator_crown_result.txt",
+	)
+
+	_, cert_results = certify_lyapunov(
+		policy_model,
+		lyap_model,
+		dyn_model,
+		certification_config,
+		rho_estimate=train_results.rho_estimate,
+		device=device,
 	)
 
 	lcil_plt.certified_regions_2d(
-		results["certified_regions"],
-		results["failed_regions"],
+		cert_results.certified_regions,
+		cert_results.failed_regions,
 		state_labels=["x", "v"],
 		html_path="plots/certified_regions.html",
 	)
@@ -77,4 +96,3 @@ def main() -> None:
 
 if __name__ == "__main__":
 	main()
-

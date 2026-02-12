@@ -1,7 +1,6 @@
 from .base_models import ICNN, MLP, ResNet
 from .lyapunov import (
 	ClosedLoopLyapunovConditionVerifier,
-	ClosedLoopLyapunovVerifier,
 	LyapunovNet,
 	NeuralLyapunovCandidate,
 	QuadraticLyapunovCandidate,
@@ -14,7 +13,6 @@ __all__ = [
 	"ResNet",
 	"NeuralLyapunovCandidate",
 	"QuadraticLyapunovCandidate",
-	"ClosedLoopLyapunovVerifier",
 	"ClosedLoopLyapunovConditionVerifier",
 	"LyapunovNet",
 	"PolicyNet",

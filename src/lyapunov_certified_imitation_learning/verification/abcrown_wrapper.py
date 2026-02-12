@@ -8,17 +8,16 @@ from dataclasses import dataclass
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
 
+from .cert_config import LyapunovCertificationConfig
 from ..models.lyapunov import ClosedLoopLyapunovConditionVerifier
-from ..utils.package_logger import PackageLogger
-from ..training.lyapunov_config import LyapunovTrainingConfig
+from ..utils.package_logger import get_package_logger
 
-__logger__ = PackageLogger.get_logger(__name__)
+__logger__ = get_package_logger(__name__)
 
 
 @dataclass(frozen=True)
 class RegionCertificationResult:
     """Result container for a full-region certification pass."""
-
     success: bool
     counter_examples: list[th.Tensor]
     failed_regions: list[tuple[list[float], list[float]]]
@@ -42,8 +41,11 @@ def certify_with_crown(
     bounded_input = BoundedTensor(center, ptb)
     lirpa_model = BoundedModule(verifier_module, center, device=device, verbose=False)
 
-    with th.no_grad():
+    if method.strip().lower() == "alpha-crown":
         _, ub_out = lirpa_model.compute_bounds(x=(bounded_input,), method=method)
+    else:
+        with th.no_grad():
+            _, ub_out = lirpa_model.compute_bounds(x=(bounded_input,), method=method)
 
     max_upper = ub_out.max().item()
     is_certified = max_upper <= tolerance
@@ -52,7 +54,7 @@ def certify_with_crown(
 
 
 def _build_regions(
-    config: LyapunovTrainingConfig,
+    config: LyapunovCertificationConfig,
 ) -> list[tuple[list[float], list[float]]]:
     if config.state_dim != 2:
         raise ValueError("certification currently supports state_dim == 2.")
@@ -79,7 +81,7 @@ def _build_regions(
     return regions
 
 
-def _certify_regions(
+def certify_regions(
     verifier: nn.Module,
     regions: list[tuple[list[float], list[float]]],
     method: str,
@@ -154,7 +156,7 @@ def _certify_regions(
     )
 
 
-def _is_rho_certified(
+def is_rho_certified(
     verifier: ClosedLoopLyapunovConditionVerifier,
     rho: float,
     regions: list[tuple[list[float], list[float]]],
@@ -163,7 +165,7 @@ def _is_rho_certified(
     device: th.device,
 ) -> bool:
     verifier.set_rho(rho)
-    result = _certify_regions(
+    result = certify_regions(
         verifier=verifier,
         regions=regions,
         method=method,
@@ -173,12 +175,12 @@ def _is_rho_certified(
     )
     return result.success
 
-
-def certify_rho_max(
+    
+def certify_lyapunov(
     policy_model: nn.Module,
     lyap_model: nn.Module,
     dyn_model: nn.Module,
-    config: LyapunovTrainingConfig,
+    config: LyapunovCertificationConfig,
     rho_estimate: float,
     device: th.device = th.device("cpu"),
 ) -> tuple[float, RegionCertificationResult]:
@@ -201,7 +203,7 @@ def certify_rho_max(
     rho_scale = max(config.cert_rho_scaling, 1.01)
 
     initial_rho = max(config.rho_min, float(rho_estimate))
-    initial_ok = _is_rho_certified(
+    initial_ok = is_rho_certified(
         verifier=verifier,
         rho=initial_rho,
         regions=regions,
@@ -216,7 +218,7 @@ def certify_rho_max(
         found_upper_failure = False
         for _ in range(config.cert_max_scale_steps):
             trial = rho_up * rho_scale
-            if _is_rho_certified(verifier, trial, regions, method, tolerance, device):
+            if is_rho_certified(verifier, trial, regions, method, tolerance, device):
                 rho_lo = trial
                 rho_up = trial
             else:
@@ -225,7 +227,7 @@ def certify_rho_max(
                 break
         if not found_upper_failure:
             verifier.set_rho(rho_lo)
-            details = _certify_regions(
+            details = certify_regions(
                 verifier=verifier,
                 regions=regions,
                 method=method,
@@ -240,7 +242,7 @@ def certify_rho_max(
         trial = initial_rho
         for _ in range(config.cert_max_scale_steps):
             trial = max(config.rho_min, trial / rho_scale)
-            if _is_rho_certified(verifier, trial, regions, method, tolerance, device):
+            if is_rho_certified(verifier, trial, regions, method, tolerance, device):
                 rho_lo = trial
                 break
             rho_up = trial
@@ -248,7 +250,7 @@ def certify_rho_max(
                 break
 
         if rho_lo is None:
-            rho_min_ok = _is_rho_certified(
+            rho_min_ok = is_rho_certified(
                 verifier=verifier,
                 rho=config.rho_min,
                 regions=regions,
@@ -258,7 +260,7 @@ def certify_rho_max(
             )
             if not rho_min_ok:
                 verifier.set_rho(config.rho_min)
-                details = _certify_regions(
+                details = certify_regions(
                     verifier=verifier,
                     regions=regions,
                     method=method,
@@ -274,13 +276,13 @@ def certify_rho_max(
         if rho_up - rho_lo <= config.cert_bisection_tol:
             break
         rho_mid = 0.5 * (rho_lo + rho_up)
-        if _is_rho_certified(verifier, rho_mid, regions, method, tolerance, device):
+        if is_rho_certified(verifier, rho_mid, regions, method, tolerance, device):
             rho_lo = rho_mid
         else:
             rho_up = rho_mid
 
     verifier.set_rho(rho_lo)
-    details = _certify_regions(
+    details = certify_regions(
         verifier=verifier,
         regions=regions,
         method=method,
@@ -289,38 +291,3 @@ def certify_rho_max(
         collect_details=True,
     )
     return rho_lo, details
-
-
-def certify_list_all(
-    policy_model: nn.Module,
-    lyap_model: nn.Module,
-    dyn_model: nn.Module,
-    config: LyapunovTrainingConfig,
-    device: th.device = th.device("cpu"),
-) -> tuple[
-    list[th.Tensor],
-    list[tuple[list[float], list[float]]],
-    list[tuple[list[float], list[float]]],
-    bool,
-]:
-    """Backward-compatible certification call using rho_min as initial estimate."""
-    rho_max, details = certify_rho_max(
-        policy_model=policy_model,
-        lyap_model=lyap_model,
-        dyn_model=dyn_model,
-        config=config,
-        rho_estimate=config.rho_min,
-        device=device,
-    )
-    __logger__.info(
-        "Certification done: success=%s, failed_regions=%d, rho_max=%.6f",
-        details.success,
-        len(details.failed_regions),
-        rho_max,
-    )
-    return (
-        details.counter_examples,
-        details.failed_regions,
-        details.certified_regions,
-        details.success,
-    )

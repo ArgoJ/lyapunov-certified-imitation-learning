@@ -4,8 +4,8 @@ import sys
 from tqdm import tqdm
 from contextlib import contextmanager
 
-DEFAULT_MODULE_NAME = "mpc_datagen"
-DEFAULT_SHORT_NAME = "mdg"
+DEFAULT_MODULE_NAME = "lyapunov_certified_imitation_learning"
+DEFAULT_SHORT_NAME = "lcil"
 DEFAULT_LOGGER_FORMAT = '[%(asctime)s] [%(name)s] [%(levelname)s] - %(message)s'
 
 
@@ -39,58 +39,47 @@ class TqdmLoggingHandler(logging.Handler):
             self.handleError(record)
 
 
-class PackageLogger(logging.Logger):
+class PackageLogger:
     """
-    Custom Logger class that includes a context manager for tqdm-safe logging.
+    Package-local logging utilities.
     """
-    
+
     @contextmanager
-    def tqdm(self, **tqdm_kwargs):
-        """
-        Context manager to safely wrap a loop with a progress bar while logging.
-        
-        Usage
-        -----
-        ```python
-        logger = logging.getLogger("my_module")
-        with logger.tqdm(total=100) as pbar:
-            for i in range(100):
-                ...
-        ```
-        """
-        target_logger = self
-        if not self.handlers and self.propagate and self.parent:
+    def tqdm(logger: logging.Logger, **tqdm_kwargs):
+        """Context manager to safely wrap a loop with tqdm-aware logging."""
+        target_logger = logger
+        if not logger.handlers and logger.propagate and logger.parent:
             target_logger = logging.getLogger(DEFAULT_MODULE_NAME)
 
-        tqdm_handler, restored_handlers = self._swap_to_tqdm_handler(target_logger)
+        tqdm_handler, restored_handlers = PackageLogger._swap_to_tqdm_handler(target_logger)
         pbar = tqdm(**tqdm_kwargs)
-        
+
         try:
             yield pbar
         finally:
             pbar.close()
             if tqdm_handler:
-                self._restore_handlers(target_logger, tqdm_handler, restored_handlers)
+                PackageLogger._restore_handlers(target_logger, tqdm_handler, restored_handlers)
 
-    def _swap_to_tqdm_handler(self, logger_instance: logging.Logger):
+    @staticmethod
+    def _swap_to_tqdm_handler(logger_instance: logging.Logger):
         """Internal helper to swap StreamHandlers with TqdmLoggingHandler."""
         removed_handlers = []
-        
-        # Delete StreamHandler 
+
         for h in list(logger_instance.handlers):
             if isinstance(h, logging.StreamHandler) and not isinstance(h, TqdmLoggingHandler):
                 logger_instance.removeHandler(h)
                 removed_handlers.append(h)
-        
-        # Add Tqdm Handler
+
         handler = TqdmLoggingHandler()
         formatter = ShortNameFormatter(DEFAULT_LOGGER_FORMAT)
         handler.setFormatter(formatter)
         logger_instance.addHandler(handler)
-        
+
         return handler, removed_handlers
 
-    def _restore_handlers(self, logger_instance: logging.Logger, handler_to_remove, handlers_to_restore):
+    @staticmethod
+    def _restore_handlers(logger_instance: logging.Logger, handler_to_remove, handlers_to_restore):
         """Internal helper to restore original handlers."""
         logger_instance.removeHandler(handler_to_remove)
         for h in handlers_to_restore:
@@ -99,27 +88,37 @@ class PackageLogger(logging.Logger):
     @staticmethod
     def setup(package_name: str = DEFAULT_MODULE_NAME, level: int = logging.INFO):
         """
-        Registers this class as the default Logger and sets up the root package logger.
-        MUST be called before any logging.getLogger() calls in the main script.
+        Configure only the package root logger.
         """
-        # Register PackageLogger as the default Logger class
-        logging.setLoggerClass(PackageLogger)
-        
-        # Configure root package logger
         logger = logging.getLogger(package_name)
         logger.setLevel(level)
-        logger.propagate = False # Prevent duplicate logs to the root system logger
-        
-        # Remove old handlers (reset)
+        logger.propagate = False
+
         if logger.handlers:
             for handler in list(logger.handlers):
                 logger.removeHandler(handler)
 
-        # Standard Handler (Console)
         handler = logging.StreamHandler(sys.stdout)
         handler.setLevel(level)
         formatter = ShortNameFormatter(DEFAULT_LOGGER_FORMAT)
         handler.setFormatter(formatter)
         logger.addHandler(handler)
-        
+
         return logger
+
+
+class PackageBoundLogger(logging.LoggerAdapter):
+    """LoggerAdapter with tqdm support for package-local logging."""
+
+    def __init__(self, logger: logging.Logger):
+        super().__init__(logger, extra={})
+
+    @contextmanager
+    def tqdm(self, **tqdm_kwargs):
+        with PackageLogger.tqdm(self.logger, **tqdm_kwargs) as pbar:
+            yield pbar
+
+
+def get_package_logger(name: str) -> PackageBoundLogger:
+    """Return a package-scoped logger wrapper with `.tqdm(...)` support."""
+    return PackageBoundLogger(logging.getLogger(name))

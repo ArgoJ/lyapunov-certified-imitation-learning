@@ -6,20 +6,27 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 
-from typing import Any
-from tqdm import tqdm
+from dataclasses import dataclass
 
-from .lyapunov_config import LyapunovTrainingConfig
-from ..utils.package_logger import DEFAULT_MODULE_NAME, PackageLogger
-from ..verification.abcrown_wrapper import certify_rho_max
+from .train_config import LyapunovTrainingConfig
+from ..utils.package_logger import get_package_logger
+from ..models.lyapunov import ClosedLoopLyapunovConditionVerifier
 from ..verification.counterexample import (
     estimate_rho_from_boundary,
     find_counter_examples,
-    lyapunov_condition_violation,
     sample_uniform_box,
 )
 
-__logger__ = PackageLogger.get_logger(__name__)
+__logger__ = get_package_logger(__name__)
+
+
+@dataclass
+class LyapunovTrainingResult:
+    rho_estimate: float
+    num_mined_counterexamples: int
+    train_time: float
+    lyap_model_path: str
+    policy_model_path: str
 
 
 def _parameter_l1_norm(model_params: list[nn.Parameter]) -> th.Tensor:
@@ -45,9 +52,8 @@ def train_lyapunov(
     dyn_model: nn.Module,
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),
-    models_prefix: str = "lyap_crown",
-    results_path: str = "lyap_crown_result.txt",
-) -> dict[str, Any]:
+    models_prefix: str | None = None,
+) -> LyapunovTrainingResult:
     """Train a Lyapunov-stable neural controller with a CEGIS-style loop."""
     if len(config.state_bounds) != config.state_dim:
         raise ValueError("state_bounds must match state_dim.")
@@ -65,6 +71,15 @@ def train_lyapunov(
     training_pool = sample_uniform_box(config.sample_size, bounds, device)
     roa_candidates = _build_roa_candidates(config.roa_candidate_size, bounds, device)
     origin = th.zeros(1, config.state_dim, dtype=th.float32, device=device)
+    verifier = ClosedLoopLyapunovConditionVerifier(
+        policy_model=policy_model,
+        lyap_model=lyap_model,
+        dyn_model=dyn_model,
+        bounds=bounds,
+        kappa=config.kappa,
+        invariance_weight=config.invariance_weight,
+        rho=config.rho_min,
+    ).to(device)
 
     trainable_params = list(policy_model.parameters()) + list(lyap_model.parameters())
 
@@ -74,7 +89,7 @@ def train_lyapunov(
 
     start_time = time.time()
     total_steps = config.outer_epochs * config.steps_per_epoch
-    with PackageLogger.tqdm_progress(total=total_steps, desc="Iterations", unit="step") as pbar:
+    with __logger__.tqdm(total=total_steps, desc="Iterations", unit="step") as pbar:
         for outer_iter in range(config.outer_epochs):
             rho_estimate = estimate_rho_from_boundary(
                 lyap_model=lyap_model,
@@ -108,19 +123,13 @@ def train_lyapunov(
                     size=(batch_size,),
                     device=device,
                 )
-                x_batch = training_pool[batch_idx]
-                violation = lyapunov_condition_violation(
-                    policy_model=policy_model,
-                    lyap_model=lyap_model,
-                    dyn_model=dyn_model,
-                    state=x_batch,
-                    bounds=bounds,
-                    kappa=config.kappa,
-                    invariance_weight=config.invariance_weight,
-                    rho=rho_estimate,
-                )
-                loss_condition = violation.mean()
 
+                # L_Vdot = ReLU(verifier(x))
+                x_batch = training_pool[batch_idx]
+                verifier.set_rho(rho_estimate)
+                loss_condition = th.relu(verifier(x_batch)).mean()
+
+                # L_roa = ReLU(V(x) / rho - 1)
                 v_candidates = lyap_model(roa_candidates)
                 loss_roa = th.relu(v_candidates / max(rho_estimate, config.rho_min) - 1.0).mean()
 
@@ -151,71 +160,26 @@ def train_lyapunov(
     train_time = time.time() - start_time
     __logger__.info("Training finished in %.2fs", train_time)
 
-    results: dict[str, Any] = {
-        "counter_examples": [],
-        "failed_regions": [],
-        "certified_regions": [],
-        "success": None,
-        "rho_estimate": rho_estimate,
-        "rho_certified": None,
-        "num_mined_counterexamples": num_mined_counterexamples,
-    }
+    if models_prefix is not None:
+        parent_dir = os.path.abspath(os.path.dirname(models_prefix))
+        os.makedirs(parent_dir, exist_ok=True)
 
-    if config.run_certification:
-        __logger__.info(
-            "Starting certification with alpha-beta-CROWN (rho estimate %.6f)...",
-            rho_estimate,
+        seed_suffix = f"_{config.seed}" if config.seed is not None else ""
+        lyap_path = f"{models_prefix}_lyap{seed_suffix}.pt"
+        policy_path = f"{models_prefix}_policy{seed_suffix}.pt"
+        th.save(
+            {"model_state_dict": lyap_model.state_dict()},
+            lyap_path,
         )
-        try:
-            rho_certified, cert_result = certify_rho_max(
-                policy_model=policy_model,
-                lyap_model=lyap_model,
-                dyn_model=dyn_model,
-                config=config,
-                rho_estimate=rho_estimate,
-                device=device,
-            )
-            results["counter_examples"] = cert_result.counter_examples
-            results["failed_regions"] = cert_result.failed_regions
-            results["certified_regions"] = cert_result.certified_regions
-            results["success"] = cert_result.success
-            results["rho_certified"] = rho_certified
-            __logger__.info(
-                "Certification success=%s, failed_regions=%d, rho_certified=%.6f",
-                cert_result.success,
-                len(cert_result.failed_regions),
-                rho_certified,
-            )
-        except Exception as exc:
-            __logger__.warning("Certification failed or timed out: %s", exc)
-            import traceback
+        th.save(
+            {"model_state_dict": policy_model.state_dict()},
+            policy_path,
+        )
 
-            traceback.print_exc()
-    else:
-        __logger__.info("Certification skipped by config.")
-
-    parent_dir = os.path.abspath(os.path.dirname(models_prefix))
-    os.makedirs(parent_dir, exist_ok=True)
-
-    seed_suffix = f"_{config.seed}" if config.seed is not None else ""
-    th.save(
-        {"model_state_dict": lyap_model.state_dict()},
-        f"{models_prefix}_lyap{seed_suffix}.pt",
+    return LyapunovTrainingResult(
+        rho_estimate=rho_estimate,
+        num_mined_counterexamples=num_mined_counterexamples,
+        train_time=train_time,
+        lyap_model_path=lyap_path,
+        policy_model_path=policy_path,
     )
-    th.save(
-        {"model_state_dict": policy_model.state_dict()},
-        f"{models_prefix}_policy{seed_suffix}.pt",
-    )
-
-    if results_path and results["success"] is not None:
-        seed_value = config.seed if config.seed is not None else -1
-        with open(results_path, "a", encoding="utf-8") as handle:
-            handle.write(
-                f"Seed: {seed_value}, Success: {results['success']}, "
-                f"Training Time: {train_time:.2f}, "
-                f"Failed Regions: {len(results['failed_regions'])}, "
-                f"Rho Estimate: {results['rho_estimate']:.6f}, "
-                f"Rho Certified: {results['rho_certified']:.6f}\n"
-            )
-
-    return results

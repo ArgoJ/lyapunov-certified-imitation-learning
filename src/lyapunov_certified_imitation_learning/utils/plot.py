@@ -5,9 +5,9 @@ from plotly.subplots import make_subplots
 from typing import Callable
 
 from mpc_datagen.mpc_data import MPCDataset
-from .package_logger import PackageLogger
+from .package_logger import get_package_logger
 
-__logger__ = PackageLogger.get_logger(__name__)
+__logger__ = get_package_logger(__name__)
 
 
 def mpc_trajectories(
