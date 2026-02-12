@@ -73,14 +73,8 @@ def train_lyapunov(
     num_mined_counterexamples = 0
 
     start_time = time.time()
-    tqdm_handler = None
-    restored_handlers = []
-    tqdm_handler, restored_handlers = PackageLogger.add_tqdm_handler()
-
     total_steps = config.outer_epochs * config.steps_per_epoch
-    pbar = tqdm(total=total_steps, desc="Iterations", unit="step")
-
-    try:
+    with PackageLogger.tqdm_progress(total=total_steps, desc="Iterations", unit="step") as pbar:
         for outer_iter in range(config.outer_epochs):
             rho_estimate = estimate_rho_from_boundary(
                 lyap_model=lyap_model,
@@ -153,12 +147,6 @@ def train_lyapunov(
                         "pool": int(training_pool.shape[0]),
                     }
                 )
-    except KeyboardInterrupt:
-        __logger__.info("Training interrupted by user.")
-    finally:
-        pbar.close()
-        if tqdm_handler:
-            PackageLogger.restore_handlers(DEFAULT_MODULE_NAME, tqdm_handler, restored_handlers)
 
     train_time = time.time() - start_time
     __logger__.info("Training finished in %.2fs", train_time)
