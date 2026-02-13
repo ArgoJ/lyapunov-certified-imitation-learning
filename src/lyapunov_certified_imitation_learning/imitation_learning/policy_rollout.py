@@ -1,11 +1,101 @@
+from dataclasses import dataclass
+from typing import Protocol
+
 import numpy as np
 import torch as th
+from numpy.typing import ArrayLike
 
-from mpc_datagen import MPCConfig, MPCData, MPCDataset, MPCMeta, MPCTrajectory, Sampler, SamplerBase
+from mpc_datagen import MPCConfig, MPCData, MPCDataset, MPCMeta, MPCTrajectory
 
 from ..utils.package_logger import get_package_logger
 
 __logger__ = get_package_logger(__name__)
+
+
+def _normalize_bounds(
+    bounds: ArrayLike | None,
+    expected_dim: int | None,
+    name: str,
+) -> np.ndarray | None:
+    if bounds is None:
+        return None
+
+    bounds_array = np.asarray(bounds, dtype=float)
+    if bounds_array.ndim != 2 or bounds_array.shape[0] != 2:
+        raise ValueError(f"{name} must have shape (2, dim), got {bounds_array.shape}.")
+    if expected_dim is not None and bounds_array.shape[1] != expected_dim:
+        raise ValueError(f"{name} must have shape (2, {expected_dim}), got {bounds_array.shape}.")
+    if np.any(bounds_array[0] > bounds_array[1]):
+        raise ValueError(f"{name} lower bounds must be <= upper bounds.")
+
+    return bounds_array
+
+
+@dataclass(slots=True)
+class PolicyRolloutConfig:
+    """Configuration for policy rollout data generation."""
+
+    T_sim: int
+    dt: float
+    nx: int
+    nu: int
+    N: int = 1
+    state_bounds: ArrayLike | None = None
+    input_bounds: ArrayLike | None = None
+
+    def __post_init__(self) -> None:
+        if self.T_sim <= 0:
+            raise ValueError("T_sim must be positive.")
+        if self.dt <= 0:
+            raise ValueError("dt must be positive.")
+        if self.nx <= 0 or self.nu <= 0:
+            raise ValueError("nx and nu must be positive.")
+        if self.N <= 0:
+            raise ValueError("N must be positive.")
+
+        self.state_bounds = _normalize_bounds(self.state_bounds, self.nx, "state_bounds")
+        self.input_bounds = _normalize_bounds(self.input_bounds, self.nu, "input_bounds")
+
+    def to_mpc_config(self) -> MPCConfig:
+        """Build an MPCConfig object from rollout parameters."""
+        mpc_config = MPCConfig(
+            T_sim=int(self.T_sim),
+            N=int(self.N),
+            nx=int(self.nx),
+            nu=int(self.nu),
+            dt=float(self.dt),
+        )
+
+        if self.state_bounds is not None:
+            mpc_config.constraints.lbx = self.state_bounds[0].astype(float)
+            mpc_config.constraints.ubx = self.state_bounds[1].astype(float)
+        if self.input_bounds is not None:
+            mpc_config.constraints.lbu = self.input_bounds[0].astype(float)
+            mpc_config.constraints.ubu = self.input_bounds[1].astype(float)
+
+        return mpc_config
+
+
+class StateSampler(Protocol):
+    """Protocol for initial-state sampling used by PolicyRolloutGenerator."""
+
+    def sample_x0(self, accepted_x0: list[np.ndarray]) -> np.ndarray:
+        """Sample one initial state."""
+
+
+class RandomBoundsSampler:
+    """Uniform random sampler over a fixed state-bounds box."""
+
+    def __init__(self, bounds: ArrayLike, seed: int | None = None) -> None:
+        self.bounds = _normalize_bounds(bounds, expected_dim=None, name="bounds")
+        assert self.bounds is not None
+        self.rng = np.random.default_rng(seed)
+
+    def sample_x0(self, accepted_x0: list[np.ndarray]) -> np.ndarray:
+        del accepted_x0
+        low = self.bounds[0]
+        high = self.bounds[1]
+        return self.rng.uniform(low=low, high=high).astype(np.float32)
 
 
 class PolicyRolloutGenerator:
@@ -14,71 +104,49 @@ class PolicyRolloutGenerator:
     def __init__(
         self,
         policy: th.nn.Module,
-        t_sim: int,
-        dt: float,
-        state_bounds: np.ndarray | None = None,
-        input_bounds: np.ndarray | None = None,
-        sampler: SamplerBase | None = None,
+        rollout_config: PolicyRolloutConfig | None = None,
+        sampler: StateSampler | None = None,
         device: th.device | str = "cpu",
     ) -> None:
         """
         Initialize the generator with the given policy and rollout configuration.
-        
+
         Parameters
         ----------
         policy : torch.nn.Module
             The policy to be rolled out. Should take state tensors as input and output action tensors.
-        t_sim : int
-            Number of simulation steps for each rollout.
-        dt : float
-            Time step for the discrete-time dynamics.
-        state_bounds : np.ndarray, optional
-            State bounds with shape ``(2, nx)`` as ``[lbx; ubx]``.
-            If ``None``, no state bounds are written to the rollout config.
-        input_bounds : np.ndarray, optional
-            Input bounds with shape ``(2, nu)`` as ``[lbu; ubu]``.
-            If ``None``, policy outputs are not clipped.
-        sampler : SamplerBase, optional
-            Sampler for generating initial states. If None, a default Sampler will be used.
+        rollout_config : PolicyRolloutConfig, optional
+            Rollout configuration independent from MPCConfig. Preferred interface.
+        sampler : StateSampler, optional
+            Sampler for generating initial states. If None, `RandomBoundsSampler` is used when
+            state bounds are available.
         device : torch.device or str, optional
             Device to run the policy on (e.g., "cpu" or "cuda"). Default is "cpu".
         """
+        if rollout_config is None:
+            raise ValueError("Provide a rollout_config.")
+        self.rollout_config = rollout_config
+
         self.policy = policy
-        self.t_sim = int(t_sim)
-        self.dt = float(dt)
         self.device = th.device(device)
 
-        self.mpc_config = MPCConfig(
-            T_sim=self.t_sim,
-            N=1,
-            nx=2,
-            nu=1,
-            dt=self.dt,
-        )
+        if rollout_config is not None:
+            self.rollout_config = rollout_config
+            self.mpc_config = rollout_config.to_mpc_config()
 
-        self.state_bounds = None if state_bounds is None else np.asarray(state_bounds, dtype=float)
-        self.input_bounds = None if input_bounds is None else np.asarray(input_bounds, dtype=float)
-
-        if self.state_bounds is not None:
-            if self.state_bounds.shape != (2, self.mpc_config.nx):
-                raise ValueError(
-                    f"state_bounds must have shape (2, {self.mpc_config.nx}), got {self.state_bounds.shape}."
-                )
-            self.mpc_config.constraints.lbx = self.state_bounds[0].astype(float)
-            self.mpc_config.constraints.ubx = self.state_bounds[1].astype(float)
-
-        if self.input_bounds is not None:
-            if self.input_bounds.shape != (2, self.mpc_config.nu):
-                raise ValueError(
-                    f"input_bounds must have shape (2, {self.mpc_config.nu}), got {self.input_bounds.shape}."
-                )
-            self.mpc_config.constraints.lbu = self.input_bounds[0].astype(float)
-            self.mpc_config.constraints.ubu = self.input_bounds[1].astype(float)
+        self.t_sim = int(self.rollout_config.T_sim)
+        self.dt = float(self.rollout_config.dt)
+        self.state_bounds = self.rollout_config.state_bounds
+        self.input_bounds = self.rollout_config.input_bounds
 
         if sampler is None:
-            sampler = Sampler(bounds=self.state_bounds) if self.state_bounds is not None else Sampler()
+            if self.state_bounds is None:
+                raise ValueError(
+                    "No sampler was provided and state_bounds are not set. "
+                    "Provide a sampler or set state_bounds in PolicyRolloutConfig."
+                )
+            sampler = RandomBoundsSampler(bounds=self.state_bounds)
         self.sampler = sampler
-        self.sampler.post_init_cfg(self.mpc_config)
 
         self.policy.to(self.device)
         self.policy.eval()
@@ -99,7 +167,7 @@ class PolicyRolloutGenerator:
                         f"Policy output dimension mismatch: expected {self.mpc_config.nu}, got {u_vec.size}."
                     )
                 if self.input_bounds is not None:
-                    u_vec = np.clip(u_vec, self.mpc_config.constraints.lbu, self.mpc_config.constraints.ubu)
+                    u_vec = np.clip(u_vec, self.input_bounds[0], self.input_bounds[1])
                 u_k = float(u_vec[0])
 
                 traj.inputs[k, :] = u_vec

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
+
 import torch as th
 import torch.nn as nn
+from torch.utils.data import Dataset
 
 from ..utils.package_logger import get_package_logger
 
@@ -10,7 +13,7 @@ __logger__ = get_package_logger(__name__)
 
 def train_mlp_policy(
     policy_model: nn.Module,
-    dataset: th.utils.data.Dataset,
+    dataset: Dataset,
     num_epochs: int = 10,
     batch_size: int = 64,
     learning_rate: float = 1e-3,
