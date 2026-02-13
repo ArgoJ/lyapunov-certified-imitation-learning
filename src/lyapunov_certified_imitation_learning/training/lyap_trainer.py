@@ -89,7 +89,7 @@ def train_lyapunov(
 
     start_time = time.time()
     total_steps = config.outer_epochs * config.steps_per_epoch
-    with __logger__.tqdm(total=total_steps, desc="Iterations", unit="step") as pbar:
+    with __logger__.tqdm(total=total_steps, desc="Train iterations", unit="step") as pbar:
         for outer_iter in range(config.outer_epochs):
             rho_estimate = estimate_rho_from_boundary(
                 lyap_model=lyap_model,

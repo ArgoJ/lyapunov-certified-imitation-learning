@@ -1,6 +1,8 @@
 import logging
 import sys
+from typing import Any, Iterator
 
+import tqdm as tqdm_module
 from tqdm import tqdm
 from contextlib import contextmanager
 
@@ -45,14 +47,18 @@ class PackageLogger:
     """
 
     @contextmanager
-    def tqdm(logger: logging.Logger, **tqdm_kwargs):
+    def tqdm(
+        logger: logging.Logger,
+        *tqdm_args: Any,
+        **tqdm_kwargs: Any,
+    ) -> Iterator[tqdm_module.tqdm]:
         """Context manager to safely wrap a loop with tqdm-aware logging."""
         target_logger = logger
         if not logger.handlers and logger.propagate and logger.parent:
             target_logger = logging.getLogger(DEFAULT_MODULE_NAME)
 
         tqdm_handler, restored_handlers = PackageLogger._swap_to_tqdm_handler(target_logger)
-        pbar = tqdm(**tqdm_kwargs)
+        pbar = tqdm(*tqdm_args, **tqdm_kwargs)
 
         try:
             yield pbar
@@ -114,8 +120,12 @@ class PackageBoundLogger(logging.LoggerAdapter):
         super().__init__(logger, extra={})
 
     @contextmanager
-    def tqdm(self, **tqdm_kwargs):
-        with PackageLogger.tqdm(self.logger, **tqdm_kwargs) as pbar:
+    def tqdm(
+        self,
+        *tqdm_args: Any,
+        **tqdm_kwargs: Any,
+    ) -> Iterator[tqdm_module.tqdm]:
+        with PackageLogger.tqdm(self.logger, *tqdm_args, **tqdm_kwargs) as pbar:
             yield pbar
 
 

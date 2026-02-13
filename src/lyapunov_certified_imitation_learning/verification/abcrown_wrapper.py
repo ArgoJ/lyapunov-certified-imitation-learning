@@ -185,6 +185,8 @@ def certify_lyapunov(
     device: th.device = th.device("cpu"),
 ) -> tuple[float, RegionCertificationResult]:
     """Find the largest certified rho using scaling and bisection."""
+    __logger__.info("Starting Lyapunov certification with method: %s", config.cert_method)
+    
     bounds = th.tensor(config.state_bounds, dtype=th.float32, device=device)
     verifier = ClosedLoopLyapunovConditionVerifier(
         policy_model=policy_model,
@@ -212,19 +214,23 @@ def certify_lyapunov(
         device=device,
     )
 
+    # Initial rho passed, scale up to find an upper bound.
     if initial_ok:
         rho_lo = initial_rho
         rho_up = initial_rho
         found_upper_failure = False
-        for _ in range(config.cert_max_scale_steps):
-            trial = rho_up * rho_scale
-            if is_rho_certified(verifier, trial, regions, method, tolerance, device):
-                rho_lo = trial
-                rho_up = trial
-            else:
-                rho_up = trial
-                found_upper_failure = True
-                break
+        
+        with __logger__.tqdm(range(config.cert_max_scale_steps), desc="Scale up: upper rho") as pbar:
+            for _ in pbar:
+                trial = rho_up * rho_scale
+                if is_rho_certified(verifier, trial, regions, method, tolerance, device):
+                    rho_lo = trial
+                    rho_up = trial
+                else:
+                    rho_up = trial
+                    found_upper_failure = True
+                    break
+
         if not found_upper_failure:
             verifier.set_rho(rho_lo)
             details = certify_regions(
@@ -236,18 +242,22 @@ def certify_lyapunov(
                 collect_details=True,
             )
             return rho_lo, details
-    else:
+
+    # Initial rho failed, scale down to find a certified rho.
+    if not initial_ok:
         rho_up = initial_rho
         rho_lo: float | None = None
         trial = initial_rho
-        for _ in range(config.cert_max_scale_steps):
-            trial = max(config.rho_min, trial / rho_scale)
-            if is_rho_certified(verifier, trial, regions, method, tolerance, device):
-                rho_lo = trial
-                break
-            rho_up = trial
-            if trial <= config.rho_min:
-                break
+        
+        with __logger__.tqdm(range(config.cert_max_scale_steps), desc="Scale down: lower rho") as pbar:
+            for _ in pbar:
+                trial = max(config.rho_min, trial / rho_scale)
+                if is_rho_certified(verifier, trial, regions, method, tolerance, device):
+                    rho_lo = trial
+                    break
+                rho_up = trial
+                if trial <= config.rho_min:
+                    break
 
         if rho_lo is None:
             rho_min_ok = is_rho_certified(
@@ -272,14 +282,16 @@ def certify_lyapunov(
             rho_lo = config.rho_min
             rho_up = max(rho_up, initial_rho)
 
-    for _ in range(config.cert_max_bisection_steps):
-        if rho_up - rho_lo <= config.cert_bisection_tol:
-            break
-        rho_mid = 0.5 * (rho_lo + rho_up)
-        if is_rho_certified(verifier, rho_mid, regions, method, tolerance, device):
-            rho_lo = rho_mid
-        else:
-            rho_up = rho_mid
+    # Bisection between rho_lo and rho_up to find the largest certified rho within tolerance.
+    with __logger__.tqdm(range(config.cert_max_bisection_steps), desc="Bisection: max rho") as pbar:
+        for _ in pbar:
+            if rho_up - rho_lo <= config.cert_bisection_tol:
+                break
+            rho_mid = 0.5 * (rho_lo + rho_up)
+            if is_rho_certified(verifier, rho_mid, regions, method, tolerance, device):
+                rho_lo = rho_mid
+            else:
+                rho_up = rho_mid
 
     verifier.set_rho(rho_lo)
     details = certify_regions(
