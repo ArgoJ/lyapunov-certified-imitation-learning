@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lyapunov_certified_imitation_learning"
+name = "lyapunov-certified-imitation-learning"
 version = "0.1.0"
 description = "Learn a lyapunov certificate for a neural network"
 readme = "README.md"

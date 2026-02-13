@@ -23,6 +23,16 @@ def _get_activation(name: str) -> nn.Module:
         return nn.GELU()
     raise ValueError(f"Unknown activation '{name}'.")
 
+def _check_layer_dims(layer_dims: list[int]) -> None:
+    if len(layer_dims) < 2:
+        raise ValueError("layer_dims must contain at least input and output dimensions.")
+
+def _check_activations(activations: list[str], layer_dims: list[int]) -> None:
+    if len(activations) != len(layer_dims) - 1:
+        raise ValueError(
+            "activations must have the same length as layer_dims minus one."
+        )
+
 
 class ResidualBlock(nn.Module):
     """Residual MLP block with two linear layers.
@@ -80,12 +90,8 @@ class MLP(nn.Module):
     ):
         super(MLP, self).__init__()
 
-        if len(layer_dims) < 2:
-            raise ValueError("layer_dims must contain at least input and output.")
-        if len(activations) != len(layer_dims) - 1:
-            raise ValueError(
-                "activations must have the same length as layer_dims minus one."
-            )
+        _check_layer_dims(layer_dims)
+        _check_activations(activations, layer_dims)
 
         layers: list[nn.Module] = []
         for in_dim, out_dim, act_name in zip(
@@ -121,12 +127,8 @@ class ResNet(nn.Module):
     ):
         super(ResNet, self).__init__()
 
-        if len(layer_dims) < 2:
-            raise ValueError("layer_dims must contain at least input and output.")
-        if len(activations) != len(layer_dims) - 1:
-            raise ValueError(
-                "activations must have the same length as layer_dims minus one."
-            )
+        _check_layer_dims(layer_dims)
+        _check_activations(activations, layer_dims)
 
         layers: list[nn.Module] = []
         for in_dim, out_dim, act_name in zip(
@@ -165,12 +167,8 @@ class ICNN(nn.Module):
     ):
         super(ICNN, self).__init__()
 
-        if len(layer_dims) < 2:
-            raise ValueError("layer_dims must contain at least input and output.")
-        if len(activations) != len(layer_dims) - 1:
-            raise ValueError(
-                "activations must have the same length as layer_dims minus one."
-            )
+        _check_layer_dims(layer_dims)
+        _check_activations(activations, layer_dims)
 
         self.input_dim = layer_dims[0]
         self.layer_dims = layer_dims
