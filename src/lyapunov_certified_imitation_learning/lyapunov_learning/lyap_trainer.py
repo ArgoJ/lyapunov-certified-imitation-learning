@@ -10,8 +10,8 @@ from dataclasses import dataclass
 
 from .train_config import LyapunovTrainingConfig
 from ..utils.package_logger import get_package_logger
-from ..models.lyapunov import ClosedLoopLyapunovConditionVerifier
-from ..verification.counterexample import (
+from ..certification.verifier_models import ClosedLoopLyapunovConditionVerifier
+from ..certification.counterexample import (
     estimate_rho_from_boundary,
     find_counter_examples,
     sample_uniform_box,

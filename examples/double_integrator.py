@@ -1,10 +1,9 @@
 import torch as th
 import torch.nn as nn
 
-from lyapunov_certified_imitation_learning.models import ICNN, MLP, NeuralLyapunovCandidate
-from lyapunov_certified_imitation_learning.training import LyapunovTrainingConfig, train_lyapunov
-from lyapunov_certified_imitation_learning.verification import LyapunovCertificationConfig, certify_lyapunov
-import lyapunov_certified_imitation_learning.utils.plot as lcil_plt
+from lyapunov_certified_imitation_learning.lyapunov_learning import LyapunovTrainingConfig, train_lyapunov, NeuralLyapunovCandidate
+from lyapunov_certified_imitation_learning.certification import LyapunovCertificationConfig, certify_lyapunov
+from lyapunov_certified_imitation_learning.utils import lcil_plt, ICNN, MLP
 
 # from lyapunov_certified_imitation_learning.utils.package_logger import PackageLogger
 # import logging

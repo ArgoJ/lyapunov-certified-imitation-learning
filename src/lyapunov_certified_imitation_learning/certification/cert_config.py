@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
-from ..training.train_config import LyapunovTrainingConfig
+from ..lyapunov_learning.train_config import LyapunovTrainingConfig
 
 
 @dataclass(frozen=True)
