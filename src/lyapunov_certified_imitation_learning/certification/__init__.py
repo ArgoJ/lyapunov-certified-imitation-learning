@@ -1,4 +1,4 @@
-from .abcrown_wrapper import (
+from .lirpa_wrapper import (
     RegionCertificationResult,
     certify_lyapunov,
     certify_with_crown,
