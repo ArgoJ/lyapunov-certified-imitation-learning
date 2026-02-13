@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
 
-from .cert_config import LyapunovCertificationConfig
-from .verifier_models import ClosedLoopLyapunovConditionVerifier
+from .config import LyapunovCertificationConfig
+from .models import ClosedLoopLyapunovConditionVerifier
 from ..utils.package_logger import get_package_logger
 
 __logger__ = get_package_logger(__name__)

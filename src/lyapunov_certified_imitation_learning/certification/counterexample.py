@@ -5,8 +5,8 @@ from typing import Sequence
 import torch as th
 import torch.nn as nn
 
-from .verifier_models import ClosedLoopLyapunovConditionVerifier
-from ..lyapunov_learning.train_config import LyapunovTrainingConfig
+from .models import ClosedLoopLyapunovConditionVerifier
+from ..lyapunov_learning.config import LyapunovTrainingConfig
 
 
 def _bounds_tensor(state_bounds: Sequence[float], device: th.device) -> th.Tensor:

@@ -1,6 +1,6 @@
-from .lyap_trainer import train_lyapunov
-from .train_config import LyapunovTrainingConfig
-from .lyapunov_models import (
+from .trainer import train_lyapunov
+from .config import LyapunovTrainingConfig
+from .models import (
     LyapunovNet,
     NeuralLyapunovCandidate,
     QuadraticLyapunovCandidate

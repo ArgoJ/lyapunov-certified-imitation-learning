@@ -8,9 +8,9 @@ import torch.nn as nn
 
 from dataclasses import dataclass
 
-from .train_config import LyapunovTrainingConfig
+from .config import LyapunovTrainingConfig
 from ..utils.package_logger import get_package_logger
-from ..certification.verifier_models import ClosedLoopLyapunovConditionVerifier
+from ..certification.models import ClosedLoopLyapunovConditionVerifier
 from ..certification.counterexample import (
     estimate_rho_from_boundary,
     find_counter_examples,

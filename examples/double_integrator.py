@@ -64,7 +64,7 @@ def main() -> None:
 		cert_bisection_tol=1e-3,
 		cert_max_scale_steps=20,
 		cert_max_bisection_steps=40,
-		cert_method="crown",
+		cert_method="alpha-crown",
 	)
 
 	train_results = train_lyapunov(
