@@ -5,23 +5,25 @@ import torch.nn.functional as F
 
 def _get_activation(name: str) -> nn.Module:
     name = name.strip().lower()
-    if name in {"identity", "linear", "none"}:
-        return nn.Identity()
-    if name == "relu":
-        return nn.ReLU()
-    if name == "tanh":
-        return nn.Tanh()
-    if name == "sigmoid":
-        return nn.Sigmoid()
-    if name == "softplus":
-        return nn.Softplus()
-    if name == "elu":
-        return nn.ELU()
-    if name == "leaky_relu":
-        return nn.LeakyReLU()
-    if name == "gelu":
-        return nn.GELU()
-    raise ValueError(f"Unknown activation '{name}'.")
+    match name:
+        case "identity" | "linear":
+            return nn.Identity()
+        case "relu":
+            return nn.ReLU()
+        case "tanh":
+            return nn.Tanh()
+        case "sigmoid":
+            return nn.Sigmoid()
+        case "softplus":
+            return nn.Softplus()
+        case "elu":
+            return nn.ELU()
+        case "leaky_relu":
+            return nn.LeakyReLU()
+        case "gelu":
+            return nn.GELU()
+        case _:
+            raise ValueError(f"Unknown activation '{name}'.")
 
 def _check_layer_dims(layer_dims: list[int]) -> None:
     if len(layer_dims) < 2:

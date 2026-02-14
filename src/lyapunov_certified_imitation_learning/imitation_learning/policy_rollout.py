@@ -104,6 +104,7 @@ class PolicyRolloutGenerator:
     def __init__(
         self,
         policy: th.nn.Module,
+        simulator: th.nn.Module,
         rollout_config: PolicyRolloutConfig | None = None,
         sampler: StateSampler | None = None,
         device: th.device | str = "cpu",
@@ -115,6 +116,8 @@ class PolicyRolloutGenerator:
         ----------
         policy : torch.nn.Module
             The policy to be rolled out. Should take state tensors as input and output action tensors.
+        simulator : torch.nn.Module
+            The simulator to be used for simulating the system dynamics. Should take (state, action) tensors as input and output next-state tensors.
         rollout_config : PolicyRolloutConfig, optional
             Rollout configuration independent from MPCConfig. Preferred interface.
         sampler : StateSampler, optional
@@ -128,6 +131,7 @@ class PolicyRolloutGenerator:
         self.rollout_config = rollout_config
 
         self.policy = policy
+        self.simulator = simulator
         self.device = th.device(device)
 
         if rollout_config is not None:
@@ -150,9 +154,26 @@ class PolicyRolloutGenerator:
 
         self.policy.to(self.device)
         self.policy.eval()
+        self.simulator.to(self.device)
+        self.simulator.eval()
+
 
     def _rollout_single(self, x0: np.ndarray, traj_id: int) -> MPCData:
-        """Roll out one trajectory from `x0` and return an `MPCData` entry."""
+        """
+        Roll out one trajectory from `x0` and return an `MPCData` entry.
+        
+        Parameters
+        ----------
+        x0 : np.ndarray
+            Initial state for the rollout. Should have shape (nx,).
+        traj_id : int
+            Unique identifier for the trajectory, used in MPCMeta.
+            
+        Returns
+        -------
+        data : MPCData
+            An MPCData object containing the rolled-out trajectory and metadata.
+        """
         traj = MPCTrajectory.empty_from_cfg(self.mpc_config)
         traj.states[0] = np.asarray(x0, dtype=np.float32)
 
@@ -168,11 +189,18 @@ class PolicyRolloutGenerator:
                     )
                 if self.input_bounds is not None:
                     u_vec = np.clip(u_vec, self.input_bounds[0], self.input_bounds[1])
-                u_k = float(u_vec[0])
 
                 traj.inputs[k, :] = u_vec
-                traj.states[k + 1, 0] = x_k[0] + self.dt * x_k[1]
-                traj.states[k + 1, 1] = x_k[1] + self.dt * u_k
+                u_sim_tensor = th.as_tensor(u_vec, dtype=th.float32, device=self.device).unsqueeze(0)
+                x_next_tensor = self.simulator(x_tensor, u_sim_tensor)
+                x_next_vec = np.asarray(
+                    x_next_tensor.squeeze(0).detach().cpu().numpy(), dtype=np.float32
+                ).reshape(-1)
+                if x_next_vec.size != self.mpc_config.nx:
+                    raise ValueError(
+                        f"Simulator output dimension mismatch: expected {self.mpc_config.nx}, got {x_next_vec.size}."
+                    )
+                traj.states[k + 1, :] = x_next_vec
 
                 traj.V_solver[k] = float(np.dot(x_k, x_k) + 0.1 * float(np.dot(u_vec, u_vec)))
 
@@ -184,8 +212,9 @@ class PolicyRolloutGenerator:
 
         return MPCData(trajectory=traj, meta=meta, config=self.mpc_config)
 
+
     def generate(self, n_samples: int) -> MPCDataset:
-        """Generate `n_samples` policy rollouts using the configured sampler."""
+        """Generate a dataset of `n_samples` policy rollouts using the configured sampler."""
         dataset = MPCDataset()
         accepted_x0: list[np.ndarray] = []
 

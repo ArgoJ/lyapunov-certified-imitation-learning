@@ -1,4 +1,5 @@
 import torch as th
+import torch.nn as nn
 
 from mpc_datagen import mdg_plt
 
@@ -14,6 +15,21 @@ from lyapunov_certified_imitation_learning.imitation_learning.helpers import (
 from lyapunov_certified_imitation_learning.imitation_learning.policy_rollout import PolicyRolloutGenerator
 
 
+class DoubleIntegratorDynamics(nn.Module):
+    def __init__(self, dt: float) -> None:
+        super().__init__()
+        self.dt = float(dt)
+
+    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+        if u.ndim == 1:
+            u = u.unsqueeze(1)
+        x_pos = x[:, 0:1]
+        x_vel = x[:, 1:2]
+        x_next_pos = x_pos + self.dt * x_vel
+        x_next_vel = x_vel + self.dt * u
+        return th.cat([x_next_pos, x_next_vel], dim=1)
+
+
 def main() -> None:
     device = "cpu" #th.device("cuda" if th.cuda.is_available() else "cpu")
     dataset_path = "/home/josua/programming_stuff/projects/mpc-datagen/data/double_integrator_regional_N20_data.hdf5"
@@ -23,10 +39,10 @@ def main() -> None:
 
     net = MLPPolicy(
         [2, 16, 16, 1],
-        ["tanh", "tanh", "identity"],
+        ["relu", "tanh", "identity"],
         u_min=u_bounds[0],
         u_max=u_bounds[1],
-    ).to(device)
+    )
 
     dataloader = create_imitation_learning_dataloader(
         mpc_dataset=dataset_path,
@@ -40,16 +56,17 @@ def main() -> None:
     
     train_mlp_policy(
         policy_model=net,
-        dataset=dataloader.dataset,
+        dataloader=dataloader,
         num_epochs=1,
-        batch_size=256,
         learning_rate=1e-3,
         device=device,
     )
 
     rollout_config = get_policy_rollout_config_from_dataset(dataset_path, t_sim=80)
+    simulator = DoubleIntegratorDynamics(dt=rollout_config.dt)
     policy_rollout_generator = PolicyRolloutGenerator(
         policy=net,
+        simulator=simulator,
         rollout_config=rollout_config,
         device=device,
     )

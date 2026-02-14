@@ -62,6 +62,9 @@ class ImitationLearningDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
             grp = self.mpc_dataset._h5_file[key]
             meta = MPCMeta.from_hdf5(grp)
 
+            if meta.steps_simulated <= 0:
+                continue
+
             id_to_sim_steps[meta.id] = meta.steps_simulated
             traj_locations.append(("file", key))
             traj_lengths.append(meta.steps_simulated)
@@ -140,6 +143,11 @@ def create_imitation_learning_dataloader(
         Tensor dtype for states/actions emitted by the dataset.
     """
     dataset = ImitationLearningDataset(mpc_dataset=mpc_dataset, dtype=dtype)
+    if len(dataset) <= 0:
+        raise ValueError(
+            "No imitation-learning samples available in MPC dataset. "
+            "Ensure at least one trajectory has steps_simulated > 0 and valid state/input arrays."
+        )
     return DataLoader(
         dataset,
         batch_size=batch_size,
