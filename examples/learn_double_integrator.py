@@ -57,7 +57,7 @@ def main() -> None:
     train_mlp_policy(
         policy_model=net,
         dataloader=dataloader,
-        num_epochs=1,
+        num_epochs=5,
         learning_rate=1e-3,
         device=device,
     )
