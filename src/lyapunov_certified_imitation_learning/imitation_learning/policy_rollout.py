@@ -43,6 +43,57 @@ class PolicyRolloutConfig:
     state_bounds: ArrayLike | None = None
     input_bounds: ArrayLike | None = None
 
+    @staticmethod
+    def _extract_bounds(lower: ArrayLike, upper: ArrayLike) -> np.ndarray | None:
+        """Stack lower/upper bounds into shape ``(2, dim)`` when available."""
+        lower_arr = np.asarray(lower, dtype=np.float32).reshape(-1)
+        upper_arr = np.asarray(upper, dtype=np.float32).reshape(-1)
+
+        if lower_arr.size == 0 and upper_arr.size == 0:
+            return None
+        if lower_arr.size == 0 or upper_arr.size == 0:
+            raise ValueError("Incomplete bounds in MPCConfig constraints.")
+        if lower_arr.size != upper_arr.size:
+            raise ValueError(
+                f"Mismatched bounds size: lower={lower_arr.size}, upper={upper_arr.size}."
+            )
+
+        return np.vstack((lower_arr, upper_arr))
+
+    @classmethod
+    def from_mpc_config(
+        cls,
+        mpc_config: MPCConfig,
+        t_sim: int | None = None,
+    ) -> "PolicyRolloutConfig":
+        """Build rollout config from an ``MPCConfig``.
+
+        Parameters
+        ----------
+        mpc_config : MPCConfig
+            Source MPC configuration.
+        t_sim : int, optional
+            Optional override for rollout simulation horizon.
+        """
+        state_bounds = cls._extract_bounds(
+            mpc_config.constraints.lbx,
+            mpc_config.constraints.ubx,
+        )
+        input_bounds = cls._extract_bounds(
+            mpc_config.constraints.lbu,
+            mpc_config.constraints.ubu,
+        )
+
+        return cls(
+            T_sim=int(mpc_config.T_sim) if t_sim is None else int(t_sim),
+            dt=float(mpc_config.dt),
+            nx=int(mpc_config.nx),
+            nu=int(mpc_config.nu),
+            N=int(mpc_config.N),
+            state_bounds=state_bounds,
+            input_bounds=input_bounds,
+        )
+
     def __post_init__(self) -> None:
         if self.T_sim <= 0:
             raise ValueError("T_sim must be positive.")

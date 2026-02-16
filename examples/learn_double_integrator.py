@@ -1,18 +1,18 @@
 import torch as th
 import torch.nn as nn
+from pathlib import Path
 
-from mpc_datagen import mdg_plt
+from mpc_datagen import MPCDataset, mdg_plt
 
 from lyapunov_certified_imitation_learning.imitation_learning import (
     train_mlp_policy,
     create_imitation_learning_dataloader,
     MLPPolicy,
 )
-from lyapunov_certified_imitation_learning.imitation_learning.helpers import (
-    get_policy_rollout_config_from_dataset,
-    get_global_input_bounds,
+from lyapunov_certified_imitation_learning.imitation_learning.policy_rollout import (
+    PolicyRolloutConfig,
+    PolicyRolloutGenerator,
 )
-from lyapunov_certified_imitation_learning.imitation_learning.policy_rollout import PolicyRolloutGenerator
 
 
 class DoubleIntegratorDynamics(nn.Module):
@@ -35,7 +35,15 @@ def main() -> None:
     dataset_path = "/home/josua/programming_stuff/projects/mpc-datagen/data/double_integrator_regional_N20_data.hdf5"
     n_samples = 500
 
-    u_bounds = get_global_input_bounds(dataset_path)
+    source_dataset = MPCDataset.load(Path(dataset_path))
+    if len(source_dataset) == 0:
+        raise ValueError("MPCDataset is empty; cannot extract configuration.")
+    rollout_config = PolicyRolloutConfig.from_mpc_config(source_dataset[0].config, t_sim=80)
+    
+    if rollout_config.input_bounds is None:
+        u_bounds = (None, None)
+    else:
+        u_bounds = rollout_config.input_bounds
 
     net = MLPPolicy(
         [2, 16, 16, 1],
@@ -62,7 +70,6 @@ def main() -> None:
         device=device,
     )
 
-    rollout_config = get_policy_rollout_config_from_dataset(dataset_path, t_sim=80)
     simulator = DoubleIntegratorDynamics(dt=rollout_config.dt)
     policy_rollout_generator = PolicyRolloutGenerator(
         policy=net,
