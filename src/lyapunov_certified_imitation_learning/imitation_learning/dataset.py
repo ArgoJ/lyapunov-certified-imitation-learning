@@ -67,6 +67,26 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         """Total number of training samples across all trajectories."""
         return self._total_samples
 
+    def save_torch(self, path: str | os.PathLike[str]) -> None:
+        """Save the preprocessed (optionally filtered) state-action pairs to a ``.pt`` file.
+
+        Parameters
+        ----------
+        path : str or os.PathLike
+            Output path for ``torch.save``.
+        """
+        target_path = Path(path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        payload = {
+            "states": self._states.detach().cpu(),
+            "actions": self._actions.detach().cpu(),
+            "dtype": str(self.dtype),
+            "near_duplicate_radius": self.near_duplicate_radius,
+            "num_samples": self._total_samples,
+        }
+        th.save(payload, target_path)
+
     def _load_samples(self) -> tuple[np.ndarray, np.ndarray]:
         """Load all valid samples into contiguous NumPy arrays."""
         if self.mpc_dataset.memory_buffer:
