@@ -68,4 +68,4 @@ def train_mlp_policy(
 
             avg_loss = epoch_loss / datapoints
             
-            pbar.set_postfix({"epoch": epoch + 1, "Loss": f"{avg_loss:.6f}"})
+            pbar.set_postfix({"Loss": f"{avg_loss:.4f}"})

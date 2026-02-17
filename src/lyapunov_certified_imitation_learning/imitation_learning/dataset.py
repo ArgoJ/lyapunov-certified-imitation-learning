@@ -59,6 +59,8 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         self.near_duplicate_radius = near_duplicate_radius
         
         self._states_np, self._actions_np = self._load_samples()
+        self._states = th.as_tensor(self._states_np, dtype=self.dtype)
+        self._actions = th.as_tensor(self._actions_np, dtype=self.dtype)
         self._total_samples = int(self._states_np.shape[0])
 
     def __len__(self) -> int:
@@ -75,6 +77,8 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
 
         states_chunks: list[np.ndarray] = []
         actions_chunks: list[np.ndarray] = []
+        expected_nx: int | None = None
+        expected_nu: int | None = None
 
         indices = list(self.mpc_dataset._indices)
         with __logger__.tqdm(indices, desc="Preloading trajectories") as pbar:
@@ -93,6 +97,19 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
                         f"Trajectory data length mismatch for ID {meta.id}: "
                         f"expected {steps} steps, got {states.shape[0]} states and {actions.shape[0]} actions."
                     )
+
+                nx = int(states.shape[1])
+                nu = int(actions.shape[1])
+                if expected_nx is None:
+                    expected_nx = nx
+                    expected_nu = nu
+                elif nx != expected_nx or nu != expected_nu:
+                    raise ValueError(
+                        "Inconsistent state/action dimensions across trajectories: "
+                        f"expected (nx={expected_nx}, nu={expected_nu}), "
+                        f"got (nx={nx}, nu={nu}) for trajectory ID {meta.id}."
+                    )
+
                 states_chunks.append(states[:steps, :])
                 actions_chunks.append(actions[:steps, :])
 
@@ -101,6 +118,15 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
 
         states = np.ascontiguousarray(np.concatenate(states_chunks, axis=0))
         actions = np.ascontiguousarray(np.concatenate(actions_chunks, axis=0))
+
+        if expected_nx is not None and states.shape[1] != expected_nx:
+            raise ValueError(
+                f"Concatenated states dimension mismatch: expected nx={expected_nx}, got nx={states.shape[1]}."
+            )
+        if expected_nu is not None and actions.shape[1] != expected_nu:
+            raise ValueError(
+                f"Concatenated actions dimension mismatch: expected nu={expected_nu}, got nu={actions.shape[1]}."
+            )
 
         if self.near_duplicate_radius is None:
             return states, actions
@@ -121,19 +147,25 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
     def _near_duplicate_keep_indices(states: np.ndarray, actions: np.ndarray, radius: float) -> np.ndarray:
         """Return indices kept after vectorized near-duplicate voxel deduplication.
 
-        The method quantizes the concatenated ``[state, action]`` vector into a
-        regular grid and keeps at most one sample per voxel. Voxel size is chosen
-        as ``radius / sqrt(d)`` for ``d`` total dimensions, so points inside one
-        voxel are guaranteed to be within the L2 radius bound.
+        The method robustly normalizes the concatenated ``[state, action]``
+        features (median/IQR), then quantizes them into a regular grid and
+        keeps at most one sample per voxel. Voxel size is chosen as
+        ``radius / sqrt(d)`` for ``d`` total dimensions, so points inside one
+        voxel are guaranteed to be within the L2 radius bound in normalized space.
         """
         if states.shape[0] == 0:
             return np.empty((0,), dtype=np.int64)
 
         features = np.concatenate((states, actions), axis=1)
+        feature_median = np.median(features, axis=0)
+        feature_iqr = np.percentile(features, 75, axis=0) - np.percentile(features, 25, axis=0)
+        feature_iqr = np.maximum(feature_iqr, 1e-8)
+        normalized_features = (features - feature_median) / feature_iqr
+
         feature_dim = features.shape[1]
         cell_size = radius / np.sqrt(float(feature_dim))
 
-        quantized = np.floor(features / cell_size)
+        quantized = np.floor(normalized_features / cell_size)
         _, unique_idx = np.unique(quantized, axis=0, return_index=True)
         return np.sort(unique_idx.astype(np.int64, copy=False))
 
@@ -147,14 +179,10 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         if idx < 0 or idx >= self._total_samples:
             raise IndexError(f"Index {idx} is out of bounds for dataset size {self._total_samples}.")
 
-        if self._states_np is None or self._actions_np is None:
-            raise RuntimeError("In-memory arrays are not available.")
+        if self._states is None or self._actions is None:
+            raise RuntimeError("In-memory tensors are not available.")
 
-        state_np = self._states_np[idx]
-        action_np = self._actions_np[idx]
-        state = th.as_tensor(state_np, dtype=self.dtype)
-        action = th.as_tensor(action_np, dtype=self.dtype)
-        return state, action
+        return self._states[idx], self._actions[idx]
 
 
 def create_imitation_learning_dataloader(

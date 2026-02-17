@@ -32,7 +32,7 @@ class DoubleIntegratorDynamics(nn.Module):
 
 def main() -> None:
     device = "cpu" #th.device("cuda" if th.cuda.is_available() else "cpu")
-    dataset_path = "/home/josua/programming_stuff/projects/mpc-datagen/data/double_integrator_regional_N20_data.hdf5"
+    dataset_path = "/home/josua/programming_stuff/projects/mpc-datagen/data/double_integrator_regional_N20_data_.hdf5"
     n_samples = 500
 
     source_dataset = MPCDataset.load(Path(dataset_path))
@@ -60,13 +60,14 @@ def main() -> None:
         num_workers=0,
         pin_memory=True,
         dtype=th.float32,
+        near_duplicate_radius=1e-4,
     )
     
     train_mlp_policy(
         policy_model=net,
         dataloader=dataloader,
-        num_epochs=5,
-        learning_rate=1e-3,
+        num_epochs=100,
+        learning_rate=2e-4,
         device=device,
     )
 
