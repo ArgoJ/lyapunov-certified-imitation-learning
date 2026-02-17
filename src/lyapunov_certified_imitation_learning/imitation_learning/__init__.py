@@ -1,11 +1,10 @@
-from .dataset import ImitationLearningDataset, create_imitation_learning_dataloader
-from .dataset_converter import StateActionDataset, StateActionPair
+from .dataset import StateActionDataset, create_imitation_learning_dataloader
 from .mlp_trainer import train_mlp_policy
 from .models import MLPPolicy
 
 
 __all__ = [
-    "ImitationLearningDataset",
+    "StateActionDataset",
     "StateActionDataset",
     "StateActionPair",
     "create_imitation_learning_dataloader",

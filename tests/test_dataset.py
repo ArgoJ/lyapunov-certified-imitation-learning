@@ -5,11 +5,11 @@ from time import perf_counter
 
 import torch as th
 
-from lyapunov_certified_imitation_learning.imitation_learning.dataset import ImitationLearningDataset
+from lyapunov_certified_imitation_learning.imitation_learning.dataset import StateActionDataset
 
 
-class TestImitationLearningDatasetTiming(unittest.TestCase):
-	"""Unit tests with timing information for lazy imitation-learning dataset calls."""
+class TestStateActionDatasetTiming(unittest.TestCase):
+	"""Unit tests with timing information for in-memory imitation-learning dataset calls."""
 	PATH_FILE = Path(__file__).with_name("mpc_dataset_path.txt")
 
 	@classmethod
@@ -60,35 +60,15 @@ class TestImitationLearningDatasetTiming(unittest.TestCase):
 
 	def test_dataset_init_and_len_timing(self) -> None:
 		dataset, t_init = self._measure_call(
-			ImitationLearningDataset,
+			StateActionDataset,
 			str(self.dataset_path),
 			repeats=3,
 		)
 		self.__class__._timings["init_from_path"] = t_init
-
-		size, t_len = self._measure_call(len, dataset, repeats=5)
-		self.__class__._timings["len"] = t_len
-
-		self.assertGreater(size, 0)
-		self.assertGreater(len(dataset.id_to_sim_steps), 0)
-
-	def test_map_sample_to_traj_timing(self) -> None:
-		dataset = ImitationLearningDataset(str(self.dataset_path))
-		mid_idx = len(dataset) // 2
-
-		mapped, t_map = self._measure_call(
-			dataset._map_sample_to_traj,
-			mid_idx,
-			repeats=50,
-		)
-		self.__class__._timings["map_sample_to_traj"] = t_map
-
-		traj_idx, step_idx = mapped
-		self.assertGreaterEqual(traj_idx, 0)
-		self.assertGreaterEqual(step_idx, 0)
+		self.assertGreater(len(dataset), 0)
 
 	def test_getitem_timing_and_shapes(self) -> None:
-		dataset = ImitationLearningDataset(str(self.dataset_path))
+		dataset = StateActionDataset(str(self.dataset_path))
 		n = len(dataset)
 		indices = [0, n // 2, n - 1] if n > 2 else list(range(n))
 
@@ -107,6 +87,41 @@ class TestImitationLearningDatasetTiming(unittest.TestCase):
 
 		avg_time = total_time / max(len(indices), 1)
 		self.__class__._timings["getitem_avg"] = avg_time
+
+	def test_near_duplicate_radius_effect(self) -> None:
+		dataset_full = StateActionDataset(str(self.dataset_path))
+		dataset_filtered, t_filtered_init = self._measure_call(
+			StateActionDataset,
+			str(self.dataset_path),
+			repeats=3,
+			near_duplicate_radius=1e-3,
+		)
+		self.__class__._timings["init_filtered"] = t_filtered_init
+
+		self.assertGreater(len(dataset_full), 0)
+		self.assertGreater(len(dataset_filtered), 0)
+		self.assertLessEqual(len(dataset_filtered), len(dataset_full))
+
+		filtered_count = len(dataset_full) - len(dataset_filtered)
+		filtered_ratio = filtered_count / len(dataset_full)
+		print(
+			f"Filtered samples: {filtered_count}/{len(dataset_full)} "
+			f"({filtered_ratio:.2%}) with near_duplicate_radius=1e-3"
+		)
+
+		n = len(dataset_filtered)
+		indices = [0, n // 2, n - 1] if n > 2 else list(range(n))
+		for idx in indices:
+			state_filtered, action_filtered = dataset_filtered[idx]
+			self.assertIsInstance(state_filtered, th.Tensor)
+			self.assertIsInstance(action_filtered, th.Tensor)
+
+	def test_near_duplicate_radius_validation(self) -> None:
+		with self.assertRaises(ValueError):
+			StateActionDataset(str(self.dataset_path), near_duplicate_radius=0.0)
+
+		with self.assertRaises(ValueError):
+			StateActionDataset(str(self.dataset_path), near_duplicate_radius=-1e-3)
 
 
 if __name__ == "__main__":
