@@ -1,3 +1,4 @@
+import argparse
 import torch as th
 import torch.nn as nn
 from pathlib import Path
@@ -30,10 +31,34 @@ class DoubleIntegratorDynamics(nn.Module):
         return th.cat([x_next_pos, x_next_vel], dim=1)
 
 
+def parse_cli_args() -> argparse.Namespace:
+    """Parse command-line arguments for training and rollout settings."""
+    parser = argparse.ArgumentParser(description="Train and rollout a double-integrator imitation policy.")
+    parser.add_argument(
+        "--dataset-path",
+        type=str,
+        default="/home/josua/programming_stuff/projects/mpc-datagen/data/double_integrator_regional_N20_data_.hdf5",
+        help="Path to the source MPC dataset (HDF5).",
+    )
+    parser.add_argument("--epochs", type=int, default=100, help="Number of policy training epochs.")
+    parser.add_argument("--learning-rate", type=float, default=2e-4, help="Optimizer learning rate.")
+    parser.add_argument("--batch-size", type=int, default=256, help="Training batch size.")
+    parser.add_argument("--n-samples", type=int, default=500, help="Number of rollout initial states.")
+    parser.add_argument(
+        "--near-duplicate-radius",
+        type=float,
+        default=1e-4,
+        help="Optional near-duplicate L2 radius in normalized feature space.",
+    )
+    parser.add_argument("--device", type=str, default="cpu", help="Torch device string (e.g. cpu, cuda).")
+    return parser.parse_args()
+
+
 def main() -> None:
-    device = "cpu" #th.device("cuda" if th.cuda.is_available() else "cpu")
-    dataset_path = "/home/josua/programming_stuff/projects/mpc-datagen/data/double_integrator_regional_N20_data_.hdf5"
-    n_samples = 500
+    args = parse_cli_args()
+    device = args.device
+    dataset_path = args.dataset_path
+    n_samples = args.n_samples
 
     source_dataset = MPCDataset.load(Path(dataset_path))
     if len(source_dataset) == 0:
@@ -54,20 +79,20 @@ def main() -> None:
 
     dataloader = create_imitation_learning_dataloader(
         mpc_dataset=dataset_path,
-        batch_size=256,
+        batch_size=args.batch_size,
         shuffle=True,
         drop_last=False,
         num_workers=0,
         pin_memory=True,
         dtype=th.float32,
-        near_duplicate_radius=1e-4,
+        near_duplicate_radius=args.near_duplicate_radius,
     )
     
     train_mlp_policy(
         policy_model=net,
         dataloader=dataloader,
-        num_epochs=100,
-        learning_rate=2e-4,
+        num_epochs=args.epochs,
+        learning_rate=args.learning_rate,
         device=device,
     )
 
@@ -90,4 +115,4 @@ def main() -> None:
     )
 
 if __name__ == "__main__":
-	main()
+    main()
