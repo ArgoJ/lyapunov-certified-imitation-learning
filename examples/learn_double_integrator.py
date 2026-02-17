@@ -9,6 +9,7 @@ from lyapunov_certified_imitation_learning.imitation_learning import (
     train_mlp_policy,
     create_imitation_learning_dataloader,
     MLPPolicy,
+    ReferenceWeightedMSELoss,
 )
 from lyapunov_certified_imitation_learning.imitation_learning.policy_rollout import (
     PolicyRolloutConfig,
@@ -94,6 +95,7 @@ def main() -> None:
         num_epochs=args.epochs,
         learning_rate=args.learning_rate,
         device=device,
+        loss_fn=ReferenceWeightedMSELoss(reference=[0.0], alpha=1.0, max_weight=10.0),
     )
 
     simulator = DoubleIntegratorDynamics(dt=rollout_config.dt)

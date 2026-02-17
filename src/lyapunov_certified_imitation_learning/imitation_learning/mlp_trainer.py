@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 import torch as th
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -14,6 +12,7 @@ __logger__ = get_package_logger(__name__)
 def train_mlp_policy(
     policy_model: nn.Module,
     dataloader: DataLoader,
+    loss_fn: nn.Module | None = None,
     num_epochs: int = 10,
     learning_rate: float = 1e-3,
     device: th.device | str = "cpu",
@@ -39,7 +38,8 @@ def train_mlp_policy(
     policy_model.train()
 
     optimizer = th.optim.Adam(policy_model.parameters(), lr=learning_rate)
-    loss_fn = nn.MSELoss()
+    loss_fn = nn.MSELoss() if loss_fn is None else loss_fn
+    loss_fn = loss_fn.to(device)
     
     num_batches = max(len(dataloader), 1)
     batch_progress = 1.0 / num_batches
