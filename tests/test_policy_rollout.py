@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from lyapunov_certified_imitation_learning.imitation_learning.policy_rollout import (
+from lyapunov_certified_imitation_learning.imitation_learning_mlp.policy_rollout import (
     PolicyRolloutConfig,
     RandomBoundsSampler,
 )

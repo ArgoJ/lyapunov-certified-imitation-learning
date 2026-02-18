@@ -36,20 +36,52 @@ def certify_with_crown(
     lb = th.tensor(lb_box, device=device, dtype=th.float32).unsqueeze(0)
     ub = th.tensor(ub_box, device=device, dtype=th.float32).unsqueeze(0)
     center = (lb + ub) / 2
+    counter_example = center.squeeze(0).detach().cpu().numpy()
 
-    ptb = PerturbationLpNorm(norm=float("inf"), x_L=lb, x_U=ub)
-    bounded_input = BoundedTensor(center, ptb)
-    lirpa_model = BoundedModule(verifier_module, center, device=device, verbose=False)
+    def _compute_upper_bound(bound_method: str) -> th.Tensor:
+        ptb = PerturbationLpNorm(norm=float("inf"), x_L=lb, x_U=ub)
+        bounded_input = BoundedTensor(center, ptb)
+        lirpa_model = BoundedModule(verifier_module, center, device=device, verbose=False)
+        if bound_method == "alpha-crown":
+            _, ub_out_local = lirpa_model.compute_bounds(x=(bounded_input,), method=bound_method)
+        else:
+            with th.no_grad():
+                _, ub_out_local = lirpa_model.compute_bounds(x=(bounded_input,), method=bound_method)
+        return ub_out_local
 
-    if method.strip().lower() == "alpha-crown":
-        _, ub_out = lirpa_model.compute_bounds(x=(bounded_input,), method=method)
-    else:
-        with th.no_grad():
-            _, ub_out = lirpa_model.compute_bounds(x=(bounded_input,), method=method)
+    normalized_method = method.strip().lower()
+    fallback_methods = [normalized_method]
+    if normalized_method == "alpha-crown":
+        fallback_methods.extend(["crown", "crown-ibp", "ibp"])
+
+    ub_out: th.Tensor | None = None
+    last_exc: Exception | None = None
+    for candidate_method in fallback_methods:
+        try:
+            ub_out = _compute_upper_bound(candidate_method)
+            break
+        except Exception as exc:
+            last_exc = exc
+            __logger__.warning(
+                "LiRPA method '%s' failed with %s on region lb=%s ub=%s",
+                candidate_method,
+                exc,
+                lb_box,
+                ub_box,
+            )
+
+    if ub_out is None:
+        __logger__.error(
+            "All LiRPA methods failed on region lb=%s ub=%s (last error: %s). "
+            "Marking region as uncertified.",
+            lb_box,
+            ub_box,
+            last_exc,
+        )
+        return False, counter_example, float("inf")
 
     max_upper = ub_out.max().item()
     is_certified = max_upper <= tolerance
-    counter_example = center.squeeze(0).detach().cpu().numpy()
     return is_certified, counter_example, max_upper
 
 
@@ -60,9 +92,7 @@ def _build_regions(
         raise ValueError("certification currently supports state_dim == 2.")
     if len(config.state_bounds) != config.state_dim:
         raise ValueError("state_bounds must match state_dim.")
-
-    step = config.cert_step
-    if step <= 0:
+    if config.cert_step <= 0:
         raise ValueError("cert_step must be positive.")
 
     train_diameter = max(config.state_bounds)
@@ -71,13 +101,13 @@ def _build_regions(
     else:
         origin_exclusion = config.cert_origin_exclusion
 
-    regions: list[tuple[list[float], list[float]]] = []
     x_bound, y_bound = config.state_bounds[0], config.state_bounds[1]
-    for x in np.arange(-x_bound, x_bound, step):
-        for y in np.arange(-y_bound, y_bound, step):
+    regions: list[tuple[list[float], list[float]]] = []
+    for x in np.arange(-x_bound, x_bound, config.cert_step):
+        for y in np.arange(-y_bound, y_bound, config.cert_step):
             if abs(x) < origin_exclusion and abs(y) < origin_exclusion:
                 continue
-            regions.append(([x, y], [x + step, y + step]))
+            regions.append(([x, y], [x + config.cert_step, y + config.cert_step]))
     return regions
 
 

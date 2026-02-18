@@ -1,6 +1,9 @@
-import torch
+import os
+import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
+
+from pathlib import Path
 
 
 def _get_activation(name: str) -> nn.Module:
@@ -35,6 +38,15 @@ def _check_activations(activations: list[str], layer_dims: list[int]) -> None:
             "activations must have the same length as layer_dims minus one."
         )
 
+def save_model_checkpoint(model: nn.Module, save_path: str | os.PathLike[str]) -> None:
+    """Save model checkpoint using custom ``save`` when available, else save state dict."""
+    save_path = Path(save_path)
+    if hasattr(model, "save") and callable(model.save):
+        model.save(save_path)
+    else:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        th.save(model.state_dict(), save_path)
+
 
 class ResidualBlock(nn.Module):
     """Residual MLP block with two linear layers.
@@ -53,7 +65,7 @@ class ResidualBlock(nn.Module):
         self.linear2 = nn.Linear(dim, dim)
         self.activation = _get_activation(activation)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: th.Tensor) -> th.Tensor:
         return x + self.linear2(self.activation(self.linear1(x)))
 
 
@@ -62,14 +74,14 @@ class PositiveLinear(nn.Module):
 
     def __init__(self, in_features: int, out_features: int, bias: bool = False):
         super().__init__()
-        self.weight = nn.Parameter(torch.empty(out_features, in_features))
+        self.weight = nn.Parameter(th.empty(out_features, in_features))
         nn.init.xavier_uniform_(self.weight)
         if bias:
-            self.bias = nn.Parameter(torch.zeros(out_features))
+            self.bias = nn.Parameter(th.zeros(out_features))
         else:
             self.bias = None
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: th.Tensor) -> th.Tensor:
         weight = F.softplus(self.weight)
         return F.linear(x, weight, self.bias)
 
@@ -106,7 +118,7 @@ class MLP(nn.Module):
 
         self.net = nn.Sequential(*layers)
         
-    def forward(self, x):
+    def forward(self, x: th.Tensor) -> th.Tensor:
         return self.net(x)
 
 
@@ -146,7 +158,7 @@ class ResNet(nn.Module):
 
         self.net = nn.Sequential(*layers)
         
-    def forward(self, x):
+    def forward(self, x: th.Tensor) -> th.Tensor:
         return self.net(x)
 
 
@@ -186,7 +198,7 @@ class ICNN(nn.Module):
                 prev_dim = layer_dims[idx]
                 self.W_z.append(PositiveLinear(prev_dim, out_dim, bias=False))
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: th.Tensor) -> th.Tensor:
         z = None
         for idx, act_name in enumerate(self.activations):
             activation = _get_activation(act_name)

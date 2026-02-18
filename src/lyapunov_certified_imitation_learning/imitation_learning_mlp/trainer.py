@@ -77,6 +77,9 @@ def train_mlp_policy(
 
     if save_path is not None:
         save_path = Path(save_path)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        th.save(policy_model.state_dict(), save_path)
+        if hasattr(policy_model, "save") and callable(policy_model.save):
+            policy_model.save(save_path)
+        else:
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            th.save(policy_model.state_dict(), save_path)
         __logger__.info("Saved trained policy model to %s", save_path)

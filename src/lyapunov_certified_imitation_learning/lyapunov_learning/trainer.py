@@ -5,11 +5,13 @@ import time
 import numpy as np
 import torch as th
 import torch.nn as nn
+from pathlib import Path
 
 from dataclasses import dataclass
 
 from .config import LyapunovTrainingConfig
 from ..utils.package_logger import get_package_logger
+from ..utils.base_models import save_model_checkpoint
 from ..certification.models import ClosedLoopLyapunovConditionVerifier
 from ..certification.counterexample import (
     estimate_rho_from_boundary,
@@ -25,8 +27,8 @@ class LyapunovTrainingResult:
     rho_estimate: float
     num_mined_counterexamples: int
     train_time: float
-    lyap_model_path: str
-    policy_model_path: str
+    lyap_model_path: os.PathLike[str] | None = None
+    policy_model_path: os.PathLike[str] | None = None
 
 
 def _parameter_l1_norm(model_params: list[nn.Parameter]) -> th.Tensor:
@@ -52,7 +54,7 @@ def train_lyapunov(
     dyn_model: nn.Module,
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),
-    models_prefix: str | None = None,
+    models_folder: os.PathLike[str] | None = None,
 ) -> LyapunovTrainingResult:
     """Train a Lyapunov-stable neural controller with a CEGIS-style loop."""
     if len(config.state_bounds) != config.state_dim:
@@ -62,10 +64,22 @@ def train_lyapunov(
         th.manual_seed(config.seed)
         np.random.seed(config.seed)
 
-    optimizer = th.optim.Adam(
-        list(policy_model.parameters()) + list(lyap_model.parameters()),
-        lr=config.learning_rate,
-    )
+    policy_model.to(device).train()
+    lyap_model.to(device).train()
+    dyn_model.to(device)
+
+    lyap_params = list(lyap_model.parameters())
+    policy_params = list(policy_model.parameters()) if config.train_policy_model else []
+    trainable_params = policy_params + lyap_params
+
+    if not trainable_params:
+        raise ValueError("No trainable parameters found. Check model definitions and config.")
+
+    if not config.train_policy_model:
+        policy_model.eval()
+        __logger__.info("Policy model updates disabled; training only Lyapunov model parameters.")
+
+    optimizer = th.optim.Adam(trainable_params, lr=config.learning_rate)
 
     bounds = th.tensor(config.state_bounds, dtype=th.float32, device=device)
     training_pool = sample_uniform_box(config.sample_size, bounds, device)
@@ -80,8 +94,6 @@ def train_lyapunov(
         invariance_weight=config.invariance_weight,
         rho=config.rho_min,
     ).to(device)
-
-    trainable_params = list(policy_model.parameters()) + list(lyap_model.parameters())
 
     mining_interval = max(1, config.counterexample_every // max(1, config.steps_per_epoch))
     rho_estimate = config.rho_min
@@ -160,26 +172,28 @@ def train_lyapunov(
     train_time = time.time() - start_time
     __logger__.info("Training finished in %.2fs", train_time)
 
-    if models_prefix is not None:
-        parent_dir = os.path.abspath(os.path.dirname(models_prefix))
-        os.makedirs(parent_dir, exist_ok=True)
-
-        seed_suffix = f"_{config.seed}" if config.seed is not None else ""
-        lyap_path = f"{models_prefix}_lyap{seed_suffix}.pt"
-        policy_path = f"{models_prefix}_policy{seed_suffix}.pt"
-        th.save(
-            {"model_state_dict": lyap_model.state_dict()},
-            lyap_path,
-        )
-        th.save(
-            {"model_state_dict": policy_model.state_dict()},
-            policy_path,
-        )
-
-    return LyapunovTrainingResult(
+    results = LyapunovTrainingResult(
         rho_estimate=rho_estimate,
         num_mined_counterexamples=num_mined_counterexamples,
         train_time=train_time,
-        lyap_model_path=lyap_path,
-        policy_model_path=policy_path,
     )
+
+    if models_folder is None:
+        return results
+
+    parent_dir = os.path.abspath(os.path.dirname(models_folder))
+    os.makedirs(parent_dir, exist_ok=True)
+
+    seed_suffix = f"_{config.seed}" if config.seed is not None else ""
+
+    results.lyap_model_path = f"{models_folder}/lyapunov_model{seed_suffix}.pt"
+    results.policy_model_path = f"{models_folder}/policy_model{seed_suffix}.pt"
+    save_model_checkpoint(lyap_model, results.lyap_model_path)
+    save_model_checkpoint(policy_model, results.policy_model_path)
+    __logger__.info("Saved Lyapunov model to %s", results.lyap_model_path)
+    __logger__.info("Saved policy model to %s", results.policy_model_path)
+    
+    if not config.train_policy_model:
+        __logger__.info("Policy model was not trained; saved initial parameters.")
+
+    return results

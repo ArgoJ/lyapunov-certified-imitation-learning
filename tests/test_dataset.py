@@ -5,7 +5,7 @@ from time import perf_counter
 
 import torch as th
 
-from lyapunov_certified_imitation_learning.imitation_learning.dataset import StateActionDataset
+from lyapunov_certified_imitation_learning.imitation_learning_mlp.dataset import StateActionDataset
 
 
 class TestStateActionDatasetTiming(unittest.TestCase):

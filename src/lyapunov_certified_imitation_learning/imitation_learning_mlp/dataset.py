@@ -6,7 +6,7 @@ import numpy as np
 import torch as th
 
 from torch.utils.data import DataLoader, Dataset
-from mpc_datagen import MPCDataset, MPCMeta, MPCTrajectory
+from mpc_datagen import LinearLSCost, MPCConfig, MPCDataset, MPCMeta, MPCTrajectory
 
 from ..utils.package_logger import get_package_logger
 
@@ -97,8 +97,11 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
 
         states_chunks: list[np.ndarray] = []
         actions_chunks: list[np.ndarray] = []
+        y_res_chunks: list[np.ndarray] = []
+        steps_chunks: list[int] = []
         expected_nx: int | None = None
         expected_nu: int | None = None
+        filter_duplicates = self.near_duplicate_radius is not None
 
         indices = list(self.mpc_dataset._indices)
         with __logger__.tqdm(indices, desc="Preloading trajectories") as pbar:
@@ -110,13 +113,8 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
                     continue
 
                 traj = MPCTrajectory.from_hdf5(grp, fields=["states", "inputs"])
-                states = traj.states
-                actions = traj.inputs
-                if (states.shape[0] - 1) != steps or actions.shape[0] != steps:
-                    raise ValueError(
-                        f"Trajectory data length mismatch for ID {meta.id}: "
-                        f"expected {steps} steps, got {states.shape[0]} states and {actions.shape[0]} actions."
-                    )
+                states = traj.states[:steps, :]
+                actions = traj.inputs[:steps, :]
 
                 nx = int(states.shape[1])
                 nu = int(actions.shape[1])
@@ -130,8 +128,18 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
                         f"got (nx={nx}, nu={nu}) for trajectory ID {meta.id}."
                     )
 
-                states_chunks.append(states[:steps, :])
-                actions_chunks.append(actions[:steps, :])
+                states_chunks.append(states)
+                actions_chunks.append(actions)
+                steps_chunks.append(steps)
+
+                if filter_duplicates:
+                    global_cfg_grp = MPCConfig._get_global_cfg_grp(grp)
+                    local_cfg_grp = MPCConfig._get_local_cfg_grp(grp)
+
+                    base_grp = global_cfg_grp if global_cfg_grp is not None else local_cfg_grp
+                    overwrite_grp = local_cfg_grp if local_cfg_grp is not None else None
+                    cost = LinearLSCost.from_hdf5(base_grp, overwrite_grp)
+                    y_res_chunks.append(cost.get_y(states, actions) - cost.yref)
 
         if not states_chunks or not actions_chunks:
             return np.empty((0, 0)), np.empty((0, 0))
@@ -148,10 +156,19 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
                 f"Concatenated actions dimension mismatch: expected nu={expected_nu}, got nu={actions.shape[1]}."
             )
 
-        if self.near_duplicate_radius is None:
+        if not filter_duplicates:
             return states, actions
 
-        keep_idx = self._near_duplicate_keep_indices(states=states, actions=actions, radius=self.near_duplicate_radius)
+        y_residuals: np.ndarray | None = None
+        if y_res_chunks:
+            y_residuals = np.ascontiguousarray(np.concatenate(y_res_chunks, axis=0))
+
+        keep_idx = self._near_duplicate_keep_indices(
+            states=states,
+            actions=actions,
+            radius=self.near_duplicate_radius,
+            y_residuals=y_residuals,
+        )
         if keep_idx.size == states.shape[0]:
             return states, actions
 
@@ -164,12 +181,20 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         return np.ascontiguousarray(states[keep_idx]), np.ascontiguousarray(actions[keep_idx])
 
     @staticmethod
-    def _near_duplicate_keep_indices(states: np.ndarray, actions: np.ndarray, radius: float) -> np.ndarray:
+    def _near_duplicate_keep_indices(
+        states: np.ndarray,
+        actions: np.ndarray,
+        radius: float,
+        y_residuals: np.ndarray | None = None,
+    ) -> np.ndarray:
         """Return indices kept after vectorized near-duplicate voxel deduplication.
 
         The method robustly normalizes the concatenated ``[state, action]``
         features (median/IQR), then quantizes them into a regular grid and
-        keeps at most one sample per voxel. Voxel size is chosen as
+        keeps at most one sample per voxel. If ``y_residuals`` are
+        provided, the kept sample per voxel is chosen as the one with the
+        smallest residual score (sum of squares). Otherwise, the first sample per voxel
+        is kept. Voxel size is chosen as
         ``radius / sqrt(d)`` for ``d`` total dimensions, so points inside one
         voxel are guaranteed to be within the L2 radius bound in normalized space.
         """
@@ -186,8 +211,26 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         cell_size = radius / np.sqrt(float(feature_dim))
 
         quantized = np.floor(normalized_features / cell_size)
-        _, unique_idx = np.unique(quantized, axis=0, return_index=True)
-        return np.sort(unique_idx.astype(np.int64, copy=False))
+        _, unique_idx, inverse = np.unique(quantized, axis=0, return_index=True, return_inverse=True)
+
+        if y_residuals is None:
+            return np.sort(unique_idx.astype(np.int64, copy=False))
+
+        y_res = np.asarray(y_residuals, dtype=np.float64)
+        if y_res.ndim == 1:
+            y_res = y_res.reshape(-1, 1)
+        squared_distance = np.einsum("ij,ij->i", y_res, y_res)
+        if squared_distance.shape[0] != states.shape[0]:
+            raise ValueError(
+                "y_residuals length mismatch: "
+                f"expected {states.shape[0]}, got {squared_distance.shape[0]}."
+            )
+
+        sort_order = np.lexsort((squared_distance, inverse))
+        sorted_inverse = inverse[sort_order]
+        _, first_pos = np.unique(sorted_inverse, return_index=True)
+        keep_idx = sort_order[first_pos]
+        return np.sort(keep_idx.astype(np.int64, copy=False))
 
     def __getitem__(self, idx: int) -> tuple[th.Tensor, th.Tensor]:
         """Return one imitation pair ``(state, action)`` at global index ``idx``."""
@@ -236,7 +279,9 @@ def create_imitation_learning_dataloader(
         Tensor dtype for states/actions emitted by the dataset.
     near_duplicate_radius : float, optional
         Optional near-duplicate filter radius in L2 distance over concatenated
-        state-action vectors.
+        state-action vectors. The voxel representative is selected by distance
+        to per-sample stage references computed from ``LinearLSCost`` via
+        ``cost.get_y(states, actions) - cost.yref`` when available.
     """
     dataset = StateActionDataset(
         mpc_dataset=mpc_dataset,

@@ -24,6 +24,9 @@ class LyapunovTrainingConfig:
         Number of optimization steps per epoch.
     learning_rate : float
         Adam optimizer learning rate.
+    train_policy_model : bool
+        Whether to jointly optimize policy parameters with Lyapunov parameters.
+        If False, only the Lyapunov model is updated.
     seed : int | None
         Random seed for reproducibility.
     kappa : float
@@ -75,6 +78,7 @@ class LyapunovTrainingConfig:
     outer_epochs: int = 10
     steps_per_epoch: int = 500
     learning_rate: float = 1e-2
+    train_policy_model: bool = True
     seed: int | None = None
     kappa: float = 0.05
     invariance_weight: float = 1.0
