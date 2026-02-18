@@ -64,20 +64,27 @@ class LyapunovCertificationConfig:
         cert_max_scale_steps: int = 20,
         cert_max_bisection_steps: int = 40,
         cert_method: str = "alpha-crown",
+        **kwargs,
     ) -> "LyapunovCertificationConfig":
-        """Build a certification config from a training config."""
-        return LyapunovCertificationConfig(
-            state_dim=config.state_dim,
-            state_bounds=config.state_bounds,
-            kappa=config.kappa,
-            invariance_weight=config.invariance_weight,
-            rho_min=config.rho_min,
-            cert_step=cert_step,
-            cert_origin_exclusion=cert_origin_exclusion,
-            cert_rho_scaling=cert_rho_scaling,
-            cert_bisection_tol=cert_bisection_tol,
-            cert_max_scale_steps=cert_max_scale_steps,
-            cert_max_bisection_steps=cert_max_bisection_steps,
-            cert_method=cert_method,
-            condition_tolerance=config.condition_tolerance,
-        )
+        """Build a certification config from a training config.
+
+        Parameters in ``kwargs`` override values derived from ``config`` and
+        explicit function arguments.
+        """
+        config_values = {
+            "state_dim": config.state_dim,
+            "state_bounds": config.state_bounds,
+            "kappa": config.kappa,
+            "invariance_weight": config.invariance_weight,
+            "rho_min": config.rho_min,
+            "cert_step": cert_step,
+            "cert_origin_exclusion": cert_origin_exclusion,
+            "cert_rho_scaling": cert_rho_scaling,
+            "cert_bisection_tol": cert_bisection_tol,
+            "cert_max_scale_steps": cert_max_scale_steps,
+            "cert_max_bisection_steps": cert_max_bisection_steps,
+            "cert_method": cert_method,
+            "condition_tolerance": config.condition_tolerance,
+        }
+        config_values.update(kwargs)
+        return LyapunovCertificationConfig(**config_values)

@@ -57,8 +57,8 @@ def main() -> None:
         cert_max_scale_steps=20,
         cert_max_bisection_steps=40,
         cert_method="crown",
+        state_bounds = (15.0, 15.0),
     )
-    certification_config.state_bounds = (15.0, 15.0)
 
     train_results = train_lyapunov(
         policy_model,
