@@ -70,7 +70,7 @@ def main() -> None:
     source_dataset = MPCDataset.load(Path(dataset_path))
     if len(source_dataset) == 0:
         raise ValueError("MPCDataset is empty; cannot extract configuration.")
-    rollout_config = PolicyRolloutConfig.from_mpc_config(source_dataset[0].config, t_sim=80)
+    rollout_config = PolicyRolloutConfig.from_mpc_config(source_dataset[0].config, t_sim=40)
     
     if rollout_config.input_bounds is None:
         u_bounds = (None, None)

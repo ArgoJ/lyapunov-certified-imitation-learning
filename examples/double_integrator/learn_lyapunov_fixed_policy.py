@@ -32,7 +32,7 @@ def main() -> None:
 
     training_config = LyapunovTrainingConfig(
         state_dim=2,
-        state_bounds=(10.0, 10.0),
+        state_bounds=(20.0, 20.0),
         sample_size=1000,
         batch_size=512,
         outer_epochs=100,
@@ -88,11 +88,11 @@ def main() -> None:
             return v.detach().cpu().numpy().reshape(-1)
 
         lcil_plt.lyapunov(
-            dataset=rollout_dataset,
+            dataset=rollout_dataset[:100],
             lyapunov_func=lyapunov_func,
             state_indices=[0, 1],
             state_labels=["x", "v"],
-            plot_3d=False,
+            plot_3d=True,
             certified_regions=cert_results.certified_regions,
             uncertified_regions=cert_results.failed_regions,
             html_path="results/plots/lyapunov_certified_regions.html",
