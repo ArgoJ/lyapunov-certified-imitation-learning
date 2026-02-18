@@ -191,16 +191,14 @@ class PolicyRolloutGenerator:
 
         self.t_sim = int(self.rollout_config.T_sim)
         self.dt = float(self.rollout_config.dt)
-        self.state_bounds = self.rollout_config.state_bounds
-        self.input_bounds = self.rollout_config.input_bounds
 
         if sampler is None:
-            if self.state_bounds is None:
+            if self.rollout_config.state_bounds is None:
                 raise ValueError(
                     "No sampler was provided and state_bounds are not set. "
                     "Provide a sampler or set state_bounds in PolicyRolloutConfig."
                 )
-            sampler = RandomBoundsSampler(bounds=self.state_bounds)
+            sampler = RandomBoundsSampler(bounds=self.rollout_config.state_bounds)
         self.sampler = sampler
 
         self.policy.to(self.device)
@@ -238,8 +236,6 @@ class PolicyRolloutGenerator:
                     raise ValueError(
                         f"Policy output dimension mismatch: expected {self.mpc_config.nu}, got {u_vec.size}."
                     )
-                if self.input_bounds is not None:
-                    u_vec = np.clip(u_vec, self.input_bounds[0], self.input_bounds[1])
 
                 traj.inputs[k, :] = u_vec
                 u_sim_tensor = th.as_tensor(u_vec, dtype=th.float32, device=self.device).unsqueeze(0)

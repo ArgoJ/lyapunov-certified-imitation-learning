@@ -32,7 +32,7 @@ def main() -> None:
 
     training_config = LyapunovTrainingConfig(
         state_dim=2,
-        state_bounds=(20.0, 20.0),
+        state_bounds=(10.0, 10.0),
         sample_size=1000,
         batch_size=512,
         outer_epochs=100,
@@ -58,6 +58,7 @@ def main() -> None:
         cert_max_bisection_steps=40,
         cert_method="crown",
     )
+    certification_config.state_bounds = (15.0, 15.0)
 
     train_results = train_lyapunov(
         policy_model,
