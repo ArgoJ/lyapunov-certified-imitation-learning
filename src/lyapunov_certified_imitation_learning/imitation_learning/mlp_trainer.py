@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch as th
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -16,6 +18,7 @@ def train_mlp_policy(
     num_epochs: int = 10,
     learning_rate: float = 1e-3,
     device: th.device | str = "cpu",
+    save_path: str | Path | None = None,
 ) -> None:
     """
     Train a simple MLP policy model on the provided imitation-learning dataset.
@@ -32,6 +35,8 @@ def train_mlp_policy(
         Learning rate for the optimizer. Default is 1e-3.
     device : torch.device or str, optional
         Device to run training on (e.g., "cpu" or "cuda"). Default is "cpu".
+    save_path : str | pathlib.Path or None, optional
+        If provided, save the trained model state dict to this path after training.
     """
     device = th.device(device)
     policy_model.to(device)
@@ -69,3 +74,9 @@ def train_mlp_policy(
             avg_loss = epoch_loss / datapoints
             
             pbar.set_postfix({"Loss": f"{avg_loss:.4f}"})
+
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        th.save(policy_model.state_dict(), save_path)
+        __logger__.info("Saved trained policy model to %s", save_path)

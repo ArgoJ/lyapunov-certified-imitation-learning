@@ -42,9 +42,15 @@ def parse_cli_args() -> argparse.Namespace:
         help="Path to the source MPC dataset (HDF5).",
     )
     parser.add_argument("--epochs", type=int, default=100, help="Number of policy training epochs.")
-    parser.add_argument("--learning-rate", type=float, default=2e-4, help="Optimizer learning rate.")
+    parser.add_argument("--lr", type=float, default=2e-4, help="Optimizer learning rate.")
     parser.add_argument("--batch-size", type=int, default=256, help="Training batch size.")
     parser.add_argument("--n-samples", type=int, default=500, help="Number of rollout initial states.")
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        default="results/models/double_integrator_policy.pt",
+        help="Path where the trained model state dict will be saved.",
+    )
     parser.add_argument(
         "--near-duplicate-radius",
         type=float,
@@ -93,9 +99,10 @@ def main() -> None:
         policy_model=net,
         dataloader=dataloader,
         num_epochs=args.epochs,
-        learning_rate=args.learning_rate,
+        learning_rate=args.lr,
         device=device,
         loss_fn=ReferenceWeightedMSELoss(reference=[0.0], alpha=1.0, max_weight=10.0),
+        save_path=args.model_path,
     )
 
     simulator = DoubleIntegratorDynamics(dt=rollout_config.dt)
