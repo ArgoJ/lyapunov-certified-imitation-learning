@@ -95,14 +95,14 @@ def main() -> None:
             plot_3d=False,
             certified_regions=cert_results.certified_regions,
             uncertified_regions=cert_results.failed_regions,
-            html_path="plots/lyapunov_certified_regions.html",
+            html_path="results/plots/lyapunov_certified_regions.html",
         )
 
     lcil_plt.certified_regions_2d(
         cert_results.certified_regions,
         cert_results.failed_regions,
         state_labels=["x", "v"],
-        html_path="plots/certified_regions.html",
+        html_path="results/plots/certified_regions.html",
     )
 
 

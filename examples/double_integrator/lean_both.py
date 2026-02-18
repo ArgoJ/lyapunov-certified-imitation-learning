@@ -75,7 +75,7 @@ def main() -> None:
 		cert_results.certified_regions,
 		cert_results.failed_regions,
 		state_labels=["x", "v"],
-		html_path="plots/certified_regions.html",
+		html_path="results/plots/certified_regions.html",
 	)
 
 
