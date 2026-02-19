@@ -50,13 +50,13 @@ def main() -> None:
 
     certification_config = LyapunovCertificationConfig.from_training_config(
         training_config,
-        cert_step=1.0,
+        cert_step=0.5,
         cert_origin_exclusion=None,
         cert_rho_scaling=1.2,
         cert_bisection_tol=1e-3,
-        cert_max_scale_steps=20,
-        cert_max_bisection_steps=40,
-        cert_method="crown",
+        cert_max_scale_steps=15,
+        cert_max_bisection_steps=20,
+        cert_method="alpha-crown",
         state_bounds = (15.0, 15.0),
     )
 

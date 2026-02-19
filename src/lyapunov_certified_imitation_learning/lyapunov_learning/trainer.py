@@ -99,6 +99,8 @@ def train_lyapunov(
     rho_estimate = config.rho_min
     num_mined_counterexamples = 0
 
+    # TODO: füge CONST_C = max(0.12, -np.min(counter_example_diff_list) + 0.01) ein, 
+    # damit die Bedingung nicht zu locker wird, wenn die ersten Counterexamples sehr schlecht sind.
     start_time = time.time()
     total_steps = config.outer_epochs * config.steps_per_epoch
     with __logger__.tqdm(total=total_steps, desc="Train iterations", unit="step") as pbar:
@@ -143,7 +145,7 @@ def train_lyapunov(
 
                 # L_roa = ReLU(V(x) / rho - 1)
                 v_candidates = lyap_model(roa_candidates)
-                loss_roa = th.relu(v_candidates / max(rho_estimate, config.rho_min) - 1.0).mean()
+                loss_roa = th.relu(v_candidates / max(rho_estimate, config.rho_min) - 1.0).sum()
 
                 # Keep V(0) near zero for generic Lyapunov parameterizations.
                 loss_origin = lyap_model(origin).pow(2).mean()
