@@ -143,7 +143,8 @@ def train_lyapunov(
 
                 # L_roa = ReLU(V(x) / rho - 1)
                 v_candidates = lyap_model(roa_candidates)
-                loss_roa = th.relu(v_candidates / max(rho_estimate, config.rho_min) - 1.0).mean()
+                loss_roa = th.relu(v_candidates / max(rho_estimate, config.rho_min) - 1.0).sum()
+                # maybe switch back to mean.
 
                 # Keep V(0) near zero for generic Lyapunov parameterizations.
                 loss_origin = lyap_model(origin).pow(2).mean()

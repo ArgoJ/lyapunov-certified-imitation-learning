@@ -1,4 +1,8 @@
-from .dataset import StateActionDataset, create_imitation_learning_dataloader
+from .dataset import (
+    StateActionDataset, 
+    create_state_action_dataloader, 
+    create_train_and_val_dataloader,
+)
 from .trainer import train_mlp_policy
 from .models import MLPPolicy
 from .loss import ReferenceWeightedMSELoss
@@ -6,9 +10,9 @@ from .loss import ReferenceWeightedMSELoss
 
 __all__ = [
     "StateActionDataset",
-    "StateActionDataset",
     "StateActionPair",
-    "create_imitation_learning_dataloader",
+    "create_state_action_dataloader",
+    "create_train_and_val_dataloader",
     "train_mlp_policy",
     "MLPPolicy",
     "ReferenceWeightedMSELoss",
