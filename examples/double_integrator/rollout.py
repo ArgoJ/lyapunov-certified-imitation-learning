@@ -3,11 +3,12 @@ from pathlib import Path
 
 from mpc_datagen import MPCDataset, mdg_plt
 
-from lyapunov_certified_imitation_learning.imitation_learning_mlp import MLPPolicy
+from lyapunov_certified_imitation_learning.imitation_learning_mlp import MLPPolicy, StateActionDataset
 from lyapunov_certified_imitation_learning.imitation_learning_mlp.policy_rollout import (
     PolicyRolloutConfig,
     PolicyRolloutGenerator,
     RandomBoundsSampler,
+    FeasibleSetSampler,
 )
 from double_integrator_dyn import DoubleIntegratorDynamics
 
@@ -62,12 +63,18 @@ def main() -> None:
     net.to(device)
     net.eval()
 
+    if net.train_dataset_path is None:
+        sampler = RandomBoundsSampler(bounds=rollout_config.state_bounds)
+    else:
+        val_dataset = StateActionDataset.load(net.train_dataset_path)
+        sampler = FeasibleSetSampler(dataset=val_dataset)
+
     simulator = DoubleIntegratorDynamics(dt=rollout_config.dt)
     policy_rollout_generator = PolicyRolloutGenerator(
         policy=net,
         simulator=simulator,
         rollout_config=rollout_config,
-        sampler=RandomBoundsSampler(bounds=(rollout_config.state_bounds * [0.8, 1.0])),
+        sampler=sampler,
         device=device,
     )
     solved_dataset = policy_rollout_generator.generate(n_samples)
