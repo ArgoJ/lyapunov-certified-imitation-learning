@@ -1,12 +1,14 @@
 import argparse
 import torch as th
+
 from pathlib import Path
+from torch.optim.lr_scheduler import LRScheduler
 
 from mpc_datagen import MPCDataset
 
 from lyapunov_certified_imitation_learning.imitation_learning_mlp import (
     train_mlp_policy,
-    create_imitation_learning_dataloader,
+    create_train_and_val_dataloader,
     MLPPolicy,
     ReferenceWeightedMSELoss,
 )
@@ -58,12 +60,12 @@ def main() -> None:
 
     net = MLPPolicy(
         [2, 16, 16, 1],
-        ["relu", "tanh", "identity"],
+        ["relu", "relu", "identity"],
         u_min=u_bounds[0],
         u_max=u_bounds[1],
     )
 
-    dataloader = create_imitation_learning_dataloader(
+    train_loader, val_loader = create_train_and_val_dataloader(
         mpc_dataset=dataset_path,
         batch_size=args.batch_size,
         shuffle=True,
@@ -72,15 +74,18 @@ def main() -> None:
         pin_memory=True,
         dtype=th.float32,
         near_duplicate_radius=args.near_duplicate_radius,
+        val_fraction=0.2,
     )
     
     train_mlp_policy(
         policy_model=net,
-        dataloader=dataloader,
+        dataloader=train_loader,
+        val_dataloader=val_loader,
+        loss_fn=ReferenceWeightedMSELoss(reference=[0.0], alpha=1.0, max_weight=10.0),
+        scheduler="cosine",
         num_epochs=args.epochs,
         learning_rate=args.lr,
         device=device,
-        loss_fn=ReferenceWeightedMSELoss(reference=[0.0], alpha=1.0, max_weight=10.0),
         save_path=args.model_path,
     )
 

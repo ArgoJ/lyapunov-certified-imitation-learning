@@ -12,6 +12,7 @@ from mpc_datagen import MPCDataset
 from double_integrator_dyn import DoubleIntegratorDynamics
 
 
+# TODO: grid search for kappa cert method cert steps e.g.
 def main() -> None:
     device = th.device("cpu")
 
@@ -22,7 +23,7 @@ def main() -> None:
     ).to(device)
     policy_model.eval()
 
-    lyap_feature = ICNN([2, 32, 1], ["relu", "identity"]).to(device)
+    lyap_feature = MLP([2, 32, 1], ["relu", "identity"]).to(device)
     lyap_model = NeuralLyapunovCandidate(
         feature_net=lyap_feature,
         state_dim=2,
