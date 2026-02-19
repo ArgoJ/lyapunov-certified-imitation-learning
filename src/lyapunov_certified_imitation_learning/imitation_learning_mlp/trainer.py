@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Literal
 
+import os
 import numpy as np
 import torch as th
 import torch.nn as nn
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
 from torch.utils.data import DataLoader
 
+from .dataset import save_state_action_dataset_subset
 from ..utils.early_stopping import EarlyStopping
 from ..utils.package_logger import get_package_logger
 
@@ -50,6 +53,17 @@ class PolicyTrainingMetrics:
             epochs_completed=0,
         )
 
+    def save(self, path: os.PathLike[str]) -> None:
+        metrics_path = Path(path)
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            metrics_path,
+            train_loss=self.train_loss,
+            val_loss=self.val_loss,
+            learning_rate=self.learning_rate,
+            epochs_completed=np.asarray(self.epochs_completed, dtype=np.int64),
+        )
+
 
 def train_mlp_policy(
     policy_model: nn.Module,
@@ -62,7 +76,7 @@ def train_mlp_policy(
     learning_rate: float = 1e-3,
     restore_best_model: bool = True,
     device: th.device | str = "cpu",
-    save_path: str | Path | None = None,
+    save_folder: os.PathLike[str] | None = None,
 ) -> PolicyTrainingMetrics:
     """
     Train a simple MLP policy model on the provided imitation-learning dataset.
@@ -94,8 +108,8 @@ def train_mlp_policy(
         If ``True`` and early stopping is enabled, restore best weights before returning.
     device : torch.device or str, optional
         Device to run training on (e.g., "cpu" or "cuda"). Default is "cpu".
-    save_path : str | pathlib.Path or None, optional
-        If provided, save the trained model state dict to this path after training.
+    save_folder : PathLike[str], optional
+        If provided, save the trained model state dict and training metrics to this folder after training.
 
     Returns
     -------
@@ -138,6 +152,7 @@ def train_mlp_policy(
     val_datapoints = max(len(val_dataloader.dataset), 1) if use_validation else 0
     monitored_name = "Val" if use_validation else "Train"
     metrics = PolicyTrainingMetrics.from_num_epochs(num_epochs)
+    bar_step = 1.0 / (train_datapoints + val_datapoints)
 
     with __logger__.tqdm(
         total=float(num_epochs),
@@ -161,6 +176,7 @@ def train_mlp_policy(
                 optimizer.step()
 
                 train_epoch_loss += loss.item() * states.size(0)
+                pbar.update(bar_step * states.size(0))
 
             train_avg_loss = train_epoch_loss / train_datapoints
 
@@ -175,22 +191,25 @@ def train_mlp_policy(
                         actions = actions.to(device=device, non_blocking=True)
                         pred_actions = policy_model(states)
                         val_epoch_loss += loss_fn(pred_actions, actions).item() * states.size(0)
+                        pbar.update(bar_step * states.size(0))
                 val_avg_loss = val_epoch_loss / val_datapoints
 
-            # Scheduler and Eary stopping
+            # Update metrics
+            metrics.train_loss[epoch] = float(train_avg_loss)
+            metrics.val_loss[epoch] = float(val_avg_loss) if val_avg_loss is not None else np.nan
+            metrics.learning_rate[epoch] = float(optimizer.param_groups[0]["lr"])
+            metrics.epochs_completed = epoch + 1
+
             monitored_metric = val_avg_loss if val_avg_loss is not None else train_avg_loss
 
+            # Scheduler step
             if scheduler_obj is not None:
                 if isinstance(scheduler_obj, th.optim.lr_scheduler.ReduceLROnPlateau):
                     scheduler_obj.step(monitored_metric)
                 else:
                     scheduler_obj.step()
 
-            metrics.train_loss[epoch] = float(train_avg_loss)
-            metrics.val_loss[epoch] = float(val_avg_loss) if val_avg_loss is not None else np.nan
-            metrics.learning_rate[epoch] = float(optimizer.param_groups[0]["lr"])
-            metrics.epochs_completed = epoch + 1
-
+            # Early stopping
             if early_stopper is not None:
                 early_stopper(monitored_metric, policy_model)
                 if early_stopper.early_stop:
@@ -211,26 +230,55 @@ def train_mlp_policy(
             if val_avg_loss is not None:
                 postfix["Val"] = f"{val_avg_loss:.4f}"
             pbar.set_postfix(postfix)
-            pbar.update(1.0)
+            
 
     if early_stopper is not None and restore_best_model and early_stopper.best_model_state is not None:
         early_stopper.load_best_model(policy_model)
 
-    if save_path is not None:
-        save_path = Path(save_path)
-        if hasattr(policy_model, "save") and callable(policy_model.save):
-            policy_model.save(save_path)
+    # Saving
+    if save_folder is not None:
+        save_folder = Path(save_folder)
+
+        # Dataset saving
+        train_dataset_path = save_folder / f"{save_folder.stem}_train_dataset.pt"
+        train_saved = save_state_action_dataset_subset(dataloader.dataset, train_dataset_path)
+
+        val_saved = False
+        if val_dataloader is not None:
+            val_dataset_path = save_folder / f"{save_folder.stem}_val_dataset.pt"
+            val_saved = save_state_action_dataset_subset(val_dataloader.dataset, val_dataset_path)
         else:
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            th.save(policy_model.state_dict(), save_path)
-        metrics_path = save_path.with_name(f"{save_path.stem}_training_metrics.npz")
-        np.savez(
-            metrics_path,
-            train_loss=metrics.train_loss,
-            val_loss=metrics.val_loss,
-            learning_rate=metrics.learning_rate,
-            epochs_completed=np.asarray(metrics.epochs_completed, dtype=np.int64),
-        )
-        __logger__.info("Saved trained policy model to %s", save_path)
+            val_dataset_path = None
+
+        resolved_train_dataset_path = str(train_dataset_path) if train_saved else None
+        resolved_val_dataset_path = str(val_dataset_path) if val_saved and val_dataset_path is not None else None
+
+        # Policy model saving
+        policy_path = save_folder / f"{save_folder.stem}_policy.pt"
+        if hasattr(policy_model, "save") and callable(policy_model.save):
+            try:
+                policy_model.save(
+                    policy_path,
+                    train_dataset_path=resolved_train_dataset_path,
+                    val_dataset_path=resolved_val_dataset_path,
+                )
+            except TypeError:
+                policy_model.save(policy_path)
+        else:
+            save_folder.parent.mkdir(parents=True, exist_ok=True)
+            th.save(
+                {
+                    "state_dict": policy_model.state_dict(),
+                    "train_dataset_path": resolved_train_dataset_path,
+                    "val_dataset_path": resolved_val_dataset_path,
+                },
+                policy_path,
+            )
+
+        # Metrics
+        metrics_path = save_folder / f"{save_folder.stem}_training_metrics.npz"
+        metrics.save(metrics_path)
+        
+        __logger__.info("Saved training results to %s", metrics_path.parent)
 
     return metrics

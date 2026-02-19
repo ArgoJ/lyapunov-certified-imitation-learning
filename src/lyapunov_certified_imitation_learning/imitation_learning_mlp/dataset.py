@@ -7,7 +7,7 @@ import torch as th
 
 from numpy.typing import NDArray
 from torch.utils.data import DataLoader, Dataset, random_split
-from mpc_datagen import LinearLSCost, MPCConfig, MPCDataset, MPCMeta, MPCTrajectory
+from mpc_datagen import MPCDataset, MPCMeta, MPCTrajectory
 
 from ..utils.package_logger import get_package_logger
 
@@ -16,6 +16,34 @@ __logger__ = get_package_logger(__name__)
 
 class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
     """In-memory imitation-learning dataset backed by ``MPCDataset``."""
+
+    @staticmethod
+    def _to_tensor_2d(array: NDArray | th.Tensor, name: str) -> th.Tensor:
+        """Convert input arrays/tensors to contiguous 2D CPU tensors."""
+        if isinstance(array, th.Tensor):
+            tensor = array.detach().cpu()
+        else:
+            tensor = th.as_tensor(np.asarray(array))
+
+        if tensor.ndim != 2:
+            raise ValueError(f"{name} must be 2D, got shape {tuple(tensor.shape)}.")
+
+        return tensor.contiguous()
+
+    @staticmethod
+    def _resolve_dtype(dtype_value: th.dtype | str) -> th.dtype:
+        """Resolve serialized dtype payloads to ``torch.dtype``."""
+        if isinstance(dtype_value, th.dtype):
+            return dtype_value
+
+        if isinstance(dtype_value, str):
+            normalized = dtype_value.removeprefix("torch.")
+            if hasattr(th, normalized):
+                resolved = getattr(th, normalized)
+                if isinstance(resolved, th.dtype):
+                    return resolved
+
+        raise ValueError(f"Invalid dtype in dataset file: {dtype_value}")
 
     @staticmethod
     def _resolve_mpc_dataset(mpc_dataset: MPCDataset | os.PathLike[str]) -> MPCDataset:
@@ -33,17 +61,19 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
     
     def __init__(
         self,
-        mpc_dataset: MPCDataset | os.PathLike[str],
+        states: NDArray | th.Tensor,
+        actions: NDArray | th.Tensor,
         dtype: th.dtype = th.float32,
         near_duplicate_radius: float | None = None,
     ):
-        """Initialize an in-memory dataset from an ``MPCDataset``.
+        """Initialize an in-memory state-action dataset.
 
         Parameters
         ----------
-        mpc_dataset : MPCDataset or path-like
-            Source MPC dataset (in-memory and/or HDF5-backed). Path-like
-            values are treated as paths to an HDF5-backed dataset and loaded accordingly.
+        states : numpy.ndarray or torch.Tensor
+            State samples with shape ``(num_samples, nx)``.
+        actions : numpy.ndarray or torch.Tensor
+            Action samples with shape ``(num_samples, nu)``.
         dtype : torch.dtype, optional
             Output tensor dtype for states and actions.
         near_duplicate_radius : float, optional
@@ -55,20 +85,35 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         if near_duplicate_radius is not None and near_duplicate_radius <= 0:
             raise ValueError("near_duplicate_radius must be positive when provided.")
 
-        self.mpc_dataset = self._resolve_mpc_dataset(mpc_dataset)
+        states_tensor = self._to_tensor_2d(states, name="states")
+        actions_tensor = self._to_tensor_2d(actions, name="actions")
+        if states_tensor.shape[0] != actions_tensor.shape[0]:
+            raise ValueError(
+                "states/actions sample count mismatch: "
+                f"got {states_tensor.shape[0]} states and {actions_tensor.shape[0]} actions."
+            )
+
+        if near_duplicate_radius is not None and states_tensor.shape[0] > 0:
+            keep_idx = self._near_duplicate_keep_indices(
+                states=states_tensor,
+                actions=actions_tensor,
+                radius=near_duplicate_radius,
+            )
+            states_tensor = states_tensor.index_select(0, keep_idx)
+            actions_tensor = actions_tensor.index_select(0, keep_idx)
+
         self.dtype = dtype
         self.near_duplicate_radius = near_duplicate_radius
-        
-        self._states_np, self._actions_np = self._load_samples()
-        self._states = th.as_tensor(self._states_np, dtype=self.dtype)
-        self._actions = th.as_tensor(self._actions_np, dtype=self.dtype)
-        self._total_samples = int(self._states_np.shape[0])
+
+        self._states = states_tensor.to(dtype=self.dtype)
+        self._actions = actions_tensor.to(dtype=self.dtype)
+        self._total_samples = int(self._states.shape[0])
 
     def __len__(self) -> int:
         """Total number of training samples across all trajectories."""
         return self._total_samples
 
-    def save_torch(self, path: str | os.PathLike[str]) -> None:
+    def save(self, path: str | os.PathLike[str]) -> None:
         """Save the preprocessed (optionally filtered) state-action pairs to a ``.pt`` file.
 
         Parameters
@@ -82,32 +127,121 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         payload = {
             "states": self._states.detach().cpu(),
             "actions": self._actions.detach().cpu(),
-            "dtype": str(self.dtype),
+            "dtype": self.dtype,
             "near_duplicate_radius": self.near_duplicate_radius,
             "num_samples": self._total_samples,
         }
         th.save(payload, target_path)
 
-    def _load_samples(self) -> tuple[NDArray, NDArray]:
-        """Load all valid samples into contiguous NumPy arrays."""
-        if self.mpc_dataset.memory_buffer:
-            self.mpc_dataset.save(mode="a")
+    @classmethod
+    def load(cls, path: str | os.PathLike) -> StateActionDataset:
+        """Load a preprocessed state-action dataset from a ``.pt`` file.
 
-        if self.mpc_dataset._h5_file is None:
+        Parameters
+        ----------
+        path : str or os.PathLike
+            Path to the saved dataset file (``.pt``).
+
+        Returns
+        -------
+        StateActionDataset
+            The loaded dataset object with in-memory tensors.
+        """
+        source_path = Path(path)
+        if not source_path.is_file():
+            raise FileNotFoundError(f"Dataset file not found at {source_path}.")
+
+        payload = th.load(source_path, map_location="cpu")
+        required_keys = {"states", "actions", "dtype", "near_duplicate_radius", "num_samples"}
+        if not required_keys.issubset(payload.keys()):
+            missing = required_keys - payload.keys()
+            raise ValueError(f"Missing keys in dataset file: {missing}")
+
+        states = payload["states"]
+        actions = payload["actions"]
+        dtype_payload = payload["dtype"]
+        near_duplicate_radius = payload["near_duplicate_radius"]
+
+        dtype = cls._resolve_dtype(dtype_payload)
+        dataset = cls(
+            states=states,
+            actions=actions,
+            dtype=dtype,
+            near_duplicate_radius=None,
+        )
+        dataset.near_duplicate_radius = near_duplicate_radius
+        
+        return dataset
+
+    @classmethod
+    def from_mpc_dataset(
+        cls,
+        mpc_dataset: MPCDataset | os.PathLike[str],
+        dtype: th.dtype = th.float32,
+        near_duplicate_radius: float | None = None,
+    ) -> StateActionDataset:
+        """Create a ``StateActionDataset`` by extracting samples from an MPC dataset."""
+        resolved_mpc_dataset = cls._resolve_mpc_dataset(mpc_dataset)
+        states, actions = cls._load_samples_from_mpc_dataset(resolved_mpc_dataset)
+
+        return cls(
+            states=states,
+            actions=actions,
+            dtype=dtype,
+            near_duplicate_radius=near_duplicate_radius,
+        )
+
+    @classmethod
+    def from_subset(
+        cls,
+        dataset_subset: Dataset[tuple[th.Tensor, th.Tensor]],
+        dtype: th.dtype | None = None,
+    ) -> StateActionDataset:
+        """Create a ``StateActionDataset`` from a subset wrapper dataset."""
+        if not (hasattr(dataset_subset, "dataset") and hasattr(dataset_subset, "indices")):
+            raise TypeError("dataset_subset must expose 'dataset' and 'indices' attributes.")
+
+        parent_dataset = getattr(dataset_subset, "dataset")
+        subset_indices = th.as_tensor(getattr(dataset_subset, "indices"), dtype=th.int64)
+        parent_states = getattr(parent_dataset, "_states", None)
+        parent_actions = getattr(parent_dataset, "_actions", None)
+
+        if parent_states is None or parent_actions is None:
+            raise TypeError("Subset parent dataset must expose '_states' and '_actions' tensors.")
+
+        split_states = parent_states.index_select(0, subset_indices).detach().cpu()
+        split_actions = parent_actions.index_select(0, subset_indices).detach().cpu()
+
+        resolved_dtype = dtype
+        if resolved_dtype is None:
+            parent_dtype = getattr(parent_dataset, "dtype", None)
+            resolved_dtype = parent_dtype if isinstance(parent_dtype, th.dtype) else split_states.dtype
+
+        return cls(
+            states=split_states,
+            actions=split_actions,
+            dtype=resolved_dtype,
+            near_duplicate_radius=None,
+        )
+
+    @staticmethod
+    def _load_samples_from_mpc_dataset(mpc_dataset: MPCDataset) -> tuple[NDArray, NDArray]:
+        """Load all valid samples from ``MPCDataset`` into contiguous NumPy arrays."""
+        if mpc_dataset.memory_buffer:
+            mpc_dataset.save(mode="a")
+
+        if mpc_dataset._h5_file is None:
             raise ValueError("MPCDataset must have an HDF5 file loaded to build the imitation-learning dataset.")
 
         states_chunks: list[NDArray] = []
         actions_chunks: list[NDArray] = []
-        y_res_chunks: list[NDArray] = []
-        steps_chunks: list[int] = []
         expected_nx: int | None = None
         expected_nu: int | None = None
-        filter_duplicates = self.near_duplicate_radius is not None
 
-        indices = list(self.mpc_dataset._indices)
+        indices = list(mpc_dataset._indices)
         with __logger__.tqdm(indices, desc="Preloading trajectories") as pbar:
             for key in pbar:
-                grp = self.mpc_dataset._h5_file[key]
+                grp = mpc_dataset._h5_file[key]
                 meta = MPCMeta.from_hdf5(grp)
                 steps = int(meta.steps_simulated)
                 if steps <= 0:
@@ -131,16 +265,6 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
 
                 states_chunks.append(states)
                 actions_chunks.append(actions)
-                steps_chunks.append(steps)
-
-                if filter_duplicates:
-                    global_cfg_grp = MPCConfig._get_global_cfg_grp(grp)
-                    local_cfg_grp = MPCConfig._get_local_cfg_grp(grp)
-
-                    base_grp = global_cfg_grp if global_cfg_grp is not None else local_cfg_grp
-                    overwrite_grp = local_cfg_grp if local_cfg_grp is not None else None
-                    cost = LinearLSCost.from_hdf5(base_grp, overwrite_grp)
-                    y_res_chunks.append(cost.get_y(states, actions) - cost.yref)
 
         if not states_chunks or not actions_chunks:
             return np.empty((0, 0)), np.empty((0, 0))
@@ -157,110 +281,77 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
                 f"Concatenated actions dimension mismatch: expected nu={expected_nu}, got nu={actions.shape[1]}."
             )
 
-        if not filter_duplicates:
-            return states, actions
-
-        y_residuals: NDArray | None = None
-        if y_res_chunks:
-            y_residuals = np.ascontiguousarray(np.concatenate(y_res_chunks, axis=0))
-
-        keep_idx = self._near_duplicate_keep_indices(
-            states=states,
-            actions=actions,
-            radius=self.near_duplicate_radius,
-            y_residuals=y_residuals,
-        )
-        if keep_idx.size == states.shape[0]:
-            return states, actions
-
-        __logger__.info(
-            "Near-duplicate filter kept %d/%d samples (radius=%.4e).",
-            keep_idx.size,
-            states.shape[0],
-            self.near_duplicate_radius,
-        )
-        return np.ascontiguousarray(states[keep_idx]), np.ascontiguousarray(actions[keep_idx])
+        return states, actions
 
     @staticmethod
     def _near_duplicate_keep_indices(
-        states: NDArray,
-        actions: NDArray,
+        states: NDArray | th.Tensor,
+        actions: NDArray | th.Tensor,
         radius: float,
-        y_residuals: NDArray | None = None,
-    ) -> NDArray:
+    ) -> th.Tensor:
         """Keep sample indices after adaptive near-duplicate voxel deduplication.
 
         Parameters
         ----------
-        states : numpy.ndarray
+        states : numpy.ndarray or torch.Tensor
             State samples with shape `(n_samples, nx)`.
-        actions : numpy.ndarray
+        actions : numpy.ndarray or torch.Tensor
             Action samples with shape `(n_samples, nu)`.
         radius : float
             Base L2 radius controlling voxel size in normalized feature space.
             The base cell size is `radius / sqrt(d)` where `d = nx + nu`.
-        y_residuals : numpy.ndarray or None, optional
-            Optional residual vectors with shape `(n_samples, ny)` (or
-            `(n_samples,)`). When provided, residual norm defines radial
-            distance to reference for adaptive scaling and residual energy is
-            used to choose the representative within each voxel.
 
         Returns
         -------
-        keep_idx : numpy.ndarray
+        keep_idx : torch.Tensor
             Sorted indices of kept samples with shape `(n_kept,)`.
 
         Notes
         -----
         Concatenated `[state, action]` features are robustly normalized with
-        median/IQR, then adaptively scaled radially before quantization so that
-        voxels are effectively larger near reference and smaller toward bounds.
+        median/IQR for quantization. Radial scaling is computed from either
+        provided residuals or median-centered min/max bounds so that voxels are
+        effectively larger near reference and smaller toward bounds.
         """
-        if states.shape[0] == 0:
-            return np.empty((0,), dtype=np.int64)
+        states_tensor = th.as_tensor(states, dtype=th.float64)
+        actions_tensor = th.as_tensor(actions, dtype=th.float64)
 
-        features = np.concatenate((states, actions), axis=1)
-        feature_median = np.median(features, axis=0)
-        feature_iqr = np.percentile(features, 75, axis=0) - np.percentile(features, 25, axis=0)
-        feature_iqr = np.maximum(feature_iqr, 1e-8)
+        if states_tensor.shape[0] == 0:
+            return th.empty((0,), dtype=th.int64)
+
+        features = th.cat((states_tensor, actions_tensor), dim=1)
+        feature_median = th.median(features, dim=0).values
+        feature_iqr = th.quantile(features, 0.75, dim=0) - th.quantile(features, 0.25, dim=0)
+        feature_iqr = th.clamp(feature_iqr, min=1e-8)
         normalized_features = (features - feature_median) / feature_iqr
 
-        feature_dim = features.shape[1]
+        feature_dim = int(features.shape[1])
         cell_size = radius / np.sqrt(float(feature_dim))
 
-        if y_residuals is not None:
-            y_res = np.asarray(y_residuals, dtype=np.float64)
-            if y_res.ndim == 1:
-                y_res = y_res.reshape(-1, 1)
-            radial_source = y_res
-        else:
-            radial_source = normalized_features
+        # median-centered radial source with adaptive scaling based on either residuals or feature bounds
+        feature_min = th.min(features, dim=0).values
+        feature_max = th.max(features, dim=0).values
+        half_range = 0.5 * (feature_max - feature_min)
+        half_range = th.clamp(half_range, min=1e-8)
+        radial_source = (features - feature_median) / half_range
 
-        radial_distance = np.linalg.norm(radial_source, axis=1)
-        radial_scale = float(np.percentile(radial_distance, 90))
+        radial_distance = th.linalg.norm(radial_source, dim=1)
+        radial_scale = float(th.quantile(radial_distance, 0.90).item())
         radial_scale = max(radial_scale, 1e-8)
         t = radial_distance / radial_scale
         adaptive_scale = 0.5 + 1.5 * (t / (1.0 + t))
         transformed_features = normalized_features * adaptive_scale[:, None]
 
-        quantized = np.floor(transformed_features / cell_size).astype(np.int64, copy=False)
-        _, unique_idx, inverse = np.unique(quantized, axis=0, return_index=True, return_inverse=True)
+        quantized = th.floor(transformed_features / cell_size).to(dtype=th.int64)
+        _, inverse = th.unique(quantized, dim=0, return_inverse=True)
+        positions = th.arange(inverse.shape[0], dtype=th.int64)
 
-        if y_residuals is None:
-            return np.sort(unique_idx.astype(np.int64, copy=False))
-
-        squared_distance = np.einsum("ij,ij->i", y_res, y_res)
-        if squared_distance.shape[0] != states.shape[0]:
-            raise ValueError(
-                "y_residuals length mismatch: "
-                f"expected {states.shape[0]}, got {squared_distance.shape[0]}."
-            )
-
-        sort_order = np.lexsort((squared_distance, inverse))
-        sorted_inverse = inverse[sort_order]
-        _, first_pos = np.unique(sorted_inverse, return_index=True)
-        keep_idx = sort_order[first_pos]
-        return np.sort(keep_idx.astype(np.int64, copy=False))
+        order = positions[th.argsort(inverse, stable=True)]
+        sorted_inverse = inverse[order]
+        first_mask = th.ones_like(sorted_inverse, dtype=th.bool)
+        first_mask[1:] = sorted_inverse[1:] != sorted_inverse[:-1]
+        keep_idx = order[first_mask]
+        return th.sort(keep_idx).values
 
     def __getitem__(self, idx: int) -> tuple[th.Tensor, th.Tensor]:
         """Return one imitation pair ``(state, action)`` at global index ``idx``."""
@@ -276,6 +367,40 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
             raise RuntimeError("In-memory tensors are not available.")
 
         return self._states[idx], self._actions[idx]
+
+
+def save_state_action_dataset_subset(
+    dataset: Dataset[tuple[th.Tensor, th.Tensor]],
+    path: str | os.PathLike[str],
+) -> bool:
+    """Save a state-action dataset or subset split to ``.pt`` format.
+
+    Parameters
+    ----------
+    dataset : Dataset[tuple[torch.Tensor, torch.Tensor]]
+        Dataset instance or subset wrapper.
+    path : str or os.PathLike
+        Output path for the serialized split.
+
+    Returns
+    -------
+    bool
+        ``True`` if saving succeeded, otherwise ``False``.
+    """
+    target_path = Path(path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if hasattr(dataset, "save") and callable(dataset.save):
+        dataset.save(target_path)
+        return True
+
+    if hasattr(dataset, "dataset") and hasattr(dataset, "indices"):
+        split_dataset = StateActionDataset.from_subset(dataset)
+        split_dataset.save(target_path)
+        return True
+
+    __logger__.warning("Could not save dataset split for type '%s'.", type(dataset).__name__)
+    return False
 
 
 def create_state_action_dataloader(
@@ -313,7 +438,7 @@ def create_state_action_dataloader(
         to per-sample stage references computed from ``LinearLSCost`` via
         ``cost.get_y(states, actions) - cost.yref`` when available.
     """
-    dataset = StateActionDataset(
+    dataset = StateActionDataset.from_mpc_dataset(
         mpc_dataset=mpc_dataset,
         dtype=dtype,
         near_duplicate_radius=near_duplicate_radius,
@@ -387,7 +512,7 @@ def create_train_and_val_dataloader(
     if not (0.0 < val_fraction < 1.0):
         raise ValueError("val_fraction must be in (0., 1.).")
 
-    dataset = StateActionDataset(
+    dataset = StateActionDataset.from_mpc_dataset(
         mpc_dataset=mpc_dataset,
         dtype=dtype,
         near_duplicate_radius=near_duplicate_radius,

@@ -28,9 +28,9 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=5e-4, help="Optimizer learning rate.")
     parser.add_argument("--batch-size", type=int, default=256, help="Training batch size.")
     parser.add_argument(
-        "--model-path",
+        "--save-folder",
         type=str,
-        default="results/models/double_integrator_policy.pt",
+        default="results/double_integrator",
         help="Path where the trained model state dict will be saved.",
     )
     parser.add_argument(
@@ -86,7 +86,7 @@ def main() -> None:
         num_epochs=args.epochs,
         learning_rate=args.lr,
         device=device,
-        save_path=args.model_path,
+        save_folder=args.save_folder,
     )
 
 if __name__ == "__main__":

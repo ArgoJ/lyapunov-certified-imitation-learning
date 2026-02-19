@@ -44,6 +44,9 @@ class MLPPolicy(nn.Module):
         self.register_buffer("_u_min", u_min_tensor)
         self.register_buffer("_u_max", u_max_tensor)
 
+        self.train_dataset_path: str | None = None
+        self.val_dataset_path: str | None = None
+
     @staticmethod
     def _validate_bound_shape(
         bound: float | list[float] | th.Tensor | None,
@@ -68,7 +71,12 @@ class MLPPolicy(nn.Module):
         u = self.mlp(x)
         return th.clamp(u, min=self._u_min, max=self._u_max)
 
-    def save(self, path: str | Path) -> None:
+    def save(
+        self,
+        path: str | Path,
+        train_dataset_path: str | Path | None = None,
+        val_dataset_path: str | Path | None = None,
+    ) -> None:
         """
         Save policy weights and architecture metadata to disk.
 
@@ -76,14 +84,30 @@ class MLPPolicy(nn.Module):
         ----------
         path : str or pathlib.Path
             Target path for ``torch.save``.
+        train_dataset_path : str or pathlib.Path or None, optional
+            Optional path to the training dataset split associated with this checkpoint.
+        val_dataset_path : str or pathlib.Path or None, optional
+            Optional path to the validation dataset split associated with this checkpoint.
         """
         checkpoint_path = Path(path)
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
+        resolved_train_path = (
+            str(Path(train_dataset_path)) if train_dataset_path is not None else self.train_dataset_path
+        )
+        resolved_val_path = (
+            str(Path(val_dataset_path)) if val_dataset_path is not None else self.val_dataset_path
+        )
+
+        self.train_dataset_path = resolved_train_path
+        self.val_dataset_path = resolved_val_path
 
         payload = {
             "state_dict": self.state_dict(),
             "layer_sizes": list(self.layer_sizes),
             "activations": list(self.activations),
+            "train_dataset_path": resolved_train_path,
+            "val_dataset_path": resolved_val_path,
         }
         th.save(payload, checkpoint_path)
 
@@ -133,6 +157,8 @@ class MLPPolicy(nn.Module):
         state_dict = checkpoint["state_dict"]
         layer_sizes = checkpoint.get("layer_sizes", None)
         activations = checkpoint.get("activations", None)
+        train_dataset_path = checkpoint.get("train_dataset_path", None)
+        val_dataset_path = checkpoint.get("val_dataset_path", None)
 
         if layer_sizes is None or activations is None:
             raise ValueError(
@@ -144,4 +170,6 @@ class MLPPolicy(nn.Module):
         u_max = state_dict.get("_u_max", None)
         model = cls(layer_sizes=layer_sizes, activations=activations, u_min=u_min, u_max=u_max)
         model.load_state_dict(state_dict, strict=strict)
+        model.train_dataset_path = str(train_dataset_path) if train_dataset_path is not None else None
+        model.val_dataset_path = str(val_dataset_path) if val_dataset_path is not None else None
         return model

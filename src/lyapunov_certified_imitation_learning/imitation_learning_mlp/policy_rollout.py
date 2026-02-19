@@ -3,10 +3,11 @@ from typing import Protocol
 
 import numpy as np
 import torch as th
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
 
 from mpc_datagen import MPCConfig, MPCData, MPCDataset, MPCMeta, MPCTrajectory
 
+from .dataset import StateActionDataset
 from ..utils.package_logger import get_package_logger
 
 __logger__ = get_package_logger(__name__)
@@ -16,7 +17,7 @@ def _normalize_bounds(
     bounds: ArrayLike | None,
     expected_dim: int | None,
     name: str,
-) -> np.ndarray | None:
+) -> NDArray | None:
     if bounds is None:
         return None
 
@@ -44,7 +45,7 @@ class PolicyRolloutConfig:
     input_bounds: ArrayLike | None = None
 
     @staticmethod
-    def _extract_bounds(lower: ArrayLike, upper: ArrayLike) -> np.ndarray | None:
+    def _extract_bounds(lower: ArrayLike, upper: ArrayLike) -> NDArray | None:
         """Stack lower/upper bounds into shape ``(2, dim)`` when available."""
         lower_arr = np.asarray(lower, dtype=np.float32).reshape(-1)
         upper_arr = np.asarray(upper, dtype=np.float32).reshape(-1)
@@ -130,11 +131,11 @@ class PolicyRolloutConfig:
 class StateSampler(Protocol):
     """Protocol for initial-state sampling used by PolicyRolloutGenerator."""
 
-    def sample_x0(self, accepted_x0: list[np.ndarray]) -> np.ndarray:
+    def sample_x0(self) -> NDArray:
         """Sample one initial state."""
 
 
-class RandomBoundsSampler:
+class RandomBoundsSampler(StateSampler):
     """Uniform random sampler over a fixed state-bounds box."""
 
     def __init__(self, bounds: ArrayLike, seed: int | None = None) -> None:
@@ -142,11 +143,19 @@ class RandomBoundsSampler:
         assert self.bounds is not None
         self.rng = np.random.default_rng(seed)
 
-    def sample_x0(self, accepted_x0: list[np.ndarray]) -> np.ndarray:
-        del accepted_x0
+    def sample_x0(self) -> NDArray:
         low = self.bounds[0]
         high = self.bounds[1]
         return self.rng.uniform(low=low, high=high).astype(np.float32)
+
+
+class FeasibleSetSampler(StateSampler):
+    def __init__(self, dataset: StateActionDataset) -> None:
+        self.dataset = dataset
+
+    def sample_x0(self) -> NDArray:
+        # Placeholder implementation: replace with actual sampling logic
+        raise NotImplementedError("FeasibleSetSampler is not implemented yet.")
 
 
 class PolicyRolloutGenerator:
@@ -207,13 +216,13 @@ class PolicyRolloutGenerator:
         self.simulator.eval()
 
 
-    def _rollout_single(self, x0: np.ndarray, traj_id: int) -> MPCData:
+    def _rollout_single(self, x0: NDArray, traj_id: int) -> MPCData:
         """
         Roll out one trajectory from `x0` and return an `MPCData` entry.
         
         Parameters
         ----------
-        x0 : np.ndarray
+        x0 : NDArray
             Initial state for the rollout. Should have shape (nx,).
         traj_id : int
             Unique identifier for the trajectory, used in MPCMeta.
@@ -263,14 +272,12 @@ class PolicyRolloutGenerator:
     def generate(self, n_samples: int) -> MPCDataset:
         """Generate a dataset of `n_samples` policy rollouts using the configured sampler."""
         dataset = MPCDataset()
-        accepted_x0: list[np.ndarray] = []
 
         with __logger__.tqdm(range(n_samples), desc="Generating Policy Rollouts") as pbar:
             for idx in pbar:
-                x0 = self.sampler.sample_x0(accepted_x0)
+                x0 = self.sampler.sample_x0()
                 mpc_data = self._rollout_single(x0=x0, traj_id=idx)
                 dataset.add(mpc_data)
-                accepted_x0.append(x0)
 
         __logger__.info(f"Generated {len(dataset)} policy rollouts.")
         return dataset
