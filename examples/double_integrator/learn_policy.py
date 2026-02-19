@@ -2,10 +2,10 @@ import argparse
 import torch as th
 
 from pathlib import Path
-from torch.optim.lr_scheduler import LRScheduler
 
 from mpc_datagen import MPCDataset
 
+from lyapunov_certified_imitation_learning.utils import EarlyStopping
 from lyapunov_certified_imitation_learning.imitation_learning_mlp import (
     train_mlp_policy,
     create_train_and_val_dataloader,
@@ -81,6 +81,7 @@ def main() -> None:
         policy_model=net,
         dataloader=train_loader,
         val_dataloader=val_loader,
+        early_stopper=EarlyStopping(patience=10, delta=1e-4),
         loss_fn=ReferenceWeightedMSELoss(reference=[0.0], alpha=1.0, max_weight=10.0),
         scheduler="cosine",
         num_epochs=args.epochs,

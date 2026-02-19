@@ -5,3 +5,4 @@ from . import base_models as lcil_base_models
 
 from .package_logger import PackageLogger
 from .base_models import MLP, ICNN, ResNet, save_model_checkpoint
+from .early_stopping import EarlyStopping
