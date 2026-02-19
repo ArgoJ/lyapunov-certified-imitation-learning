@@ -150,12 +150,17 @@ class RandomBoundsSampler(StateSampler):
 
 
 class FeasibleSetSampler(StateSampler):
-    def __init__(self, dataset: StateActionDataset) -> None:
+    def __init__(self, dataset: StateActionDataset, seed: int | None = None) -> None:
         self.dataset = dataset
+        self.rng = np.random.default_rng(seed)
+
+        if len(self.dataset) <= 0:
+            raise ValueError("FeasibleSetSampler requires a non-empty dataset.")
 
     def sample_x0(self) -> NDArray:
-        # Placeholder implementation: replace with actual sampling logic
-        raise NotImplementedError("FeasibleSetSampler is not implemented yet.")
+        idx = int(self.rng.integers(low=0, high=len(self.dataset)))
+        x0, _ = self.dataset[idx]
+        return np.asarray(x0.detach().cpu().numpy(), dtype=np.float32)
 
 
 class PolicyRolloutGenerator:

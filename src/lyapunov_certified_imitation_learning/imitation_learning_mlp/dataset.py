@@ -244,7 +244,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
                 grp = mpc_dataset._h5_file[key]
                 meta = MPCMeta.from_hdf5(grp)
                 steps = int(meta.steps_simulated)
-                if steps <= 0:
+                if steps <= 0 or meta.feasible == False:
                     continue
 
                 traj = MPCTrajectory.from_hdf5(grp, fields=["states", "inputs"])
