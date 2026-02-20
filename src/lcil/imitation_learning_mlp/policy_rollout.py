@@ -44,7 +44,6 @@ class PolicyRolloutConfig:
     dt: float
     nx: int
     nu: int
-    N: int = 1
     state_bounds: ArrayLike | None = None
     input_bounds: ArrayLike | None = None
 
@@ -80,6 +79,9 @@ class PolicyRolloutConfig:
         t_sim : int, optional
             Optional override for rollout simulation horizon.
         """
+        if not isinstance(mpc_config, MPCConfig):
+            raise ValueError(f"mpc_config must be an instance of MPCConfig, got type {type(mpc_config)}.")
+            
         state_bounds = cls._extract_bounds(
             mpc_config.constraints.lbx,
             mpc_config.constraints.ubx,
@@ -94,7 +96,6 @@ class PolicyRolloutConfig:
             dt=float(mpc_config.dt),
             nx=int(mpc_config.nx),
             nu=int(mpc_config.nu),
-            N=int(mpc_config.N),
             state_bounds=state_bounds,
             input_bounds=input_bounds,
         )
@@ -106,8 +107,6 @@ class PolicyRolloutConfig:
             raise ValueError("dt must be positive.")
         if self.nx <= 0 or self.nu <= 0:
             raise ValueError("nx and nu must be positive.")
-        if self.N <= 0:
-            raise ValueError("N must be positive.")
 
         self.state_bounds = _normalize_bounds(self.state_bounds, self.nx, "state_bounds")
         self.input_bounds = _normalize_bounds(self.input_bounds, self.nu, "input_bounds")
@@ -116,7 +115,6 @@ class PolicyRolloutConfig:
         """Build an MPCConfig object from rollout parameters."""
         mpc_config = MPCConfig(
             T_sim=int(self.T_sim),
-            N=int(self.N),
             nx=int(self.nx),
             nu=int(self.nu),
             dt=float(self.dt),
@@ -178,6 +176,7 @@ class PolicyRolloutGenerator:
         self,
         policy: nn.Module,
         simulator: nn.Module,
+        rollout_config: PolicyRolloutConfig | None = None,
         sampler: StateSampler | None = None,
         device: th.device | str = "cpu",
     ) -> None:
@@ -201,10 +200,10 @@ class PolicyRolloutGenerator:
         self.policy = policy
         self.simulator = simulator
         self.device = th.device(device)
-
-        self.rollout_config = PolicyRolloutConfig()
-        self.mpc_config = self.rollout_config.to_mpc_config()
-
+        
+        self.rollout_config = rollout_config
+        self.mpc_config = rollout_config.to_mpc_config()
+        
         self.t_sim = int(self.rollout_config.T_sim)
         self.dt = float(self.rollout_config.dt)
 

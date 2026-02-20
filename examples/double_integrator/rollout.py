@@ -5,6 +5,7 @@ from mpc_datagen import mdg_plt
 from lcil.imitation_learning_mlp import MLPPolicy, StateActionDataset
 from lcil.imitation_learning_mlp.policy_rollout import (
     PolicyRolloutGenerator,
+    PolicyRolloutConfig,
     FeasibleSetSampler,
 )
 from double_integrator_dyn import DoubleIntegratorDynamics
@@ -17,7 +18,7 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-path",
         type=str,
-        default="results/double_integrator/20260220_160911/model.pt",
+        default="results/double_integrator/20260220_221524/model.pt",
         help="Path to a trained policy checkpoint.",
     )
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string (e.g. cpu, cuda).")
@@ -34,16 +35,16 @@ def main() -> None:
     net.to(device)
     net.eval()
 
-    print(f"Loaded policy model from {model_path} with config: {net.global_config}")
     print(f"dataset path: {net.val_dataset_path}")
+    cfg = PolicyRolloutConfig.from_mpc_config(net.global_config, t_sim=20.0)
     dataset = StateActionDataset.load(net.val_dataset_path)
     sampler = FeasibleSetSampler(dataset=dataset)
-    cfg = net.global_config
 
-    simulator = DoubleIntegratorDynamics(dt=net.global_config["dt"])
+    simulator = DoubleIntegratorDynamics(dt=cfg.dt)
     policy_rollout_generator = PolicyRolloutGenerator(
         policy=net,
         simulator=simulator,
+        rollout_config=cfg,
         sampler=sampler,
         device=device,
     )

@@ -310,7 +310,7 @@ class Trainer:
     def save(
         self,
         save_folder: os.PathLike[str],
-        global_config: Mapping[str, Any] | None = None,
+        global_config: Any = None,
     ) -> None:
         """Utility function to save training results after training completes.
 
@@ -319,8 +319,9 @@ class Trainer:
         save_folder : PathLike[str]
             Folder where results should be saved. The model checkpoint and training metrics will be saved
             with filenames derived from the folder name.
-        global_config : Mapping[str, Any], optional
-            Optional JSON-like metadata dict stored in the model checkpoint.
+        global_config : Any, optional
+            Optional metadata stored in the model checkpoint config file.
+            ``MPCConfig`` objects are serialized via ``to_dict()``.
         """
         if save_folder is not None:
             save_folder = Path(save_folder)

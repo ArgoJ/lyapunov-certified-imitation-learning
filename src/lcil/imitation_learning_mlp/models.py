@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 from dataclasses import is_dataclass, asdict
 
+from mpc_datagen import MPCConfig
+
 from ..utils.base_models import MLP
 from ..utils.package_logger import get_package_logger
 
@@ -63,7 +65,7 @@ class MLPPolicy(nn.Module):
 
         self.train_dataset_path: str | None = None
         self.val_dataset_path: str | None = None
-        self.global_config: dict[str, Any] | None = None
+        self.global_config: MPCConfig | dict[str, Any] | None = None
 
     @staticmethod
     def _validate_bound_shape(
@@ -89,6 +91,41 @@ class MLPPolicy(nn.Module):
         u = self.mlp(x)
         return th.clamp(u, min=self._u_min, max=self._u_max)
 
+    @staticmethod
+    def _serialize_global_config(global_config: Any) -> dict[str, Any] | None:
+        """Convert supported global config payloads to a JSON-serializable dict."""
+        if global_config is None:
+            return None
+
+        to_dict = getattr(global_config, "to_dict", None)
+        if callable(to_dict):
+            serialized = to_dict()
+            if not isinstance(serialized, dict):
+                raise TypeError("global_config.to_dict() must return a dict.")
+            return serialized
+
+        if is_dataclass(global_config):
+            return asdict(global_config)
+        if isinstance(global_config, dict):
+            return dict(global_config)
+        raise TypeError("global_config must provide to_dict(), be a dataclass, or be a dict.")
+
+    @staticmethod
+    def _deserialize_global_config(
+        global_config_data: dict[str, Any] | None,
+    ) -> MPCConfig | dict[str, Any] | None:
+        """Reconstruct ``MPCConfig`` from dict payloads when possible."""
+        if global_config_data is None:
+            return None
+
+        try:
+            return MPCConfig.from_dict(global_config_data)
+        except (KeyError, TypeError, ValueError):
+            __logger__.warning(
+                "Failed to parse global_config with MPCConfig.from_dict; keeping raw dict."
+            )
+            return global_config_data
+
     def save(
         self,
         path: str | Path,
@@ -102,14 +139,12 @@ class MLPPolicy(nn.Module):
         resolved_train = str(Path(train_dataset_path)) if train_dataset_path is not None else getattr(self, "train_dataset_path", None)
         resolved_val = str(Path(val_dataset_path)) if val_dataset_path is not None else getattr(self, "val_dataset_path", None)
         
-        if global_config is not None:
-            resolved_cfg = asdict(global_config) if is_dataclass(global_config) else dict(global_config)
-        else:
-            resolved_cfg = getattr(self, "global_config", None)
-
+        resolved_cfg_source = global_config if global_config is not None else getattr(self, "global_config", None)
+        resolved_cfg = self._serialize_global_config(resolved_cfg_source)
+        
         self.train_dataset_path = resolved_train
         self.val_dataset_path = resolved_val
-        self.global_config = resolved_cfg
+        self.global_config = self._deserialize_global_config(resolved_cfg)
 
         # Safetensors
         model_payload = {
@@ -165,7 +200,8 @@ class MLPPolicy(nn.Module):
                 config_data = json.load(f)
             train_path = config_data.get("train_dataset_path")
             val_path = config_data.get("val_dataset_path")
-            global_cfg = config_data.get("global_config")
+            raw_global_cfg = config_data.get("global_config")
+            global_cfg = cls._deserialize_global_config(raw_global_cfg)
 
         # Modell instanziieren
         u_min = state_dict.get("_u_min", None)

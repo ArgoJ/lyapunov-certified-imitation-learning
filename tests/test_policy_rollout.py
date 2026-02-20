@@ -23,7 +23,7 @@ class TestPolicyRolloutConfig(unittest.TestCase):
         bounds = np.array([[-1.0, -2.0], [1.0, 2.0]], dtype=float)
         sampler = RandomBoundsSampler(bounds=bounds, seed=7)
 
-        x0 = sampler.sample_x0([])
+        x0 = sampler.sample_x0()
 
         self.assertEqual(x0.shape, (2,))
         self.assertTrue(np.all(x0 >= bounds[0]))
