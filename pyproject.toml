@@ -23,7 +23,7 @@ dependencies = [
 
 description = "Learn a lyapunov certificate for a neural network"
 readme = "README.md"
-license = { file = "LICENSE.txt" }
+license = { file = "LICENSE" }
 maintainers = [
     { name = "Josua Lindemann", email = "josua.lindemann@outlook.de" },
 ]
