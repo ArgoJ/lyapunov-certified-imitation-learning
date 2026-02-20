@@ -55,9 +55,7 @@ def main() -> None:
     plot_path = Path(args.plot_path)
 
     source_dataset = MPCDataset.load(Path(dataset_path))
-    if len(source_dataset) == 0:
-        raise ValueError("MPCDataset is empty; cannot extract configuration.")
-    rollout_config = PolicyRolloutConfig.from_mpc_config(source_dataset[0].config, t_sim=40)
+    rollout_config = PolicyRolloutConfig.from_mpc_config(source_dataset.global_config, t_sim=40)
 
     net = MLPPolicy.load(model_path, map_location=device)
     net.to(device)

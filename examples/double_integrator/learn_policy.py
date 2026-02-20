@@ -6,13 +6,7 @@ from datetime import datetime
 
 from mpc_datagen import MPCDataset
 from lcil.utils import EarlyStopping
-from lcil.imitation_learning_mlp import (
-    train_mlp_policy,
-    create_train_and_val_dataloader,
-    MLPPolicy,
-    ReferenceWeightedMSELoss,
-)
-from lcil.imitation_learning_mlp.policy_rollout import PolicyRolloutConfig
+from lcil.imitation_learning_mlp import *
 
 
 def parse_cli_args() -> argparse.Namespace:
@@ -51,18 +45,13 @@ def main() -> None:
     source_dataset = MPCDataset.load(Path(dataset_path))
     if len(source_dataset) == 0:
         raise ValueError("MPCDataset is empty; cannot extract configuration.")
-    rollout_config = PolicyRolloutConfig.from_mpc_config(source_dataset[0].config, t_sim=40)
-    
-    if rollout_config.input_bounds is None:
-        u_bounds = (None, None)
-    else:
-        u_bounds = rollout_config.input_bounds
+    constraints = source_dataset[0].config.constraints
 
     net = MLPPolicy(
         [2, 16, 16, 1],
         ["relu", "relu", "identity"],
-        u_min=u_bounds[0],
-        u_max=u_bounds[1],
+        u_min=constraints.lbu,
+        u_max=constraints.ubu,
     )
 
     train_loader, val_loader = create_train_and_val_dataloader(

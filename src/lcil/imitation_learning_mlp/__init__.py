@@ -11,7 +11,6 @@ from .loss import ReferenceWeightedMSELoss
 
 __all__ = [
     "StateActionDataset",
-    "StateActionPair",
     "create_state_action_dataloader",
     "create_train_and_val_dataloader",
     "save_state_action_dataset_subset",

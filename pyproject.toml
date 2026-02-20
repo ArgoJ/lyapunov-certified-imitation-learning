@@ -34,15 +34,15 @@ test = [
     "pytest-cov",
 ]
 docs = [
-    "sphinx==8.2.3",
-    "sphinx_rtd_theme==3.0.2",
-    "myst-parser==4.0.1"
+    "sphinx",
+    "sphinx_rtd_theme",
+    "myst-parser"
 ]
 dev = [
     "lyapunov-certified-imitation-learning[test]",
     "lyapunov-certified-imitation-learning[docs]",
-    "pre-commit==4.3.0",
-    "ruff==0.12.12"
+    "pre-commit",
+    "ruff"
 ]
 
 [tool.setuptools.package-dir]

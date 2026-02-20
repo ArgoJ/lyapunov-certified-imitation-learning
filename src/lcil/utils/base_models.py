@@ -3,6 +3,7 @@ import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -46,6 +47,35 @@ def save_model_checkpoint(model: nn.Module, save_path: str | os.PathLike[str]) -
     else:
         save_path.parent.mkdir(parents=True, exist_ok=True)
         th.save(model.state_dict(), save_path)
+
+
+class RK4Integrator(nn.Module):
+    """Generic fourth-order Runge-Kutta integrator for control systems.
+
+    Parameters
+    ----------
+    dynamics : Callable[[th.Tensor, th.Tensor], th.Tensor]
+        Continuous-time dynamics function :math:`\dot{x} = f(x, u)`.
+    dt : float
+        Integration step size.
+    """
+
+    def __init__(
+        self,
+        dynamics: Callable[[th.Tensor, th.Tensor], th.Tensor],
+        dt: float,
+    ) -> None:
+        super().__init__()
+        self.dynamics = dynamics
+        self.dt = dt
+
+    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+        """Integrate one step with RK4."""
+        k1 = self.dynamics(x, u)
+        k2 = self.dynamics(x + 0.5 * self.dt * k1, u)
+        k3 = self.dynamics(x + 0.5 * self.dt * k2, u)
+        k4 = self.dynamics(x + self.dt * k3, u)
+        return x + (self.dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
 
 class ResidualBlock(nn.Module):

@@ -1,5 +1,5 @@
+import argparse
 import torch as th
-import torch.nn as nn
 import numpy as np
 from pathlib import Path
 
@@ -12,11 +12,105 @@ from mpc_datagen import MPCDataset
 from double_integrator_dyn import DoubleIntegratorDynamics
 
 
+def parse_cli_args() -> argparse.Namespace:
+    """Parse command-line arguments for Lyapunov learning with a fixed policy."""
+    parser = argparse.ArgumentParser(
+        description="Train and certify a Lyapunov candidate for a fixed double-integrator policy."
+    )
+    parser.add_argument(
+        "--policy-model-path",
+        type=str,
+        default="results/models/double_integrator_policy.pt",
+        help="Path to the trained fixed policy model checkpoint.",
+    )
+    parser.add_argument(
+        "--models-folder",
+        type=str,
+        default="results/models/double_integrator_lyap",
+        help="Output folder for trained Lyapunov model artifacts.",
+    )
+    parser.add_argument(
+        "--rollout-dataset-path",
+        type=str,
+        default="results/data/policy_rollouts.hdf5",
+        help="Optional rollout dataset path for Lyapunov plotting.",
+    )
+    parser.add_argument(
+        "--lyapunov-plot-html",
+        type=str,
+        default="results/plots/lyapunov_certified_regions.html",
+        help="Output path for the Lyapunov surface plot.",
+    )
+    parser.add_argument(
+        "--regions-plot-html",
+        type=str,
+        default="results/plots/certified_regions.html",
+        help="Output path for the certified/failed regions 2D plot.",
+    )
+    parser.add_argument("--device", type=str, default="cpu", help="Torch device string.")
+    parser.add_argument("--dt", type=float, default=0.1, help="Dynamics integration step.")
+
+    parser.add_argument("--sample-size", type=int, default=1000, help="Training sample size.")
+    parser.add_argument("--batch-size", type=int, default=512, help="Training batch size.")
+    parser.add_argument("--outer-epochs", type=int, default=100, help="Number of outer epochs.")
+    parser.add_argument("--steps-per-epoch", type=int, default=5, help="Gradient steps per epoch.")
+    parser.add_argument(
+        "--counterexample-every",
+        type=int,
+        default=10,
+        help="Counterexample search interval in epochs.",
+    )
+    parser.add_argument("--learning-rate", type=float, default=1e-2, help="Optimizer learning rate.")
+    parser.add_argument("--seed", type=int, default=5912354, help="Random seed.")
+    parser.add_argument("--kappa", type=float, default=0.05, help="Lyapunov decrease margin kappa.")
+    parser.add_argument(
+        "--train-state-bound",
+        type=float,
+        default=10.0,
+        help="Training state bound used for both dimensions.",
+    )
+    parser.add_argument("--invariance-weight", type=float, default=1.0, help="Invariance loss weight.")
+    parser.add_argument("--rho-growth-gamma", type=float, default=1.1, help="ROA rho growth factor.")
+    parser.add_argument("--roa-weight", type=float, default=0.1, help="ROA objective weight.")
+    parser.add_argument("--l1-weight", type=float, default=1e-6, help="L1 regularization weight.")
+
+    parser.add_argument("--cert-step", type=float, default=0.5, help="Certification grid step.")
+    parser.add_argument("--cert-rho-scaling", type=float, default=1.2, help="Certification rho scaling.")
+    parser.add_argument("--cert-bisection-tol", type=float, default=1e-3, help="Certification bisection tolerance.")
+    parser.add_argument(
+        "--cert-max-scale-steps",
+        type=int,
+        default=15,
+        help="Maximum scale expansion steps during certification.",
+    )
+    parser.add_argument(
+        "--cert-max-bisection-steps",
+        type=int,
+        default=20,
+        help="Maximum bisection steps during certification.",
+    )
+    parser.add_argument(
+        "--cert-method",
+        type=str,
+        default="alpha-crown",
+        help="Certification backend/method name.",
+    )
+    parser.add_argument(
+        "--cert-state-bound",
+        type=float,
+        default=15.0,
+        help="Certification state bound used for both dimensions.",
+    )
+    return parser.parse_args()
+
+
+
 # TODO: grid search for kappa cert method cert steps e.g.
 def main() -> None:
-    device = th.device("cpu")
+    args = parse_cli_args()
+    device = th.device(args.device)
 
-    policy_model_path = Path("results/models/double_integrator_policy.pt")
+    policy_model_path = Path(args.policy_model_path)
     policy_model = MLPPolicy.load(
         path=policy_model_path,
         map_location=device,
@@ -29,36 +123,36 @@ def main() -> None:
         state_dim=2,
         epsilon=1e-3,
     ).to(device)
-    dyn_model = DoubleIntegratorDynamics(dt=0.1).to(device)
+    dyn_model = DoubleIntegratorDynamics(dt=args.dt).to(device)
 
     training_config = LyapunovTrainingConfig(
         state_dim=2,
-        state_bounds=(10.0, 10.0),
-        sample_size=1000,
-        batch_size=512,
-        outer_epochs=100,
-        steps_per_epoch=5,
-        counterexample_every=10,
-        learning_rate=1e-2,
+        state_bounds=(args.train_state_bound, args.train_state_bound),
+        sample_size=args.sample_size,
+        batch_size=args.batch_size,
+        outer_epochs=args.outer_epochs,
+        steps_per_epoch=args.steps_per_epoch,
+        counterexample_every=args.counterexample_every,
+        learning_rate=args.learning_rate,
         train_policy_model=False,
-        seed=5912354,
-        kappa=0.05,
-        invariance_weight=1.0,
-        rho_growth_gamma=1.1,
-        roa_weight=0.1,
-        l1_weight=1e-6,
+        seed=args.seed,
+        kappa=args.kappa,
+        invariance_weight=args.invariance_weight,
+        rho_growth_gamma=args.rho_growth_gamma,
+        roa_weight=args.roa_weight,
+        l1_weight=args.l1_weight,
     )
 
     certification_config = LyapunovCertificationConfig.from_training_config(
         training_config,
-        cert_step=0.5,
+        cert_step=args.cert_step,
         cert_origin_exclusion=None,
-        cert_rho_scaling=1.2,
-        cert_bisection_tol=1e-3,
-        cert_max_scale_steps=15,
-        cert_max_bisection_steps=20,
-        cert_method="alpha-crown",
-        state_bounds = (15.0, 15.0),
+        cert_rho_scaling=args.cert_rho_scaling,
+        cert_bisection_tol=args.cert_bisection_tol,
+        cert_max_scale_steps=args.cert_max_scale_steps,
+        cert_max_bisection_steps=args.cert_max_bisection_steps,
+        cert_method=args.cert_method,
+        state_bounds=(args.cert_state_bound, args.cert_state_bound),
     )
 
     train_results = train_lyapunov(
@@ -67,7 +161,7 @@ def main() -> None:
         dyn_model,
         training_config,
         device=device,
-        models_folder="results/models/double_integrator_lyap",
+        models_folder=args.models_folder,
     )
 
     _, cert_results = certify_lyapunov(
@@ -79,7 +173,7 @@ def main() -> None:
         device=device,
     )
 
-    rollout_dataset_path = Path("results/data/policy_rollouts.hdf5")
+    rollout_dataset_path = Path(args.rollout_dataset_path)
     if rollout_dataset_path.exists():
         rollout_dataset = MPCDataset.load(rollout_dataset_path)
 
@@ -97,14 +191,14 @@ def main() -> None:
             plot_3d=True,
             certified_regions=cert_results.certified_regions,
             uncertified_regions=cert_results.failed_regions,
-            html_path="results/plots/lyapunov_certified_regions.html",
+            html_path=args.lyapunov_plot_html,
         )
 
     lcil_plt.certified_regions_2d(
         cert_results.certified_regions,
         cert_results.failed_regions,
         state_labels=["x", "v"],
-        html_path="results/plots/certified_regions.html",
+        html_path=args.regions_plot_html,
     )
 
 
