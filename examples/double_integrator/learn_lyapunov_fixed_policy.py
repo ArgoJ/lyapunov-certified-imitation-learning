@@ -3,10 +3,10 @@ import torch.nn as nn
 import numpy as np
 from pathlib import Path
 
-from lyapunov_certified_imitation_learning.lyapunov_learning import LyapunovTrainingConfig, train_lyapunov, NeuralLyapunovCandidate
-from lyapunov_certified_imitation_learning.certification import LyapunovCertificationConfig, certify_lyapunov
-from lyapunov_certified_imitation_learning.utils import lcil_plt, ICNN, MLP
-from lyapunov_certified_imitation_learning.imitation_learning_mlp import MLPPolicy
+from lcil.lyapunov_learning import LyapunovTrainingConfig, train_lyapunov, NeuralLyapunovCandidate
+from lcil.certification import LyapunovCertificationConfig, certify_lyapunov
+from lcil.utils import lcil_plt, ICNN, MLP
+from lcil.imitation_learning_mlp import MLPPolicy
 from mpc_datagen import MPCDataset
 
 from double_integrator_dyn import DoubleIntegratorDynamics

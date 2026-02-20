@@ -3,8 +3,8 @@ from pathlib import Path
 
 from mpc_datagen import MPCDataset, mdg_plt
 
-from lyapunov_certified_imitation_learning.imitation_learning_mlp import MLPPolicy, StateActionDataset
-from lyapunov_certified_imitation_learning.imitation_learning_mlp.policy_rollout import (
+from lcil.imitation_learning_mlp import MLPPolicy, StateActionDataset
+from lcil.imitation_learning_mlp.policy_rollout import (
     PolicyRolloutConfig,
     PolicyRolloutGenerator,
     RandomBoundsSampler,

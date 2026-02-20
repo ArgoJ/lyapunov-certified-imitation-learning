@@ -3,8 +3,8 @@ from pathlib import Path
 
 import torch as th
 
-from lyapunov_certified_imitation_learning.imitation_learning_mlp import MLPPolicy
-from lyapunov_certified_imitation_learning.utils.package_logger import get_package_logger
+from lcil.imitation_learning_mlp import MLPPolicy
+from lcil.utils.package_logger import get_package_logger
 
 
 __logger__ = get_package_logger(__name__)

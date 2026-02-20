@@ -12,16 +12,16 @@ from abcrown import (
     output_vars,
 )
 
-from lyapunov_certified_imitation_learning.certification.models import (
+from lcil.certification.models import (
     ClosedLoopLyapunovConditionVerifier,
 )
-from lyapunov_certified_imitation_learning.certification import LyapunovCertificationConfig
-from lyapunov_certified_imitation_learning.lyapunov_learning import (
+from lcil.certification import LyapunovCertificationConfig
+from lcil.lyapunov_learning import (
     LyapunovTrainingConfig,
     NeuralLyapunovCandidate,
 )
-from lyapunov_certified_imitation_learning.utils.package_logger import get_package_logger
-from lyapunov_certified_imitation_learning.utils import ICNN, MLP
+from lcil.utils.package_logger import get_package_logger
+from lcil.utils import ICNN, MLP
 
 __logger__ = get_package_logger(__name__)
 

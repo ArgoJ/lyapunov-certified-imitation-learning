@@ -2,7 +2,7 @@ import unittest
 
 import torch as th
 
-from lyapunov_certified_imitation_learning.imitation_learning_mlp.models import MLPPolicy
+from lcil.imitation_learning_mlp.models import MLPPolicy
 
 
 class TestMLPPolicyBounds(unittest.TestCase):

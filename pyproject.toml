@@ -5,15 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lyapunov-certified-imitation-learning"
 version = "0.1.0"
-description = "Learn a lyapunov certificate for a neural network"
-readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "torch",
     "numpy",
     "matplotlib",
     "scipy",
-    "pandas",
     "plotly",
     "tqdm",
     "casadi",
@@ -21,6 +18,31 @@ dependencies = [
     "mpc-datagen @ git+https://github.com/ArgoJ/mpc-datagen.git",
     "auto_LiRPA @ git+https://github.com/Verified-Intelligence/auto_LiRPA.git",
     "abcrown @ git+https://github.com/Verified-Intelligence/alpha-beta-CROWN.git",
+    "leap_c @ git+https://github.com/leap-c/leap-c.git",
+]
+
+description = "Learn a lyapunov certificate for a neural network"
+readme = "README.md"
+license = { file = "LICENSE.txt" }
+maintainers = [
+    { name = "Josua Lindemann", email = "josua.lindemann@outlook.de" },
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov",
+]
+docs = [
+    "sphinx==8.2.3",
+    "sphinx_rtd_theme==3.0.2",
+    "myst-parser==4.0.1"
+]
+dev = [
+    "lyapunov-certified-imitation-learning[test]",
+    "lyapunov-certified-imitation-learning[docs]",
+    "pre-commit==4.3.0",
+    "ruff==0.12.12"
 ]
 
 [tool.setuptools.package-dir]
@@ -28,3 +50,17 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.urls]
+Repository = "https://github.com/ArgoJ/lyapunov-certified-imitation-learning"
+"Bug Tracker" = "https://github.com/ArgoJ/lyapunov-certified-imitation-learning/issues"
+
+[tool.pytest.ini_options]
+testpaths = "tests"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"

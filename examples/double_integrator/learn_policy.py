@@ -2,17 +2,17 @@ import argparse
 import torch as th
 
 from pathlib import Path
+from datetime import datetime
 
 from mpc_datagen import MPCDataset
-
-from lyapunov_certified_imitation_learning.utils import EarlyStopping
-from lyapunov_certified_imitation_learning.imitation_learning_mlp import (
+from lcil.utils import EarlyStopping
+from lcil.imitation_learning_mlp import (
     train_mlp_policy,
     create_train_and_val_dataloader,
     MLPPolicy,
     ReferenceWeightedMSELoss,
 )
-from lyapunov_certified_imitation_learning.imitation_learning_mlp.policy_rollout import PolicyRolloutConfig
+from lcil.imitation_learning_mlp.policy_rollout import PolicyRolloutConfig
 
 
 def parse_cli_args() -> argparse.Namespace:
@@ -87,7 +87,7 @@ def main() -> None:
         num_epochs=args.epochs,
         learning_rate=args.lr,
         device=device,
-        save_folder=args.save_folder,
+        save_folder=Path(args.save_folder) / datetime.now().strftime('%Y%m%d_%H%M%S'),
     )
 
 if __name__ == "__main__":
