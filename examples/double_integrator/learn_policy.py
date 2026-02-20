@@ -66,17 +66,19 @@ def main() -> None:
         val_fraction=0.2,
     )
     
-    train_mlp_policy(
-        policy_model=net,
+    trainer = Trainer(
+        model=net,
         dataloader=train_loader,
         val_dataloader=val_loader,
         early_stopper=EarlyStopping(patience=10, delta=1e-4),
         loss_fn=ReferenceWeightedMSELoss(reference=[0.0], alpha=1.0, max_weight=10.0),
-        scheduler="cosine",
-        num_epochs=args.epochs,
-        learning_rate=args.lr,
         device=device,
-        save_folder=Path(args.save_folder) / datetime.now().strftime('%Y%m%d_%H%M%S'),
+    )
+    trainer.set_adam_optimizer(learning_rate=args.lr, scheduler_type="cosine")
+    trainer.train(num_epochs=args.epochs)
+    trainer.save(
+        save_folder=Path(args.save_folder) / datetime.now().strftime('%Y%m%d_%H%M%S'), 
+        global_config=source_dataset.global_config
     )
 
 if __name__ == "__main__":

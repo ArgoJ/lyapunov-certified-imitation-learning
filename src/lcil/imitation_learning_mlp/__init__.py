@@ -4,7 +4,7 @@ from .dataset import (
     create_train_and_val_dataloader,
     save_state_action_dataset_subset,
 )
-from .trainer import train_mlp_policy
+from .trainer import Trainer
 from .models import MLPPolicy
 from .loss import ReferenceWeightedMSELoss
 
@@ -14,7 +14,7 @@ __all__ = [
     "create_state_action_dataloader",
     "create_train_and_val_dataloader",
     "save_state_action_dataset_subset",
-    "train_mlp_policy",
+    "Trainer",
     "MLPPolicy",
     "ReferenceWeightedMSELoss",
 ]
