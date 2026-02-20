@@ -8,6 +8,8 @@ from mpc_datagen import MPCDataset
 from lcil.utils import EarlyStopping
 from lcil.imitation_learning_mlp import *
 
+from double_integrator_dyn import DoubleIntegratorDynamics
+
 
 def parse_cli_args() -> argparse.Namespace:
     """Parse command-line arguments for policy training."""
@@ -45,13 +47,13 @@ def main() -> None:
     source_dataset = MPCDataset.load(Path(dataset_path))
     if len(source_dataset) == 0:
         raise ValueError("MPCDataset is empty; cannot extract configuration.")
-    constraints = source_dataset[0].config.constraints
+    dataset_cfg = source_dataset.global_config
 
     net = MLPPolicy(
         [2, 16, 16, 1],
         ["relu", "relu", "identity"],
-        u_min=constraints.lbu,
-        u_max=constraints.ubu,
+        u_min=dataset_cfg.constraints.lbu,
+        u_max=dataset_cfg.constraints.ubu,
     )
 
     train_loader, val_loader = create_train_and_val_dataloader(
@@ -65,13 +67,23 @@ def main() -> None:
         near_duplicate_radius=args.near_duplicate_radius,
         val_fraction=0.2,
     )
-    
+
+    loss_fn = ReferenceWeightedDynamicsAwareLoss(
+        reference_loss=ReferenceWeightedMSELoss(reference=[dataset_cfg.cost.yref[-dataset_cfg.nu:]], alpha=1.0, max_weight=2.0),
+        dynamics_loss=DynamicsAwareLoss(
+            dynamics=DoubleIntegratorDynamics(dt=0.1), 
+            x_min=th.tensor(dataset_cfg.constraints.lbx), 
+            x_max=th.tensor(dataset_cfg.constraints.ubx)
+        ),
+        lambda_dyn=1.5,
+    )
+
     trainer = Trainer(
         model=net,
         dataloader=train_loader,
         val_dataloader=val_loader,
         early_stopper=EarlyStopping(patience=10, delta=1e-4),
-        loss_fn=ReferenceWeightedMSELoss(reference=[0.0], alpha=1.0, max_weight=10.0),
+        loss_fn=loss_fn,
         device=device,
     )
     trainer.set_adam_optimizer(learning_rate=args.lr, scheduler_type="cosine")

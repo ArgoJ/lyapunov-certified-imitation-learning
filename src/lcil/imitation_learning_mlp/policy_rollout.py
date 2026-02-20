@@ -3,6 +3,8 @@ from typing import Protocol
 
 import numpy as np
 import torch as th
+
+from torch import nn
 from numpy.typing import ArrayLike, NDArray
 
 from mpc_datagen import MPCConfig, MPCData, MPCDataset, MPCMeta, MPCTrajectory
@@ -32,6 +34,8 @@ def _normalize_bounds(
     return bounds_array
 
 
+
+# --- CONFIG ---
 @dataclass(slots=True)
 class PolicyRolloutConfig:
     """Configuration for policy rollout data generation."""
@@ -128,6 +132,8 @@ class PolicyRolloutConfig:
         return mpc_config
 
 
+
+# --- SAMPLER ---
 class StateSampler(Protocol):
     """Protocol for initial-state sampling used by PolicyRolloutGenerator."""
 
@@ -163,14 +169,15 @@ class FeasibleSetSampler(StateSampler):
         return np.asarray(x0.detach().cpu().numpy(), dtype=np.float32)
 
 
+
+# --- GENERATOR ---
 class PolicyRolloutGenerator:
     """Generator for closed-loop policy rollout datasets."""
 
     def __init__(
         self,
-        policy: th.nn.Module,
-        simulator: th.nn.Module,
-        rollout_config: PolicyRolloutConfig | None = None,
+        policy: nn.Module,
+        simulator: nn.Module,
         sampler: StateSampler | None = None,
         device: th.device | str = "cpu",
     ) -> None:
@@ -191,17 +198,12 @@ class PolicyRolloutGenerator:
         device : torch.device or str, optional
             Device to run the policy on (e.g., "cpu" or "cuda"). Default is "cpu".
         """
-        if rollout_config is None:
-            raise ValueError("Provide a rollout_config.")
-        self.rollout_config = rollout_config
-
         self.policy = policy
         self.simulator = simulator
         self.device = th.device(device)
 
-        if rollout_config is not None:
-            self.rollout_config = rollout_config
-            self.mpc_config = rollout_config.to_mpc_config()
+        self.rollout_config = PolicyRolloutConfig()
+        self.mpc_config = self.rollout_config.to_mpc_config()
 
         self.t_sim = int(self.rollout_config.T_sim)
         self.dt = float(self.rollout_config.dt)
@@ -214,12 +216,6 @@ class PolicyRolloutGenerator:
                 )
             sampler = RandomBoundsSampler(bounds=self.rollout_config.state_bounds)
         self.sampler = sampler
-
-        self.policy.to(self.device)
-        self.policy.eval()
-        self.simulator.to(self.device)
-        self.simulator.eval()
-
 
     def _rollout_single(self, x0: NDArray, traj_id: int) -> MPCData:
         """
@@ -276,6 +272,11 @@ class PolicyRolloutGenerator:
 
     def generate(self, n_samples: int) -> MPCDataset:
         """Generate a dataset of `n_samples` policy rollouts using the configured sampler."""
+        self.policy.to(self.device)
+        self.policy.eval()
+        self.simulator.to(self.device)
+        self.simulator.eval()
+
         dataset = MPCDataset()
 
         with __logger__.tqdm(range(n_samples), desc="Generating Policy Rollouts") as pbar:

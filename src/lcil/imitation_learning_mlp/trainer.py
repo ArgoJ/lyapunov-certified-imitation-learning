@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 import os
+import inspect
 import numpy as np
 import torch as th
 import torch.nn as nn
@@ -113,6 +114,9 @@ class Trainer:
         self.early_stopper: EarlyStopping | None = early_stopper
         self.loss_fn = nn.MSELoss() if loss_fn is None else loss_fn
         self.device = th.device(device)
+        
+        loss_signature = inspect.signature(self.loss_fn.forward)
+        self._loss_requires_states = "states" in loss_signature.parameters
         
         self.optimizer: th.optim.Optimizer | None = None
         self.scheduler: th.optim.lr_scheduler.LRScheduler | th.optim.lr_scheduler.ReduceLROnPlateau | None = None
@@ -226,7 +230,12 @@ class Trainer:
 
                     self.optimizer.zero_grad(set_to_none=True)
                     pred_actions = self.model(states)
-                    loss = self.loss_fn(pred_actions, actions)
+                    
+                    if self._loss_requires_states:
+                        loss = self.loss_fn(pred_actions, actions, states=states)
+                    else:
+                        loss = self.loss_fn(pred_actions, actions)
+
                     loss.backward()
                     self.optimizer.step()
 
@@ -245,7 +254,12 @@ class Trainer:
                             states = states.to(device=self.device, non_blocking=True)
                             actions = actions.to(device=self.device, non_blocking=True)
                             pred_actions = self.model(states)
-                            val_epoch_loss += self.loss_fn(pred_actions, actions).item() * states.size(0)
+
+                            if self._loss_requires_states:
+                                val_epoch_loss += self.loss_fn(pred_actions, actions, states=states).item() * states.size(0)
+                            else:
+                                val_epoch_loss += self.loss_fn(pred_actions, actions).item() * states.size(0)
+
                             pbar.update(bar_step * states.size(0))
                     val_avg_loss = val_epoch_loss / val_datapoints
 
@@ -327,27 +341,12 @@ class Trainer:
 
             # Policy model saving
             model_path = save_folder / "model.pt"
-            if hasattr(self.model, "save") and callable(self.model.save):
-                try:
-                    self.model.save(
-                        model_path,
-                        train_dataset_path=resolved_train_dataset_path,
-                        val_dataset_path=resolved_val_dataset_path,
-                        global_config=global_config,
-                    )
-                except TypeError:
-                    self.model.save(model_path)
-            else:
-                save_folder.parent.mkdir(parents=True, exist_ok=True)
-                th.save(
-                    {
-                        "state_dict": self.model.state_dict(),
-                        "train_dataset_path": resolved_train_dataset_path,
-                        "val_dataset_path": resolved_val_dataset_path,
-                        "global_config": dict(global_config) if global_config is not None else None,
-                    },
-                    model_path,
-                )
+            self.model.save(
+                model_path,
+                train_dataset_path=resolved_train_dataset_path,
+                val_dataset_path=resolved_val_dataset_path,
+                global_config=global_config,
+            )
 
             # Metrics
             metrics_path = save_folder / "training_metrics.npz"

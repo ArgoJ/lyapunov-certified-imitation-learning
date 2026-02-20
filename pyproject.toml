@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lyapunov-certified-imitation-learning"
 version = "0.1.0"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "torch",
     "numpy",
@@ -18,7 +18,6 @@ dependencies = [
     "mpc-datagen @ git+https://github.com/ArgoJ/mpc-datagen.git",
     "auto_LiRPA @ git+https://github.com/Verified-Intelligence/auto_LiRPA.git",
     "abcrown @ git+https://github.com/Verified-Intelligence/alpha-beta-CROWN.git",
-    "leap_c @ git+https://github.com/leap-c/leap-c.git",
 ]
 
 description = "Learn a lyapunov certificate for a neural network"

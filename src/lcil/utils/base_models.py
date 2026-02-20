@@ -49,6 +49,18 @@ def save_model_checkpoint(model: nn.Module, save_path: str | os.PathLike[str]) -
         th.save(model.state_dict(), save_path)
 
 
+class LinearDynamics(nn.Module):
+    """Simple linear dynamics model :math:`\dot{x} = A x + B u`."""
+
+    def __init__(self, A: th.Tensor, B: th.Tensor):
+        super().__init__()
+        self.register_buffer("A", A)
+        self.register_buffer("B", B)
+
+    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+        return F.linear(x, self.A) + F.linear(u, self.B)
+
+
 class RK4Integrator(nn.Module):
     """Generic fourth-order Runge-Kutta integrator for control systems.
 
