@@ -36,7 +36,7 @@ def main() -> None:
     net.eval()
 
     print(f"dataset path: {net.val_dataset_path}")
-    cfg = PolicyRolloutConfig.from_mpc_config(net.global_config, t_sim=20.0)
+    cfg = PolicyRolloutConfig.from_mpc_config(net.global_config, t_sim=40.0)
     dataset = StateActionDataset.load(net.val_dataset_path)
     sampler = FeasibleSetSampler(dataset=dataset)
 

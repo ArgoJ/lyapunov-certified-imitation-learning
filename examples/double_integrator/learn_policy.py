@@ -69,13 +69,16 @@ def main() -> None:
     )
 
     loss_fn = ReferenceWeightedDynamicsAwareLoss(
-        reference_loss=ReferenceWeightedMSELoss(reference=[dataset_cfg.cost.yref[-dataset_cfg.nu:]], alpha=1.0, max_weight=2.0),
+        reference_loss=ReferenceWeightedMSELoss(
+            reference=[dataset_cfg.cost.yref[-dataset_cfg.nu:]],
+            alpha=1.0,
+            max_weight=1.0,
+            min_weight=0.7),
         dynamics_loss=DynamicsAwareLoss(
             dynamics=DoubleIntegratorDynamics(dt=0.1), 
             x_min=th.tensor(dataset_cfg.constraints.lbx), 
-            x_max=th.tensor(dataset_cfg.constraints.ubx)
-        ),
-        lambda_dyn=1.5,
+            x_max=th.tensor(dataset_cfg.constraints.ubx)),
+        lambda_dyn=1.0,
     )
 
     trainer = Trainer(
