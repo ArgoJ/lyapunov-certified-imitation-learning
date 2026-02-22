@@ -15,7 +15,7 @@ from ..certification.models import ClosedLoopLyapunovConditionVerifier
 from ..certification.counterexample import (
     estimate_rho_from_boundary,
     find_counter_examples,
-    sample_uniform_asym_box,
+    sample_uniform_box,
 )
 from ..utils.base_models import save_model_checkpoint
 from ..utils.package_logger import get_package_logger
@@ -58,6 +58,12 @@ class LyapunovTrainer:
         self.origin = th.zeros(1, self.config.state_dim, dtype=th.float32, device=self.device)
         self.lbx = th.tensor(self.config.state_bounds[0], dtype=th.float32, device=self.device)
         self.ubx = th.tensor(self.config.state_bounds[1], dtype=th.float32, device=self.device)
+        
+        if (self.lbx >= 0).any() or (self.ubx <= 0).any() or (self.lbx > self.ubx).any():
+            __logger__.warning(
+                "State bounds do not appear to include the origin." 
+                "Ensure that state_bounds are correctly specified for Lyapunov training."
+            )
 
         if self.config.seed is not None:
             th.manual_seed(self.config.seed)
@@ -176,8 +182,8 @@ class LyapunovTrainer:
         roa_candidates = self._build_roa_candidates()
         
         # Initial training pool sampled uniformly from the state space bounds
-        initial_pool = sample_uniform_asym_box(self.config.sample_size, self.lbx, self.ubx, self.device)
-        state_buffer = DynamicStateBuffer(initial_states=initial_pool, max_size=self.config.max_buffer)
+        initial_x = sample_uniform_box(self.config.sample_size, self.lbx, self.ubx, self.device)
+        state_buffer = DynamicStateBuffer(initial_states=initial_x, max_size=self.config.max_buffer)
 
         mining_interval = max(1, self.config.counterexample_every // max(1, self.config.steps_per_epoch))
         rho_estimate = self.config.rho_min

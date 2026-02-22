@@ -63,6 +63,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         self,
         states: NDArray | th.Tensor,
         actions: NDArray | th.Tensor,
+        refs: NDArray | th.Tensor | None = None,
         dtype: th.dtype = th.float32,
         near_duplicate_radius: float | None = None,
     ):
@@ -74,6 +75,8 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
             State samples with shape ``(num_samples, nx)``.
         actions : numpy.ndarray or torch.Tensor
             Action samples with shape ``(num_samples, nu)``.
+        refs : numpy.ndarray or torch.Tensor, optional
+            Reference samples with shape ``(num_samples, nref)``.
         dtype : torch.dtype, optional
             Output tensor dtype for states and actions.
         near_duplicate_radius : float, optional
@@ -87,10 +90,16 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
 
         states_tensor = self._to_tensor_2d(states, name="states")
         actions_tensor = self._to_tensor_2d(actions, name="actions")
+        refs_tensor = self._to_tensor_2d(refs, name="refs") if refs is not None else None
         if states_tensor.shape[0] != actions_tensor.shape[0]:
             raise ValueError(
                 "states/actions sample count mismatch: "
                 f"got {states_tensor.shape[0]} states and {actions_tensor.shape[0]} actions."
+            )
+        if refs_tensor is not None and states_tensor.shape[0] != refs_tensor.shape[0]:
+            raise ValueError(
+                "states/refs sample count mismatch: "
+                f"got {states_tensor.shape[0]} states and {refs_tensor.shape[0]} refs."
             )
 
         if near_duplicate_radius is not None and states_tensor.shape[0] > 0:
@@ -101,17 +110,37 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
             )
             states_tensor = states_tensor.index_select(0, keep_idx)
             actions_tensor = actions_tensor.index_select(0, keep_idx)
+            if refs_tensor is not None:
+                refs_tensor = refs_tensor.index_select(0, keep_idx)
 
         self.dtype = dtype
         self.near_duplicate_radius = near_duplicate_radius
 
         self._states = states_tensor.to(dtype=self.dtype)
         self._actions = actions_tensor.to(dtype=self.dtype)
+        self._refs = refs_tensor.to(dtype=self.dtype) if refs_tensor is not None else None
         self._total_samples = int(self._states.shape[0])
 
     def __len__(self) -> int:
         """Total number of training samples across all trajectories."""
         return self._total_samples
+
+    def __getitem__(self, idx: int) -> tuple[th.Tensor, th.Tensor] | tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """Return one imitation pair ``(state, action)`` at global index ``idx``."""
+        if self._total_samples == 0:
+            raise IndexError("Cannot index an empty imitation-learning dataset.")
+
+        if idx < 0:
+            idx += self._total_samples
+        if idx < 0 or idx >= self._total_samples:
+            raise IndexError(f"Index {idx} is out of bounds for dataset size {self._total_samples}.")
+
+        if self._states is None or self._actions is None:
+            raise RuntimeError("In-memory tensors are not available.")
+
+        if self._refs is not None:
+            return self._states[idx], self._actions[idx], self._refs[idx]
+        return self._states[idx], self._actions[idx]
 
     def save(self, path: str | os.PathLike[str]) -> None:
         """Save the preprocessed (optionally filtered) state-action pairs to a ``.pt`` file.
@@ -130,6 +159,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
             "dtype": self.dtype,
             "near_duplicate_radius": self.near_duplicate_radius,
             "num_samples": self._total_samples,
+            "refs": self._refs.detach().cpu() if self._refs is not None else None,
         }
         th.save(payload, target_path)
 
@@ -152,13 +182,14 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
             raise FileNotFoundError(f"Dataset file not found at {source_path}.")
 
         payload = th.load(source_path, map_location="cpu")
-        required_keys = {"states", "actions", "dtype", "near_duplicate_radius", "num_samples"}
+        required_keys = {"states", "actions", "dtype", "near_duplicate_radius", "num_samples", "refs"}
         if not required_keys.issubset(payload.keys()):
             missing = required_keys - payload.keys()
             raise ValueError(f"Missing keys in dataset file: {missing}")
 
         states = payload["states"]
         actions = payload["actions"]
+        references = payload["refs"]
         dtype_payload = payload["dtype"]
         near_duplicate_radius = payload["near_duplicate_radius"]
 
@@ -166,6 +197,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         dataset = cls(
             states=states,
             actions=actions,
+            refs=references,
             dtype=dtype,
             near_duplicate_radius=None,
         )
@@ -178,6 +210,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         cls,
         mpc_dataset: MPCDataset | os.PathLike[str],
         dtype: th.dtype = th.float32,
+        use_references: bool = False,
         near_duplicate_radius: float | None = None,
     ) -> StateActionDataset:
         """Create a ``StateActionDataset`` by extracting samples from an MPC dataset."""
@@ -188,6 +221,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
             states=states,
             actions=actions,
             dtype=dtype,
+            refs=None if not use_references else None, # TODO: compute references from cost if requested
             near_duplicate_radius=near_duplicate_radius,
         )
 
@@ -205,12 +239,14 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         subset_indices = th.as_tensor(getattr(dataset_subset, "indices"), dtype=th.int64)
         parent_states = getattr(parent_dataset, "_states", None)
         parent_actions = getattr(parent_dataset, "_actions", None)
+        parent_refs = getattr(parent_dataset, "_refs", None)
 
         if parent_states is None or parent_actions is None:
             raise TypeError("Subset parent dataset must expose '_states' and '_actions' tensors.")
 
         split_states = parent_states.index_select(0, subset_indices).detach().cpu()
         split_actions = parent_actions.index_select(0, subset_indices).detach().cpu()
+        split_refs = parent_refs.index_select(0, subset_indices).detach().cpu() if parent_refs is not None else None
 
         resolved_dtype = dtype
         if resolved_dtype is None:
@@ -220,6 +256,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         return cls(
             states=split_states,
             actions=split_actions,
+            refs=split_refs,
             dtype=resolved_dtype,
             near_duplicate_radius=None,
         )
@@ -235,6 +272,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
 
         states_chunks: list[NDArray] = []
         actions_chunks: list[NDArray] = []
+        references_chunks: list[NDArray] = []
         expected_nx: int | None = None
         expected_nu: int | None = None
 
@@ -352,21 +390,6 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         first_mask[1:] = sorted_inverse[1:] != sorted_inverse[:-1]
         keep_idx = order[first_mask]
         return th.sort(keep_idx).values
-
-    def __getitem__(self, idx: int) -> tuple[th.Tensor, th.Tensor]:
-        """Return one imitation pair ``(state, action)`` at global index ``idx``."""
-        if self._total_samples == 0:
-            raise IndexError("Cannot index an empty imitation-learning dataset.")
-
-        if idx < 0:
-            idx += self._total_samples
-        if idx < 0 or idx >= self._total_samples:
-            raise IndexError(f"Index {idx} is out of bounds for dataset size {self._total_samples}.")
-
-        if self._states is None or self._actions is None:
-            raise RuntimeError("In-memory tensors are not available.")
-
-        return self._states[idx], self._actions[idx]
 
 
 def save_state_action_dataset_subset(

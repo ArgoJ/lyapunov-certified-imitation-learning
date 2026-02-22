@@ -111,6 +111,7 @@ class PolicyTrainer:
         
         loss_signature = inspect.signature(self.loss_fn.forward)
         self._loss_requires_states = "states" in loss_signature.parameters
+        self._use_refs = hasattr(dataloader.dataset, "refs") and dataloader.dataset._refs is not None
         
         self.optimizer: th.optim.Optimizer | None = None
         self.scheduler: th.optim.lr_scheduler.LRScheduler | th.optim.lr_scheduler.ReduceLROnPlateau | None = None
@@ -185,6 +186,21 @@ class PolicyTrainer:
             )
         else:
             raise ValueError(f"Unsupported scheduler '{st}'.")
+
+    def _extract_batch(self, batch: tuple[th.Tensor, ...]) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """Utility to extract model inputs and action targets from a dataloader batch, handling optional references."""
+        if self._use_refs:
+            states, actions, refs = batch
+            states = states.to(device=self.device, non_blocking=True)
+            refs = refs.to(device=self.device, non_blocking=True)
+            actions = actions.to(device=self.device, non_blocking=True)
+            nn_inputs = states - refs 
+        else:
+            states, actions = batch
+            states = states.to(device=self.device, non_blocking=True)
+            actions = actions.to(device=self.device, non_blocking=True)
+            nn_inputs = states
+        return nn_inputs, states, actions
     
     def train(
         self,
@@ -233,12 +249,11 @@ class PolicyTrainer:
                 self.model.train()
 
                 # Training loop
-                for states, actions in self.dataloader:
-                    states = states.to(device=self.device, non_blocking=True)
-                    actions = actions.to(device=self.device, non_blocking=True)
+                for batch in self.dataloader:
+                    nn_inputs, states, actions = self._extract_batch(batch)
 
                     self.optimizer.zero_grad(set_to_none=True)
-                    pred_actions = self.model(states)
+                    pred_actions = self.model(nn_inputs)
                     
                     if self._loss_requires_states:
                         loss = self.loss_fn(pred_actions, actions, states=states)
@@ -248,8 +263,8 @@ class PolicyTrainer:
                     loss.backward()
                     self.optimizer.step()
 
-                    train_epoch_loss += loss.item() * states.size(0)
-                    pbar.update(bar_step * states.size(0))
+                    train_epoch_loss += loss.item() * nn_inputs.size(0)
+                    pbar.update(bar_step * nn_inputs.size(0))
 
                 train_avg_loss = train_epoch_loss / train_datapoints
 
@@ -259,17 +274,16 @@ class PolicyTrainer:
                     self.model.eval()
                     val_epoch_loss = 0.0
                     with th.no_grad():
-                        for states, actions in self.val_dataloader:
-                            states = states.to(device=self.device, non_blocking=True)
-                            actions = actions.to(device=self.device, non_blocking=True)
-                            pred_actions = self.model(states)
+                        for batch in self.val_dataloader:
+                            nn_inputs, states, actions = self._extract_batch(batch)
+                            pred_actions = self.model(nn_inputs)
 
                             if self._loss_requires_states:
-                                val_epoch_loss += self.loss_fn(pred_actions, actions, states=states).item() * states.size(0)
+                                val_epoch_loss += self.loss_fn(pred_actions, actions, states=states).item() * nn_inputs.size(0)
                             else:
-                                val_epoch_loss += self.loss_fn(pred_actions, actions).item() * states.size(0)
+                                val_epoch_loss += self.loss_fn(pred_actions, actions).item() * nn_inputs.size(0)
 
-                            pbar.update(bar_step * states.size(0))
+                            pbar.update(bar_step * nn_inputs.size(0))
                     val_avg_loss = val_epoch_loss / val_datapoints
 
                 # Update metrics
@@ -297,7 +311,6 @@ class PolicyTrainer:
                             monitored_name,
                             monitored_metric,
                         )
-                        pbar.update(1.0)
                         break
 
                 # Postfix for tqdm bar
