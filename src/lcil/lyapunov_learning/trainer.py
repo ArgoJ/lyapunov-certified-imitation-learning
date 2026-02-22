@@ -5,19 +5,20 @@ import time
 import numpy as np
 import torch as th
 import torch.nn as nn
-from pathlib import Path
 
+from pathlib import Path
 from dataclasses import dataclass
 
 from .config import LyapunovTrainingConfig
-from ..utils.package_logger import get_package_logger
-from ..utils.base_models import save_model_checkpoint
+from .buffer import DynamicStateBuffer
 from ..certification.models import ClosedLoopLyapunovConditionVerifier
 from ..certification.counterexample import (
     estimate_rho_from_boundary,
     find_counter_examples,
-    sample_uniform_box,
+    sample_uniform_asym_box,
 )
+from ..utils.base_models import save_model_checkpoint
+from ..utils.package_logger import get_package_logger
 
 __logger__ = get_package_logger(__name__)
 
@@ -34,169 +35,231 @@ class LyapunovTrainingResult:
 def _parameter_l1_norm(model_params: list[nn.Parameter]) -> th.Tensor:
     return th.stack([param.abs().sum() for param in model_params]).sum()
 
+class LyapunovTrainer:
+    """Trainer class for Lyapunov-stable neural controllers utilizing a CEGIS-style loop."""
 
-def _build_roa_candidates(
-    sample_size: int,
-    bounds: th.Tensor,
-    device: th.device,
-) -> th.Tensor:
-    """Create diverse candidate states near the boundary of B."""
-    state_dim = bounds.numel()
-    directions = th.randn(sample_size, state_dim, device=device)
-    directions = directions / directions.norm(dim=1, keepdim=True).clamp(min=1e-8)
-    radii = th.rand(sample_size, 1, device=device) * 0.4 + 0.6
-    return directions * radii * bounds.unsqueeze(0)
+    def __init__(
+        self,
+        policy_model: nn.Module,
+        lyap_model: nn.Module,
+        dyn_model: nn.Module,
+        config: LyapunovTrainingConfig,
+        device: th.device | str = "cpu"
+    ) -> None:
+        self.policy_model = policy_model
+        self.lyap_model = lyap_model
+        self.dyn_model = dyn_model
+        self.config = config
+        self.device = th.device(device)
+        
+        if len(self.config.state_bounds) != self.config.state_dim:
+            raise ValueError("state_bounds must match state_dim.")
+        
+        self.origin = th.zeros(1, self.config.state_dim, dtype=th.float32, device=self.device)
+        self.lbx = th.tensor(self.config.state_bounds[0], dtype=th.float32, device=self.device)
+        self.ubx = th.tensor(self.config.state_bounds[1], dtype=th.float32, device=self.device)
 
+        if self.config.seed is not None:
+            th.manual_seed(self.config.seed)
+            np.random.seed(self.config.seed)
 
-def train_lyapunov(
-    policy_model: nn.Module,
-    lyap_model: nn.Module,
-    dyn_model: nn.Module,
-    config: LyapunovTrainingConfig,
-    device: th.device = th.device("cpu"),
-    models_folder: os.PathLike[str] | None = None,
-) -> LyapunovTrainingResult:
-    """Train a Lyapunov-stable neural controller with a CEGIS-style loop."""
-    if len(config.state_bounds) != config.state_dim:
-        raise ValueError("state_bounds must match state_dim.")
+        self.policy_model.to(self.device)
+        self.lyap_model.to(self.device)
+        self.dyn_model.to(self.device)
 
-    if config.seed is not None:
-        th.manual_seed(config.seed)
-        np.random.seed(config.seed)
+        self.optimizer: th.optim.Optimizer | None = None
+        self.verifier: ClosedLoopLyapunovConditionVerifier | None = None
+        self.trainable_params: list[nn.Parameter] = []
+        self.results: LyapunovTrainingResult | None = None
 
-    policy_model.to(device).train()
-    lyap_model.to(device).train()
-    dyn_model.to(device)
+    def _set_adam_optimizer(self) -> None:
+        """Configure the trainer to use the Adam optimizer based on the config."""
+        self.lyap_model.train()
+        self.dyn_model.eval()
 
-    lyap_params = list(lyap_model.parameters())
-    policy_params = list(policy_model.parameters()) if config.train_policy_model else []
-    trainable_params = policy_params + lyap_params
+        if not self.config.train_policy_model:
+            self.policy_model.eval()
+            policy_params = []
+            __logger__.info("Policy model updates disabled; training only Lyapunov model parameters.")
+        else:
+            self.policy_model.train()
+            policy_params = list(self.policy_model.parameters())
+            __logger__.info("Training both policy and Lyapunov model parameters.")
 
-    if not trainable_params:
-        raise ValueError("No trainable parameters found. Check model definitions and config.")
+        lyap_params = list(self.lyap_model.parameters())
+        self.trainable_params = policy_params + lyap_params
 
-    if not config.train_policy_model:
-        policy_model.eval()
-        __logger__.info("Policy model updates disabled; training only Lyapunov model parameters.")
+        if not self.trainable_params:
+            raise ValueError("No trainable parameters found. Check model definitions and config.")
 
-    optimizer = th.optim.Adam(trainable_params, lr=config.learning_rate)
+        self.optimizer = th.optim.Adam(self.trainable_params, lr=self.config.learning_rate)
 
-    bounds = th.tensor(config.state_bounds, dtype=th.float32, device=device)
-    training_pool = sample_uniform_box(config.sample_size, bounds, device)
-    roa_candidates = _build_roa_candidates(config.roa_candidate_size, bounds, device)
-    origin = th.zeros(1, config.state_dim, dtype=th.float32, device=device)
-    verifier = ClosedLoopLyapunovConditionVerifier(
-        policy_model=policy_model,
-        lyap_model=lyap_model,
-        dyn_model=dyn_model,
-        bounds=bounds,
-        kappa=config.kappa,
-        invariance_weight=config.invariance_weight,
-        rho=config.rho_min,
-    ).to(device)
+    def _set_verifier(self) -> None:
+        """Utility to create and configure the Lyapunov condition verifier."""
+        self.verifier = ClosedLoopLyapunovConditionVerifier(
+            policy_model=self.policy_model,
+            lyap_model=self.lyap_model,
+            dyn_model=self.dyn_model,
+            lbx=self.lbx,
+            ubx=self.ubx,
+            kappa=self.config.kappa,
+            invariance_weight=self.config.invariance_weight,
+            rho=self.config.rho_min,
+        ).to(self.device)
 
-    mining_interval = max(1, config.counterexample_every // max(1, config.steps_per_epoch))
-    rho_estimate = config.rho_min
-    num_mined_counterexamples = 0
+    def _loss_fn(self, x_batch: th.Tensor, roa_candidates: th.Tensor, rho_estimate: float) -> th.Tensor:
+        """Compute the combined loss for a training batch."""
+        if self.verifier is None:
+            raise ValueError("Verifier not initialized. Call _set_verifier() before computing loss.")
+        
+        # L_Vdot = ReLU(verifier(x))
+        self.verifier.set_rho(rho_estimate)
+        loss_condition = th.relu(self.verifier(x_batch)).mean()
 
-    # TODO: füge CONST_C = max(0.12, -np.min(counter_example_diff_list) + 0.01) ein, 
-    # damit die Bedingung nicht zu locker wird, wenn die ersten Counterexamples sehr schlecht sind.
-    start_time = time.time()
-    total_steps = config.outer_epochs * config.steps_per_epoch
-    with __logger__.tqdm(total=total_steps, desc="Train iterations", unit="step") as pbar:
-        for outer_iter in range(config.outer_epochs):
-            rho_estimate = estimate_rho_from_boundary(
-                lyap_model=lyap_model,
-                config=config,
-                device=device,
-            )
+        # L_roa = ReLU(V(x) / rho - 1)
+        v_candidates = self.lyap_model(roa_candidates)
+        loss_roa = th.relu(v_candidates / max(rho_estimate, self.config.rho_min) - 1.0).sum()
 
-            if (outer_iter + 1) % mining_interval == 0:
-                new_cex = find_counter_examples(
-                    policy_model=policy_model,
-                    lyap_model=lyap_model,
-                    dyn_model=dyn_model,
-                    config=config,
-                    rho=rho_estimate,
-                    device=device,
+        # Keep V(0) near zero for generic Lyapunov parameterizations.
+        loss_origin = self.lyap_model(self.origin).pow(2).mean()
+        loss_l1 = _parameter_l1_norm(self.trainable_params)
+
+        total_loss = (
+            loss_condition
+            + self.config.roa_weight * loss_roa
+            + self.config.l1_weight * loss_l1
+            + self.config.pos_scale * loss_origin
+        )
+
+        return total_loss
+
+    def _mine_new_counterexamples(self, rho_estimate: float) -> th.Tensor:
+        """Mine new counterexamples using the verifier and add them to the training buffer."""
+        if self.verifier is None:
+            raise ValueError("Verifier not initialized. Call _set_verifier() before mining counterexamples.")
+        
+        new_cex = find_counter_examples(
+            policy_model=self.policy_model,
+            lyap_model=self.lyap_model,
+            dyn_model=self.dyn_model,
+            config=self.config,
+            rho=rho_estimate,
+            device=self.device,
+        )
+        
+        if new_cex.numel() > 0:
+            # Margin dynamically adjusted based on the worst violation in the new counterexamples
+            with th.no_grad():
+                cex_diffs = self.verifier(new_cex).detach().cpu().numpy()
+            const_c = max(self.config.kappa, -np.min(cex_diffs) + 0.01)
+            self.verifier.set_kappa(const_c)
+
+            return new_cex
+        
+        return th.empty((0, self.config.state_dim), device=self.device)
+
+    def _build_roa_candidates(self) -> th.Tensor:
+        """Create diverse candidate states near the boundary of the asymmetric B."""
+        directions = th.randn(self.config.roa_candidate_size, self.config.state_dim, device=self.device)
+        directions = directions / directions.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        radii = th.rand(self.config.roa_candidate_size, 1, device=self.device) * 0.4 + 0.6
+        z_candidates = directions * radii  # between 0.6 and 1.0 in random directions
+        half_width = (self.ubx - self.lbx) / 2.0
+        center = (self.ubx + self.lbx) / 2.0
+        return z_candidates * half_width + center
+
+    def train(self) -> LyapunovTrainingResult:
+        """Execute the CEGIS-style training loop."""
+        self._set_adam_optimizer()
+        self._set_verifier()
+
+        roa_candidates = self._build_roa_candidates()
+        
+        # Initial training pool sampled uniformly from the state space bounds
+        initial_pool = sample_uniform_asym_box(self.config.sample_size, self.lbx, self.ubx, self.device)
+        state_buffer = DynamicStateBuffer(initial_states=initial_pool, max_size=self.config.max_buffer)
+
+        mining_interval = max(1, self.config.counterexample_every // max(1, self.config.steps_per_epoch))
+        rho_estimate = self.config.rho_min
+        num_mined_counterexamples = 0
+        total_steps = self.config.outer_epochs * self.config.steps_per_epoch
+        
+        start_time = time.time()
+        with __logger__.tqdm(total=total_steps, desc="Lyapunov Training Iterations", unit="step") as pbar:
+            for outer_iter in range(self.config.outer_epochs):
+                
+                # Estimate current Region of Attraction
+                rho_estimate = estimate_rho_from_boundary(
+                    lyap_model=self.lyap_model,
+                    config=self.config,
+                    device=self.device,
                 )
-                if new_cex.numel() > 0:
+
+                # Mine counterexamples (CEGIS)
+                if (outer_iter + 1) % mining_interval == 0:
+                    new_cex = self._mine_new_counterexamples(rho_estimate)
                     num_mined_counterexamples += new_cex.shape[0]
-                    training_pool = th.cat((training_pool, new_cex), dim=0)
-                    if training_pool.shape[0] > config.max_buffer:
-                        keep_idx = th.randperm(training_pool.shape[0], device=device)[
-                            : config.max_buffer
-                        ]
-                        training_pool = training_pool[keep_idx]
+                    state_buffer.add(new_cex)
 
-            for _ in range(config.steps_per_epoch):
-                batch_size = min(config.batch_size, training_pool.shape[0])
-                batch_idx = th.randint(
-                    low=0,
-                    high=training_pool.shape[0],
-                    size=(batch_size,),
-                    device=device,
-                )
+                # Inner training loop
+                for _ in range(self.config.steps_per_epoch):
+                    x_batch = state_buffer.sample(self.config.batch_size)
+                    loss = self._loss_fn(x_batch, roa_candidates, rho_estimate)
 
-                # L_Vdot = ReLU(verifier(x))
-                x_batch = training_pool[batch_idx]
-                verifier.set_rho(rho_estimate)
-                loss_condition = th.relu(verifier(x_batch)).mean()
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    self.optimizer.step()
 
-                # L_roa = ReLU(V(x) / rho - 1)
-                v_candidates = lyap_model(roa_candidates)
-                loss_roa = th.relu(v_candidates / max(rho_estimate, config.rho_min) - 1.0).sum()
-                # maybe switch back to mean.
+                    # Update Progress Bar
+                    pbar.update(1)
+                    pbar.set_postfix({
+                        "Loss": f"{loss.item():.4f}",
+                        "Rho": f"{rho_estimate:.4f}",
+                        "Pool": int(state_buffer.__len__()),
+                    })
 
-                # Keep V(0) near zero for generic Lyapunov parameterizations.
-                loss_origin = lyap_model(origin).pow(2).mean()
-                loss_l1 = _parameter_l1_norm(trainable_params)
+        train_time = time.time() - start_time
+        __logger__.info("Lyapunov training finished in %.2fs", train_time)
 
-                loss = (
-                    loss_condition
-                    + config.roa_weight * loss_roa
-                    + config.l1_weight * loss_l1
-                    + config.pos_scale * loss_origin
-                )
+        self.results = LyapunovTrainingResult(
+            rho_estimate=rho_estimate,
+            num_mined_counterexamples=num_mined_counterexamples,
+            train_time=train_time,
+        )
 
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+        return self.results
 
-                pbar.update(1)
-                pbar.set_postfix(
-                    {
-                        "loss": f"{loss.item():.4f}",
-                        "rho": f"{rho_estimate:.4f}",
-                        "pool": int(training_pool.shape[0]),
-                    }
-                )
+    def save(
+        self,
+        save_folder: os.PathLike[str],
+    ) -> None:
+        """Utility function to save training results and model checkpoints.
 
-    train_time = time.time() - start_time
-    __logger__.info("Training finished in %.2fs", train_time)
+        Parameters
+        ----------
+        save_folder : PathLike[str]
+            Folder where the models and config should be saved.
+        """
+        if self.results is None:
+            __logger__.warning("Training has not been executed yet. Saving initialized models only.")
 
-    results = LyapunovTrainingResult(
-        rho_estimate=rho_estimate,
-        num_mined_counterexamples=num_mined_counterexamples,
-        train_time=train_time,
-    )
+        save_folder = Path(save_folder)
+        save_folder.mkdir(parents=True, exist_ok=True)
 
-    if models_folder is None:
-        return results
+        seed_suffix = f"_{self.config.seed}" if self.config.seed is not None else ""
+        lyap_model_path = save_folder / f"lyapunov_model{seed_suffix}.pt"
+        policy_model_path = save_folder / f"policy_model{seed_suffix}.pt"
 
-    parent_dir = os.path.abspath(os.path.dirname(models_folder))
-    os.makedirs(parent_dir, exist_ok=True)
+        save_model_checkpoint(self.lyap_model, lyap_model_path)
+        save_model_checkpoint(self.policy_model, policy_model_path)
+        
+        __logger__.info("Saved Lyapunov model to %s", lyap_model_path)
+        __logger__.info("Saved policy model to %s", policy_model_path)
 
-    seed_suffix = f"_{config.seed}" if config.seed is not None else ""
+        if not self.config.train_policy_model:
+            __logger__.info("Policy model was not trained; saved initial (frozen) parameters.")
 
-    results.lyap_model_path = f"{models_folder}/lyapunov_model{seed_suffix}.pt"
-    results.policy_model_path = f"{models_folder}/policy_model{seed_suffix}.pt"
-    save_model_checkpoint(lyap_model, results.lyap_model_path)
-    save_model_checkpoint(policy_model, results.policy_model_path)
-    __logger__.info("Saved Lyapunov model to %s", results.lyap_model_path)
-    __logger__.info("Saved policy model to %s", results.policy_model_path)
-    
-    if not config.train_policy_model:
-        __logger__.info("Policy model was not trained; saved initial parameters.")
-
-    return results
+        # Optional: Update the results object with the paths if it exists
+        if self.results is not None:
+            self.results.lyap_model_path = str(lyap_model_path)
+            self.results.policy_model_path = str(policy_model_path)

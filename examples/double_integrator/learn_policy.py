@@ -81,7 +81,7 @@ def main() -> None:
         lambda_dyn=1.0,
     )
 
-    trainer = Trainer(
+    trainer = PolicyTrainer(
         model=net,
         dataloader=train_loader,
         val_dataloader=val_loader,

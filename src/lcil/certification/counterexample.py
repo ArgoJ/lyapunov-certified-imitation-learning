@@ -30,6 +30,15 @@ def sample_uniform_box(
     delta = th.zeros(sample_size, bounds.numel(), device=device).uniform_(-1.0, 1.0)
     return delta * bounds
 
+def sample_uniform_asym_box(
+    sample_size: int,
+    lb: th.Tensor,
+    ub: th.Tensor,
+    device: th.device,
+) -> th.Tensor:
+    """Sample uniformly from the asymmetric box B = {x | lb <= x <= ub}."""
+    u = th.rand(sample_size, lb.numel(), device=device)
+    return u * (ub - lb) + lb
 
 def sample_boundary_points(
     sample_size: int,

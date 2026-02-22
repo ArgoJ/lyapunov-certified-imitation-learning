@@ -68,7 +68,7 @@ class PolicyTrainingMetrics:
 
 
 
-class Trainer:
+class PolicyTrainer:
     """Trainer class for MLP policy imitation learning. Encapsulates training loop, metrics tracking, and checkpoint saving."""
 
     def __init__(
@@ -88,23 +88,17 @@ class Trainer:
             The model to be trained. Should take state tensors as input and output action tensors.
         dataloader : torch.utils.data.DataLoader
             The imitation learning dataloader providing ``(state, action)`` pairs for training.
-        val_dataloader : torch.utils.data.DataLoader or None, optional
+        val_dataloader : torch.utils.data.DataLoader, optional
             Optional validation dataloader providing ``(state, action)`` pairs.
             If provided, validation loss is computed each epoch and used for
             early stopping / ``"plateau"`` scheduler monitoring.
             If ``None``, training loss is used as the monitored metric.
-        scheduler : {"none", "step", "cosine", "plateau"}, optional
-            Learning-rate scheduler specifier. ``"step"`` uses a step decay,
-            ``"cosine"`` uses cosine annealing, and ``"plateau"`` uses
-            validation/train metric plateau reduction.
-        early_stopper : EarlyStopping or None, optional
+        early_stopper : EarlyStopping, optional
             Optional externally configured early-stopping utility.
             If provided, it is used directly and internal
             ``early_stopping_*`` arguments are ignored.
-        num_epochs : int, optional
-            Number of training epochs. Default is 10.
-        learning_rate : float, optional
-            Learning rate for the optimizer. Default is 1e-3.
+        loss_fn : torch.nn.Module, optional
+            Optional loss function module. If ``None``, defaults to mean squared error (MSE
         device : torch.device or str, optional
             Device to run training on (e.g., "cpu" or "cuda"). Default is "cpu".
         """
@@ -130,6 +124,21 @@ class Trainer:
         scheduler_type: Literal["none", "step", "cosine", "plateau"] = "none",
         scheduler_params: Mapping[str, Any] | None = None,
     ) -> None:
+        """Configure the trainer to use the Adam optimizer with the specified learning rate and optional LR scheduler.
+        
+        Parameters
+        ----------
+        learning_rate : float, optional
+            Learning rate for the Adam optimizer. Default is 1e-3.
+        scheduler_type : str, optional
+            Type of learning rate scheduler to use. One of "none", "step", "cosine", or "plateau". Default is "none" (no scheduler).
+        scheduler_params : dict or None, optional
+            Optional dictionary of parameters for the specified scheduler. The required keys depend on the scheduler type:
+            - For "step": {"step_size": int, "gamma": float}
+            - For "cosine": {"eta_min": float}
+            - For "plateau": {"factor": float, "patience": int, "min_lr": float, "mode": str}
+            If ``None``, default parameters will be used for the chosen scheduler type.
+        """
         if self.model is None:
             raise ValueError("Model must be set before configuring optimizer.")
         

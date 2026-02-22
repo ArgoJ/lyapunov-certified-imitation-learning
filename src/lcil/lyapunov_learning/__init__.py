@@ -1,4 +1,4 @@
-from .trainer import train_lyapunov
+from .trainer import LyapunovTrainer
 from .config import LyapunovTrainingConfig
 from .models import (
     LyapunovNet,
@@ -7,7 +7,7 @@ from .models import (
 )
 
 __all__ = [
-    "train_lyapunov",
+    "LyapunovTrainer",
     "LyapunovTrainingConfig",
     "LyapunovNet",
     "NeuralLyapunovCandidate",

@@ -1,9 +1,11 @@
 import argparse
 import torch as th
 import numpy as np
+
+from datetime import datetime
 from pathlib import Path
 
-from lcil.lyapunov_learning import LyapunovTrainingConfig, train_lyapunov, NeuralLyapunovCandidate
+from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer
 from lcil.certification import LyapunovCertificationConfig, certify_lyapunov
 from lcil.utils import lcil_plt, ICNN, MLP
 from lcil.imitation_learning_mlp import MLPPolicy
@@ -18,38 +20,18 @@ def parse_cli_args() -> argparse.Namespace:
         description="Train and certify a Lyapunov candidate for a fixed double-integrator policy."
     )
     parser.add_argument(
-        "--policy-model-path",
+        "--policy-path",
         type=str,
-        default="results/models/double_integrator_policy.pt",
+        default="results/double_integrator/20260222_112847/model.pt",
         help="Path to the trained fixed policy model checkpoint.",
     )
     parser.add_argument(
-        "--models-folder",
+        "--save-folder",
         type=str,
-        default="results/models/double_integrator_lyap",
+        default="results/double_integrator_lyap",
         help="Output folder for trained Lyapunov model artifacts.",
     )
-    parser.add_argument(
-        "--rollout-dataset-path",
-        type=str,
-        default="results/data/policy_rollouts.hdf5",
-        help="Optional rollout dataset path for Lyapunov plotting.",
-    )
-    parser.add_argument(
-        "--lyapunov-plot-html",
-        type=str,
-        default="results/plots/lyapunov_certified_regions.html",
-        help="Output path for the Lyapunov surface plot.",
-    )
-    parser.add_argument(
-        "--regions-plot-html",
-        type=str,
-        default="results/plots/certified_regions.html",
-        help="Output path for the certified/failed regions 2D plot.",
-    )
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string.")
-    parser.add_argument("--dt", type=float, default=0.1, help="Dynamics integration step.")
-
     parser.add_argument("--sample-size", type=int, default=1000, help="Training sample size.")
     parser.add_argument("--batch-size", type=int, default=512, help="Training batch size.")
     parser.add_argument("--outer-epochs", type=int, default=100, help="Number of outer epochs.")
@@ -62,13 +44,7 @@ def parse_cli_args() -> argparse.Namespace:
     )
     parser.add_argument("--learning-rate", type=float, default=1e-2, help="Optimizer learning rate.")
     parser.add_argument("--seed", type=int, default=5912354, help="Random seed.")
-    parser.add_argument("--kappa", type=float, default=0.05, help="Lyapunov decrease margin kappa.")
-    parser.add_argument(
-        "--train-state-bound",
-        type=float,
-        default=10.0,
-        help="Training state bound used for both dimensions.",
-    )
+    parser.add_argument("--kappa", type=float, default=0.12, help="Lyapunov decrease margin kappa.")
     parser.add_argument("--invariance-weight", type=float, default=1.0, help="Invariance loss weight.")
     parser.add_argument("--rho-growth-gamma", type=float, default=1.1, help="ROA rho growth factor.")
     parser.add_argument("--roa-weight", type=float, default=0.1, help="ROA objective weight.")
@@ -109,13 +85,13 @@ def parse_cli_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_cli_args()
     device = th.device(args.device)
+    base_path = Path(args.save_folder) / datetime.now().strftime('%Y%m%d_%H%M%S')
 
-    policy_model_path = Path(args.policy_model_path)
+    policy_path = Path(args.policy_path)
     policy_model = MLPPolicy.load(
-        path=policy_model_path,
+        path=policy_path,
         map_location=device,
     ).to(device)
-    policy_model.eval()
 
     lyap_feature = MLP([2, 32, 1], ["relu", "identity"]).to(device)
     lyap_model = NeuralLyapunovCandidate(
@@ -123,11 +99,11 @@ def main() -> None:
         state_dim=2,
         epsilon=1e-3,
     ).to(device)
-    dyn_model = DoubleIntegratorDynamics(dt=args.dt).to(device)
+    dyn_model = DoubleIntegratorDynamics(dt=policy_model.global_config.dt).to(device)
 
     training_config = LyapunovTrainingConfig(
-        state_dim=2,
-        state_bounds=(args.train_state_bound, args.train_state_bound),
+        state_dim=policy_model.global_config.nx,
+        state_bounds=(policy_model.global_config.constraints.lbx, policy_model.global_config.constraints.ubx),
         sample_size=args.sample_size,
         batch_size=args.batch_size,
         outer_epochs=args.outer_epochs,
@@ -155,14 +131,15 @@ def main() -> None:
         state_bounds=(args.cert_state_bound, args.cert_state_bound),
     )
 
-    train_results = train_lyapunov(
-        policy_model,
-        lyap_model,
-        dyn_model,
-        training_config,
+    trainer = LyapunovTrainer(
+        policy_model=policy_model,
+        lyap_model=lyap_model,
+        dyn_model=dyn_model,
+        config=training_config,
         device=device,
-        models_folder=args.models_folder,
     )
+    train_results = trainer.train()
+    trainer.save(base_path)
 
     _, cert_results = certify_lyapunov(
         policy_model,
@@ -173,7 +150,7 @@ def main() -> None:
         device=device,
     )
 
-    rollout_dataset_path = Path(args.rollout_dataset_path)
+    rollout_dataset_path = policy_path.parent / "policy_rollouts.hdf5"
     if rollout_dataset_path.exists():
         rollout_dataset = MPCDataset.load(rollout_dataset_path)
 
@@ -191,14 +168,14 @@ def main() -> None:
             plot_3d=True,
             certified_regions=cert_results.certified_regions,
             uncertified_regions=cert_results.failed_regions,
-            html_path=args.lyapunov_plot_html,
+            html_path=base_path / "lyapunov_plot.html",
         )
 
     lcil_plt.certified_regions_2d(
         cert_results.certified_regions,
         cert_results.failed_regions,
         state_labels=["x", "v"],
-        html_path=args.regions_plot_html,
+        html_path=base_path / "certified_regions.html",
     )
 
 
