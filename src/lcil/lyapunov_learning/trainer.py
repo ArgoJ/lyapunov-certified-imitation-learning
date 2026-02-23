@@ -53,7 +53,10 @@ class LyapunovTrainer:
         self.device = th.device(device)
         
         if len(self.config.state_bounds) != self.config.state_dim:
-            raise ValueError("state_bounds must match state_dim.")
+            raise ValueError(
+                "state_bounds must match state_dim. "
+                f"Expected {self.config.state_dim}, got {len(self.config.state_bounds)}"
+            )
         
         self.origin = th.zeros(1, self.config.state_dim, dtype=th.float32, device=self.device)
         self.lbx = th.tensor(self.config.state_bounds[0], dtype=th.float32, device=self.device)

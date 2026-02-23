@@ -11,8 +11,8 @@ from ..lyapunov_learning.config import LyapunovTrainingConfig
 
 def _bounds_tensor(state_bounds: Sequence[float], device: th.device) -> th.Tensor:
     bounds = th.as_tensor(state_bounds, dtype=th.float32, device=device)
-    if bounds.ndim != 1:
-        raise ValueError("state_bounds must be a flat sequence of per-dimension bounds.")
+    if bounds.ndim != 2 or bounds.shape[0] != 2:
+        raise ValueError("state_bounds must be a sequence of shape (2, nx) [lb, ub].")
     return bounds
 
 
@@ -133,8 +133,8 @@ def find_counter_examples(
         policy_model=policy_model,
         lyap_model=lyap_model,
         dyn_model=dyn_model,
-        lb=lbx,
-        ub=ubx,
+        lbx=lbx,
+        ubx=ubx,
         kappa=config.kappa,
         invariance_weight=config.invariance_weight,
         rho=rho_value,

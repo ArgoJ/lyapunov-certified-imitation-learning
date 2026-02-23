@@ -71,12 +71,6 @@ def parse_cli_args() -> argparse.Namespace:
         default="alpha-crown",
         help="Certification backend/method name.",
     )
-    parser.add_argument(
-        "--cert-state-bound",
-        type=float,
-        default=15.0,
-        help="Certification state bound used for both dimensions.",
-    )
     return parser.parse_args()
 
 
@@ -103,7 +97,7 @@ def main() -> None:
 
     training_config = LyapunovTrainingConfig(
         state_dim=policy_model.global_config.nx,
-        state_bounds=(policy_model.global_config.constraints.lbx, policy_model.global_config.constraints.ubx),
+        state_bounds=np.vstack([policy_model.global_config.constraints.lbx, policy_model.global_config.constraints.ubx]),
         sample_size=args.sample_size,
         batch_size=args.batch_size,
         outer_epochs=args.outer_epochs,
@@ -128,7 +122,7 @@ def main() -> None:
         cert_max_scale_steps=args.cert_max_scale_steps,
         cert_max_bisection_steps=args.cert_max_bisection_steps,
         cert_method=args.cert_method,
-        state_bounds=(args.cert_state_bound, args.cert_state_bound),
+        state_bounds=training_config.state_bounds * 1.2,
     )
 
     trainer = LyapunovTrainer(

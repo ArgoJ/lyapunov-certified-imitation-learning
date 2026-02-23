@@ -53,6 +53,7 @@ class LyapunovCertificationConfig:
     cert_max_bisection_steps: int = 40
     cert_method: str = "alpha-crown"
     condition_tolerance: float = 1e-6
+    cert_suppress_native_output: bool = True
 
     @staticmethod
     def from_training_config(
@@ -64,6 +65,7 @@ class LyapunovCertificationConfig:
         cert_max_scale_steps: int = 20,
         cert_max_bisection_steps: int = 40,
         cert_method: str = "alpha-crown",
+        cert_suppress_native_output: bool = True,
         **kwargs,
     ) -> "LyapunovCertificationConfig":
         """Build a certification config from a training config.
@@ -85,6 +87,7 @@ class LyapunovCertificationConfig:
             "cert_max_bisection_steps": cert_max_bisection_steps,
             "cert_method": cert_method,
             "condition_tolerance": config.condition_tolerance,
+            "cert_suppress_native_output": cert_suppress_native_output,
         }
         config_values.update(kwargs)
         return LyapunovCertificationConfig(**config_values)
