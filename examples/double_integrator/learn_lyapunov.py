@@ -1,4 +1,5 @@
 import argparse
+import itertools
 import torch as th
 import numpy as np
 
@@ -42,14 +43,18 @@ def parse_cli_args() -> argparse.Namespace:
         default=10,
         help="Counterexample search interval in epochs.",
     )
-    parser.add_argument("--learning-rate", type=float, default=1e-2, help="Optimizer learning rate.")
-    parser.add_argument("--seed", type=int, default=5912354, help="Random seed.")
-    parser.add_argument("--kappa", type=float, default=0.12, help="Lyapunov decrease margin kappa.")
-    parser.add_argument("--invariance-weight", type=float, default=1.0, help="Invariance loss weight.")
-    parser.add_argument("--rho-growth-gamma", type=float, default=1.1, help="ROA rho growth factor.")
-    parser.add_argument("--roa-weight", type=float, default=0.1, help="ROA objective weight.")
-    parser.add_argument("--l1-weight", type=float, default=1e-6, help="L1 regularization weight.")
+    
+    # Grid Search Parameters (accept multiple values)
+    parser.add_argument("--learning-rate", nargs='+', type=float, default=[1e-2], help="Optimizer learning rate(s).")
+    parser.add_argument("--kappa", nargs='+', type=float, default=[0.12], help="Lyapunov decrease margin kappa(s).")
+    parser.add_argument("--invariance-weight", nargs='+', type=float, default=[1.0], help="Invariance loss weight(s).")
+    parser.add_argument("--rho-growth-gamma", nargs='+', type=float, default=[1.1], help="ROA rho growth factor(s).")
+    parser.add_argument("--roa-weight", nargs='+', type=float, default=[0.1], help="ROA objective weight(s).")
+    parser.add_argument("--l1-weight", nargs='+', type=float, default=[1e-6], help="L1 regularization weight(s).")
 
+    parser.add_argument("--seed", type=int, default=5912354, help="Random seed.")
+    
+    # Certification Parameters
     parser.add_argument("--cert-step", type=float, default=0.5, help="Certification grid step.")
     parser.add_argument("--cert-rho-scaling", type=float, default=1.2, help="Certification rho scaling.")
     parser.add_argument("--cert-bisection-tol", type=float, default=1e-3, help="Certification bisection tolerance.")
@@ -74,103 +79,151 @@ def parse_cli_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-
-# TODO: grid search for kappa cert method cert steps e.g.
 def main() -> None:
     args = parse_cli_args()
     device = th.device(args.device)
-    base_path = Path(args.save_folder) / datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    # Parent directory for this entire grid search sweep
+    sweep_base_path = Path(args.save_folder) / datetime.now().strftime('%Y%m%d_%H%M%S')
+    sweep_base_path.mkdir(parents=True, exist_ok=True)
 
+    # Load policy and dynamics once (they don't change across runs)
     policy_path = Path(args.policy_path)
     policy_model = MLPPolicy.load(
         path=policy_path,
         map_location=device,
     ).to(device)
-
-    lyap_feature = MLP([2, 32, 1], ["relu", "identity"]).to(device)
-    lyap_model = NeuralLyapunovCandidate(
-        feature_net=lyap_feature,
-        state_dim=2,
-        epsilon=1e-3,
-    ).to(device)
+    policy_model.eval()
+    
     dyn_model = DoubleIntegratorDynamics(dt=policy_model.global_config.dt).to(device)
-
-    training_config = LyapunovTrainingConfig(
-        state_dim=policy_model.global_config.nx,
-        state_bounds=np.vstack([policy_model.global_config.constraints.lbx, policy_model.global_config.constraints.ubx]),
-        initial_sample_size=args.initial_sample_size,
-        batch_size=args.batch_size,
-        outer_epochs=args.outer_epochs,
-        steps_per_epoch=args.steps_per_epoch,
-        counterexample_every=args.counterexample_every,
-        learning_rate=args.learning_rate,
-        train_policy_model=False,
-        seed=args.seed,
-        kappa=args.kappa,
-        invariance_weight=args.invariance_weight,
-        rho_growth_gamma=args.rho_growth_gamma,
-        roa_weight=args.roa_weight,
-        l1_weight=args.l1_weight,
-    )
-
-    certification_config = LyapunovCertificationConfig.from_training_config(
-        training_config,
-        cert_step=args.cert_step,
-        cert_origin_exclusion=None,
-        cert_rho_scaling=args.cert_rho_scaling,
-        cert_bisection_tol=args.cert_bisection_tol,
-        cert_max_scale_steps=args.cert_max_scale_steps,
-        cert_max_bisection_steps=args.cert_max_bisection_steps,
-        cert_method=args.cert_method,
-        state_bounds=training_config.state_bounds * 1.2,
-    )
-
-    trainer = LyapunovTrainer(
-        policy_model=policy_model,
-        lyap_model=lyap_model,
-        dyn_model=dyn_model,
-        config=training_config,
-        device=device,
-    )
-    train_results = trainer.train()
-    trainer.save(base_path)
-
-    certifier = LiRPACertifier(
-        policy_model,
-        lyap_model,
-        dyn_model,
-        certification_config,
-        device,
-    )
-    _, cert_results = certifier.certify(train_results.rho_estimate)
-
+    dyn_model.eval()
+    
     rollout_dataset_path = policy_path.parent / "policy_rollouts.hdf5"
+    rollout_dataset = None
     if rollout_dataset_path.exists():
         rollout_dataset = MPCDataset.load(rollout_dataset_path)
 
-        def lyapunov_func(states: np.ndarray) -> np.ndarray:
-            x = th.as_tensor(states, dtype=th.float32, device=device)
-            with th.no_grad():
-                v = lyap_model(x)
-            return v.detach().cpu().numpy().reshape(-1)
+    state_bounds = np.vstack([policy_model.global_config.constraints.lbx, policy_model.global_config.constraints.ubx])
 
-        lcil_plt.lyapunov(
-            dataset=rollout_dataset[:100],
-            lyapunov_func=lyapunov_func,
-            state_indices=[0, 1],
-            state_labels=["x", "v"],
-            plot_3d=True,
-            certified_regions=cert_results.certified_regions,
-            uncertified_regions=cert_results.failed_regions,
-            html_path=base_path / "lyapunov_plot.html",
+    # Generate all combinations for the grid search
+    grid = list(itertools.product(
+        args.learning_rate,
+        args.kappa,
+        args.invariance_weight,
+        args.rho_growth_gamma,
+        args.roa_weight,
+        args.l1_weight
+    ))
+
+    print(f"Starting grid search over {len(grid)} configurations...")
+
+    for run_idx, (lr, kappa, inv_w, rho_gamma, roa_w, l1_w) in enumerate(grid):
+        print(f"\n[{run_idx+1}/{len(grid)}] Running config -> "
+              f"lr: {lr}, kappa: {kappa}, inv_w: {inv_w}, rho_g: {rho_gamma}, roa_w: {roa_w}, l1_w: {l1_w}")
+        
+        # Create a specific folder for this parameter combination
+        run_name = f"lr_{lr}__kappa_{kappa}__invw_{inv_w}__rhog_{rho_gamma}__roaw_{roa_w}__l1w_{l1_w}"
+        base_path = sweep_base_path / run_name
+        base_path.mkdir(parents=True, exist_ok=True)
+
+        # ---------------------------------------------------------------------
+        # 1. Initialize fresh Lyapunov Model (so it trains from scratch)
+        # ---------------------------------------------------------------------
+        lyap_feature = MLP([2, 32, 1], ["relu", "identity"]).to(device)
+        lyap_model = NeuralLyapunovCandidate(
+            feature_net=lyap_feature,
+            state_dim=2,
+            epsilon=1e-3,
+        ).to(device)
+
+        # ---------------------------------------------------------------------
+        # 2. Setup Configs with current grid parameters
+        # ---------------------------------------------------------------------
+        training_config = LyapunovTrainingConfig(
+            state_dim=policy_model.global_config.nx,
+            state_bounds=state_bounds,
+            initial_sample_size=args.initial_sample_size,
+            batch_size=args.batch_size,
+            outer_epochs=args.outer_epochs,
+            steps_per_epoch=args.steps_per_epoch,
+            counterexample_every=args.counterexample_every,
+            train_policy_model=False,
+            seed=args.seed + run_idx, # Optional: vary seed slightly to avoid perfectly identical samples
+            # Variables from grid
+            learning_rate=lr,
+            kappa=kappa,
+            invariance_weight=inv_w,
+            rho_growth_gamma=rho_gamma,
+            roa_weight=roa_w,
+            l1_weight=l1_w,
         )
 
-    lcil_plt.certified_regions_2d(
-        cert_results.certified_regions,
-        cert_results.failed_regions,
-        state_labels=["x", "v"],
-        html_path=base_path / "certified_regions.html",
-    )
+        certification_config = LyapunovCertificationConfig.from_training_config(
+            training_config,
+            cert_step=args.cert_step,
+            cert_origin_exclusion=None,
+            cert_rho_scaling=args.cert_rho_scaling,
+            cert_bisection_tol=args.cert_bisection_tol,
+            cert_max_scale_steps=args.cert_max_scale_steps,
+            cert_max_bisection_steps=args.cert_max_bisection_steps,
+            cert_method=args.cert_method,
+            state_bounds=training_config.state_bounds * 1.2,
+        )
+
+        # ---------------------------------------------------------------------
+        # 3. Train
+        # ---------------------------------------------------------------------
+        trainer = LyapunovTrainer(
+            policy_model=policy_model,
+            lyap_model=lyap_model,
+            dyn_model=dyn_model,
+            config=training_config,
+            device=device,
+        )
+        train_results = trainer.train()
+        trainer.save(base_path)
+
+        # ---------------------------------------------------------------------
+        # 4. Certify
+        # ---------------------------------------------------------------------
+        certifier = LiRPACertifier(
+            policy_model,
+            lyap_model,
+            dyn_model,
+            certification_config,
+            device,
+        )
+        _, cert_results = certifier.certify(train_results.rho_estimate)
+
+        # ---------------------------------------------------------------------
+        # 5. Plot & Save
+        # ---------------------------------------------------------------------
+        if rollout_dataset is not None:
+            def lyapunov_func(states: np.ndarray) -> np.ndarray:
+                x = th.as_tensor(states, dtype=th.float32, device=device)
+                with th.no_grad():
+                    v = lyap_model(x)
+                return v.detach().cpu().numpy().reshape(-1)
+
+            lcil_plt.lyapunov(
+                dataset=rollout_dataset[:100],
+                lyapunov_func=lyapunov_func,
+                state_indices=[0, 1],
+                state_labels=["x", "v"],
+                plot_3d=True,
+                certified_regions=cert_results.certified_regions,
+                uncertified_regions=cert_results.failed_regions,
+                html_path=base_path / "lyapunov_plot.html",
+            )
+
+        lcil_plt.certified_regions_2d(
+            cert_results.certified_regions,
+            cert_results.failed_regions,
+            state_labels=["x", "v"],
+            html_path=base_path / "certified_regions.html",
+        )
+
+    print(f"\nGrid search complete. All results saved to: {sweep_base_path}")
 
 
 if __name__ == "__main__":

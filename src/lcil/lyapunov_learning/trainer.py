@@ -249,26 +249,18 @@ class LyapunovTrainer:
         save_folder : PathLike[str]
             Folder where the models and config should be saved.
         """
-        if self.results is None:
-            __logger__.warning("Training has not been executed yet. Saving initialized models only.")
-
         save_folder = Path(save_folder)
         save_folder.mkdir(parents=True, exist_ok=True)
 
-        seed_suffix = f"_{self.config.seed}" if self.config.seed is not None else ""
-        lyap_model_path = save_folder / f"lyapunov_model{seed_suffix}.pt"
-        policy_model_path = save_folder / f"policy_model{seed_suffix}.pt"
+        lyap_model_path = save_folder / f"lyapunov_model.pt"
+        policy_model_path = save_folder / f"policy_model.pt"
 
         save_model_checkpoint(self.lyap_model, lyap_model_path)
         save_model_checkpoint(self.policy_model, policy_model_path)
-        
-        __logger__.info("Saved Lyapunov model to %s", lyap_model_path)
-        __logger__.info("Saved policy model to %s", policy_model_path)
-
-        if not self.config.train_policy_model:
-            __logger__.info("Policy model was not trained; saved initial (frozen) parameters.")
 
         # Optional: Update the results object with the paths if it exists
         if self.results is not None:
             self.results.lyap_model_path = str(lyap_model_path)
             self.results.policy_model_path = str(policy_model_path)
+        
+        __logger__.info("Saved lyapunov results to %s", save_folder)
