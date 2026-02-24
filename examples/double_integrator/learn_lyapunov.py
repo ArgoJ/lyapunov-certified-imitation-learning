@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer
-from lcil.certification import LyapunovCertificationConfig, certify_lyapunov
+from lcil.certification import LyapunovCertificationConfig, LiRPACertifier
 from lcil.utils import lcil_plt, ICNN, MLP
 from lcil.imitation_learning_mlp import MLPPolicy
 from mpc_datagen import MPCDataset
@@ -32,7 +32,7 @@ def parse_cli_args() -> argparse.Namespace:
         help="Output folder for trained Lyapunov model artifacts.",
     )
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string.")
-    parser.add_argument("--sample-size", type=int, default=1000, help="Training sample size.")
+    parser.add_argument("--initial-sample-size", type=int, default=1000, help="Training sample size.")
     parser.add_argument("--batch-size", type=int, default=512, help="Training batch size.")
     parser.add_argument("--outer-epochs", type=int, default=100, help="Number of outer epochs.")
     parser.add_argument("--steps-per-epoch", type=int, default=5, help="Gradient steps per epoch.")
@@ -98,7 +98,7 @@ def main() -> None:
     training_config = LyapunovTrainingConfig(
         state_dim=policy_model.global_config.nx,
         state_bounds=np.vstack([policy_model.global_config.constraints.lbx, policy_model.global_config.constraints.ubx]),
-        sample_size=args.sample_size,
+        initial_sample_size=args.initial_sample_size,
         batch_size=args.batch_size,
         outer_epochs=args.outer_epochs,
         steps_per_epoch=args.steps_per_epoch,
@@ -135,14 +135,14 @@ def main() -> None:
     train_results = trainer.train()
     trainer.save(base_path)
 
-    _, cert_results = certify_lyapunov(
+    certifier = LiRPACertifier(
         policy_model,
         lyap_model,
         dyn_model,
         certification_config,
-        rho_estimate=train_results.rho_estimate,
-        device=device,
+        device,
     )
+    _, cert_results = certifier.certify(train_results.rho_estimate)
 
     rollout_dataset_path = policy_path.parent / "policy_rollouts.hdf5"
     if rollout_dataset_path.exists():

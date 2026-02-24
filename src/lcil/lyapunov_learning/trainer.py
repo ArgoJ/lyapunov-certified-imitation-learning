@@ -11,12 +11,12 @@ from dataclasses import dataclass
 
 from .config import LyapunovTrainingConfig
 from .buffer import DynamicStateBuffer
-from ..certification.models import ClosedLoopLyapunovConditionVerifier
-from ..certification.counterexample import (
+from .counterexample import (
     estimate_rho_from_boundary,
     find_counter_examples,
     sample_uniform_box,
 )
+from ..certification.models import ClosedLoopLyapunovConditionVerifier
 from ..utils.base_models import save_model_checkpoint
 from ..utils.package_logger import get_package_logger
 
@@ -185,7 +185,7 @@ class LyapunovTrainer:
         roa_candidates = self._build_roa_candidates()
         
         # Initial training pool sampled uniformly from the state space bounds
-        initial_x = sample_uniform_box(self.config.sample_size, self.lbx, self.ubx, self.device)
+        initial_x = sample_uniform_box(self.config.initial_sample_size, self.lbx, self.ubx, self.device)
         state_buffer = DynamicStateBuffer(initial_states=initial_x, max_size=self.config.max_buffer)
 
         mining_interval = max(1, self.config.counterexample_every // max(1, self.config.steps_per_epoch))

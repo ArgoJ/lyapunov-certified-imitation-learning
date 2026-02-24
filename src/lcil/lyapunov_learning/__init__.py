@@ -5,6 +5,11 @@ from .models import (
     NeuralLyapunovCandidate,
     QuadraticLyapunovCandidate
 )
+from .counterexample import (
+    estimate_rho_from_boundary,
+    find_counter_examples,
+    sample_uniform_box,
+)
 
 __all__ = [
     "LyapunovTrainer",
@@ -12,4 +17,7 @@ __all__ = [
     "LyapunovNet",
     "NeuralLyapunovCandidate",
     "QuadraticLyapunovCandidate",
+    "estimate_rho_from_boundary",
+    "find_counter_examples",
+    "sample_uniform_box",
 ]
