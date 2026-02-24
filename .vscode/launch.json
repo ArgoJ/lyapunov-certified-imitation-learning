@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: Debug learn_lyapunov",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/examples/double_integrator/learn_lyapunov.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--policy-path", "results/double_integrator/20260223_094057/model.pt"
+      ],
+      "justMyCode": true
+    }
+  ]
+}
