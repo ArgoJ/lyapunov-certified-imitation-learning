@@ -192,7 +192,9 @@ class LiRPACertifier:
     def certify_regions(
             self, 
             regions: list[tuple[list[float], list[float]]] = None, 
-            collect_details: bool = True
+            collect_details: bool = True,
+            depth: int = 0,
+            max_depth: int = 3
     ) -> RegionCertificationResult:
         """
         Certify a list of regions and optionally collect details on 
@@ -252,7 +254,12 @@ class LiRPACertifier:
 
         # Recursive call for hard regions
         if sub_regions_to_check and collect_details:
-            sub_result = self.certify_regions(regions=sub_regions_to_check, collect_details=True)
+            sub_result = self.certify_regions(
+                regions=sub_regions_to_check,
+                collect_details=True,
+                depth=depth + 1,
+                max_depth=max_depth
+            )
             certified_regions.extend(sub_result.certified_regions)
             failed_regions.extend(sub_result.failed_regions)
             counter_examples.extend(sub_result.counter_examples)
