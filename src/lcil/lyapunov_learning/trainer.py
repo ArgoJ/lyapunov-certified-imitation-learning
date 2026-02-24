@@ -89,11 +89,11 @@ class LyapunovTrainer:
         if not self.config.train_policy_model:
             self.policy_model.eval()
             policy_params = []
-            __logger__.info("Policy model updates disabled; training only Lyapunov model parameters.")
+            __logger__.debug("Policy model updates disabled; training only Lyapunov model parameters.")
         else:
             self.policy_model.train()
             policy_params = list(self.policy_model.parameters())
-            __logger__.info("Training both policy and Lyapunov model parameters.")
+            __logger__.debug("Training both policy and Lyapunov model parameters.")
 
         lyap_params = list(self.lyap_model.parameters())
         self.trainable_params = policy_params + lyap_params
@@ -228,7 +228,7 @@ class LyapunovTrainer:
                     })
 
         train_time = time.time() - start_time
-        __logger__.info("Lyapunov training finished in %.2fs", train_time)
+        __logger__.debug("Lyapunov training finished in %.2fs", train_time)
 
         self.results = LyapunovTrainingResult(
             rho_estimate=rho_estimate,
