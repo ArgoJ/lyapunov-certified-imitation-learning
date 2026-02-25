@@ -10,6 +10,9 @@
       "args": [
         "--policy-path", "results/double_integrator/20260222_112847/model.pt"
       ],
+      "env": {
+        "PYTORCH_JIT": "0"
+      },
       "justMyCode": true
     }
   ]

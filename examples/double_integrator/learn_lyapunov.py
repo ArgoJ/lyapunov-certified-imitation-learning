@@ -167,7 +167,7 @@ def main() -> None:
             cert_max_scale_steps=args.cert_max_scale_steps,
             cert_max_bisection_steps=args.cert_max_bisection_steps,
             cert_method=args.cert_method,
-            state_bounds=training_config.state_bounds * 1.2,
+            state_bounds=training_config.state_bounds * 0.8,
         )
 
         # ---------------------------------------------------------------------
