@@ -115,38 +115,26 @@ def estimate_rho_from_boundary(
 
 
 def find_counter_examples(
-    policy_model: nn.Module,
-    lyap_model: nn.Module,
-    dyn_model: nn.Module,
+    verifier: nn.Module,
     config: LyapunovTrainingConfig,
     rho: float,
+    kappa: float,
     device: th.device = th.device("cpu"),
 ) -> th.Tensor:
-    """Find counterexamples via PGD on ReLU(verifier(x))."""
-    if len(config.state_bounds) != config.state_dim:
-        raise ValueError("state_bounds must match state_dim.")
-
+    """Find counterexamples via PGD on ReLU(verifier(x, rho, kappa))."""
     bounds = _bounds_tensor(config.state_bounds, device)
     lbx, ubx = bounds[0], bounds[1]
-    rho_value = max(config.rho_min, float(rho))
-    verifier = ClosedLoopLyapunovConditionVerifier(
-        policy_model=policy_model,
-        lyap_model=lyap_model,
-        dyn_model=dyn_model,
-        lbx=lbx,
-        ubx=ubx,
-        kappa=config.kappa,
-        invariance_weight=config.invariance_weight,
-        rho=rho_value,
-    ).to(device)
-    verifier.set_rho(rho_value)
+    
+    # Convert scalar rho and kappa to tensors for the verifier's forward method
+    rho_t = th.tensor([max(config.rho_min, float(rho))], dtype=th.float32, device=device)
+    kappa_t = th.tensor([kappa], dtype=th.float32, device=device)
 
     adv_states = sample_uniform_box(config.adversarial_samples, lbx, ubx, device)
     step = config.adversarial_step_size * (ubx - lbx).unsqueeze(0)
 
     for _ in range(config.counterexample_steps):
         adv_states.requires_grad_(True)
-        violation = th.relu(verifier(adv_states))
+        violation = th.relu(verifier(adv_states, rho_t, kappa_t))
         grad = th.autograd.grad(
             violation.mean(),
             adv_states,
@@ -159,7 +147,7 @@ def find_counter_examples(
             adv_states = project_to_box(adv_states, lbx, ubx)
 
     with th.no_grad():
-        violation = th.relu(verifier(adv_states))
+        violation = th.relu(verifier(adv_states, rho_t, kappa_t))
         counter_mask = violation.flatten() > config.condition_tolerance
 
     return adv_states[counter_mask].clone().detach()

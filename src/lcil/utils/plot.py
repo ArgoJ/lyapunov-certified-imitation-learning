@@ -1,6 +1,8 @@
 import numpy as np
 import os
 import plotly.graph_objects as go
+
+from numpy.typing import NDArray
 from plotly.subplots import make_subplots
 from typing import Callable
 
@@ -10,16 +12,27 @@ from .package_logger import get_package_logger
 __logger__ = get_package_logger(__name__)
 
 
+def _regions_to_np(regs: NDArray | None) -> NDArray:
+        if regs is None:
+            return np.empty((0, 2, 2))
+        return regs
+
+def _plotly_multiline(x: NDArray, axis: int=0):
+    if axis == 0:
+        return np.hstack([x, np.full((x.shape[0], 1), np.nan)]).flatten()
+    elif axis == 1:
+        return np.vstack([x, np.full((x.shape[1], 1), np.nan)]).flatten()
+
 def lyapunov(
     dataset: MPCDataset,
-    lyapunov_func: Callable[[np.ndarray], np.ndarray],
+    lyapunov_func: Callable[[NDArray], NDArray],
     state_indices: list = [0, 1],
     state_labels: list[str] | None = None,
     limits: list = None,
     resolution: int = 100,
     plot_3d: bool = False,
-    certified_regions: list[tuple[list[float], list[float]]] | None = None,
-    uncertified_regions: list[tuple[list[float], list[float]]] | None = None,
+    certified_regions: NDArray | None = None,
+    uncertified_regions: NDArray | None = None,
     html_path: str = None,
 ):
     """Plot Lyapunov landscape, trajectories, and optional certified regions in 2D/3D.
@@ -66,8 +79,8 @@ def lyapunov(
     if len(state_labels) != 2:
         raise ValueError("state_labels must contain exactly 2 labels.")
 
-    certified_regions = certified_regions or []
-    uncertified_regions = uncertified_regions or []
+    certified_regions = _regions_to_np(certified_regions)
+    uncertified_regions = _regions_to_np(uncertified_regions)
 
     # Determine limits if not provided
     if limits is None:
@@ -75,12 +88,14 @@ def lyapunov(
         min_x, max_x = all_states[:, idx_x].min(), all_states[:, idx_x].max()
         min_y, max_y = all_states[:, idx_y].min(), all_states[:, idx_y].max()
 
-        all_regions = certified_regions + uncertified_regions
-        if all_regions:
-            min_x = min(min_x, min(lb[0] for lb, _ in all_regions))
-            max_x = max(max_x, max(ub[0] for _, ub in all_regions))
-            min_y = min(min_y, min(lb[1] for lb, _ in all_regions))
-            max_y = max(max_y, max(ub[1] for _, ub in all_regions))
+        # combine region arrays if any exist
+        if certified_regions.shape[0] + uncertified_regions.shape[0] > 0:
+            all_lbs = np.vstack([certified_regions[:, 0, :], uncertified_regions[:, 0, :]]) if (certified_regions.shape[0] + uncertified_regions.shape[0]) > 0 else np.empty((0,2))
+            all_ubs = np.vstack([certified_regions[:, 1, :], uncertified_regions[:, 1, :]]) if (certified_regions.shape[0] + uncertified_regions.shape[0]) > 0 else np.empty((0,2))
+            min_x = min(min_x, all_lbs[:, 0].min())
+            max_x = max(max_x, all_ubs[:, 0].max())
+            min_y = min(min_y, all_lbs[:, 1].min())
+            max_y = max(max_y, all_ubs[:, 1].max())
         
         # Add some padding
         pad_x = (max_x - min_x) * 0.2 if max_x != min_x else 1.0
@@ -146,27 +161,28 @@ def lyapunov(
         )
 
     def _add_region_outlines_2d(
-        regions: list[tuple[list[float], list[float]]],
+        regions: NDArray | None,
         color: str,
         name: str,
         dash: str = "solid",
     ) -> None:
-        if not regions:
+        if regions is None or regions.shape[0] == 0:
             return
-        for lb, ub in regions:
-            fig.add_shape(
-                type="rect",
-                x0=lb[0],
-                y0=lb[1],
-                x1=ub[0],
-                y1=ub[1],
-                line=dict(color=color, width=2, dash=dash),
-                fillcolor="rgba(0,0,0,0)",
-            )
+
+        lbs = regions[:, 0, :]
+        ubs = regions[:, 1, :]
+
+        # X and Y coordinates for closed rectangles (N x 5)
+        X = np.column_stack([lbs[:, 0], ubs[:, 0], ubs[:, 0], lbs[:, 0], lbs[:, 0]])
+        Y = np.column_stack([lbs[:, 1], lbs[:, 1], ubs[:, 1], ubs[:, 1], lbs[:, 1]])
+
+        x_coords = _plotly_multiline(X, axis=0)
+        y_coords = _plotly_multiline(Y, axis=0)
+
         fig.add_trace(
             go.Scatter(
-                x=[None],
-                y=[None],
+                x=x_coords,
+                y=y_coords,
                 mode="lines",
                 line=dict(color=color, width=2, dash=dash),
                 name=name,
@@ -175,34 +191,31 @@ def lyapunov(
         )
 
     def _add_region_outlines_3d(
-        regions: list[tuple[list[float], list[float]]],
+        regions: NDArray | None,
         color: str,
         name: str,
         z_level: float,
         dash: str = "solid",
     ) -> None:
-        if not regions:
+        if regions is None or regions.shape[0] == 0:
             return
-        for lb, ub in regions:
-            x_loop = [lb[0], ub[0], ub[0], lb[0], lb[0]]
-            y_loop = [lb[1], lb[1], ub[1], ub[1], lb[1]]
-            z_loop = [z_level] * 5
-            fig.add_trace(
-                go.Scatter3d(
-                    x=x_loop,
-                    y=y_loop,
-                    z=z_loop,
-                    mode="lines",
-                    line=dict(color=color, width=4, dash=dash),
-                    name=name,
-                    showlegend=False,
-                )
-            )
+
+        lbs = regions[:, 0, :]
+        ubs = regions[:, 1, :]
+
+        X = np.column_stack([lbs[:, 0], ubs[:, 0], ubs[:, 0], lbs[:, 0], lbs[:, 0]])
+        Y = np.column_stack([lbs[:, 1], lbs[:, 1], ubs[:, 1], ubs[:, 1], lbs[:, 1]])
+        Z = np.full(X.shape, z_level)
+
+        x_coords = _plotly_multiline(X, axis=0)
+        y_coords = _plotly_multiline(Y, axis=0)
+        z_coords = _plotly_multiline(Z, axis=0)
+
         fig.add_trace(
             go.Scatter3d(
-                x=[None],
-                y=[None],
-                z=[None],
+                x=x_coords,
+                y=y_coords,
+                z=z_coords,
                 mode="lines",
                 line=dict(color=color, width=4, dash=dash),
                 name=name,
@@ -214,13 +227,13 @@ def lyapunov(
         z_overlay = float(np.nanmin(Z))
         _add_region_outlines_3d(
             certified_regions,
-            color="#d62728",
+            color="#209209",
             name="Certified (outline)",
             z_level=z_overlay,
         )
         _add_region_outlines_3d(
             uncertified_regions,
-            color="#7f7f7f",
+            color="#c53131",
             name="Uncertified (outline)",
             z_level=z_overlay,
             dash="dash",
@@ -228,12 +241,12 @@ def lyapunov(
     else:
         _add_region_outlines_2d(
             certified_regions,
-            color="#d62728",
+            color="#209209",
             name="Certified (outline)",
         )
         _add_region_outlines_2d(
             uncertified_regions,
-            color="#7f7f7f",
+            color="#c53131",
             name="Uncertified (outline)",
             dash="dash",
         )
@@ -351,8 +364,8 @@ def lyapunov(
 
 
 def certified_regions_2d(
-    certified_regions: list[tuple[list[float], list[float]]],
-    uncertified_regions: list[tuple[list[float], list[float]]],
+    certified_regions: NDArray,
+    uncertified_regions: NDArray,
     state_labels: list[str] | None = None,
     bounds: list[tuple[float, float]] | None = None,
     html_path: str | None = None,
@@ -372,51 +385,58 @@ def certified_regions_2d(
     html_path : str, optional
         If provided, saves the plot to the specified HTML file.
     """
-    if not certified_regions and not uncertified_regions:
+    certified_regions = _regions_to_np(certified_regions)
+    uncertified_regions = _regions_to_np(uncertified_regions)
+
+    if certified_regions.shape[0] == 0 and uncertified_regions.shape[0] == 0:
         __logger__.warning("No regions provided for plotting.")
         return
 
     if state_labels is None:
         state_labels = ["State 0", "State 1"]
 
-    all_regions = certified_regions + uncertified_regions
     if bounds is None:
-        x_min = min(lb[0] for lb, _ in all_regions)
-        x_max = max(ub[0] for _, ub in all_regions)
-        y_min = min(lb[1] for lb, _ in all_regions)
-        y_max = max(ub[1] for _, ub in all_regions)
+        all_lbs = np.vstack([certified_regions[:, 0, :], uncertified_regions[:, 0, :]]) if (certified_regions.shape[0] + uncertified_regions.shape[0]) > 0 else np.empty((0,2))
+        all_ubs = np.vstack([certified_regions[:, 1, :], uncertified_regions[:, 1, :]]) if (certified_regions.shape[0] + uncertified_regions.shape[0]) > 0 else np.empty((0,2))
+        x_min = all_lbs[:, 0].min()
+        x_max = all_ubs[:, 0].max()
+        y_min = all_lbs[:, 1].min()
+        y_max = all_ubs[:, 1].max()
         bounds = [(x_min, x_max), (y_min, y_max)]
 
     fig = go.Figure()
 
-    def add_regions(regions: list[tuple[list[float], list[float]]], color: str, name: str):
-        for lb, ub in regions:
-            fig.add_shape(
-                type="rect",
-                x0=lb[0],
-                y0=lb[1],
-                x1=ub[0],
-                y1=ub[1],
-                line=dict(color=color, width=1),
-                fillcolor=color,
-                opacity=0.3,
-            )
-        # Legend entry
+    def add_regions(regions: np.ndarray, color: str, name: str):
+        if regions is None or regions.shape[0] == 0:
+            return
+
+        lbs = regions[:, 0, :]
+        ubs = regions[:, 1, :]
+
+        # Reihenfolge X: x0, x1, x1, x0, x0
+        X = np.column_stack([lbs[:, 0], ubs[:, 0], ubs[:, 0], lbs[:, 0], lbs[:, 0]])
+        # Reihenfolge Y: y0, y0, y1, y1, y0
+        Y = np.column_stack([lbs[:, 1], lbs[:, 1], ubs[:, 1], ubs[:, 1], lbs[:, 1]])
+
+        x_coords = _plotly_multiline(X, axis=0)
+        y_coords = _plotly_multiline(Y, axis=0)
+
         fig.add_trace(
             go.Scatter(
-                x=[None],
-                y=[None],
-                mode="markers",
-                marker=dict(size=10, color=color),
+                x=x_coords,
+                y=y_coords,
+                mode="lines",
+                fill="toself",
+                fillcolor=color,
+                line=dict(color=color, width=1),
+                opacity=0.3,
                 name=name,
                 showlegend=True,
             )
         )
 
-    if certified_regions:
-        add_regions(certified_regions, "#2ca02c", "Certified")
-    if uncertified_regions:
-        add_regions(uncertified_regions, "#d62728", "Uncertified")
+    add_regions(certified_regions, "#2ca02c", "Certified")
+    add_regions(uncertified_regions, "#d62728", "Uncertified")
 
     fig.update_layout(
         title="Certified Regions",

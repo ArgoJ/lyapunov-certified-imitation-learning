@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lyapunov-certified-imitation-learning"
 version = "0.1.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "torch",
     "numpy",

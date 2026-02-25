@@ -12,8 +12,8 @@ class LyapunovTrainingConfig:
     ----------
     state_dim : int
         Dimension of the system state.
-    state_bounds : Sequence[float]
-        Per-dimension absolute bounds used for sampling and counterexample mining.
+    state_bounds : tuple[Sequence[float], Sequence[float]]
+        Lower and upper bounds for each state dimension, used for sampling and certification. [lbx, ubx]
     initial_sample_size : int
         Number of initial random samples used for training.
     batch_size : int
@@ -72,7 +72,7 @@ class LyapunovTrainingConfig:
     """
 
     state_dim: int
-    state_bounds: Sequence[float]
+    state_bounds: tuple[Sequence[float], Sequence[float]]
     initial_sample_size: int = 1000
     batch_size: int = 512
     outer_epochs: int = 10

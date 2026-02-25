@@ -135,22 +135,37 @@ make install -j$CPU_CORES
 
 # 3. Python-Interface installieren
 if [[ "$ACADOS_PYTHON" == "ON" ]]; then
-    if [[ "$CREATE_VENV" == "ON" ]];
-    then
-        sudo apt install python3-venv
+    # If requested, create and activate a new venv
+    if [[ "$CREATE_VENV" == "ON" ]]; then
+        sudo apt install -y python3-venv
         VENV_PATH="$HOME/$VENV_NAME"
         echo "Erstelle Python virtual environment in: $VENV_PATH"
         python3 -m venv "$VENV_PATH"
+        # shellcheck disable=SC1090
         source "$VENV_PATH/bin/activate"
+        PIP_CMD="pip"
+    else
+        # If a venv is already active, prefer its pip (no sudo)
+        if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+            echo "Gefundenes aktives venv: $VIRTUAL_ENV. Installiere in dieses venv."
+            PIP_CMD="$VIRTUAL_ENV/bin/pip"
+            # Fallback: if pip not present at path, use 'pip' from PATH
+            if [[ ! -x "$PIP_CMD" ]]; then
+                PIP_CMD="pip"
+            fi
+        else
+            PIP_CMD=""
+        fi
     fi
 
     echo "Installiere Python-Schnittstelle (acados_template)..."
-    cd $ACADOS_INSTALL_DIR/interfaces/acados_template
+    cd "$ACADOS_INSTALL_DIR/interfaces/acados_template"
 
-    if [[ "$CREATE_VENV" == "ON" ]]; then
-        pip install . > /dev/null
+    if [[ -n "$PIP_CMD" ]]; then
+        # Use pip (in venv or created venv) without sudo so packages land in the venv
+        "$PIP_CMD" install . > /dev/null
     else
-        echo "WARNUNG: Installation erfolgt systemweit. Nutze --venv für eine isolierte Installation."
+        echo "WARNUNG: Keine aktive venv erkannt und --venv nicht gesetzt. Installation erfolgt systemweit. Nutze --venv oder aktiviere ein venv vor dem Aufruf."
         sudo pip install . > /dev/null
     fi
 fi

@@ -165,7 +165,7 @@ class MLPPolicy(nn.Module):
         with open(config_path, "w") as f:
             json.dump(config_payload, f, indent=4, cls=ConfigEncoder)
             
-        __logger__.info(f"Saved policy weights to {checkpoint_path} and config to {config_path}")
+        __logger__.info(f"Saved policy weights and config to {checkpoint_path.parent}")
 
 
     @classmethod

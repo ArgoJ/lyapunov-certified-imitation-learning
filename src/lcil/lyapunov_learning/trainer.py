@@ -6,6 +6,7 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 
+from numpy.typing import NDArray
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -46,40 +47,61 @@ class LyapunovTrainer:
         config: LyapunovTrainingConfig,
         device: th.device | str = "cpu"
     ) -> None:
-        self.policy_model = policy_model
-        self.lyap_model = lyap_model
-        self.dyn_model = dyn_model
-        self.config = config
+        self.config = self._resolve_config(config)
         self.device = th.device(device)
-        
-        if len(self.config.state_bounds) != self.config.state_dim:
-            raise ValueError(
-                "state_bounds must match state_dim. "
-                f"Expected {self.config.state_dim}, got {len(self.config.state_bounds)}"
-            )
-        
+
+        self.policy_model = policy_model.to(self.device)
+        self.lyap_model = lyap_model.to(self.device)
+        self.dyn_model = dyn_model.to(self.device)
+
         self.origin = th.zeros(1, self.config.state_dim, dtype=th.float32, device=self.device)
-        self.lbx = th.tensor(self.config.state_bounds[0], dtype=th.float32, device=self.device)
-        self.ubx = th.tensor(self.config.state_bounds[1], dtype=th.float32, device=self.device)
-        
-        if (self.lbx >= 0).any() or (self.ubx <= 0).any() or (self.lbx > self.ubx).any():
-            __logger__.warning(
-                "State bounds do not appear to include the origin." 
-                "Ensure that state_bounds are correctly specified for Lyapunov training."
-            )
-
-        if self.config.seed is not None:
-            th.manual_seed(self.config.seed)
-            np.random.seed(self.config.seed)
-
-        self.policy_model.to(self.device)
-        self.lyap_model.to(self.device)
-        self.dyn_model.to(self.device)
+        self.lbx, self.ubx = self._resolve_bounds(self.config.state_bounds, self.device)
 
         self.optimizer: th.optim.Optimizer | None = None
         self.verifier: ClosedLoopLyapunovConditionVerifier | None = None
         self.trainable_params: list[nn.Parameter] = []
         self.results: LyapunovTrainingResult | None = None
+
+    @staticmethod
+    def _resolve_config(config: LyapunovTrainingConfig) -> LyapunovTrainingConfig:
+        """Utility to resolve and validate the training configuration."""
+        if config.learning_rate <= 0:
+            raise ValueError("Learning rate must be positive.")
+        if config.batch_size <= 0:
+            raise ValueError("Batch size must be positive.")
+        if config.roa_candidate_size <= 0:
+            raise ValueError("ROA candidate size must be positive.")
+        if config.outer_epochs <= 0:
+            raise ValueError("Outer epochs must be positive.")
+        if config.steps_per_epoch <= 0:
+            raise ValueError("Steps per epoch must be positive.")
+        if config.counterexample_every < 0:
+            raise ValueError("Counterexample mining interval must be non-negative.")
+        if config.rho_min <= 0:
+            raise ValueError("Minimum rho estimate must be positive.")
+        if len(config.state_bounds) != config.state_dim:
+            raise ValueError(
+                "state_bounds must match state_dim. "
+                f"Expected {config.state_dim}, got {len(config.state_bounds)}"
+            )
+        if config.seed is not None:
+            th.manual_seed(config.seed)
+            np.random.seed(config.seed)
+        return config
+
+    @staticmethod
+    def _resolve_bounds(state_bounds: NDArray, device: th.device) -> tuple[th.Tensor, th.Tensor]:
+        """Utility to convert state bounds from config into tensors."""
+        lbx = th.tensor(state_bounds[0], dtype=th.float32, device=device)
+        ubx = th.tensor(state_bounds[1], dtype=th.float32, device=device)
+        
+        if (lbx >= 0).any() or (ubx <= 0).any() or (lbx > ubx).any():
+            raise ValueError(
+                "State bounds do not appear to include the origin. " 
+                "Ensure that state_bounds are correctly specified for Lyapunov training."
+            )
+
+        return lbx, ubx
 
     def _set_adam_optimizer(self) -> None:
         """Configure the trainer to use the Adam optimizer based on the config."""
@@ -111,23 +133,27 @@ class LyapunovTrainer:
             dyn_model=self.dyn_model,
             lbx=self.lbx,
             ubx=self.ubx,
-            kappa=self.config.kappa,
             invariance_weight=self.config.invariance_weight,
-            rho=self.config.rho_min,
         ).to(self.device)
 
-    def _loss_fn(self, x_batch: th.Tensor, roa_candidates: th.Tensor, rho_estimate: float) -> th.Tensor:
+    def _to_tensor(self, value: float) -> th.Tensor:
+        """Utility to convert scalar values to tensors on the correct device."""
+        return th.tensor([value], dtype=th.float32, device=self.device)
+
+    def _loss_fn(self, x_batch: th.Tensor, roa_candidates: th.Tensor, rho_estimate: float, current_kappa: float) -> th.Tensor:
         """Compute the combined loss for a training batch."""
         if self.verifier is None:
             raise ValueError("Verifier not initialized. Call _set_verifier() before computing loss.")
         
-        # L_Vdot = ReLU(verifier(x))
-        self.verifier.set_rho(rho_estimate)
-        loss_condition = th.relu(self.verifier(x_batch)).mean()
+        rho_t = self._to_tensor(rho_estimate)
+        kappa_t = self._to_tensor(current_kappa)
+
+        # L_Vdot = ReLU(verifier(x, rho, kappa))
+        loss_condition = th.relu(self.verifier(x_batch, rho_t, kappa_t)).mean()
 
         # L_roa = ReLU(V(x) / rho - 1)
         v_candidates = self.lyap_model(roa_candidates)
-        loss_roa = th.relu(v_candidates / max(rho_estimate, self.config.rho_min) - 1.0).sum()
+        loss_roa = th.relu(v_candidates / max(rho_estimate, self.config.rho_min) - 1.0).mean()
 
         # Keep V(0) near zero for generic Lyapunov parameterizations.
         loss_origin = self.lyap_model(self.origin).pow(2).mean()
@@ -142,30 +168,30 @@ class LyapunovTrainer:
 
         return total_loss
 
-    def _mine_new_counterexamples(self, rho_estimate: float) -> th.Tensor:
+    def _mine_new_counterexamples(self, rho_estimate: float, current_kappa: float) -> th.Tensor:
         """Mine new counterexamples using the verifier and add them to the training buffer."""
         if self.verifier is None:
             raise ValueError("Verifier not initialized. Call _set_verifier() before mining counterexamples.")
         
         new_cex = find_counter_examples(
-            policy_model=self.policy_model,
-            lyap_model=self.lyap_model,
-            dyn_model=self.dyn_model,
+            verifier=self.verifier,
             config=self.config,
             rho=rho_estimate,
+            kappa=current_kappa,
             device=self.device,
         )
         
+        rho_t = self._to_tensor(rho_estimate)
+        kappa_t = self._to_tensor(current_kappa)
+        
+        new_kappa = current_kappa
         if new_cex.numel() > 0:
             # Margin dynamically adjusted based on the worst violation in the new counterexamples
             with th.no_grad():
-                cex_diffs = self.verifier(new_cex).detach().cpu().numpy()
-            const_c = max(self.config.kappa, -np.min(cex_diffs) + 0.01)
-            self.verifier.set_kappa(const_c)
-
-            return new_cex
+                cex_diffs = self.verifier(new_cex, rho_t, kappa_t).detach().cpu().numpy()
+            new_kappa = max(self.config.kappa, -np.min(cex_diffs) + 0.01)
         
-        return th.empty((0, self.config.state_dim), device=self.device)
+        return new_cex, new_kappa
 
     def _build_roa_candidates(self) -> th.Tensor:
         """Create diverse candidate states near the boundary of the asymmetric B."""
@@ -190,6 +216,7 @@ class LyapunovTrainer:
 
         mining_interval = max(1, self.config.counterexample_every // max(1, self.config.steps_per_epoch))
         rho_estimate = self.config.rho_min
+        current_kappa = self.config.kappa
         num_mined_counterexamples = 0
         total_steps = self.config.outer_epochs * self.config.steps_per_epoch
         
@@ -206,14 +233,14 @@ class LyapunovTrainer:
 
                 # Mine counterexamples (CEGIS)
                 if (outer_iter + 1) % mining_interval == 0:
-                    new_cex = self._mine_new_counterexamples(rho_estimate)
+                    new_cex, current_kappa = self._mine_new_counterexamples(rho_estimate, current_kappa)
                     num_mined_counterexamples += new_cex.shape[0]
                     state_buffer.add(new_cex)
 
                 # Inner training loop
                 for _ in range(self.config.steps_per_epoch):
                     x_batch = state_buffer.sample(self.config.batch_size)
-                    loss = self._loss_fn(x_batch, roa_candidates, rho_estimate)
+                    loss = self._loss_fn(x_batch, roa_candidates, rho_estimate, current_kappa)
 
                     self.optimizer.zero_grad()
                     loss.backward()

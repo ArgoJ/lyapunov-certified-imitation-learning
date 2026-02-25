@@ -8,7 +8,7 @@
       "program": "${workspaceFolder}/examples/double_integrator/learn_lyapunov.py",
       "console": "integratedTerminal",
       "args": [
-        "--policy-path", "results/double_integrator/20260223_094057/model.pt"
+        "--policy-path", "results/double_integrator/20260222_112847/model.pt"
       ],
       "justMyCode": true
     }
