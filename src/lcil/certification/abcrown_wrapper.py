@@ -92,7 +92,10 @@ class ABCrownCertifier(BaseCertifier):
             y = output_vars(1)
 
             input_constraint = (x >= lb) & (x <= ub)
-            output_constraint = (y[0] > self.config.condition_tolerance)
+            # ABCROWN negates `output_constraint` internally to construct
+            # counterexample clauses. Therefore this must encode the *safe*
+            # condition directly: verifier output should stay below tolerance.
+            output_constraint = (y[0] < self.config.condition_tolerance)
 
             spec = VerificationSpec.build_spec(
                 input_vars=x,
@@ -109,7 +112,10 @@ class ABCrownCertifier(BaseCertifier):
 
             res = solver.solve()
 
-            if res.status in ["verified", "safe", "safe-incomplete"]:
+            status = str(res.status).strip().lower()
+            is_safe_status = status == "verified" or status.startswith("safe")
+
+            if is_safe_status:
                 is_certified[idx] = True
                 max_uppers[idx] = self.config.condition_tolerance - 1e-4
             else:
