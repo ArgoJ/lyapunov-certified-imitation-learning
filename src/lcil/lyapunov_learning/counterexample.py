@@ -6,7 +6,6 @@ import torch as th
 import torch.nn as nn
 
 from .config import LyapunovTrainingConfig
-from ..certification.models import ClosedLoopLyapunovConditionVerifier
 
 
 def _bounds_tensor(state_bounds: Sequence[float], device: th.device) -> th.Tensor:

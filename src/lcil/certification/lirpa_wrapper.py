@@ -7,7 +7,6 @@ import numpy as np
 from contextlib import nullcontext
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
-from .config import LyapunovCertificationConfig
 from .certifier_base import BaseCertifier, RegionCertificationResult
 from ..utils.package_logger import get_package_logger, PackageLogger
 
