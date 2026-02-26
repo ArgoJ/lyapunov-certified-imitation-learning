@@ -3,6 +3,7 @@
 
 
 # %% General Imports
+import argparse
 import numpy as np
 
 from numpy.typing import NDArray
@@ -188,8 +189,42 @@ def get_ocp_solver(
     return solver, info
 
 
+def setup_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Generate MPC imitation datasets for the double integrator."
+    )
+    parser.add_argument(
+        "--n-samples",
+        type=int,
+        default=20000,
+        help="Number of trajectories to generate.",
+    )
+    parser.add_argument(
+        "--t-sim",
+        type=int,
+        default=40,
+        help="Simulation horizon length (number of MPC steps).",
+    )
+    parser.add_argument(
+        "--bound-scale",
+        type=float,
+        default=10.0,
+        help="Scale for box constraints on states and inputs in the OCP.",
+    )
+    parser.add_argument(
+        "--base-path",
+        type=str,
+        default="results/double_integrator/data",
+        help="Base output path for generated datasets and plots.",
+    )
+    return parser
+
+
 # %%  
 if __name__ == "__main__":
+    parser = setup_parser()
+    args = parser.parse_args()
+
     # Continuous-time double integrator matrices (standard)
     A_c = np.array([[0, 1],
                     [0, 0]])
@@ -200,10 +235,12 @@ if __name__ == "__main__":
     Q = np.diag([15.0, 1.0])
     R = np.diag([0.1])
 
-    T_sim=40
-    n_samples=20000
-    bounds_scale=10.0
-    terminal_box_halfwidth=2.0
+    base_path = args.base_path
+
+    T_sim = args.t_sim
+    n_samples = args.n_samples
+    bounds_scale = args.bound_scale
+    terminal_box_halfwidth = 2.0
 
     def run_case(
         name: str,
@@ -244,7 +281,7 @@ if __name__ == "__main__":
         )
         dataset = generator.generate(n_samples=n_samples)
         dataset.validate()
-        dataset.save(f"data/double_integrator_{terminal_mode}_N{N}_data.hdf5")
+        dataset.save(f"{base_path}/double_integrator_{terminal_mode}_N{N}_data.hdf5")
 
         veri_stats = StabilityVerifier.verify(dataset, solver, alpha_required=1e-4)
         VerificationRender(veri_stats).render()
@@ -275,7 +312,7 @@ if __name__ == "__main__":
             roa_lyapunov_func=roa_lyap_fun,
             c_level=c_min,
             roa_bounds=roa_bounds,
-            base_path=f"plots/double_integrator_{terminal_mode}_N{N}",
+            base_path=f"{base_path}/double_integrator_{terminal_mode}_N{N}",
         )
 
 
