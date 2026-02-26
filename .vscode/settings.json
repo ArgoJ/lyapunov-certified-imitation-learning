@@ -4,15 +4,7 @@
     "terminal.integrated.suggest.enabled": true,
     "terminal.integrated.suggest.inlineSuggestion": "alwaysOnTopExceptExactMatch",
 
-    "python.defaultInterpreterPath": "${env:HOME}/.acados_env/bin/python",
+    "python.defaultInterpreterPath": "${env:HOME}/.ma/bin/python",
     "python.terminal.activateEnvironment": true,
-    "python.autoComplete.extraPaths": [
-        "/opt/ros/humble/lib/python3.10/site-packages",
-        "/opt/ros/humble/local/lib/python3.10/dist-packages"
-    ],
-    "python.analysis.extraPaths": [
-        "/opt/ros/humble/lib/python3.10/site-packages",
-        "/opt/ros/humble/local/lib/python3.10/dist-packages"
-    ],
     "autoDocstring.docstringFormat": "numpy"
 }  

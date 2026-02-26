@@ -13,7 +13,6 @@ from abcrown import (
     output_vars
 )
 
-from .config import LyapunovCertificationConfig
 from .certifier_base import BaseCertifier, RegionCertificationResult
 
 

@@ -157,7 +157,7 @@ class BaseCertifier(ABC):
             if not found_upper_failure:
                 return rho_lo, self.certify_regions(rho=rho_lo, collect_details=True)
 
-        if not initial_ok:
+        else:
             rho_up = initial_rho
             rho_lo: float | None = None
             trial = initial_rho
