@@ -24,8 +24,9 @@ class LyapunovCertificationConfig:
         Minimum admissible sublevel value.
     cert_step : float
         Grid step size for certification region decomposition.
-    cert_origin_exclusion : float | None
-        Radius around the origin to skip during certification.
+    cert_origin_exclusion : float | Sequence[float] | None
+        Radius around the origin to skip during certification. If a sequence is
+        provided, it is interpreted per state dimension.
     cert_rho_scaling : float
         Multiplicative factor used in rho scaling before bisection.
     cert_bisection_tol : float
@@ -46,7 +47,7 @@ class LyapunovCertificationConfig:
     invariance_weight: float = 1.0
     rho_min: float = 1e-6
     cert_step: float = 1.0
-    cert_origin_exclusion: float | None = None
+    cert_origin_exclusion: float | Sequence[float] | None = None
     cert_rho_scaling: float = 1.2
     cert_bisection_tol: float = 1e-3
     cert_max_scale_steps: int = 20
@@ -59,7 +60,7 @@ class LyapunovCertificationConfig:
     def from_training_config(
         config: LyapunovTrainingConfig,
         cert_step: float = 1.0,
-        cert_origin_exclusion: float | None = None,
+        cert_origin_exclusion: float | Sequence[float] | None = None,
         cert_rho_scaling: float = 1.2,
         cert_bisection_tol: float = 1e-3,
         cert_max_scale_steps: int = 20,

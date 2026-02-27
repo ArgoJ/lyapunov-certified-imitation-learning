@@ -124,6 +124,40 @@ class BaseCertifier(ABC):
         verifier.eval()
         return verifier
 
+    def _resolve_origin_exclusion(self) -> th.Tensor:
+        """Resolve origin exclusion widths per state dimension."""
+        # Default: 1% of per-dimension bound radius, capped at 0.1.
+        default_exclusion = th.minimum(
+            self.bounds.abs().max(dim=0).values * 0.01,
+            th.full((self.config.state_dim,), 0.1, dtype=th.float32, device=self.device),
+        )
+
+        raw_exclusion = self.config.cert_origin_exclusion
+        if raw_exclusion is None:
+            exclusion = default_exclusion
+        elif isinstance(raw_exclusion, (int, float)):
+            scalar = float(raw_exclusion)
+            if scalar < 0:
+                raise ValueError("cert_origin_exclusion must be non-negative.")
+            exclusion = th.full(
+                (self.config.state_dim,),
+                scalar,
+                dtype=th.float32,
+                device=self.device,
+            )
+        else:
+            exclusion = th.as_tensor(raw_exclusion, dtype=th.float32, device=self.device).reshape(-1)
+            if exclusion.numel() != self.config.state_dim:
+                raise ValueError(
+                    "cert_origin_exclusion must be scalar or match state_dim."
+                )
+            if (exclusion < 0).any():
+                raise ValueError("cert_origin_exclusion must be non-negative.")
+
+        # Ensure the exclusion does not extend outside available bounds around zero.
+        max_centered = th.clamp(th.minimum(-self.bounds[0], self.bounds[1]), min=0.0)
+        return th.minimum(exclusion, max_centered)
+
     def is_rho_certified(self, rho: float) -> bool:
         result = self.certify_regions(rho=rho, collect_details=False) 
         return result.success

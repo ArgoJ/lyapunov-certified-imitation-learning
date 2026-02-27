@@ -39,8 +39,9 @@ class LiRPACertifier(BaseCertifier):
         if self.config.state_dim != 2:
             raise ValueError("certification currently supports state_dim == 2.")
 
-        train_diameter = th.max(th.abs(self.bounds)).item()
-        origin_exclusion = self.config.cert_origin_exclusion or min(train_diameter * 0.01, 0.1)
+        origin_exclusion = self._resolve_origin_exclusion()
+        excl_x = origin_exclusion[0].item()
+        excl_y = origin_exclusion[1].item()
 
         lbx, ubx = self.bounds[0], self.bounds[1]
         step = self.config.cert_step
@@ -52,8 +53,8 @@ class LiRPACertifier(BaseCertifier):
         grid_x = grid_x.flatten()
         grid_y = grid_y.flatten()
 
-        overlaps_origin = (grid_x < origin_exclusion) & ((grid_x + step) > -origin_exclusion) & \
-                          (grid_y < origin_exclusion) & ((grid_y + step) > -origin_exclusion)
+        overlaps_origin = (grid_x < excl_x) & ((grid_x + step) > -excl_x) & \
+                          (grid_y < excl_y) & ((grid_y + step) > -excl_y)
         
         mask = ~overlaps_origin
         

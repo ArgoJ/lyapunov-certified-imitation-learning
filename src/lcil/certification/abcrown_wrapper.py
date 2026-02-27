@@ -41,8 +41,12 @@ class ABCrownCertifier(BaseCertifier):
     """
 
     def build_regions(self) -> tuple[th.Tensor, th.Tensor]:
-        train_diameter = th.max(th.abs(self.bounds)).item()
-        excl = self.config.cert_origin_exclusion or min(train_diameter * 0.01, 0.1)
+        if self.config.state_dim != 2:
+            raise ValueError("certification currently supports state_dim == 2.")
+
+        origin_exclusion = self._resolve_origin_exclusion()
+        excl_x = origin_exclusion[0].item()
+        excl_y = origin_exclusion[1].item()
 
         lb_x, ub_x = self.bounds[0][0].item(), self.bounds[1][0].item()
         lb_y, ub_y = self.bounds[0][1].item(), self.bounds[1][1].item()
@@ -53,14 +57,25 @@ class ABCrownCertifier(BaseCertifier):
         # 3. Über dem Zentrum (nur Mittelstreifen)
         # 4. Unter dem Zentrum (nur Mittelstreifen)
         boxes = [
-            ([lb_x, lb_y], [-excl, ub_y]),           # Links
-            ([excl, lb_y], [ub_x, ub_y]),            # Rechts
-            ([-excl, excl], [excl, ub_y]),           # Oben
-            ([-excl, lb_y], [excl, -excl])           # Unten
+            ([lb_x, lb_y], [-excl_x, ub_y]),         # Links
+            ([excl_x, lb_y], [ub_x, ub_y]),          # Rechts
+            ([-excl_x, excl_y], [excl_x, ub_y]),     # Oben
+            ([-excl_x, lb_y], [excl_x, -excl_y])     # Unten
         ]
 
-        lbs = th.tensor([b[0] for b in boxes], dtype=th.float32, device=self.device)
-        ubs = th.tensor([b[1] for b in boxes], dtype=th.float32, device=self.device)
+        valid_boxes: list[tuple[list[float], list[float]]] = []
+        for lb, ub in boxes:
+            lb_t = th.tensor(lb, dtype=th.float32, device=self.device)
+            ub_t = th.tensor(ub, dtype=th.float32, device=self.device)
+            if th.all(lb_t < ub_t):
+                valid_boxes.append((lb, ub))
+
+        if not valid_boxes:
+            empty = th.empty((0, self.config.state_dim), dtype=th.float32, device=self.device)
+            return empty, empty
+
+        lbs = th.tensor([b[0] for b in valid_boxes], dtype=th.float32, device=self.device)
+        ubs = th.tensor([b[1] for b in valid_boxes], dtype=th.float32, device=self.device)
 
         return lbs, ubs
 
