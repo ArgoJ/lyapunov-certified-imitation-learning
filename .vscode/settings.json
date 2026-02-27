@@ -4,7 +4,7 @@
     "terminal.integrated.suggest.enabled": true,
     "terminal.integrated.suggest.inlineSuggestion": "alwaysOnTopExceptExactMatch",
 
-    "python.defaultInterpreterPath": "${env:HOME}/.ma/bin/python",
+    "python.defaultInterpreterPath": "${env:HOME}/.ma_env/bin/python",
     "python.terminal.activateEnvironment": true,
-    "autoDocstring.docstringFormat": "numpy"
+    "autoDocstring.docstringFormat": "numpy",
 }  

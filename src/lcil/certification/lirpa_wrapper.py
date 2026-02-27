@@ -4,11 +4,10 @@ import torch as th
 import torch.nn as nn
 import numpy as np
 
-from contextlib import nullcontext
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
 from .certifier_base import BaseCertifier, RegionCertificationResult
-from ..utils.package_logger import get_package_logger, PackageLogger
+from ..utils.package_logger import get_package_logger
 
 __logger__ = get_package_logger(__name__)
 
@@ -16,26 +15,6 @@ __logger__ = get_package_logger(__name__)
 class LiRPACertifier(BaseCertifier):
     """_summary_
     """
-
-    @staticmethod
-    def _get_lirpa_ctx(suppress_native_output: bool = False):
-        """_summary_
-
-        Parameters
-        ----------
-        suppress_native_output : bool, optional
-            _description_, by default False
-
-        Returns
-        -------
-        _type_
-            _description_
-        """
-        if suppress_native_output:
-            lirpa_ctx = PackageLogger.suppress_native_output()
-        else:
-            lirpa_ctx = nullcontext()
-        return lirpa_ctx
 
     @staticmethod
     def _get_fallback_methods(method : str) -> list[str]:
@@ -162,7 +141,7 @@ class LiRPACertifier(BaseCertifier):
             b_kappa = th.full((batch_len, 1), self.config.kappa, dtype=th.float32, device=self.device)
 
             ub_out = None
-            ctx = self._get_lirpa_ctx(self.config.cert_suppress_native_output)
+            ctx = self._get_suppress_ctx(self.config.cert_suppress_native_output)
             for candidate_method in self.fallback_methods:
                 try:
                     with ctx:

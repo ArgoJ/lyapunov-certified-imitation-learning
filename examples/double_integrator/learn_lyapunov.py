@@ -26,12 +26,6 @@ def parse_cli_args() -> argparse.Namespace:
         default="results/double_integrator/20260222_112847/model.pt",
         help="Path to the trained fixed policy model checkpoint.",
     )
-    parser.add_argument(
-        "--save-folder",
-        type=str,
-        default="results/double_integrator_lyap",
-        help="Output folder for trained Lyapunov model artifacts.",
-    )
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string.")
     parser.add_argument("--initial-sample-size", type=int, default=1000, help="Training sample size.")
     parser.add_argument("--batch-size", type=int, default=512, help="Training batch size.")
@@ -82,10 +76,6 @@ def parse_cli_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_cli_args()
     device = th.device(args.device)
-    
-    # Parent directory for this entire grid search sweep
-    sweep_base_path = Path(args.save_folder) / datetime.now().strftime('%Y%m%d_%H%M%S')
-    sweep_base_path.mkdir(parents=True, exist_ok=True)
 
     # Load policy and dynamics once (they don't change across runs)
     policy_path = Path(args.policy_path)
@@ -94,6 +84,10 @@ def main() -> None:
         map_location=device,
     ).to(device)
     policy_model.eval()
+
+    # Parent directory for this entire grid search sweep
+    sweep_base_path = policy_path.parent / "lyapunov" / datetime.now().strftime("%Y%m%d_%H%M%S")
+    sweep_base_path.mkdir(parents=True, exist_ok=True)
     
     dyn_model = DoubleIntegratorDynamics(dt=policy_model.global_config.dt).to(device)
     dyn_model.eval()

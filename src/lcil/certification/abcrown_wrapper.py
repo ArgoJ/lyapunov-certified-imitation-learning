@@ -4,7 +4,6 @@ import torch as th
 import torch.nn as nn
 import numpy as np
 
-# --- Neue Alpha-Beta-CROWN API Imports ---
 from abcrown import (
     ABCrownSolver, 
     VerificationSpec, 
@@ -14,6 +13,10 @@ from abcrown import (
 )
 
 from .certifier_base import BaseCertifier, RegionCertificationResult
+from ..utils.package_logger import get_package_logger
+
+
+__logger__ = get_package_logger(__name__)
 
 
 class _ABCrownModelWrapper(nn.Module):
@@ -137,10 +140,11 @@ class ABCrownCertifier(BaseCertifier):
             empty = th.empty((0, 2), device=self.device)
             return empty, empty, empty, empty, empty
 
-        is_safe, centers, _ = self._certify_batched_regions(
-            lbs, ubs, rho,
-            early_exit=not collect_details
-        )
+        with self._get_suppress_ctx(self.config.cert_suppress_native_output):
+            is_safe, centers, _ = self._certify_batched_regions(
+                lbs, ubs, rho,
+                early_exit=not collect_details
+            )
 
         c_lbs = lbs[is_safe]
         c_ubs = ubs[is_safe]

@@ -78,7 +78,7 @@ def main() -> None:
             dynamics=DoubleIntegratorDynamics(dt=0.1), 
             x_min=th.tensor(dataset_cfg.constraints.lbx), 
             x_max=th.tensor(dataset_cfg.constraints.ubx)),
-        lambda_dyn=1.0,
+        lambda_dyn=2.0,
     )
 
     trainer = PolicyTrainer(

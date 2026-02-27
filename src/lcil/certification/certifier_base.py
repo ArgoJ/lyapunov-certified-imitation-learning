@@ -4,13 +4,14 @@ import torch as th
 import torch.nn as nn
 import numpy as np
 
+from contextlib import nullcontext
 from typing import Sequence
 from dataclasses import dataclass, replace
 from abc import ABC, abstractmethod
 
 from .config import LyapunovCertificationConfig
 from .models import ClosedLoopLyapunovConditionVerifier
-from ..utils.package_logger import get_package_logger
+from ..utils.package_logger import get_package_logger, PackageLogger
 
 __logger__ = get_package_logger(__name__)
 
@@ -84,6 +85,14 @@ class BaseCertifier(ABC):
     # ==========================================
     # CORE LOGIK
     # ==========================================
+
+    @staticmethod
+    def _get_suppress_ctx(suppress_native_output: bool = False):
+        if suppress_native_output:
+            lirpa_ctx = PackageLogger.suppress_native_output(suppress_stderr=True)
+        else:
+            lirpa_ctx = nullcontext()
+        return lirpa_ctx
 
     @staticmethod
     def _resolve_config(config: LyapunovCertificationConfig) -> LyapunovCertificationConfig:

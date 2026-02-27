@@ -5,7 +5,7 @@ import tqdm as tqdm_module
 
 from typing import Any, Iterator
 from tqdm import tqdm
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
 
 DEFAULT_MODULE_NAME = "lcil"
 DEFAULT_SHORT_NAME = "lcil"
@@ -112,47 +112,58 @@ class PackageLogger:
         logger.addHandler(handler)
 
         return logger
-
+    
     @staticmethod
     @contextmanager
     def suppress_native_output(
         suppress_stdout: bool = True,
         suppress_stderr: bool = False,
+        suppress_logging: bool = False,
     ) -> Iterator[None]:
-        """Temporarily suppress native writes to file descriptors 1/2.
+        """Temporarily suppress native writes, Python streams, and logging.
 
-        This is useful for C/C++ extension output
-        that bypasses Python's ``logging`` module.
-
-        Parameters
-        ----------
-        suppress_stdout : bool, optional
-            If True, redirects OS-level stdout (fd=1) to ``os.devnull``.
-        suppress_stderr : bool, optional
-            If True, redirects OS-level stderr (fd=2) to ``os.devnull``.
+        This completely silences C/C++ extensions, Python print/tqdm, 
+        and standard Python loggers.
         """
-        if not suppress_stdout and not suppress_stderr:
-            yield
-            return
+        # Logging-Level deactivate
+        if suppress_logging:
+            root_logger = logging.getLogger()
+            old_log_level = root_logger.getEffectiveLevel()
+            root_logger.setLevel(logging.CRITICAL)
 
+        # OS-Level (C/C++ File Descriptors)
         devnull_fd = os.open(os.devnull, os.O_WRONLY)
         saved_fds: dict[int, int] = {}
 
+        # Python-Level (sys.stdout / sys.stderr)
+        devnull_file = open(os.devnull, 'w')
+
         try:
+            # OS-Level redirection
             if suppress_stdout:
+                sys.stdout.flush()
                 saved_fds[1] = os.dup(1)
                 os.dup2(devnull_fd, 1)
 
             if suppress_stderr:
+                sys.stderr.flush()
                 saved_fds[2] = os.dup(2)
                 os.dup2(devnull_fd, 2)
 
-            yield
+            # Python-Level redirection
+            with redirect_stdout(devnull_file if suppress_stdout else sys.stdout), \
+                 redirect_stderr(devnull_file if suppress_stderr else sys.stderr):
+                yield
+
         finally:
             for target_fd, saved_fd in saved_fds.items():
                 os.dup2(saved_fd, target_fd)
                 os.close(saved_fd)
+
             os.close(devnull_fd)
+            devnull_file.close()
+            if suppress_logging:
+                root_logger.setLevel(old_log_level)
 
 
 class PackageBoundLogger(logging.LoggerAdapter):
