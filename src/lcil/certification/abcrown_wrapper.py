@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import torch as th
 import torch.nn as nn
-import numpy as np
 
 from abcrown import (
     ABCrownSolver, 
@@ -12,7 +11,7 @@ from abcrown import (
     output_vars
 )
 
-from .certifier_base import BaseCertifier, RegionCertificationResult
+from .certifier_base import BaseCertifier
 from ..utils.package_logger import get_package_logger
 
 
@@ -24,11 +23,11 @@ class _ABCrownModelWrapper(nn.Module):
     A wrapper that freezes the dynamic parameters (rho, kappa)
     so that ABCrownSolver can evaluate a clean model x -> y.
     """
-    def __init__(self, verifier: nn.Module, rho: float, kappa: float, device: th.device):
+    def __init__(self, verifier: nn.Module, device: th.device):
         super().__init__()
         self.verifier = verifier
-        self.rho = th.tensor([rho], dtype=th.float32, device=device)
-        self.kappa = th.tensor([kappa], dtype=th.float32, device=device)
+        self.register_buffer("rho", th.tensor([0.0], dtype=th.float32, device=device))
+        self.register_buffer("kappa", th.tensor([0.0], dtype=th.float32, device=device))
 
     def forward(self, x: th.Tensor) -> th.Tensor:
         return self.verifier(x, self.rho, self.kappa)
@@ -40,51 +39,16 @@ class ABCrownCertifier(BaseCertifier):
     Combines spatial branch-and-bound with neural activation branch-and-bound.
     """
 
-    def build_regions(self) -> tuple[th.Tensor, th.Tensor]:
-        if self.config.state_dim != 2:
-            raise ValueError("certification currently supports state_dim == 2.")
-
-        origin_exclusion = self._resolve_origin_exclusion()
-        excl_x = origin_exclusion[0].item()
-        excl_y = origin_exclusion[1].item()
-
-        lb_x, ub_x = self.bounds[0][0].item(), self.bounds[1][0].item()
-        lb_y, ub_y = self.bounds[0][1].item(), self.bounds[1][1].item()
-
-        # Wir zerlegen den 2D-Raum (ohne das Zentrum) in 4 große Makro-Rechtecke:
-        # 1. Links vom Zentrum (volle Höhe)
-        # 2. Rechts vom Zentrum (volle Höhe)
-        # 3. Über dem Zentrum (nur Mittelstreifen)
-        # 4. Unter dem Zentrum (nur Mittelstreifen)
-        boxes = [
-            ([lb_x, lb_y], [-excl_x, ub_y]),         # Links
-            ([excl_x, lb_y], [ub_x, ub_y]),          # Rechts
-            ([-excl_x, excl_y], [excl_x, ub_y]),     # Oben
-            ([-excl_x, lb_y], [excl_x, -excl_y])     # Unten
-        ]
-
-        valid_boxes: list[tuple[list[float], list[float]]] = []
-        for lb, ub in boxes:
-            lb_t = th.tensor(lb, dtype=th.float32, device=self.device)
-            ub_t = th.tensor(ub, dtype=th.float32, device=self.device)
-            if th.all(lb_t < ub_t):
-                valid_boxes.append((lb, ub))
-
-        if not valid_boxes:
-            empty = th.empty((0, self.config.state_dim), dtype=th.float32, device=self.device)
-            return empty, empty
-
-        lbs = th.tensor([b[0] for b in valid_boxes], dtype=th.float32, device=self.device)
-        ubs = th.tensor([b[1] for b in valid_boxes], dtype=th.float32, device=self.device)
-
-        return lbs, ubs
-
     def setup_backend(self) -> None:
         self.abcrown_config = (
             ConfigBuilder.from_defaults()
             .set(general__device=self.device.type)
             ()
         )
+
+        self.wrapped_model = _ABCrownModelWrapper(self.verifier, self.device)
+        self.wrapped_model.kappa.fill_(self.config.kappa)
+        self.wrapped_model.eval()
 
     def _certify_batched_regions(
             self,
@@ -96,41 +60,38 @@ class ABCrownCertifier(BaseCertifier):
         num_regions = len(lbs)
         is_certified = th.zeros(num_regions, dtype=th.bool, device=self.device)
         max_uppers = th.full((num_regions,), float("inf"), dtype=th.float32, device=self.device)
-        centers_out = th.empty_like(lbs)
+        centers_out = (lbs + ubs) / 2.0
 
-        wrapped_model = _ABCrownModelWrapper(self.verifier, rho, self.config.kappa, self.device)
+        self.wrapped_model.rho.fill_(rho)
         for idx in range(num_regions):
             lb = lbs[idx]
             ub = ubs[idx]
-            center = (lb + ub) / 2.0
-            centers_out[idx] = center
 
-            x = input_vars(self.config.state_dim)
-            y = output_vars(1)
+            with self._get_suppress_ctx():
+                x = input_vars(self.config.state_dim)
+                y = output_vars(1)
 
-            input_constraint = (x >= lb) & (x <= ub)
-            # ABCROWN negates `output_constraint` internally to construct
-            # counterexample clauses. Therefore this must encode the *safe*
-            # condition directly: verifier output should stay below tolerance.
-            output_constraint = (y[0] < self.config.condition_tolerance)
+                input_constraint = (x >= lb) & (x <= ub)
+                output_constraint = (y[0] < self.config.condition_tolerance)
 
-            spec = VerificationSpec.build_spec(
-                input_vars=x,
-                output_vars=y,
-                input_constraint=input_constraint,
-                output_constraint=output_constraint,
-            )
+                spec = VerificationSpec.build_spec(
+                    input_vars=x,
+                    output_vars=y,
+                    input_constraint=input_constraint,
+                    output_constraint=output_constraint,
+                )
 
-            solver = ABCrownSolver(
-                spec=spec,
-                computing_graph=wrapped_model,
-                config=self.abcrown_config
-            )
+                solver = ABCrownSolver(
+                    spec=spec,
+                    computing_graph=self.wrapped_model,
+                    config=self.abcrown_config
+                )
 
-            res = solver.solve()
+                res = solver.solve()
 
             status = str(res.status).strip().lower()
             is_safe_status = status == "verified" or status.startswith("safe")
+            __logger__.debug(f"Region {idx}: status={status}, lb={lb.cpu().numpy()}, ub={ub.cpu().numpy()}, rho={rho:.6f}")
 
             if is_safe_status:
                 is_certified[idx] = True
@@ -143,44 +104,3 @@ class ABCrownCertifier(BaseCertifier):
                 break
 
         return is_certified, centers_out, max_uppers
-
-    def certify_regions(
-            self, 
-            rho: float,
-            collect_details: bool = True
-    ) -> RegionCertificationResult:
-        lbs, ubs = self.regions
-    
-        if len(lbs) == 0:
-            empty = th.empty((0, 2), device=self.device)
-            return empty, empty, empty, empty, empty
-
-        with self._get_suppress_ctx(self.config.cert_suppress_native_output):
-            is_safe, centers, _ = self._certify_batched_regions(
-                lbs, ubs, rho,
-                early_exit=not collect_details
-            )
-
-        c_lbs = lbs[is_safe]
-        c_ubs = ubs[is_safe]
-
-        failed_mask = ~is_safe
-        f_lbs = lbs[failed_mask]
-        f_ubs = ubs[failed_mask]
-        cex = centers[failed_mask]
-
-        c_lbs_np = c_lbs.cpu().numpy() if c_lbs.numel() > 0 else np.empty((0, self.config.state_dim), dtype=np.float32)
-        c_ubs_np = c_ubs.cpu().numpy() if c_ubs.numel() > 0 else np.empty((0, self.config.state_dim), dtype=np.float32)
-        f_lbs_np = f_lbs.cpu().numpy() if f_lbs.numel() > 0 else np.empty((0, self.config.state_dim), dtype=np.float32)
-        f_ubs_np = f_ubs.cpu().numpy() if f_ubs.numel() > 0 else np.empty((0, self.config.state_dim), dtype=np.float32)
-
-        certified_regions_np = np.stack([c_lbs_np, c_ubs_np], axis=1) if c_lbs_np.shape[0] > 0 else np.empty((0, 2, self.config.state_dim), dtype=np.float32)
-        failed_regions_np = np.stack([f_lbs_np, f_ubs_np], axis=1) if f_lbs_np.shape[0] > 0 else np.empty((0, 2, self.config.state_dim), dtype=np.float32)
-        counter_examples_np = cex.cpu().numpy() if cex.numel() > 0 else np.empty((0, self.config.state_dim), dtype=np.float32)
-
-        return RegionCertificationResult(
-            success=failed_regions_np.shape[0] == 0,
-            counter_examples=counter_examples_np,
-            failed_regions=failed_regions_np,
-            certified_regions=certified_regions_np,
-        )

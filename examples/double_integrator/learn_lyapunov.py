@@ -49,8 +49,8 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=5912354, help="Random seed.")
     
     # Certification Parameters
-    parser.add_argument("--cert-step", type=float, default=0.5, help="Certification grid step.")
-    parser.add_argument("--cert-rho-scaling", type=float, default=1.2, help="Certification rho scaling.")
+    parser.add_argument("--cert-step", type=float, default=2.0, help="Certification grid step.")
+    parser.add_argument("--cert-rho-scaling", type=float, default=1.5, help="Certification rho scaling.")
     parser.add_argument("--cert-bisection-tol", type=float, default=1e-3, help="Certification bisection tolerance.")
     parser.add_argument(
         "--cert-max-scale-steps",
