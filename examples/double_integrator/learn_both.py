@@ -1,8 +1,8 @@
 import torch as th
 import torch.nn as nn
 
-from lcil.lyapunov_learning import LyapunovTrainingConfig, train_lyapunov, NeuralLyapunovCandidate
-from lcil.certification import LyapunovCertificationConfig, certify_lyapunov
+from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer
+from lcil.certification import LyapunovCertificationConfig, ABCrownCertifier
 from lcil.utils import lcil_plt, ICNN, MLP
 
 # from lyapunov_certified_imitation_learning.utils.package_logger import PackageLogger
@@ -21,7 +21,7 @@ def main() -> None:
 	lyap_model = NeuralLyapunovCandidate(
 		feature_net=lyap_feature,
 		state_dim=2,
-		epsilon=1e-3,
+		eps=1e-3,
 	).to(device)
 	dyn_model = DoubleIntegratorDynamics(dt=0.1).to(device)
 

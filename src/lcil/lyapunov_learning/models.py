@@ -32,7 +32,7 @@ class LyapunovNet(nn.Module):
     def forward(self, x: th.Tensor) -> th.Tensor:
         return self.net(x)
 
-
+# TODO: Change names to be control confirm
 class NeuralLyapunovCandidate(nn.Module):
     """Lyapunov candidate from Eq. (9) in the paper.
 
@@ -43,17 +43,17 @@ class NeuralLyapunovCandidate(nn.Module):
         self,
         feature_net: nn.Module,
         state_dim: int,
-        epsilon: float = 1e-3,
-        goal_state: th.Tensor | None = None,
+        eps: float = 1e-3,
+        x_star: th.Tensor | None = None,
     ):
         super().__init__()
         self.feature_net = feature_net
         self.state_dim = state_dim
-        self.epsilon = float(epsilon)
+        self.eps = float(eps)
         self.r_factor = nn.Parameter(th.eye(state_dim))
-        if goal_state is None:
-            goal_state = th.zeros(state_dim, dtype=th.float32)
-        self.register_buffer("goal_state", goal_state.reshape(1, state_dim))
+        if x_star is None:
+            x_star = th.zeros(state_dim, dtype=th.float32)
+        self.register_buffer("x_star", x_star.reshape(1, state_dim))
 
     def _pd_matrix(self) -> th.Tensor:
         eye = th.eye(
@@ -61,16 +61,19 @@ class NeuralLyapunovCandidate(nn.Module):
             dtype=self.r_factor.dtype,
             device=self.r_factor.device,
         )
-        return self.epsilon * eye + self.r_factor.transpose(0, 1) @ self.r_factor
+        return self.eps * eye + self.r_factor.transpose(0, 1) @ self.r_factor
+
+    def set_x_star(self, x_star: th.Tensor) -> None:
+        self.x_star.copy_(x_star.reshape(1, -1))
 
     def forward(self, x: th.Tensor) -> th.Tensor:
-        goal = self.goal_state.to(dtype=x.dtype, device=x.device)
-        goal_batch = goal.expand(x.shape[0], -1)
+        x_star = self.x_star.to(dtype=x.dtype, device=x.device)
+        x_star_batch = x_star.expand(x.shape[0], -1)
         phi_x = self.feature_net(x)
-        phi_goal = self.feature_net(goal_batch)
-        feature_term = th.abs(phi_x - phi_goal).sum(dim=1, keepdim=True)
+        phi_x_star = self.feature_net(x_star_batch)
+        feature_term = th.abs(phi_x - phi_x_star).sum(dim=1, keepdim=True)
 
-        delta = x - goal_batch
+        delta = x - x_star_batch
         pd_matrix = self._pd_matrix()
         linear_term = th.abs(delta @ pd_matrix.transpose(0, 1)).sum(
             dim=1,
@@ -85,16 +88,16 @@ class QuadraticLyapunovCandidate(nn.Module):
     def __init__(
         self,
         state_dim: int,
-        epsilon: float = 1e-3,
-        goal_state: th.Tensor | None = None,
+        eps: float = 1e-3,
+        x_star: th.Tensor | None = None,
     ):
         super().__init__()
         self.state_dim = state_dim
-        self.epsilon = float(epsilon)
+        self.eps = float(eps)
         self.r_factor = nn.Parameter(th.eye(state_dim))
-        if goal_state is None:
-            goal_state = th.zeros(state_dim, dtype=th.float32)
-        self.register_buffer("goal_state", goal_state.reshape(1, state_dim))
+        if x_star is None:
+            x_star = th.zeros(state_dim, dtype=th.float32)
+        self.register_buffer("x_star", x_star.reshape(1, state_dim))
 
     def _pd_matrix(self) -> th.Tensor:
         eye = th.eye(
@@ -102,10 +105,10 @@ class QuadraticLyapunovCandidate(nn.Module):
             dtype=self.r_factor.dtype,
             device=self.r_factor.device,
         )
-        return self.epsilon * eye + self.r_factor.transpose(0, 1) @ self.r_factor
+        return self.eps * eye + self.r_factor.transpose(0, 1) @ self.r_factor
 
     def forward(self, x: th.Tensor) -> th.Tensor:
-        goal = self.goal_state.to(dtype=x.dtype, device=x.device)
+        goal = self.x_star.to(dtype=x.dtype, device=x.device)
         delta = x - goal.expand(x.shape[0], -1)
         pd_matrix = self._pd_matrix()
         value = (delta @ pd_matrix) * delta

@@ -417,6 +417,9 @@ class BaseCertifier(ABC):
         return result.success
 
     def certify(self, rho_estimate: float) -> tuple[float, RegionCertificationResult]:
+        if rho_estimate <= 0:
+            raise ValueError("rho_estimate must be positive.")
+
         __logger__.info("Starting Lyapunov certification with %s method.", self.config.cert_method.upper())
 
         self.verifier = self._setup_verifier()

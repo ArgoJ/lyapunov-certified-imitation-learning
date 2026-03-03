@@ -127,7 +127,7 @@ def main() -> None:
         lyap_model = NeuralLyapunovCandidate(
             feature_net=lyap_feature,
             state_dim=2,
-            epsilon=1e-3,
+            eps=1e-3,
         ).to(device)
 
         # ---------------------------------------------------------------------
@@ -187,7 +187,7 @@ def main() -> None:
             certification_config,
             device,
         )
-        _, cert_results = certifier.certify(train_results.rho_estimate)
+        _, cert_results = certifier.certify(max(train_results.rho_estimate, 1e-3))
 
         # ---------------------------------------------------------------------
         # 5. Plot & Save
