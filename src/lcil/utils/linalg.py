@@ -1,44 +1,45 @@
 import numpy as np
 import casadi as ca
+from numpy.typing import NDArray
 
-def as_vec(x: np.ndarray, n: int, name: str) -> np.ndarray:
+def as_vec(x: NDArray, n: int, name: str) -> NDArray:
     x = np.asarray(x, dtype=float).reshape(-1)
     if x.shape != (n,):
         raise ValueError(f"{name} must have shape ({n},), got {x.shape}.")
     return x
 
-def as_mat(M: np.ndarray, shape: tuple[int, int], name: str) -> np.ndarray:
+def as_mat(M: NDArray, shape: tuple[int, int], name: str) -> NDArray:
     M = np.asarray(M, dtype=float)
     if M.shape != shape:
         raise ValueError(f"{name} must have shape {shape}, got {M.shape}.")
     return M
 
-def sym(M: np.ndarray) -> np.ndarray:
+def sym(M: NDArray) -> NDArray:
     """Return the symmetric part of matrix M."""
     return 0.5 * (M + M.T)
 
-def min_pd_eig(M: np.ndarray) -> float:
+def min_pd_eig(M: NDArray) -> float:
     """Compute the minimum eigenvalue of a symmetric matrix M."""
     M = sym(M)
     eig = np.linalg.eigvalsh(M)
     return np.min(eig)
 
-def is_psd(M: np.ndarray, tol: float = 1e-12) -> bool:
+def is_psd(M: NDArray, tol: float = 1e-12) -> bool:
     """Check if matrix M is positive semi-definite."""
     return bool(min_pd_eig(M) >= -tol)
 
-def is_pd(M: np.ndarray, tol: float = 1e-12) -> bool:
+def is_pd(M: NDArray, tol: float = 1e-12) -> bool:
     """Check if matrix M is positive definite."""
     return bool(min_pd_eig(M) > tol)
 
-def sqrt_psd(M: np.ndarray, tol: float = 1e-12) -> np.ndarray:
+def sqrt_psd(M: NDArray, tol: float = 1e-12) -> NDArray:
     """Compute the principal square root of a PSD matrix M."""
     M = sym(M)
     w, V = np.linalg.eigh(M)
     w = np.clip(w, 0.0, None)
     return (V * np.sqrt(w)) @ V.T   # V diag(sqrt(w)) V^T
 
-def pbh_stabilizable(A: np.ndarray, B: np.ndarray, tol: float = 1e-9) -> bool:
+def pbh_stabilizable(A: NDArray, B: NDArray, tol: float = 1e-9) -> bool:
     """Check if the pair (A,B) is stabilizable using PBH test."""
     A = np.asarray(A); B = np.asarray(B)
     n = A.shape[0]
@@ -50,7 +51,7 @@ def pbh_stabilizable(A: np.ndarray, B: np.ndarray, tol: float = 1e-9) -> bool:
                 return False
     return True
 
-def pbh_detectable(A: np.ndarray, Q: np.ndarray, tol_rank: float = 1e-9) -> bool:
+def pbh_detectable(A: NDArray, Q: NDArray, tol_rank: float = 1e-9) -> bool:
     """Check if the pair (A,Q) is detectable using PBH test."""
     A = np.asarray(A); Q = np.asarray(Q)
     n = A.shape[0]
@@ -63,7 +64,7 @@ def pbh_detectable(A: np.ndarray, Q: np.ndarray, tol_rank: float = 1e-9) -> bool
                 return False
     return True
 
-def dare_residual(A: np.ndarray, B: np.ndarray, Q: np.ndarray, R: np.ndarray, P: np.ndarray) -> np.ndarray:
+def dare_residual(A: NDArray, B: NDArray, Q: NDArray, R: NDArray, P: NDArray) -> NDArray:
     """Compute the residual of the discrete-time algebraic Riccati equation."""
     A = np.asarray(A); B = np.asarray(B)
     Q = np.asarray(Q); R = np.asarray(R); P = np.asarray(P)
@@ -87,10 +88,10 @@ def discretize_and_linearize_rk4(
     u_sym: ca.SX,
     f_expl_expr: ca.SX,
     dt: float,
-    x_lin: np.ndarray,
-    u_lin: np.ndarray,
+    x_lin: NDArray,
+    u_lin: NDArray,
     num_steps: int = 1,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[NDArray, NDArray, NDArray]:
     """Discretize and linearize continuous-time dynamics using RK4 method.
 
     Parameters
@@ -101,7 +102,7 @@ def discretize_and_linearize_rk4(
         Symbolic expression of continuous-time dynamics (x_dot = f_expl_expr).
     dt : float
         Discretization time step.
-    x_lin, u_lin : np.ndarray
+    x_lin, u_lin : NDArray
         State and input around which to linearize.
     num_steps : int, optional
         Number of RK4 steps within dt, by default 1.
@@ -136,7 +137,7 @@ def discretize_and_linearize_rk4(
     return Ad, Bd, gd
 
 
-def lin_c2d_rk4(A: np.ndarray, B: np.ndarray, dt: float, num_steps: int = 1) -> tuple[np.ndarray, np.ndarray]:
+def lin_c2d_rk4(A: NDArray, B: NDArray, dt: float, num_steps: int = 1) -> tuple[NDArray, NDArray]:
     """Discretize linear system x_dot = A x + B u using RK4 method.
 
     Parameters

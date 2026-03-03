@@ -6,6 +6,7 @@ import numpy as np
 from pathlib import Path
 from typing import Any
 from dataclasses import is_dataclass, asdict
+from numpy.typing import NDArray
 
 from mpc_datagen import MPCConfig
 
@@ -18,7 +19,7 @@ __logger__ = get_package_logger(__name__)
 class ConfigEncoder(json.JSONEncoder):
     """Custom JSON Encoder that converts Numpy arrays and Tensors to lists."""
     def default(self, obj):
-        if isinstance(obj, np.ndarray):
+        if isinstance(obj, NDArray):
             return obj.tolist()
         if isinstance(obj, th.Tensor):
             return obj.detach().cpu().numpy().tolist()

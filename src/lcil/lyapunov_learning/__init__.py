@@ -1,5 +1,6 @@
 from .trainer import LyapunovTrainer
 from .config import LyapunovTrainingConfig
+from .rollout import LyapunovRollout
 from .models import (
     LyapunovNet,
     NeuralLyapunovCandidate,
@@ -14,6 +15,7 @@ from .counterexample import (
 __all__ = [
     "LyapunovTrainer",
     "LyapunovTrainingConfig",
+    "LyapunovRollout",
     "LyapunovNet",
     "NeuralLyapunovCandidate",
     "QuadraticLyapunovCandidate",

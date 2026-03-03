@@ -24,9 +24,9 @@ __logger__ = get_package_logger(__name__)
 class PolicyTrainingMetrics:
     """Per-epoch training metrics for policy optimization."""
 
-    train_loss: np.ndarray
-    val_loss: np.ndarray
-    learning_rate: np.ndarray
+    train_loss: NDArray
+    val_loss: NDArray
+    learning_rate: NDArray
     epochs_completed: int = 0
 
     @classmethod

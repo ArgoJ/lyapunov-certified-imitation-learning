@@ -8,6 +8,7 @@ from contextlib import nullcontext
 from typing import Sequence
 from dataclasses import dataclass, replace
 from abc import ABC, abstractmethod
+from numpy.typing import NDArray
 
 from .config import LyapunovCertificationConfig
 from .models import ClosedLoopLyapunovConditionVerifier
@@ -20,9 +21,9 @@ __logger__ = get_package_logger(__name__)
 class RegionCertificationResult:
     """Result container for a full-region certification pass."""
     success: bool
-    counter_examples: np.ndarray
-    failed_regions: np.ndarray
-    certified_regions: np.ndarray
+    counter_examples: NDArray
+    failed_regions: NDArray
+    certified_regions: NDArray
 
 
 class BaseCertifier(ABC):

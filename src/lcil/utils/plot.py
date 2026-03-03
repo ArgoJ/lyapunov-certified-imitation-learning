@@ -42,7 +42,7 @@ def lyapunov(
     ----------
     dataset : MPCDataset
         The dataset containing trajectories to plot.
-    lyapunov_func : Callable[[np.ndarray], np.ndarray]
+    lyapunov_func : Callable[[NDArray], NDArray]
         A function that takes a state vector and returns the Lyapunov value.
     state_indices : list, optional
         Indices of the two state variables to plot (x, y axes). Default is [0, 1].
@@ -406,7 +406,7 @@ def certified_regions_2d(
 
     fig = go.Figure()
 
-    def add_regions(regions: np.ndarray, color: str, name: str):
+    def add_regions(regions: NDArray, color: str, name: str):
         if regions is None or regions.shape[0] == 0:
             return
 
