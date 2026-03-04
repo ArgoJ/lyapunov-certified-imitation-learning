@@ -8,16 +8,24 @@ Act like a control + DL engineer: keep changes small, numerically careful, and c
 
 - Work from the repo root: `/home/josua/programming_stuff/projects/lyapunov-certified-imitation-learning`.
 - Before running anything that touches Python/acados, activate:
-  - `source ~/.acados_env/bin/activate`
+  - `source ~/.ma_env/bin/activate`
   - then run `python3 ...` from the repo root.
 
 ## Where To Look First
 
 - Data Generation: in mpc-datagen package (`/home/josua/programming_stuff/projects/mpc-datagen`)
-- Learning (Lyapunov nets / datasets): `src/lyapunov_certified_imitation_learning/lypunov_learning/`
-- Verification: `src/lyapunov_certified_imitation_learning/lyapunov_verification/`
+- Imitation Learning: `src/lcil/imitation_learning`
+- Lyapunov Learning: `src/lcil/lypunov_learning/`
+- Certification: `src/lcil/certification/`
 - Example system: `examples/double_integrator/`
 - Generated solver artifacts (do not edit): `c_generated_code/`
+
+All folders in the `lcil` package do have somewhat a similar structure with:
+- `models.py`
+- `config.py`
+- `trainer.py`
+- `rollout.py`
+- etc.
 
 ## Dependencies (Rules)
 

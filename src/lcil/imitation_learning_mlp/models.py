@@ -1,7 +1,6 @@
 import torch as th
 import torch.nn as nn
 import json
-import numpy as np
 
 from pathlib import Path
 from typing import Any

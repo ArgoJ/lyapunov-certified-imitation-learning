@@ -3,6 +3,9 @@ from __future__ import annotations
 import torch as th
 import torch.nn as nn
 
+import os
+os.environ.setdefault("PYTORCH_JIT", "0")
+
 from abcrown import (
     ABCrownSolver, 
     VerificationSpec, 

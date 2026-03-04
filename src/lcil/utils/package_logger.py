@@ -5,7 +5,7 @@ import tqdm as tqdm_module
 
 from typing import Any, Iterator
 from tqdm import tqdm
-from contextlib import contextmanager, redirect_stdout, redirect_stderr
+from contextlib import contextmanager, nullcontext, redirect_stdout, redirect_stderr
 
 DEFAULT_MODULE_NAME = "lcil"
 DEFAULT_SHORT_NAME = "lcil"
@@ -54,17 +54,37 @@ class PackageLogger:
         **tqdm_kwargs: Any,
     ) -> Iterator[tqdm_module.tqdm]:
         """Context manager to safely wrap a loop with tqdm-aware logging."""
+        suppress_native_output = bool(tqdm_kwargs.pop("suppress_native_output", False))
+        suppress_native_stderr = bool(tqdm_kwargs.pop("suppress_native_stderr", False))
+
         target_logger = logger
         if not logger.handlers and logger.propagate and logger.parent:
             target_logger = logging.getLogger(DEFAULT_MODULE_NAME)
 
         tqdm_handler, restored_handlers = PackageLogger._swap_to_tqdm_handler(target_logger)
+        tqdm_stream = None
+        if suppress_native_stderr and "file" not in tqdm_kwargs:
+            tqdm_stream = os.fdopen(os.dup(2), "w", buffering=1)
+            tqdm_kwargs["file"] = tqdm_stream
+
         pbar = tqdm(*tqdm_args, **tqdm_kwargs)
+        output_redirect = (
+            PackageLogger.suppress_native_output(
+                suppress_stdout=suppress_native_output,
+                suppress_stderr=suppress_native_stderr,
+                suppress_logging=False,
+            )
+            if (suppress_native_output or suppress_native_stderr)
+            else nullcontext(None)
+        )
 
         try:
-            yield pbar
+            with output_redirect:
+                yield pbar
         finally:
             pbar.close()
+            if tqdm_stream is not None:
+                tqdm_stream.close()
             if tqdm_handler:
                 PackageLogger._restore_handlers(target_logger, tqdm_handler, restored_handlers)
 

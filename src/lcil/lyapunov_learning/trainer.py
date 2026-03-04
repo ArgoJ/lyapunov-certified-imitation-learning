@@ -221,7 +221,12 @@ class LyapunovTrainer:
         total_steps = self.config.outer_epochs * self.config.steps_per_epoch
         
         start_time = time.time()
-        with __logger__.tqdm(total=total_steps, desc="Lyapunov Training Iterations", unit="step") as pbar:
+        with __logger__.tqdm(
+            total=total_steps, 
+            desc="Lyapunov Training Iterations", 
+            unit="step",
+            suppress_native_output=True,
+        ) as pbar:
             for outer_iter in range(self.config.outer_epochs):
                 
                 # Estimate current Region of Attraction

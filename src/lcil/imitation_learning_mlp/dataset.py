@@ -277,7 +277,11 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         expected_nu: int | None = None
 
         indices = list(mpc_dataset._indices)
-        with __logger__.tqdm(indices, desc="Preloading trajectories") as pbar:
+        with __logger__.tqdm(
+            indices,
+            desc="Preloading trajectories",
+            suppress_native_output=True,
+        ) as pbar:
             for key in pbar:
                 grp = mpc_dataset._h5_file[key]
                 meta = MPCMeta.from_hdf5(grp)

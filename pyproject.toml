@@ -15,6 +15,7 @@ dependencies = [
     "tqdm",
     "casadi",
     "h5py",
+    "typeguard",
     "mpc-datagen",
     "auto_LiRPA @ git+https://github.com/Verified-Intelligence/auto_LiRPA.git",
     "abcrown @ git+https://github.com/Verified-Intelligence/alpha-beta-CROWN.git",

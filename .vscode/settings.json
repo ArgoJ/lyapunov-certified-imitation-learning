@@ -5,6 +5,10 @@
     "terminal.integrated.suggest.inlineSuggestion": "alwaysOnTopExceptExactMatch",
 
     "python.defaultInterpreterPath": "${env:HOME}/.ma_env/bin/python",
+    "python.analysis.extraPaths": [
+        "${env:HOME}/.ma_env/lib/python3.11/site-packages",
+        "${env:HOME}/leap-c"
+    ],
     "python.terminal.activateEnvironment": true,
     "autoDocstring.docstringFormat": "numpy",
 }  
