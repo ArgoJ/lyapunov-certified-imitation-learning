@@ -5,11 +5,6 @@ from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandida
 from lcil.certification import LyapunovCertificationConfig, ABCrownCertifier
 from lcil.utils import lcil_plt, ICNN, MLP
 
-# from lyapunov_certified_imitation_learning.utils.package_logger import PackageLogger
-# import logging
-# PackageLogger.setup(level=logging.DEBUG)
-
-
 from double_integrator_dyn import DoubleIntegratorDynamics
 
 

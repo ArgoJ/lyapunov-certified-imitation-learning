@@ -3,9 +3,9 @@ from __future__ import annotations
 import torch as th
 
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
+from pkg_logger import get_package_logger
 
 from .certifier_base import BaseCertifier
-from ..utils.package_logger import get_package_logger
 
 __logger__ = get_package_logger(__name__)
 

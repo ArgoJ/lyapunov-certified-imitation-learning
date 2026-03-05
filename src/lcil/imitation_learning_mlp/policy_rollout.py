@@ -8,9 +8,9 @@ from torch import nn
 from numpy.typing import ArrayLike, NDArray
 
 from mpc_datagen import MPCConfig, MPCData, MPCDataset, MPCMeta, MPCTrajectory
+from pkg_logger import get_package_logger
 
 from .dataset import StateActionDataset
-from ..utils.package_logger import get_package_logger
 
 __logger__ = get_package_logger(__name__)
 

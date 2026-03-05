@@ -9,13 +9,14 @@ import torch.nn as nn
 
 from dataclasses import dataclass
 from pathlib import Path
+from numpy.typing import NDArray
 from typing import Any, Literal
 from collections.abc import Mapping
 from torch.utils.data import DataLoader
+from pkg_logger import get_package_logger
 
 from .dataset import save_state_action_dataset_subset
 from ..utils.early_stopping import EarlyStopping
-from ..utils.package_logger import get_package_logger
 
 __logger__ = get_package_logger(__name__)
 

@@ -9,10 +9,10 @@ from typing import Sequence
 from dataclasses import dataclass, replace
 from abc import ABC, abstractmethod
 from numpy.typing import NDArray
+from pkg_logger import get_package_logger, PackageLogger
 
 from .config import LyapunovCertificationConfig
 from .models import ClosedLoopLyapunovConditionVerifier
-from ..utils.package_logger import get_package_logger, PackageLogger
 
 __logger__ = get_package_logger(__name__)
 

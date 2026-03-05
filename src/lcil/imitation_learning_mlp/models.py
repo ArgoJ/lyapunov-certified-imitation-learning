@@ -8,9 +8,9 @@ from dataclasses import is_dataclass, asdict
 from numpy.typing import NDArray
 
 from mpc_datagen import MPCConfig
+from pkg_logger import get_package_logger
 
 from ..utils.base_models import MLP
-from ..utils.package_logger import get_package_logger
 
 __logger__ = get_package_logger(__name__)
 

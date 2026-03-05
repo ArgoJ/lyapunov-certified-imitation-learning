@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from numpy.typing import NDArray
 from mpc_datagen import MPCDataset
 
-from ..utils.package_logger import get_package_logger
+from pkg_logger import get_package_logger
 
 __logger__ = get_package_logger(__name__)
 

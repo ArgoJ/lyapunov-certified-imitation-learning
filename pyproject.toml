@@ -17,6 +17,7 @@ dependencies = [
     "h5py",
     "typeguard",
     "mpc-datagen",
+    "pkg-logger",
     "auto_LiRPA @ git+https://github.com/Verified-Intelligence/auto_LiRPA.git",
     "abcrown @ git+https://github.com/Verified-Intelligence/alpha-beta-CROWN.git",
 ]

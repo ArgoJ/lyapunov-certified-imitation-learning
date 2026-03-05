@@ -5,13 +5,12 @@ import torch as th
 from datetime import datetime
 from pathlib import Path
 
-from lcil.lyapunov_learning import (
-    LyapunovTrainingConfig,
-    LyapunovTrainer,
-    NeuralLyapunovCandidate,
-)
-from lcil.utils import MLP
-from lcil.utils.package_logger import get_package_logger
+from mpc_datagen import MPCDataGenerator
+from pkg_logger import get_package_logger
+
+from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer
+from lcil.certification import LyapunovCertificationConfig, ABCrownCertifier
+from lcil.utils import lcil_plt, ICNN, MLP
 
 from acados_ocp import get_ocp_solver
 from diff_mpc import DiffMPCPolicy
@@ -62,11 +61,35 @@ def parse_cli_args() -> argparse.Namespace:
         default="results/double_integrator/diff_mpc_lyapunov",
         help="Directory where checkpoints will be stored.",
     )
+
+    # Certification Parameters
+    parser.add_argument("--cert-step", type=float, default=2.0, help="Certification grid step.")
+    parser.add_argument("--cert-rho-scaling", type=float, default=1.5, help="Certification rho scaling.")
+    parser.add_argument("--cert-bisection-tol", type=float, default=1e-3, help="Certification bisection tolerance.")
+    parser.add_argument(
+        "--cert-max-scale-steps",
+        type=int,
+        default=15,
+        help="Maximum scale expansion steps during certification.",
+    )
+    parser.add_argument(
+        "--cert-max-bisection-steps",
+        type=int,
+        default=20,
+        help="Maximum bisection steps during certification.",
+    )
+    parser.add_argument(
+        "--cert-method",
+        type=str,
+        default="alpha-crown",
+        help="Certification backend/method name.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_cli_args()
+    save_dir = Path(args.save_folder) / datetime.now().strftime("%Y%m%d_%H%M%S")
     device = th.device(args.device)
 
     a_c = np.array([[0.0, 1.0], [0.0, 0.0]], dtype=np.float64)
@@ -96,6 +119,9 @@ def main() -> None:
     dyn_model = DoubleIntegratorDynamics(dt=args.dt).to(device)
     dyn_model.eval()
 
+    # ---------------------------------------------------------------------
+    # 1. Initialize fresh Lyapunov Model (so it trains from scratch)
+    # ---------------------------------------------------------------------
     lyap_feature = MLP([2, 32, 1], ["tanh", "identity"]).to(device)
     lyap_model = NeuralLyapunovCandidate(
         feature_net=lyap_feature,
@@ -103,6 +129,9 @@ def main() -> None:
         eps=1e-3,
     ).to(device)
 
+    # ---------------------------------------------------------------------
+    # 2. Setup Configs with current grid parameters
+    # ---------------------------------------------------------------------
     ocp = solver.acados_ocp
     state_bounds = np.vstack([ocp.constraints.lbx, ocp.constraints.ubx])
     training_config = LyapunovTrainingConfig(
@@ -123,6 +152,21 @@ def main() -> None:
         l1_weight=args.l1_weight,
     )
 
+    certification_config = LyapunovCertificationConfig.from_training_config(
+        training_config,
+        cert_step=args.cert_step,
+        cert_origin_exclusion=None,
+        cert_rho_scaling=args.cert_rho_scaling,
+        cert_bisection_tol=args.cert_bisection_tol,
+        cert_max_scale_steps=args.cert_max_scale_steps,
+        cert_max_bisection_steps=args.cert_max_bisection_steps,
+        cert_method=args.cert_method,
+        state_bounds=training_config.state_bounds * 0.8,
+    )
+
+    # ---------------------------------------------------------------------
+    # 3. Train
+    # ---------------------------------------------------------------------
     trainer = LyapunovTrainer(
         policy_model=policy_model,
         lyap_model=lyap_model,
@@ -131,14 +175,49 @@ def main() -> None:
         device=device,
     )
     train_results = trainer.train()
-
-    save_dir = Path(args.save_folder) / datetime.now().strftime("%Y%m%d_%H%M%S")
     trainer.save(save_dir)
 
-    __logger__.info(
-        "Diff-MPC Lyapunov training completed. rho_estimate=%.6f, saved_to=%s",
-        train_results.rho_estimate,
-        save_dir,
+    # ---------------------------------------------------------------------
+    # 4. Certify
+    # ---------------------------------------------------------------------
+    certifier = ABCrownCertifier(
+        policy_model,
+        lyap_model,
+        dyn_model,
+        certification_config,
+        device,
+    )
+    _, cert_results = certifier.certify(max(train_results.rho_estimate, 1e-3))
+
+    # ---------------------------------------------------------------------
+    # 5. Plot & Save
+    # ---------------------------------------------------------------------
+    if True:
+        generator = MPCDataGenerator(solver, T_sim=40.0, dt=args.dt, reset_solver=True)
+        rollout_dataset = generator.generate(100)
+
+        def lyapunov_func(states: np.ndarray) -> np.ndarray:
+            x = th.as_tensor(states, dtype=th.float32, device=device)
+            with th.no_grad():
+                v = lyap_model(x)
+            return v.detach().cpu().numpy().reshape(-1)
+
+        lcil_plt.lyapunov(
+            dataset=rollout_dataset,
+            lyapunov_func=lyapunov_func,
+            state_indices=[0, 1],
+            state_labels=["x", "v"],
+            plot_3d=True,
+            certified_regions=cert_results.certified_regions,
+            uncertified_regions=cert_results.failed_regions,
+            html_path=save_dir / "lyapunov_plot.html",
+        )
+
+    lcil_plt.certified_regions_2d(
+        cert_results.certified_regions,
+        cert_results.failed_regions,
+        state_labels=["x", "v"],
+        html_path=save_dir / "certified_regions.html",
     )
 
 

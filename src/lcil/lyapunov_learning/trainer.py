@@ -9,6 +9,7 @@ import torch.nn as nn
 from numpy.typing import NDArray
 from pathlib import Path
 from dataclasses import dataclass
+from pkg_logger import get_package_logger
 
 from .config import LyapunovTrainingConfig
 from .buffer import DynamicStateBuffer
@@ -19,7 +20,6 @@ from .counterexample import (
 )
 from ..certification.models import ClosedLoopLyapunovConditionVerifier
 from ..utils.base_models import save_model_checkpoint
-from ..utils.package_logger import get_package_logger
 
 __logger__ = get_package_logger(__name__)
 
