@@ -200,8 +200,8 @@ def main() -> None:
                 return v.detach().cpu().numpy().reshape(-1)
 
             lcil_plt.lyapunov(
-                dataset=rollout_dataset[:100],
                 lyapunov_func=lyapunov_func,
+                dataset=rollout_dataset[:100],
                 state_indices=[0, 1],
                 state_labels=["x", "v"],
                 plot_3d=True,

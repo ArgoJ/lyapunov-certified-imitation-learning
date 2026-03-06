@@ -13,6 +13,9 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 
+_ORIG_ABCROWN = sys.modules.get("abcrown")
+_ORIG_LCIL_CERTIFICATION = sys.modules.get("lcil.certification")
+
 _abcrown_stub = types.ModuleType("abcrown")
 _abcrown_stub.ABCrownSolver = object
 _abcrown_stub.VerificationSpec = object
@@ -33,7 +36,9 @@ LyapunovCertificationConfig = importlib.import_module(
     "lcil.certification.config"
 ).LyapunovCertificationConfig
 certifier_base = importlib.import_module("lcil.certification.certifier_base")
-certified_regions_2d = importlib.import_module("lcil.utils.plot").certified_regions_2d
+plot_module = importlib.import_module("lcil.utils.plot")
+certified_regions_2d = plot_module.certified_regions_2d
+lyapunov = plot_module.lyapunov
 
 
 @dataclass
@@ -208,13 +213,14 @@ class _NegativeQuadraticLyapunov(nn.Module):
 
 
 class _MixedLyapunov(nn.Module):
-    def __init__(self, alpha: float = 0.3):
+    def __init__(self, alpha: float = 0.3, beta: float = 1.5):
         super().__init__()
         self.alpha = float(alpha)
+        self.beta = float(beta)
 
     def forward(self, x: th.Tensor) -> th.Tensor:
         r2 = (x * x).sum(dim=1, keepdim=True)
-        return r2 - self.alpha * (r2 * r2)
+        return self.beta * r2 - self.alpha * (r2 * r2)
 
 
 class TestABCrownCertifier(unittest.TestCase):
@@ -235,6 +241,22 @@ class TestABCrownCertifier(unittest.TestCase):
     def tearDownClass(cls) -> None:
         for patcher in cls._patchers:
             patcher.stop()
+
+        # Drop cached submodules that may have captured stubbed abcrown symbols.
+        sys.modules.pop("lcil.certification.abcrown_wrapper", None)
+        sys.modules.pop("lcil.certification.config", None)
+        sys.modules.pop("lcil.certification.certifier_base", None)
+
+        # Restore original modules so later tests can import real integrations.
+        if _ORIG_ABCROWN is None:
+            sys.modules.pop("abcrown", None)
+        else:
+            sys.modules["abcrown"] = _ORIG_ABCROWN
+
+        if _ORIG_LCIL_CERTIFICATION is None:
+            sys.modules.pop("lcil.certification", None)
+        else:
+            sys.modules["lcil.certification"] = _ORIG_LCIL_CERTIFICATION
 
     @staticmethod
     def _make_certifier(lyap_model: nn.Module) -> ABCrownCertifier:
@@ -290,6 +312,62 @@ class TestABCrownCertifier(unittest.TestCase):
             self.assertTrue(html_path.exists())
             self.assertGreater(html_path.stat().st_size, 0)
 
+    @staticmethod
+    def _to_numpy_lyapunov(lyap_model: nn.Module):
+        def _lyapunov_func(x: np.ndarray) -> np.ndarray | float:
+            x_array = np.asarray(x, dtype=np.float32)
+            x_tensor = th.as_tensor(x_array, dtype=th.float32)
+            if x_tensor.ndim == 1:
+                x_tensor = x_tensor.unsqueeze(0)
+
+            with th.no_grad():
+                values = lyap_model(x_tensor).reshape(-1)
+
+            values_np = values.detach().cpu().numpy()
+            if x_array.ndim == 1:
+                return float(values_np[0])
+            return values_np
+
+        return _lyapunov_func
+
+    def _assert_lyapunov_plot_written(
+        self,
+        lyap_model: nn.Module,
+        certified_regions: np.ndarray,
+        uncertified_regions: np.ndarray,
+        stem: str,
+    ) -> None:
+        lyap_func = self._to_numpy_lyapunov(lyap_model)
+        plot_dir = os.environ.get("LCIL_TEST_PLOT_DIR")
+        if plot_dir:
+            output_dir = Path(plot_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            html_path = output_dir / f"{stem}.html"
+            lyapunov(
+                dataset=None,
+                lyapunov_func=lyap_func,
+                state_labels=["x0", "x1"],
+                certified_regions=certified_regions,
+                uncertified_regions=uncertified_regions,
+                html_path=str(html_path),
+            )
+            self.assertTrue(html_path.exists())
+            self.assertGreater(html_path.stat().st_size, 0)
+            return
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            html_path = Path(tmp_dir) / f"{stem}.html"
+            lyapunov(
+                dataset=None,
+                lyapunov_func=lyap_func,
+                state_labels=["x0", "x1"],
+                certified_regions=certified_regions,
+                uncertified_regions=uncertified_regions,
+                html_path=str(html_path),
+            )
+            self.assertTrue(html_path.exists())
+            self.assertGreater(html_path.stat().st_size, 0)
+
     def test_quadratic_lyapunov_certifies_all_regions(self) -> None:
         certifier = self._make_certifier(_QuadraticLyapunov())
         rho_certified, result = certifier.certify(rho_estimate=1.0)
@@ -302,6 +380,12 @@ class TestABCrownCertifier(unittest.TestCase):
             certified_regions=result.certified_regions,
             uncertified_regions=result.failed_regions,
             stem="quadratic_regions",
+        )
+        self._assert_lyapunov_plot_written(
+            lyap_model=certifier.lyap_model,
+            certified_regions=result.certified_regions,
+            uncertified_regions=result.failed_regions,
+            stem="quadratic_lyapunov",
         )
 
     def test_negative_quadratic_produces_counterexamples(self) -> None:
@@ -318,9 +402,15 @@ class TestABCrownCertifier(unittest.TestCase):
             uncertified_regions=result.failed_regions,
             stem="negative_regions",
         )
+        self._assert_lyapunov_plot_written(
+            lyap_model=certifier.lyap_model,
+            certified_regions=result.certified_regions,
+            uncertified_regions=result.failed_regions,
+            stem="negative_lyapunov",
+        )
 
     def test_mixed_lyapunov_has_safe_and_unsafe_regions(self) -> None:
-        certifier = self._make_certifier(_MixedLyapunov(alpha=0.3))
+        certifier = self._make_certifier(_MixedLyapunov(alpha=0.3, beta=2.0))
         rho_certified, result = certifier.certify(rho_estimate=1.0)
 
         self.assertFalse(result.success)
@@ -336,6 +426,12 @@ class TestABCrownCertifier(unittest.TestCase):
             certified_regions=result.certified_regions,
             uncertified_regions=result.failed_regions,
             stem="mixed_regions",
+        )
+        self._assert_lyapunov_plot_written(
+            lyap_model=certifier.lyap_model,
+            certified_regions=result.certified_regions,
+            uncertified_regions=result.failed_regions,
+            stem="mixed_lyapunov",
         )
 
 

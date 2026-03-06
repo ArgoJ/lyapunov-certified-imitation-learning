@@ -3,8 +3,8 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 # Ensure abcrown/auto_LiRPA runs without TorchScript JIT in tests.
 os.environ["PYTORCH_JIT"] = "0"
@@ -12,6 +12,7 @@ os.environ["PYTORCH_JIT"] = "0"
 import numpy as np
 import torch as th
 import torch.nn as nn
+from scipy.linalg import solve_discrete_are
 from tqdm import tqdm
 
 plot_module = importlib.import_module("lcil.utils.plot")
@@ -19,33 +20,71 @@ certified_regions_2d = plot_module.certified_regions_2d
 lyapunov = plot_module.lyapunov
 
 
-class _ZeroPolicy(nn.Module):
-    def __init__(self, nu: int = 1):
+def _discrete_double_integrator_matrices(dt: float) -> tuple[np.ndarray, np.ndarray]:
+    ad = np.array(
+        [
+            [1.0, dt],
+            [0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    bd = np.array(
+        [
+            [0.5 * dt * dt],
+            [dt],
+        ],
+        dtype=np.float64,
+    )
+    return ad, bd
+
+
+def _riccati_gain_and_value_matrix(
+    dt: float,
+    q: np.ndarray | None = None,
+    r: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    ad, bd = _discrete_double_integrator_matrices(dt)
+    if q is None:
+        q = np.diag([1.0, 1.0]).astype(np.float64)
+    if r is None:
+        r = np.array([[0.1]], dtype=np.float64)
+
+    p = solve_discrete_are(ad, bd, q, r)
+    k = np.linalg.solve(r + bd.T @ p @ bd, bd.T @ p @ ad)
+    return k, p
+
+
+class _RiccatiPolicy(nn.Module):
+    def __init__(self, k_gain: np.ndarray):
         super().__init__()
-        self.nu = nu
+        self.register_buffer("k_gain", th.as_tensor(k_gain, dtype=th.float32))
 
     def forward(self, x: th.Tensor) -> th.Tensor:
-        return th.zeros((x.shape[0], self.nu), dtype=x.dtype, device=x.device)
+        return -(x @ self.k_gain.transpose(0, 1))
 
 
-class _ZeroDynamics(nn.Module):
+class _DoubleIntegratorDynamics(nn.Module):
+    def __init__(self, dt: float = 0.1):
+        super().__init__()
+        ad, bd = _discrete_double_integrator_matrices(dt)
+        self.register_buffer("ad", th.as_tensor(ad, dtype=th.float32))
+        self.register_buffer("bd", th.as_tensor(bd, dtype=th.float32))
+
     def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        return th.zeros_like(x)
+        return x @ self.ad.transpose(0, 1) + u @ self.bd.transpose(0, 1)
 
 
-class _MixedLyapunov(nn.Module):
-    def __init__(self, alpha: float = 0.3, beta: float = 1.5):
+class _RiccatiQuadraticLyapunov(nn.Module):
+    def __init__(self, p_matrix: np.ndarray):
         super().__init__()
-        self.alpha = float(alpha)
-        self.beta = float(beta)
+        p_sym = 0.5 * (p_matrix + p_matrix.T)
+        self.register_buffer("p_matrix", th.as_tensor(p_sym, dtype=th.float32))
 
     def forward(self, x: th.Tensor) -> th.Tensor:
-        r2 = (x * x).sum(dim=1, keepdim=True)
-        return self.beta * r2 - self.alpha * (r2 * r2)
+        return ((x @ self.p_matrix) * x).sum(dim=1, keepdim=True)
 
 
-class TestABCrownCertifierIntegration(unittest.TestCase):
+class TestABCrownDoubleIntegratorIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         if os.environ.get("LCIL_RUN_ABCROWN_INTEGRATION", "0") != "1":
@@ -97,22 +136,23 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
 
     @classmethod
     def _make_certifier(cls, lyap_model: nn.Module):
+        k_gain, _ = _riccati_gain_and_value_matrix(dt=0.1)
         config = cls.LyapunovCertificationConfig(
             state_dim=2,
-            state_bounds=np.array([[-2.0, -2.0], [2.0, 2.0]], dtype=np.float32),
-            kappa=0.1,
+            state_bounds=np.array([[-5.0, -5.0], [5.0, 5.0]], dtype=np.float32),
+            kappa=0.05,
             invariance_weight=1.0,
             cert_step=1.0,
             cert_origin_exclusion=0.0,
             cert_max_scale_steps=6,
             cert_max_bisection_steps=6,
             cert_method="alpha-crown",
-            condition_tolerance=1e-6,
+            condition_tolerance=1e-5,
         )
         return cls.ABCrownCertifier(
-            policy_model=_ZeroPolicy(),
+            policy_model=_RiccatiPolicy(k_gain),
             lyap_model=lyap_model,
-            dyn_model=_ZeroDynamics(),
+            dyn_model=_DoubleIntegratorDynamics(dt=0.1),
             config=config,
             device=th.device("cpu"),
         )
@@ -205,26 +245,35 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
             self.assertTrue(html_path.exists())
             self.assertGreater(html_path.stat().st_size, 0)
 
-    def test_mixed_lyapunov_pipeline_with_real_abcrown(self) -> None:
-        certifier = self._make_certifier(_MixedLyapunov(alpha=0.3, beta=2.0))
+    def test_double_integrator_lqr_pipeline_with_real_abcrown(self) -> None:
+        _, p_matrix = _riccati_gain_and_value_matrix(dt=0.1)
+        certifier = self._make_certifier(_RiccatiQuadraticLyapunov(p_matrix))
+
+        probe_state = th.tensor([[0.75, -0.35]], dtype=th.float32)
+        with th.no_grad():
+            probe_control = certifier.policy_model(probe_state)
+            probe_next = certifier.dyn_model(probe_state, probe_control)
+
+        self.assertGreater(float(probe_control.abs().max().item()), 1e-6)
+        self.assertGreater(float((probe_next - probe_state).abs().max().item()), 1e-6)
 
         rho_certified, result = certifier.certify(rho_estimate=1.0)
 
         self.assertIsInstance(float(rho_certified), float)
         self.assertGreaterEqual(rho_certified, certifier.config.rho_min)
+        self.assertTrue(result.success)
+        self.assertEqual(result.failed_regions.shape[0], 0)
         self.assertGreater(result.certified_regions.shape[0], 0)
-        self.assertGreater(result.failed_regions.shape[0], 0)
-        self.assertGreaterEqual(result.counter_examples.shape[0], result.failed_regions.shape[0])
         self._assert_region_plot_written(
             certified_regions=result.certified_regions,
             uncertified_regions=result.failed_regions,
-            stem="mixed_regions_integration",
+            stem="double_integrator_riccati_regions_integration",
         )
         self._assert_lyapunov_plot_written(
             lyap_model=certifier.lyap_model,
             certified_regions=result.certified_regions,
             uncertified_regions=result.failed_regions,
-            stem="mixed_lyapunov_integration",
+            stem="double_integrator_riccati_lyapunov_integration",
         )
 
 

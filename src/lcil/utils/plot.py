@@ -23,8 +23,8 @@ def _plotly_multiline(x: NDArray, axis: int=0):
         return np.vstack([x, np.full((x.shape[1], 1), np.nan)]).flatten()
 
 def lyapunov(
-    dataset: MPCDataset,
     lyapunov_func: Callable[[NDArray], NDArray],
+    dataset: MPCDataset | None = None,
     state_indices: list = [0, 1],
     state_labels: list[str] | None = None,
     limits: list = None,
@@ -39,10 +39,11 @@ def lyapunov(
 
     Parameters
     ----------
-    dataset : MPCDataset
-        The dataset containing trajectories to plot.
     lyapunov_func : Callable[[NDArray], NDArray]
         A function that takes a state vector and returns the Lyapunov value.
+    dataset : MPCDataset, optional
+        The dataset containing trajectories to plot. If None, only the
+        Lyapunov landscape and optional regions are shown. Default is None.
     state_indices : list, optional
         Indices of the two state variables to plot (x, y axes). Default is [0, 1].
     state_labels : list[str], optional
@@ -61,18 +62,28 @@ def lyapunov(
     html_path : str, optional
         If provided, saves the plot to the specified HTML file.
     """
-    if len(dataset) == 0:
-        __logger__.warning("Dataset is empty.")
-        return
-
-    # Infer dimensions
-    first_traj = dataset[0].trajectory
-    num_states = first_traj.states.shape[1]
-    
     if len(state_indices) != 2:
         raise ValueError("state_indices must contain exactly 2 indices.")
 
+    if min(state_indices) < 0:
+        raise ValueError("state_indices must be non-negative.")
+
+    has_dataset = dataset is not None and len(dataset) > 0
+
+    # Infer state dimension from dataset if present, otherwise from indices.
+    if has_dataset:
+        first_traj = dataset[0].trajectory
+        num_states = first_traj.states.shape[1]
+    else:
+        num_states = max(state_indices) + 1
+
     idx_x, idx_y = state_indices
+
+    if idx_x >= num_states or idx_y >= num_states:
+        raise ValueError(
+            f"state_indices {state_indices} exceed inferred state dimension {num_states}."
+        )
+
     if state_labels is None:
         state_labels = [f"State {idx_x}", f"State {idx_y}"]
     if len(state_labels) != 2:
@@ -83,28 +94,46 @@ def lyapunov(
 
     # Determine limits if not provided
     if limits is None:
-        all_states = np.vstack([d.trajectory.states for d in dataset])
-        min_x, max_x = all_states[:, idx_x].min(), all_states[:, idx_x].max()
-        min_y, max_y = all_states[:, idx_y].min(), all_states[:, idx_y].max()
+        min_x = max_x = min_y = max_y = None
 
-        # combine region arrays if any exist
+        if has_dataset:
+            all_states = np.vstack([d.trajectory.states for d in dataset])
+            min_x = all_states[:, idx_x].min()
+            max_x = all_states[:, idx_x].max()
+            min_y = all_states[:, idx_y].min()
+            max_y = all_states[:, idx_y].max()
+
         if certified_regions.shape[0] + uncertified_regions.shape[0] > 0:
-            all_lbs = np.vstack([certified_regions[:, 0, :], uncertified_regions[:, 0, :]]) if (certified_regions.shape[0] + uncertified_regions.shape[0]) > 0 else np.empty((0,2))
-            all_ubs = np.vstack([certified_regions[:, 1, :], uncertified_regions[:, 1, :]]) if (certified_regions.shape[0] + uncertified_regions.shape[0]) > 0 else np.empty((0,2))
-            min_x = min(min_x, all_lbs[:, 0].min())
-            max_x = max(max_x, all_ubs[:, 0].max())
-            min_y = min(min_y, all_lbs[:, 1].min())
-            max_y = max(max_y, all_ubs[:, 1].max())
-        
-        # Add some padding
-        pad_x = (max_x - min_x) * 0.2 if max_x != min_x else 1.0
-        pad_y = (max_y - min_y) * 0.2 if max_y != min_y else 1.0
-        
-        limits = [
-            (min_x - pad_x, max_x + pad_x),
-            (min_y - pad_y, max_y + pad_y)
-        ]
+            all_lbs = np.vstack([certified_regions[:, 0, :], uncertified_regions[:, 0, :]])
+            all_ubs = np.vstack([certified_regions[:, 1, :], uncertified_regions[:, 1, :]])
 
+            if min_x is None:
+                min_x = all_lbs[:, 0].min()
+                max_x = all_ubs[:, 0].max()
+                min_y = all_lbs[:, 1].min()
+                max_y = all_ubs[:, 1].max()
+            else:
+                min_x = min(min_x, all_lbs[:, 0].min())
+                max_x = max(max_x, all_ubs[:, 0].max())
+                min_y = min(min_y, all_lbs[:, 1].min())
+                max_y = max(max_y, all_ubs[:, 1].max())
+
+        if min_x is None:
+            __logger__.warning(
+                "Could not infer limits without dataset/regions. Falling back to [-1, 1]^2."
+            )
+            limits = [(-1.0, 1.0), (-1.0, 1.0)]
+        else:
+            # Add some padding
+            pad_x = (max_x - min_x) * 0.1 if max_x != min_x else 1.0
+            pad_y = (max_y - min_y) * 0.1 if max_y != min_y else 1.0
+
+            limits = [
+                (min_x - pad_x, max_x + pad_x),
+                (min_y - pad_y, max_y + pad_y)
+            ]
+
+    # === LYAPUNOV FUNCTION PLOT ===
     # Create grid for Lyapunov function
     x_range = np.linspace(limits[0][0], limits[0][1], resolution)
     y_range = np.linspace(limits[1][0], limits[1][1], resolution)
@@ -159,6 +188,7 @@ def lyapunov(
             )
         )
 
+    # === CERTIFIED/UNCERTIFIED REGIONS ===
     def _add_region_outlines_2d(
         regions: NDArray | None,
         color: str,
@@ -250,55 +280,57 @@ def lyapunov(
             dash="dash",
         )
 
+
+    # === MPC TRAJECTORIES ===
     trajectory_indices = []
-    
-    # Plot MPC Trajectories
     colors = [
         '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
         '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
     ]
 
-    for idx, entry in enumerate(dataset):
-        traj = entry.trajectory
-        color = colors[idx % len(colors)]
-        
-        if plot_3d:
-            try:
-                v_traj = lyapunov_func(traj.states)
-            except Exception:
-                v_traj = np.array([lyapunov_func(s) for s in traj.states])
-            
-            if hasattr(v_traj, 'ndim') and v_traj.ndim > 1:
-                v_traj = v_traj.flatten()
-            elif isinstance(v_traj, list):
-                v_traj = np.array(v_traj)
+    if has_dataset:
+        for idx, entry in enumerate(dataset):
+            traj = entry.trajectory
+            color = colors[idx % len(colors)]
 
-            fig.add_trace(
-                go.Scatter3d(
-                    x=traj.states[:, idx_x],
-                    y=traj.states[:, idx_y],
-                    z=v_traj,
-                    mode='lines',
-                    name=f'Run {idx+1}',
-                    line=dict(color=color, width=4),
-                    showlegend=False
-                )
-            )
-        else:
-            fig.add_trace(
-                go.Scatter(
-                    x=traj.states[:, idx_x],
-                    y=traj.states[:, idx_y],
-                    mode='lines',
-                    name=f'Run {idx+1}',
-                    line=dict(color=color, width=2),
-                    opacity=0.7,
-                    showlegend=False
-                )
-            )
-        trajectory_indices.append(len(fig.data) - 1)
+            if plot_3d:
+                try:
+                    v_traj = lyapunov_func(traj.states)
+                except Exception:
+                    v_traj = np.array([lyapunov_func(s) for s in traj.states])
 
-    # Layout Configuration
+                if hasattr(v_traj, 'ndim') and v_traj.ndim > 1:
+                    v_traj = v_traj.flatten()
+                elif isinstance(v_traj, list):
+                    v_traj = np.array(v_traj)
+
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=traj.states[:, idx_x],
+                        y=traj.states[:, idx_y],
+                        z=v_traj,
+                        mode='lines',
+                        name=f'Run {idx+1}',
+                        line=dict(color=color, width=4),
+                        showlegend=False
+                    )
+                )
+            else:
+                fig.add_trace(
+                    go.Scatter(
+                        x=traj.states[:, idx_x],
+                        y=traj.states[:, idx_y],
+                        mode='lines',
+                        name=f'Run {idx+1}',
+                        line=dict(color=color, width=2),
+                        opacity=0.7,
+                        showlegend=False
+                    )
+                )
+            trajectory_indices.append(len(fig.data) - 1)
+
+
+    # === CONFIGURE LAYOUT ===
     if plot_3d:
         fig.update_layout(
             title_text=(
@@ -329,28 +361,29 @@ def lyapunov(
         )
     
     # Toggle Button for Trajectories
-    fig.update_layout(
-        updatemenus=[
-            dict(
-                type="buttons",
-                direction="left",
-                buttons=list([
-                    dict(
-                        args=[{"visible": True}, trajectory_indices],
-                        args2=[{"visible": False}, trajectory_indices],
-                        label="Trajectories",
-                        method="restyle"
-                    )
-                ]),
-                pad={"r": 10, "t": 10},
-                showactive=True,
-                x=1.0,
-                xanchor="right",
-                y=-0.05,
-                yanchor="top"
-            ),
-        ]
-    )
+    if trajectory_indices:
+        fig.update_layout(
+            updatemenus=[
+                dict(
+                    type="buttons",
+                    direction="left",
+                    buttons=list([
+                        dict(
+                            args=[{"visible": True}, trajectory_indices],
+                            args2=[{"visible": False}, trajectory_indices],
+                            label="Trajectories",
+                            method="restyle"
+                        )
+                    ]),
+                    pad={"r": 10, "t": 10},
+                    showactive=True,
+                    x=1.0,
+                    xanchor="right",
+                    y=-0.05,
+                    yanchor="top"
+                ),
+            ]
+        )
 
     if html_path is not None:
         dir_path = os.path.dirname(html_path)
