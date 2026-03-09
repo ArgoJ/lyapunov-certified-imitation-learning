@@ -59,6 +59,7 @@ class LyapunovCertificationConfig:
     @staticmethod
     def from_training_config(
         config: LyapunovTrainingConfig,
+        state_bounds: Sequence[float] | None = None,
         cert_step: float = 1.0,
         cert_origin_exclusion: float | Sequence[float] | None = None,
         cert_rho_scaling: float = 1.2,
@@ -67,16 +68,14 @@ class LyapunovCertificationConfig:
         cert_max_bisection_steps: int = 40,
         cert_method: str = "alpha-crown",
         cert_suppress_native_output: bool = True,
-        **kwargs,
     ) -> "LyapunovCertificationConfig":
         """Build a certification config from a training config.
 
-        Parameters in ``kwargs`` override values derived from ``config`` and
-        explicit function arguments.
+        Explicit function arguments override values derived from ``config``.
         """
         config_values = {
             "state_dim": config.state_dim,
-            "state_bounds": config.state_bounds,
+            "state_bounds": config.state_bounds if state_bounds is None else state_bounds,
             "kappa": config.kappa,
             "invariance_weight": config.invariance_weight,
             "rho_min": config.rho_min,
@@ -90,5 +89,4 @@ class LyapunovCertificationConfig:
             "condition_tolerance": config.condition_tolerance,
             "cert_suppress_native_output": cert_suppress_native_output,
         }
-        config_values.update(kwargs)
         return LyapunovCertificationConfig(**config_values)
