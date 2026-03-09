@@ -109,10 +109,9 @@ class LiRPACertifier(BaseCertifier):
             b_kappa = th.full((batch_len, 1), self.config.kappa, dtype=th.float32, device=self.device)
 
             ub_out = None
-            ctx = self._get_suppress_ctx()
             for candidate_method in self.fallback_methods:
                 try:
-                    with ctx:
+                    with self._get_suppress_ctx():
                         if candidate_method == "alpha-crown":
                             _, ub_out = self.lirpa_model.compute_bounds(
                                 x=(bounded_input, b_rho, b_kappa), 
