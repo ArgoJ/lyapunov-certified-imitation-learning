@@ -144,24 +144,8 @@ if __name__ == "__main__":
             base_path=f"{base_path}/double_integrator_{terminal_mode}_N{N}",
         )
 
-
-    # Case 1: regional terminal cost + small terminal set (should pass regional proof + empirical)
     run_case(
         name="Regional terminal ingredients",
         terminal_mode="regional",
         N=20,
     )
-
-    # # Case 2: equilibrium terminal constraint x(N)=0 (sample close so feasibility is easy)
-    # run_case(
-    #     name="Equilibrium terminal constraint",
-    #     terminal_mode="equilibrium",
-    #     N=25,
-    # )
-
-    # # Case 3: no terminal ingredients (zero terminal weight, no terminal bounds)
-    # run_case(
-    #     name="No terminal ingredients (Grüne horizon condition)",
-    #     terminal_mode="none",
-    #     N=70,
-    # )
