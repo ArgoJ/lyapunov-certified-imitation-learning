@@ -24,16 +24,16 @@ class LyapunovCertificationConfig:
         Minimum admissible sublevel value.
     cert_step : float
         Grid step size for certification region decomposition.
-    cert_origin_exclusion : float | Sequence[float] | None
+    origin_exclusion : float | Sequence[float] | None
         Radius around the origin to skip during certification. If a sequence is
         provided, it is interpreted per state dimension.
-    cert_rho_scaling : float
+    rho_scaling : float
         Multiplicative factor used in rho scaling before bisection.
-    cert_bisection_tol : float
+    bisection_tol : float
         Tolerance used in rho bisection.
-    cert_max_scale_steps : int
+    max_scale_steps : int
         Maximum rho scaling attempts during certification.
-    cert_max_bisection_steps : int
+    max_bisection_steps : int
         Maximum bisection iterations for certification.
     cert_method : str
         AutoLiRPA bound method (e.g., "crown", "alpha-crown").
