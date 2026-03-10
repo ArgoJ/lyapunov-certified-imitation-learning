@@ -47,14 +47,14 @@ class LyapunovCertificationConfig:
     invariance_weight: float = 1.0
     rho_min: float = 1e-6
     cert_step: float = 1.0
-    cert_origin_exclusion: float | Sequence[float] | None = None
-    cert_rho_scaling: float = 1.2
-    cert_bisection_tol: float = 1e-3
-    cert_max_scale_steps: int = 20
-    cert_max_bisection_steps: int = 40
+    origin_exclusion: float | Sequence[float] | None = None
+    rho_scaling: float = 1.2
+    bisection_tol: float = 1e-3
+    max_scale_steps: int = 20
+    max_bisection_steps: int = 40
     cert_method: str = "alpha-crown"
     condition_tolerance: float = 1e-6
-    cert_suppress_native_output: bool = True
+    suppress_native_output: bool = True
 
     @staticmethod
     def from_training_config(
@@ -80,13 +80,13 @@ class LyapunovCertificationConfig:
             "invariance_weight": config.invariance_weight,
             "rho_min": config.rho_min,
             "cert_step": cert_step,
-            "cert_origin_exclusion": cert_origin_exclusion,
-            "cert_rho_scaling": cert_rho_scaling,
-            "cert_bisection_tol": cert_bisection_tol,
-            "cert_max_scale_steps": cert_max_scale_steps,
-            "cert_max_bisection_steps": cert_max_bisection_steps,
+            "origin_exclusion": cert_origin_exclusion,
+            "rho_scaling": cert_rho_scaling,
+            "bisection_tol": cert_bisection_tol,
+            "max_scale_steps": cert_max_scale_steps,
+            "max_bisection_steps": cert_max_bisection_steps,
             "cert_method": cert_method,
             "condition_tolerance": config.condition_tolerance,
-            "cert_suppress_native_output": cert_suppress_native_output,
+            "suppress_native_output": cert_suppress_native_output,
         }
         return LyapunovCertificationConfig(**config_values)
