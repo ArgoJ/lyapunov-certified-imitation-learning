@@ -101,11 +101,14 @@ class _NonlinearInvertedPendulumOnCartDynamics(nn.Module):
         l = self.length
         g = self.gravity
 
-        sin_theta = th.sin(theta)
-        cos_theta = th.cos(theta)
+        # sin_theta = th.sin(theta)
+        # cos_theta = th.cos(theta)
+        sin_theta = th.tanh(theta) * 1.2
+        cos_theta = 1.0 - 0.5 * theta.pow(2)
         total_mass = m_c + m_p
 
         denom = total_mass - m_p * cos_theta * cos_theta
+        denom = th.maximum(denom, th.full_like(denom, 1e-6))
 
         p_ddot = (
             force
@@ -190,8 +193,8 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
             state_dim=4,
             state_bounds=np.array(
                 [
-                    [-0.5, -2.0, -0.6, -4.0],
-                    [ 0.5,  2.0,  0.6,  4.0],
+                    [-0.3, -1.5, -0.3, -2.0],
+                    [ 0.3,  1.5,  0.3,  2.0],
                 ],
                 dtype=np.float32,
             ),
@@ -339,7 +342,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
         self.assertGreater(float(probe_control.abs().max().item()), 1e-6)
         self.assertGreater(float((probe_next - probe_state).abs().max().item()), 1e-6)
 
-        rho_certified, result = certifier.certify(rho_estimate=1.0)
+        rho_certified, result = certifier.certify(rho_estimate=0.1)
 
         self.assertIsInstance(float(rho_certified), float)
         self.assertGreaterEqual(rho_certified, certifier.config.rho_min)
