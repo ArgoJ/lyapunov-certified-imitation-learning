@@ -43,6 +43,7 @@ class ABCrownCertifier(BaseCertifier):
     """
 
     def setup_backend(self) -> None:
+        """Set up the ABCrownSolver and its configuration."""
         self.abcrown_config = (
             ConfigBuilder.from_defaults()
             .set(general__device=self.device.type)
@@ -59,10 +60,30 @@ class ABCrownCertifier(BaseCertifier):
             ubs: th.Tensor,
             rho: float,
             early_exit: bool = True,
-    ) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
+    ) -> tuple[th.Tensor, th.Tensor]:
+        """
+        Certifies a batch of regions using the ABCrown solver.
+
+        Parameters
+        ----------
+        lbs : th.Tensor
+            Lower bounds of the regions.
+        ubs : th.Tensor
+            Upper bounds of the regions.
+        rho : float
+            The rho parameter for the certification.
+        early_exit : bool, optional
+            Whether to exit early if a region is not certified. Defaults to True.
+
+        Returns
+        -------
+        tuple[th.Tensor, th.Tensor]
+            A tuple containing:
+            - is_certified: A boolean tensor indicating whether each region is certified.
+            - centers_out: A tensor containing the centers of the regions.
+        """
         num_regions = len(lbs)
         is_certified = th.zeros(num_regions, dtype=th.bool, device=self.device)
-        max_uppers = th.full((num_regions,), float("inf"), dtype=th.float32, device=self.device)
         centers_out = (lbs + ubs) / 2.0
 
         self.wrapped_model.rho.fill_(rho)
@@ -98,12 +119,10 @@ class ABCrownCertifier(BaseCertifier):
 
             if is_safe_status:
                 is_certified[idx] = True
-                max_uppers[idx] = self.config.condition_tolerance - 1e-4
             else:
                 is_certified[idx] = False
-                max_uppers[idx] = float("inf")
 
             if early_exit and not is_certified[idx]:
                 break
 
-        return is_certified, centers_out, max_uppers
+        return is_certified, centers_out

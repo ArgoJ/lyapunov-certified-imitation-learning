@@ -56,7 +56,7 @@ class LiRPACertifier(BaseCertifier):
             rho: float,
             early_exit: bool = True,
             max_batch_size: int = 512,
-    ) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
+    ) -> tuple[th.Tensor, th.Tensor]:
         """_summary_
 
         Parameters
@@ -74,7 +74,7 @@ class LiRPACertifier(BaseCertifier):
 
         Returns
         -------
-        tuple[th.Tensor, th.Tensor, th.Tensor]
+        tuple[th.Tensor, th.Tensor]
             _description_
 
         Raises
@@ -88,7 +88,6 @@ class LiRPACertifier(BaseCertifier):
         
         # Preallocate output tensors
         is_certified = th.empty(num_regions, dtype=th.bool, device=self.device)
-        max_uppers = th.empty(num_regions, dtype=th.float32, device=self.device)
         centers_out = th.empty_like(lbs)
 
         for idx in range(0, num_regions, max_batch_size):
@@ -130,10 +129,8 @@ class LiRPACertifier(BaseCertifier):
             if ub_out is None:
                 # Fallback on failure
                 is_certified[idx : end_idx] = False
-                max_uppers[idx : end_idx] = float("inf")
             else:
                 max_u = ub_out.flatten()
-                max_uppers[idx : end_idx] = max_u
                 is_certified[idx : end_idx] = max_u <= self.config.condition_tolerance
 
             # cleanup
@@ -142,6 +139,6 @@ class LiRPACertifier(BaseCertifier):
             #     th.cuda.empty_cache()
 
             if early_exit and not is_certified[idx : end_idx].all():
-                return is_certified, centers_out, max_uppers
+                return is_certified, centers_out
 
-        return is_certified, centers_out, max_uppers
+        return is_certified, centers_out

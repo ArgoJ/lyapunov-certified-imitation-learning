@@ -13,6 +13,7 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 from scipy.linalg import solve_discrete_are
+from scipy.signal import cont2discrete
 from tqdm import tqdm
 
 plot_module = importlib.import_module("lcil.utils.plot")
@@ -20,20 +21,35 @@ certified_regions_2d = plot_module.certified_regions_2d
 lyapunov = plot_module.lyapunov
 
 
-def _discrete_double_integrator_matrices(dt: float) -> tuple[np.ndarray, np.ndarray]:
-    ad = np.array(
+def _discrete_inverted_pendulum_on_cart_matrices(dt: float) -> tuple[np.ndarray, np.ndarray]:
+    # Continuous-time linearization around the upright equilibrium (theta=0).
+    m_cart = 1.0
+    m_pole = 0.1
+    length = 0.5
+    gravity = 9.81
+
+    ac = np.array(
         [
-            [1.0, dt],
-            [0.0, 1.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, -(m_pole * gravity) / m_cart, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, ((m_cart + m_pole) * gravity) / (m_cart * length), 0.0],
         ],
         dtype=np.float64,
     )
-    bd = np.array(
+    bc = np.array(
         [
-            [0.5 * dt * dt],
-            [dt],
+            [0.0],
+            [1.0 / m_cart],
+            [0.0],
+            [-1.0 / (m_cart * length)],
         ],
         dtype=np.float64,
+    )
+
+    ad, bd, _, _, _ = cont2discrete(
+        (ac, bc, np.eye(4, dtype=np.float64), np.zeros((4, 1), dtype=np.float64)),
+        dt,
     )
     return ad, bd
 
@@ -43,11 +59,11 @@ def _riccati_gain_and_value_matrix(
     q: np.ndarray | None = None,
     r: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    ad, bd = _discrete_double_integrator_matrices(dt)
+    ad, bd = _discrete_inverted_pendulum_on_cart_matrices(dt)
     if q is None:
-        q = np.diag([1.0, 1.0]).astype(np.float64)
+        q = np.diag([10.0, 1.0, 50.0, 5.0]).astype(np.float64)
     if r is None:
-        r = np.array([[0.1]], dtype=np.float64)
+        r = np.array([[0.2]], dtype=np.float64)
 
     p = solve_discrete_are(ad, bd, q, r)
     k = np.linalg.solve(r + bd.T @ p @ bd, bd.T @ p @ ad)
@@ -63,10 +79,10 @@ class _RiccatiPolicy(nn.Module):
         return -(x @ self.k_gain.transpose(0, 1))
 
 
-class _DoubleIntegratorDynamics(nn.Module):
+class _InvertedPendulumOnCartDynamics(nn.Module):
     def __init__(self, dt: float = 0.1):
         super().__init__()
-        ad, bd = _discrete_double_integrator_matrices(dt)
+        ad, bd = _discrete_inverted_pendulum_on_cart_matrices(dt)
         self.register_buffer("ad", th.as_tensor(ad, dtype=th.float32))
         self.register_buffer("bd", th.as_tensor(bd, dtype=th.float32))
 
@@ -84,7 +100,7 @@ class _RiccatiQuadraticLyapunov(nn.Module):
         return ((x @ self.p_matrix) * x).sum(dim=1, keepdim=True)
 
 
-class TestABCrownDoubleIntegratorIntegration(unittest.TestCase):
+class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         if os.environ.get("LCIL_RUN_ABCROWN_INTEGRATION", "0") != "1":
@@ -138,24 +154,37 @@ class TestABCrownDoubleIntegratorIntegration(unittest.TestCase):
     def _make_certifier(cls, lyap_model: nn.Module):
         k_gain, _ = _riccati_gain_and_value_matrix(dt=0.1)
         config = cls.LyapunovCertificationConfig(
-            state_dim=2,
-            state_bounds=np.array([[-5.0, -5.0], [5.0, 5.0]], dtype=np.float32),
+            state_dim=4,
+            state_bounds=np.array(
+                [
+                    [-0.6, -1.5, -0.35, -2.0],
+                    [0.6, 1.5, 0.35, 2.0],
+                ],
+                dtype=np.float32,
+            ),
             kappa=0.05,
             invariance_weight=1.0,
-            cert_step=1.0,
-            cert_origin_exclusion=0.0,
-            cert_max_scale_steps=6,
-            cert_max_bisection_steps=6,
+            cert_step=2.0,
+            origin_exclusion=0.0,
+            max_scale_steps=3,
+            max_bisection_steps=3,
             cert_method="alpha-crown",
             condition_tolerance=1e-5,
         )
         return cls.ABCrownCertifier(
             policy_model=_RiccatiPolicy(k_gain),
             lyap_model=lyap_model,
-            dyn_model=_DoubleIntegratorDynamics(dt=0.1),
+            dyn_model=_InvertedPendulumOnCartDynamics(dt=0.1),
             config=config,
             device=th.device("cpu"),
         )
+
+    @staticmethod
+    def _project_regions_to_2d(
+        regions: np.ndarray,
+        state_indices: tuple[int, int] = (0, 1),
+    ) -> np.ndarray:
+        return regions[:, :, list(state_indices)]
 
     def _assert_region_plot_written(
         self,
@@ -163,15 +192,18 @@ class TestABCrownDoubleIntegratorIntegration(unittest.TestCase):
         uncertified_regions: np.ndarray,
         stem: str,
     ) -> None:
+        certified_regions_2d_view = self._project_regions_to_2d(certified_regions)
+        uncertified_regions_2d_view = self._project_regions_to_2d(uncertified_regions)
+
         plot_dir = os.environ.get("LCIL_TEST_PLOT_DIR")
         if plot_dir:
             output_dir = Path(plot_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             html_path = output_dir / f"{stem}.html"
             certified_regions_2d(
-                certified_regions=certified_regions,
-                uncertified_regions=uncertified_regions,
-                state_labels=["x0", "x1"],
+                certified_regions=certified_regions_2d_view,
+                uncertified_regions=uncertified_regions_2d_view,
+                state_labels=["x", "x_dot"],
                 html_path=str(html_path),
             )
             self.assertTrue(html_path.exists())
@@ -181,19 +213,36 @@ class TestABCrownDoubleIntegratorIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             html_path = Path(tmp_dir) / f"{stem}.html"
             certified_regions_2d(
-                certified_regions=certified_regions,
-                uncertified_regions=uncertified_regions,
-                state_labels=["x0", "x1"],
+                certified_regions=certified_regions_2d_view,
+                uncertified_regions=uncertified_regions_2d_view,
+                state_labels=["x", "x_dot"],
                 html_path=str(html_path),
             )
             self.assertTrue(html_path.exists())
             self.assertGreater(html_path.stat().st_size, 0)
 
     @staticmethod
-    def _to_numpy_lyapunov(lyap_model: nn.Module):
+    def _to_numpy_lyapunov(
+        lyap_model: nn.Module,
+        state_dim: int,
+        plot_state_indices: tuple[int, int],
+    ):
         def _lyapunov_func(x: np.ndarray) -> np.ndarray | float:
             x_array = np.asarray(x, dtype=np.float32)
-            x_tensor = th.as_tensor(x_array, dtype=th.float32)
+
+            if x_array.shape[-1] == len(plot_state_indices):
+                x_lifted = np.zeros((*x_array.shape[:-1], state_dim), dtype=np.float32)
+                x_lifted[..., plot_state_indices[0]] = x_array[..., 0]
+                x_lifted[..., plot_state_indices[1]] = x_array[..., 1]
+            elif x_array.shape[-1] == state_dim:
+                x_lifted = x_array
+            else:
+                raise ValueError(
+                    f"Lyapunov input has invalid shape {x_array.shape}; expected last dim "
+                    f"{len(plot_state_indices)} or {state_dim}."
+                )
+
+            x_tensor = th.as_tensor(x_lifted, dtype=th.float32)
             if x_tensor.ndim == 1:
                 x_tensor = x_tensor.unsqueeze(0)
 
@@ -201,7 +250,7 @@ class TestABCrownDoubleIntegratorIntegration(unittest.TestCase):
                 values = lyap_model(x_tensor).reshape(-1)
 
             values_np = values.detach().cpu().numpy()
-            if x_array.ndim == 1:
+            if x_lifted.ndim == 1:
                 return float(values_np[0])
             return values_np
 
@@ -214,7 +263,21 @@ class TestABCrownDoubleIntegratorIntegration(unittest.TestCase):
         uncertified_regions: np.ndarray,
         stem: str,
     ) -> None:
-        lyap_func = self._to_numpy_lyapunov(lyap_model)
+        plot_state_indices = (0, 1)
+        lyap_func = self._to_numpy_lyapunov(
+            lyap_model=lyap_model,
+            state_dim=4,
+            plot_state_indices=plot_state_indices,
+        )
+        certified_regions_2d_view = self._project_regions_to_2d(
+            certified_regions,
+            state_indices=plot_state_indices,
+        )
+        uncertified_regions_2d_view = self._project_regions_to_2d(
+            uncertified_regions,
+            state_indices=plot_state_indices,
+        )
+
         plot_dir = os.environ.get("LCIL_TEST_PLOT_DIR")
         if plot_dir:
             output_dir = Path(plot_dir)
@@ -223,9 +286,10 @@ class TestABCrownDoubleIntegratorIntegration(unittest.TestCase):
             lyapunov(
                 dataset=None,
                 lyapunov_func=lyap_func,
-                state_labels=["x0", "x1"],
-                certified_regions=certified_regions,
-                uncertified_regions=uncertified_regions,
+                state_indices=list(plot_state_indices),
+                state_labels=["x", "x_dot"],
+                certified_regions=certified_regions_2d_view,
+                uncertified_regions=uncertified_regions_2d_view,
                 html_path=str(html_path),
             )
             self.assertTrue(html_path.exists())
@@ -237,19 +301,20 @@ class TestABCrownDoubleIntegratorIntegration(unittest.TestCase):
             lyapunov(
                 dataset=None,
                 lyapunov_func=lyap_func,
-                state_labels=["x0", "x1"],
-                certified_regions=certified_regions,
-                uncertified_regions=uncertified_regions,
+                state_indices=list(plot_state_indices),
+                state_labels=["x", "x_dot"],
+                certified_regions=certified_regions_2d_view,
+                uncertified_regions=uncertified_regions_2d_view,
                 html_path=str(html_path),
             )
             self.assertTrue(html_path.exists())
             self.assertGreater(html_path.stat().st_size, 0)
 
-    def test_double_integrator_lqr_pipeline_with_real_abcrown(self) -> None:
+    def test_inverted_pendulum_on_cart_lqr_pipeline_with_real_abcrown(self) -> None:
         _, p_matrix = _riccati_gain_and_value_matrix(dt=0.1)
         certifier = self._make_certifier(_RiccatiQuadraticLyapunov(p_matrix))
 
-        probe_state = th.tensor([[0.75, -0.35]], dtype=th.float32)
+        probe_state = th.tensor([[0.15, 0.4, 0.07, -0.3]], dtype=th.float32)
         with th.no_grad():
             probe_control = certifier.policy_model(probe_state)
             probe_next = certifier.dyn_model(probe_state, probe_control)
@@ -267,13 +332,13 @@ class TestABCrownDoubleIntegratorIntegration(unittest.TestCase):
         self._assert_region_plot_written(
             certified_regions=result.certified_regions,
             uncertified_regions=result.failed_regions,
-            stem="double_integrator_riccati_regions_integration",
+            stem="inverted_pendulum_on_cart_riccati_regions_integration",
         )
         self._assert_lyapunov_plot_written(
             lyap_model=certifier.lyap_model,
             certified_regions=result.certified_regions,
             uncertified_regions=result.failed_regions,
-            stem="double_integrator_riccati_lyapunov_integration",
+            stem="inverted_pendulum_on_cart_riccati_lyapunov_integration",
         )
 
 

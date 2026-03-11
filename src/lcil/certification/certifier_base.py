@@ -94,7 +94,7 @@ class BaseCertifier(ABC):
             rho: float,
             early_exit: bool = True,
             *args, **kwargs
-    ) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
+    ) -> tuple[th.Tensor, th.Tensor]:
         """Certify a batch of axis-aligned regions.
 
         Parameters
@@ -114,10 +114,9 @@ class BaseCertifier(ABC):
 
         Returns
         -------
-        tuple[th.Tensor, th.Tensor, th.Tensor]
-            ``(is_safe, centers, aux)`` where ``is_safe`` is boolean per region,
-            ``centers`` contains representative points, and ``aux`` is
-            backend-defined extra output.
+        tuple[th.Tensor, th.Tensor]
+            ``(is_safe, centers)`` where ``is_safe`` is boolean per region,
+            ``centers`` contains representative points.
         """
         pass
 
@@ -321,10 +320,10 @@ class BaseCertifier(ABC):
             shape ``(m, state_dim)``.
         """
         if len(lbs) == 0:
-            empty = th.empty((0, 2), device=self.device)
+            empty = th.empty((0, self.config.state_dim), device=self.device)
             return empty, empty, empty, empty, empty
 
-        is_safe, centers, _ = self._certify_batched_regions(
+        is_safe, centers = self._certify_batched_regions(
             lbs, ubs, rho,
             early_exit=not collect_details
         )
@@ -337,8 +336,8 @@ class BaseCertifier(ABC):
         failed_ubs = ubs[failed_mask]
         counter_examples = centers[failed_mask]
 
-        final_failed_lbs = th.empty((0, 2), device=self.device)
-        final_failed_ubs = th.empty((0, 2), device=self.device)
+        final_failed_lbs = th.empty((0, self.config.state_dim), device=self.device)
+        final_failed_ubs = th.empty((0, self.config.state_dim), device=self.device)
 
         if len(failed_lbs) > 0:
             if not collect_details:
@@ -349,22 +348,23 @@ class BaseCertifier(ABC):
                 final_failed_lbs = failed_lbs
                 final_failed_ubs = failed_ubs
             else:
-                # 4 Sub-Regions with midpoint splitting
+                # Split each failed box into 2 sub-boxes along its widest dimension.
+                # This avoids the 2^state_dim combinatorial explosion in higher dimensions.
                 mids = (failed_lbs + failed_ubs) / 2.0
-                
-                # Q1: Lower-Left
-                q1_lb, q1_ub = failed_lbs, mids
-                # Q2: Lower-Right
-                q2_lb = th.stack([mids[:, 0], failed_lbs[:, 1]], dim=1)
-                q2_ub = th.stack([failed_ubs[:, 0], mids[:, 1]], dim=1)
-                # Q3: Upper-Left
-                q3_lb = th.stack([failed_lbs[:, 0], mids[:, 1]], dim=1)
-                q3_ub = th.stack([mids[:, 0], failed_ubs[:, 1]], dim=1)
-                # Q4: Upper-Right
-                q4_lb, q4_ub = mids, failed_ubs
+                widths = failed_ubs - failed_lbs
+                split_dims = th.argmax(widths, dim=1)
+                row_idx = th.arange(failed_lbs.shape[0], device=self.device)
 
-                sub_lbs = th.cat([q1_lb, q2_lb, q3_lb, q4_lb], dim=0)
-                sub_ubs = th.cat([q1_ub, q2_ub, q3_ub, q4_ub], dim=0)
+                low_lbs = failed_lbs.clone()
+                low_ubs = failed_ubs.clone()
+                low_ubs[row_idx, split_dims] = mids[row_idx, split_dims]
+
+                high_lbs = failed_lbs.clone()
+                high_ubs = failed_ubs.clone()
+                high_lbs[row_idx, split_dims] = mids[row_idx, split_dims]
+
+                sub_lbs = th.cat([low_lbs, high_lbs], dim=0)
+                sub_ubs = th.cat([low_ubs, high_ubs], dim=0)
 
                 # Rekursiv certification of all sub-boxes
                 sub_c_lbs, sub_c_ubs, sub_f_lbs, sub_f_ubs, sub_cex = self._certify_regions_recursive(
@@ -500,44 +500,28 @@ class BaseCertifier(ABC):
             return False, rho_lo, rho_up
     
     def build_regions(self) -> tuple[th.Tensor, th.Tensor]:
-        """Build 2D grid cells and remove cells intersecting the origin window.
+        """Build axis-aligned grid cells and remove cells intersecting the origin window.
 
         Returns
         -------
         tuple[th.Tensor, th.Tensor]
-            ``(lbs, ubs)`` where each tensor has shape ``(n, 2)``.
-
-        Raises
-        ------
-        ValueError
-            If ``state_dim`` is not 2.
+            ``(lbs, ubs)`` where each tensor has shape ``(n, state_dim)``.
         """
-        if self.config.state_dim != 2:
-            raise ValueError("certification currently supports state_dim == 2.")
-
         origin_exclusion = self._resolve_origin_exclusion()
-        excl_x = origin_exclusion[0].item()
-        excl_y = origin_exclusion[1].item()
-
         lbx, ubx = self.bounds[0], self.bounds[1]
         step = self.config.cert_step
 
-        x_vals = th.arange(lbx[0].item(), ubx[0].item(), step, device=self.device)
-        y_vals = th.arange(lbx[1].item(), ubx[1].item(), step, device=self.device)
-        grid_y, grid_x = th.meshgrid(y_vals, x_vals, indexing="ij")
+        axes = [th.arange(lbx[i].item(), ubx[i].item(), step, device=self.device) for i in range(self.config.state_dim)]
+        mesh = th.meshgrid(*axes, indexing="ij")
+        lbs = th.stack([axis.flatten() for axis in mesh], dim=1)
+        ubs = th.minimum(lbs + step, ubx.unsqueeze(0))
 
-        grid_x = grid_x.flatten()
-        grid_y = grid_y.flatten()
-
-        overlaps_origin = (grid_x < excl_x) & ((grid_x + step) > -excl_x) & \
-                          (grid_y < excl_y) & ((grid_y + step) > -excl_y)
-
+        overlaps_origin_per_dim = (lbs < origin_exclusion.unsqueeze(0)) & (ubs > -origin_exclusion.unsqueeze(0))
+        overlaps_origin = overlaps_origin_per_dim.all(dim=1)
         valid_mask = ~overlaps_origin
-        valid_x = grid_x[valid_mask]
-        valid_y = grid_y[valid_mask]
 
-        lbs = th.stack([valid_x, valid_y], dim=1)
-        ubs = lbs + step
+        lbs = lbs[valid_mask]
+        ubs = ubs[valid_mask]
         return lbs, ubs
 
     def is_rho_certified(self, rho: float) -> bool:
@@ -581,6 +565,7 @@ class BaseCertifier(ABC):
 
         self.verifier = self._setup_verifier()
         self.regions = self.build_regions()
+        __logger__.info("Built %d certification regions (state_dim=%d).", len(self.regions[0]), self.config.state_dim)
         self.setup_backend()
 
         if self.config.rho_min > rho_estimate:

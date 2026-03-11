@@ -98,14 +98,14 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
     @classmethod
     def _make_certifier(cls, lyap_model: nn.Module):
         config = cls.LyapunovCertificationConfig(
-            state_dim=2,
-            state_bounds=np.array([[-2.0, -2.0], [2.0, 2.0]], dtype=np.float32),
+            state_dim=3,
+            state_bounds=np.array([[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]], dtype=np.float32),
             kappa=0.1,
             invariance_weight=1.0,
             cert_step=1.0,
-            cert_origin_exclusion=0.0,
-            cert_max_scale_steps=6,
-            cert_max_bisection_steps=6,
+            origin_exclusion=0.0,
+            max_scale_steps=6,
+            max_bisection_steps=6,
             cert_method="alpha-crown",
             condition_tolerance=1e-6,
         )
@@ -117,20 +117,30 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
             device=th.device("cpu"),
         )
 
+    @staticmethod
+    def _project_regions_to_2d(
+        regions: np.ndarray,
+        state_indices: tuple[int, int] = (0, 1),
+    ) -> np.ndarray:
+        return regions[:, :, list(state_indices)]
+
     def _assert_region_plot_written(
         self,
         certified_regions: np.ndarray,
         uncertified_regions: np.ndarray,
         stem: str,
     ) -> None:
+        certified_regions_2d_view = self._project_regions_to_2d(certified_regions)
+        uncertified_regions_2d_view = self._project_regions_to_2d(uncertified_regions)
+
         plot_dir = os.environ.get("LCIL_TEST_PLOT_DIR")
         if plot_dir:
             output_dir = Path(plot_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             html_path = output_dir / f"{stem}.html"
             certified_regions_2d(
-                certified_regions=certified_regions,
-                uncertified_regions=uncertified_regions,
+                certified_regions=certified_regions_2d_view,
+                uncertified_regions=uncertified_regions_2d_view,
                 state_labels=["x0", "x1"],
                 html_path=str(html_path),
             )
@@ -141,8 +151,8 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             html_path = Path(tmp_dir) / f"{stem}.html"
             certified_regions_2d(
-                certified_regions=certified_regions,
-                uncertified_regions=uncertified_regions,
+                certified_regions=certified_regions_2d_view,
+                uncertified_regions=uncertified_regions_2d_view,
                 state_labels=["x0", "x1"],
                 html_path=str(html_path),
             )
@@ -150,10 +160,27 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
             self.assertGreater(html_path.stat().st_size, 0)
 
     @staticmethod
-    def _to_numpy_lyapunov(lyap_model: nn.Module):
+    def _to_numpy_lyapunov(
+        lyap_model: nn.Module,
+        state_dim: int,
+        plot_state_indices: tuple[int, int],
+    ):
         def _lyapunov_func(x: np.ndarray) -> np.ndarray | float:
             x_array = np.asarray(x, dtype=np.float32)
-            x_tensor = th.as_tensor(x_array, dtype=th.float32)
+
+            if x_array.shape[-1] == len(plot_state_indices):
+                x_lifted = np.zeros((*x_array.shape[:-1], state_dim), dtype=np.float32)
+                x_lifted[..., plot_state_indices[0]] = x_array[..., 0]
+                x_lifted[..., plot_state_indices[1]] = x_array[..., 1]
+            elif x_array.shape[-1] == state_dim:
+                x_lifted = x_array
+            else:
+                raise ValueError(
+                    f"Lyapunov input has invalid shape {x_array.shape}; expected last dim "
+                    f"{len(plot_state_indices)} or {state_dim}."
+                )
+
+            x_tensor = th.as_tensor(x_lifted, dtype=th.float32)
             if x_tensor.ndim == 1:
                 x_tensor = x_tensor.unsqueeze(0)
 
@@ -161,7 +188,7 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
                 values = lyap_model(x_tensor).reshape(-1)
 
             values_np = values.detach().cpu().numpy()
-            if x_array.ndim == 1:
+            if x_lifted.ndim == 1:
                 return float(values_np[0])
             return values_np
 
@@ -174,7 +201,21 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
         uncertified_regions: np.ndarray,
         stem: str,
     ) -> None:
-        lyap_func = self._to_numpy_lyapunov(lyap_model)
+        plot_state_indices = (0, 1)
+        lyap_func = self._to_numpy_lyapunov(
+            lyap_model=lyap_model,
+            state_dim=3,
+            plot_state_indices=plot_state_indices,
+        )
+        certified_regions_2d_view = self._project_regions_to_2d(
+            certified_regions,
+            state_indices=plot_state_indices,
+        )
+        uncertified_regions_2d_view = self._project_regions_to_2d(
+            uncertified_regions,
+            state_indices=plot_state_indices,
+        )
+
         plot_dir = os.environ.get("LCIL_TEST_PLOT_DIR")
         if plot_dir:
             output_dir = Path(plot_dir)
@@ -184,8 +225,8 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
                 dataset=None,
                 lyapunov_func=lyap_func,
                 state_labels=["x0", "x1"],
-                certified_regions=certified_regions,
-                uncertified_regions=uncertified_regions,
+                certified_regions=certified_regions_2d_view,
+                uncertified_regions=uncertified_regions_2d_view,
                 html_path=str(html_path),
             )
             self.assertTrue(html_path.exists())
@@ -198,8 +239,8 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
                 dataset=None,
                 lyapunov_func=lyap_func,
                 state_labels=["x0", "x1"],
-                certified_regions=certified_regions,
-                uncertified_regions=uncertified_regions,
+                certified_regions=certified_regions_2d_view,
+                uncertified_regions=uncertified_regions_2d_view,
                 html_path=str(html_path),
             )
             self.assertTrue(html_path.exists())
