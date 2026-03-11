@@ -228,29 +228,30 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
         certified_regions_2d_view = self._project_regions_to_2d(certified_regions)
         uncertified_regions_2d_view = self._project_regions_to_2d(uncertified_regions)
 
+        self._assert_plot_written(
+            plot_fn=certified_regions_2d,
+            stem=stem,
+            plot_kwargs={
+                "certified_regions": certified_regions_2d_view,
+                "uncertified_regions": uncertified_regions_2d_view,
+                "state_labels": ["x", "x_dot"],
+            },
+        )
+
+    def _assert_plot_written(self, plot_fn, stem: str, plot_kwargs: dict) -> None:
         plot_dir = os.environ.get("LCIL_TEST_PLOT_DIR")
         if plot_dir:
             output_dir = Path(plot_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             html_path = output_dir / f"{stem}.html"
-            certified_regions_2d(
-                certified_regions=certified_regions_2d_view,
-                uncertified_regions=uncertified_regions_2d_view,
-                state_labels=["x", "x_dot"],
-                html_path=str(html_path),
-            )
+            plot_fn(**plot_kwargs, html_path=str(html_path))
             self.assertTrue(html_path.exists())
             self.assertGreater(html_path.stat().st_size, 0)
             return
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             html_path = Path(tmp_dir) / f"{stem}.html"
-            certified_regions_2d(
-                certified_regions=certified_regions_2d_view,
-                uncertified_regions=uncertified_regions_2d_view,
-                state_labels=["x", "x_dot"],
-                html_path=str(html_path),
-            )
+            plot_fn(**plot_kwargs, html_path=str(html_path))
             self.assertTrue(html_path.exists())
             self.assertGreater(html_path.stat().st_size, 0)
 
@@ -313,39 +314,20 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
             state_indices=plot_state_indices,
         )
 
-        plot_dir = os.environ.get("LCIL_TEST_PLOT_DIR")
-        if plot_dir:
-            output_dir = Path(plot_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            html_path = output_dir / f"{stem}.html"
-            lyapunov(
-                dataset=None,
-                lyapunov_func=lyap_func,
-                state_indices=list(plot_state_indices),
-                state_labels=state_labels,
-                certified_regions=certified_regions_2d_view,
-                uncertified_regions=uncertified_regions_2d_view,
-                html_path=str(html_path),
-            )
-            self.assertTrue(html_path.exists())
-            self.assertGreater(html_path.stat().st_size, 0)
-            return
+        self._assert_plot_written(
+            plot_fn=lyapunov,
+            stem=stem,
+            plot_kwargs={
+                "dataset": None,
+                "lyapunov_func": lyap_func,
+                "state_indices": list(plot_state_indices),
+                "state_labels": state_labels,
+                "certified_regions": certified_regions_2d_view,
+                "uncertified_regions": uncertified_regions_2d_view,
+            },
+        )
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            html_path = Path(tmp_dir) / f"{stem}.html"
-            lyapunov(
-                dataset=None,
-                lyapunov_func=lyap_func,
-                state_indices=list(plot_state_indices),
-                state_labels=state_labels,
-                certified_regions=certified_regions_2d_view,
-                uncertified_regions=uncertified_regions_2d_view,
-                html_path=str(html_path),
-            )
-            self.assertTrue(html_path.exists())
-            self.assertGreater(html_path.stat().st_size, 0)
-
-    def test_inverted_pendulum_on_cart_lqr_pipeline_with_real_abcrown(self) -> None:
+    def test_inverted_pendulum_on_cart_lqr(self) -> None:
         _, p_matrix = _riccati_gain_and_value_matrix(dt=0.1)
         certifier = self._make_certifier(_RiccatiQuadraticLyapunov(p_matrix))
 
