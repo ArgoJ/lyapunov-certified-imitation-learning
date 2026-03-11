@@ -79,15 +79,48 @@ class _RiccatiPolicy(nn.Module):
         return -(x @ self.k_gain.transpose(0, 1))
 
 
-class _InvertedPendulumOnCartDynamics(nn.Module):
+class _NonlinearInvertedPendulumOnCartDynamics(nn.Module):
     def __init__(self, dt: float = 0.1):
         super().__init__()
-        ad, bd = _discrete_inverted_pendulum_on_cart_matrices(dt)
-        self.register_buffer("ad", th.as_tensor(ad, dtype=th.float32))
-        self.register_buffer("bd", th.as_tensor(bd, dtype=th.float32))
+        self.dt = float(dt)
+
+        self.m_cart = 1.0
+        self.m_pole = 0.1
+        self.length = 0.5
+        self.gravity = 9.81
 
     def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        return x @ self.ad.transpose(0, 1) + u @ self.bd.transpose(0, 1)
+        p = x[:, 0]
+        p_dot = x[:, 1]
+        theta = x[:, 2]
+        theta_dot = x[:, 3]
+        force = u[:, 0]
+
+        m_c = self.m_cart
+        m_p = self.m_pole
+        l = self.length
+        g = self.gravity
+
+        sin_theta = th.sin(theta)
+        cos_theta = th.cos(theta)
+        total_mass = m_c + m_p
+
+        denom = total_mass - m_p * cos_theta * cos_theta
+
+        p_ddot = (
+            force
+            - m_p * l * theta_dot.pow(2) * sin_theta
+            - m_p * g * sin_theta * cos_theta
+        ) / denom
+
+        theta_ddot = (
+            force * cos_theta
+            - m_p * l * theta_dot.pow(2) * sin_theta * cos_theta
+            - total_mass * g * sin_theta
+        ) / (l * denom)
+
+        x_dot = th.stack([p_dot, p_ddot, theta_dot, theta_ddot], dim=1)
+        return x + self.dt * x_dot
 
 
 class _RiccatiQuadraticLyapunov(nn.Module):
@@ -157,8 +190,8 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
             state_dim=4,
             state_bounds=np.array(
                 [
-                    [-0.6, -1.5, -0.35, -2.0],
-                    [0.6, 1.5, 0.35, 2.0],
+                    [-0.5, -2.0, -0.6, -4.0],
+                    [ 0.5,  2.0,  0.6,  4.0],
                 ],
                 dtype=np.float32,
             ),
@@ -174,7 +207,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
         return cls.ABCrownCertifier(
             policy_model=_RiccatiPolicy(k_gain),
             lyap_model=lyap_model,
-            dyn_model=_InvertedPendulumOnCartDynamics(dt=0.1),
+            dyn_model=_NonlinearInvertedPendulumOnCartDynamics(dt=0.1),
             config=config,
             device=th.device("cpu"),
         )
@@ -263,7 +296,9 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
         uncertified_regions: np.ndarray,
         stem: str,
     ) -> None:
-        plot_state_indices = (0, 1)
+        plot_state_indices = (2, 3)
+        state_labels = ["theta", "theta_dot"]
+
         lyap_func = self._to_numpy_lyapunov(
             lyap_model=lyap_model,
             state_dim=4,
@@ -287,7 +322,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
                 dataset=None,
                 lyapunov_func=lyap_func,
                 state_indices=list(plot_state_indices),
-                state_labels=["x", "x_dot"],
+                state_labels=state_labels,
                 certified_regions=certified_regions_2d_view,
                 uncertified_regions=uncertified_regions_2d_view,
                 html_path=str(html_path),
@@ -302,7 +337,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
                 dataset=None,
                 lyapunov_func=lyap_func,
                 state_indices=list(plot_state_indices),
-                state_labels=["x", "x_dot"],
+                state_labels=state_labels,
                 certified_regions=certified_regions_2d_view,
                 uncertified_regions=uncertified_regions_2d_view,
                 html_path=str(html_path),
@@ -326,8 +361,9 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
 
         self.assertIsInstance(float(rho_certified), float)
         self.assertGreaterEqual(rho_certified, certifier.config.rho_min)
+        self.assertLess(rho_certified, 1.0)
         self.assertTrue(result.success)
-        self.assertEqual(result.failed_regions.shape[0], 0)
+        self.assertGreater(result.failed_regions.shape[0], 0)
         self.assertGreater(result.certified_regions.shape[0], 0)
         self._assert_region_plot_written(
             certified_regions=result.certified_regions,

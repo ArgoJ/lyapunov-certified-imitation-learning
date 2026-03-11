@@ -90,6 +90,66 @@ class RK4Integrator(nn.Module):
         return x + (self.dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
 
+class Linearize(nn.Module):
+    """Linearize nonlinear dynamics around an operating point.
+
+    Given ``f(x, u)``, returns Jacobians ``A = df/dx`` and ``B = df/du`` at
+    ``(x0, u0)`` and the nominal vector field value ``f0``.
+    """
+
+    def __init__(self, dynamics: Callable[[th.Tensor, th.Tensor], th.Tensor]):
+        super().__init__()
+        self.dynamics = dynamics
+
+    def forward(
+        self,
+        x0: th.Tensor,
+        u0: th.Tensor,
+    ) -> tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+        """Compute local linearization matrices for a batch.
+
+        Parameters
+        ----------
+        x0 : th.Tensor
+            State operating points of shape ``(B, nx)``.
+        u0 : th.Tensor
+            Input operating points of shape ``(B, nu)``.
+
+        Returns
+        -------
+        tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor]
+            ``(A, B, f0, c0)`` where ``A`` has shape ``(B, nx, nx)``,
+            ``B`` has shape ``(B, nx, nu)``, ``f0`` has shape ``(B, nx)``,
+            and ``c0`` has shape ``(B, nx)``.
+        """
+        x0 = x0.detach().clone()
+        u0 = u0.detach().clone()
+
+        single = (x0.ndim == 1)
+
+        if single:
+            x0 = x0.unsqueeze(0)
+            u0 = u0.unsqueeze(0)
+
+        def f_single(x_var: th.Tensor, u_var: th.Tensor) -> th.Tensor:
+            return self.dynamics(x_var.unsqueeze(0), u_var.unsqueeze(0)).squeeze(0)
+
+        a_fun = th.func.jacrev(f_single, argnums=0)
+        b_fun = th.func.jacrev(f_single, argnums=1)
+
+        a_mat = th.func.vmap(a_fun)(x0, u0)   # (B, nx, nx)
+        b_mat = th.func.vmap(b_fun)(x0, u0)   # (B, nx, nu)
+        f0 = th.func.vmap(f_single)(x0, u0)   # (B, nx)
+
+        ax = th.matmul(a_mat, x0.unsqueeze(-1)).squeeze(-1)  # (B, nx)
+        bu = th.matmul(b_mat, u0.unsqueeze(-1)).squeeze(-1)  # (B, nx)
+        c0 = f0 - ax - bu
+
+        if single:
+            return a_mat[0], b_mat[0], f0[0], c0[0]
+        return a_mat.detach(), b_mat.detach(), f0.detach(), c0.detach()
+
+
 class ResidualBlock(nn.Module):
     """Residual MLP block with two linear layers.
 
