@@ -12,15 +12,128 @@ __logger__ = get_package_logger(__name__)
 
 
 def _regions_to_np(regs: NDArray | None) -> NDArray:
-        if regs is None:
+        if regs is None or regs.shape[0] == 0:
             return np.empty((0, 2, 2))
-        return regs
+        return np.asarray(regs, dtype=np.float64)
 
-def _plotly_multiline(x: NDArray, axis: int=0):
+
+def _plotly_multiline(x: NDArray, axis: int=0) -> NDArray:
     if axis == 0:
         return np.hstack([x, np.full((x.shape[0], 1), np.nan)]).flatten()
     elif axis == 1:
         return np.vstack([x, np.full((x.shape[1], 1), np.nan)]).flatten()
+
+
+def _project_if_needed(regs: NDArray, indices: list[int]) -> NDArray:
+    if regs is None or regs.shape[0] == 0:
+        return regs
+    if regs.shape[2] > 2:
+        return regs[:, :, [indices[0], indices[1]]]
+    return regs
+
+
+def _dedupe_regions(regs: NDArray, decimals: int = 12) -> NDArray:
+    regs = np.asarray(regs, dtype=np.float64)
+    if regs.size == 0:
+        return np.empty((0, 2, 2), dtype=np.float64)
+
+    rounded_flat = np.round(regs, decimals=decimals).reshape(regs.shape[0], -1)
+    _, unique_indices = np.unique(rounded_flat, axis=0, return_index=True)
+    unique_indices = np.sort(unique_indices)
+    return regs[unique_indices]
+
+
+def _collapse_projected_regions(
+    cert_regs: NDArray,
+    uncert_regs: NDArray,
+    indices: list[int] = [0, 1],
+    decimals: int = 12,
+) -> tuple[NDArray, NDArray]:
+    cert_regs_np = _regions_to_np(cert_regs)
+    uncert_regs_np = _regions_to_np(uncert_regs)
+
+    cert_projected = _project_if_needed(cert_regs_np, indices)
+    uncert_projected = _project_if_needed(uncert_regs_np, indices)
+
+    cert_unique = _dedupe_regions(cert_projected, decimals)
+    uncert_unique = _dedupe_regions(uncert_projected, decimals)
+
+    if cert_unique.shape[0] == 0 or uncert_unique.shape[0] == 0:
+        return cert_unique, uncert_unique
+
+    cert_lbs = cert_unique[:, 0, :]
+    cert_ubs = cert_unique[:, 1, :]
+    uncert_lbs = uncert_unique[:, 0, :]
+    uncert_ubs = uncert_unique[:, 1, :]
+
+    # certified[i] contains uncertified[j] iff
+    # cert_lb <= uncert_lb and cert_ub >= uncert_ub (component-wise).
+    contains_matrix = (
+        (cert_lbs[:, None, :] <= uncert_lbs[None, :, :])
+        & (cert_ubs[:, None, :] >= uncert_ubs[None, :, :])
+    ).all(axis=2)
+
+    # Remove any certified region that contains at least one uncertified region.
+    keep_cert_mask = ~contains_matrix.any(axis=1)
+    cert_filtered = cert_unique[keep_cert_mask]
+
+    return cert_filtered, uncert_unique
+
+
+def _build_X_Y(regions: NDArray) -> tuple[NDArray, NDArray]:
+    lbs = regions[:, 0, :]
+    ubs = regions[:, 1, :]
+
+    X = np.column_stack([lbs[:, 0], ubs[:, 0], ubs[:, 0], lbs[:, 0], lbs[:, 0]])
+    Y = np.column_stack([lbs[:, 1], lbs[:, 1], ubs[:, 1], ubs[:, 1], lbs[:, 1]])
+    return X, Y
+
+
+def _add_regions(
+        regions: NDArray | None,
+        fig: go.Figure,
+        color: str,
+        name: str,
+        z_level: float | None = None,
+        dash: str = "solid",
+        fill: bool = False,
+) -> None:
+    if regions is None or regions.shape[0] == 0:
+        return
+
+    X, Y = _build_X_Y(regions)
+
+    x_coords = _plotly_multiline(X, axis=0)
+    y_coords = _plotly_multiline(Y, axis=0)
+
+    if z_level is not None:
+        Z = np.full(X.shape, z_level)
+        z_coords = _plotly_multiline(Z, axis=0)
+        fig.add_trace(
+            go.Scatter3d(
+                x=x_coords,
+                y=y_coords,
+                z=z_coords,
+                mode="lines",
+                line=dict(color=color, width=4, dash=dash),
+                name=name,
+                showlegend=True,
+            )
+        )
+    else:
+        fig.add_trace(
+            go.Scatter(
+                x=x_coords,
+                y=y_coords,
+                mode="lines",
+                fill="toself" if fill else None,
+                fillcolor=color if fill else None,
+                opacity=0.3 if fill else None,
+                line=dict(color=color, width=2, dash=dash),
+                name=name,
+                showlegend=True,
+            )
+        )
 
 def lyapunov(
     lyapunov_func: Callable[[NDArray], NDArray],
@@ -89,8 +202,11 @@ def lyapunov(
     if len(state_labels) != 2:
         raise ValueError("state_labels must contain exactly 2 labels.")
 
-    certified_regions = _regions_to_np(certified_regions)
-    uncertified_regions = _regions_to_np(uncertified_regions)
+    certified_regions, uncertified_regions = _collapse_projected_regions(
+        certified_regions,
+        uncertified_regions,
+        indices=state_indices,
+    )
 
     # Determine limits if not provided
     if limits is None:
@@ -189,96 +305,24 @@ def lyapunov(
         )
 
     # === CERTIFIED/UNCERTIFIED REGIONS ===
-    def _add_region_outlines_2d(
-        regions: NDArray | None,
-        color: str,
-        name: str,
-        dash: str = "solid",
-    ) -> None:
-        if regions is None or regions.shape[0] == 0:
-            return
-
-        lbs = regions[:, 0, :]
-        ubs = regions[:, 1, :]
-
-        # X and Y coordinates for closed rectangles (N x 5)
-        X = np.column_stack([lbs[:, 0], ubs[:, 0], ubs[:, 0], lbs[:, 0], lbs[:, 0]])
-        Y = np.column_stack([lbs[:, 1], lbs[:, 1], ubs[:, 1], ubs[:, 1], lbs[:, 1]])
-
-        x_coords = _plotly_multiline(X, axis=0)
-        y_coords = _plotly_multiline(Y, axis=0)
-
-        fig.add_trace(
-            go.Scatter(
-                x=x_coords,
-                y=y_coords,
-                mode="lines",
-                line=dict(color=color, width=2, dash=dash),
-                name=name,
-                showlegend=True,
-            )
-        )
-
-    def _add_region_outlines_3d(
-        regions: NDArray | None,
-        color: str,
-        name: str,
-        z_level: float,
-        dash: str = "solid",
-    ) -> None:
-        if regions is None or regions.shape[0] == 0:
-            return
-
-        lbs = regions[:, 0, :]
-        ubs = regions[:, 1, :]
-
-        X = np.column_stack([lbs[:, 0], ubs[:, 0], ubs[:, 0], lbs[:, 0], lbs[:, 0]])
-        Y = np.column_stack([lbs[:, 1], lbs[:, 1], ubs[:, 1], ubs[:, 1], lbs[:, 1]])
-        Z = np.full(X.shape, z_level)
-
-        x_coords = _plotly_multiline(X, axis=0)
-        y_coords = _plotly_multiline(Y, axis=0)
-        z_coords = _plotly_multiline(Z, axis=0)
-
-        fig.add_trace(
-            go.Scatter3d(
-                x=x_coords,
-                y=y_coords,
-                z=z_coords,
-                mode="lines",
-                line=dict(color=color, width=4, dash=dash),
-                name=name,
-                showlegend=True,
-            )
-        )
-
-    if plot_3d:
-        z_overlay = float(np.nanmin(Z))
-        _add_region_outlines_3d(
-            certified_regions,
-            color="#209209",
-            name="Certified (outline)",
-            z_level=z_overlay,
-        )
-        _add_region_outlines_3d(
-            uncertified_regions,
-            color="#c53131",
-            name="Uncertified (outline)",
-            z_level=z_overlay,
-            dash="dash",
-        )
-    else:
-        _add_region_outlines_2d(
-            certified_regions,
-            color="#209209",
-            name="Certified (outline)",
-        )
-        _add_region_outlines_2d(
-            uncertified_regions,
-            color="#c53131",
-            name="Uncertified (outline)",
-            dash="dash",
-        )
+    z_overlay = float(np.nanmin(Z)) if plot_3d else None
+    _add_regions(
+        certified_regions,
+        fig,
+        color="#209209",
+        z_level=z_overlay,
+        name="Certified",
+        fill=False,
+    )
+    _add_regions(
+        uncertified_regions,
+        fig,
+        color="#c53131",
+        z_level=z_overlay,
+        name="Uncertified",
+        dash="dash",
+        fill=False
+    )
 
 
     # === MPC TRAJECTORIES ===
@@ -398,6 +442,7 @@ def lyapunov(
 def certified_regions_2d(
     certified_regions: NDArray,
     uncertified_regions: NDArray,
+    state_indices: list[int] = [0, 1],
     state_labels: list[str] | None = None,
     bounds: list[tuple[float, float]] | None = None,
     html_path: str | None = None,
@@ -410,6 +455,10 @@ def certified_regions_2d(
         Certified boxes in state space.
     uncertified_regions : list of (lb, ub)
         Uncertified boxes in state space.
+    state_indices : list[int], optional
+        Indices of the two state dimensions to visualize. If input regions
+        contain more than two state dimensions, they are projected to these
+        indices before plotting.
     state_labels : list of str, optional
         Axis labels for the two states. Defaults to ["State 0", "State 1"].
     bounds : list of tuples, optional
@@ -417,8 +466,17 @@ def certified_regions_2d(
     html_path : str, optional
         If provided, saves the plot to the specified HTML file.
     """
-    certified_regions = _regions_to_np(certified_regions)
-    uncertified_regions = _regions_to_np(uncertified_regions)
+    # Validate and possibly project regions to the requested state indices.
+    if len(state_indices) != 2:
+        raise ValueError("state_indices must contain exactly 2 indices.")
+    if min(state_indices) < 0:
+        raise ValueError("state_indices must be non-negative.")
+
+    certified_regions, uncertified_regions = _collapse_projected_regions(
+        certified_regions,
+        uncertified_regions,
+        indices=state_indices,
+    )
 
     if certified_regions.shape[0] == 0 and uncertified_regions.shape[0] == 0:
         __logger__.warning("No regions provided for plotting.")
@@ -438,37 +496,20 @@ def certified_regions_2d(
 
     fig = go.Figure()
 
-    def add_regions(regions: NDArray, color: str, name: str):
-        if regions is None or regions.shape[0] == 0:
-            return
-
-        lbs = regions[:, 0, :]
-        ubs = regions[:, 1, :]
-
-        # Reihenfolge X: x0, x1, x1, x0, x0
-        X = np.column_stack([lbs[:, 0], ubs[:, 0], ubs[:, 0], lbs[:, 0], lbs[:, 0]])
-        # Reihenfolge Y: y0, y0, y1, y1, y0
-        Y = np.column_stack([lbs[:, 1], lbs[:, 1], ubs[:, 1], ubs[:, 1], lbs[:, 1]])
-
-        x_coords = _plotly_multiline(X, axis=0)
-        y_coords = _plotly_multiline(Y, axis=0)
-
-        fig.add_trace(
-            go.Scatter(
-                x=x_coords,
-                y=y_coords,
-                mode="lines",
-                fill="toself",
-                fillcolor=color,
-                line=dict(color=color, width=1),
-                opacity=0.3,
-                name=name,
-                showlegend=True,
-            )
-        )
-
-    add_regions(certified_regions, "#2ca02c", "Certified")
-    add_regions(uncertified_regions, "#d62728", "Uncertified")
+    _add_regions(
+        certified_regions, 
+        fig,
+        "#2ca02c", 
+        "Certified",
+        fill=True,
+    )
+    _add_regions(
+        uncertified_regions, 
+        fig,
+        "#d62728", 
+        "Uncertified",
+        fill=True,
+    )
 
     fig.update_layout(
         title="Certified Regions",

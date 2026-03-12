@@ -55,6 +55,14 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
 
         try:
             abcrown = importlib.import_module("abcrown")
+
+            is_stubbed_module = (
+                getattr(abcrown, "__file__", None) is None
+                or not hasattr(getattr(abcrown, "ConfigBuilder", object), "from_defaults")
+            )
+            if is_stubbed_module:
+                sys.modules.pop("abcrown", None)
+                abcrown = importlib.import_module("abcrown")
         except Exception as exc:  # pragma: no cover - depends on local environment
             raise unittest.SkipTest(f"abcrown is not importable: {exc}") from exc
 
@@ -102,7 +110,7 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
             state_bounds=np.array([[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]], dtype=np.float32),
             kappa=0.1,
             invariance_weight=1.0,
-            cert_step=1.0,
+            cert_bins_per_dim=4,
             origin_exclusion=0.0,
             max_scale_steps=6,
             max_bisection_steps=6,

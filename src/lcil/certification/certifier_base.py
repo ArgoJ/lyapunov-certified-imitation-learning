@@ -141,15 +141,24 @@ class BaseCertifier(ABC):
         Raises
         ------
         ValueError
-            If ``cert_step`` is non-positive.
+            If ``cert_bins_per_dim`` is invalid.
         """
+        raw_bins = config.cert_bins_per_dim
+        if isinstance(raw_bins, (int, np.integer)):
+            bins_per_dim = (int(raw_bins),) * config.state_dim
+        else:
+            bins_per_dim = tuple(int(bins) for bins in raw_bins)
+            if len(bins_per_dim) != config.state_dim:
+                raise ValueError("cert_bins_per_dim must be scalar or match state_dim.")
+        if any(bins <= 0 for bins in bins_per_dim):
+            raise ValueError("cert_bins_per_dim must contain only positive integers.")
+
         resolved_config = replace(
             config,
             cert_method=config.cert_method.strip().lower(),
             rho_scaling=max(config.rho_scaling, 1.01),
+            cert_bins_per_dim=bins_per_dim,
         )
-        if resolved_config.cert_step <= 0:
-            raise ValueError("cert_step must be positive.")
         return resolved_config
 
     @staticmethod
@@ -224,6 +233,19 @@ class BaseCertifier(ABC):
             lirpa_ctx = nullcontext()
         return lirpa_ctx
 
+    def _filter_sublevel_regions(
+        self,
+        lbs: th.Tensor,
+        ubs: th.Tensor,
+        rho: float,
+    ) -> tuple[th.Tensor, th.Tensor]:
+        """Optionally prune boxes proven to lie completely outside ``V(x) <= rho``.
+
+        The default implementation performs no pruning. Backends may override
+        this with a sound lower-bound check for the Lyapunov model.
+        """
+        return lbs, ubs
+
     def _setup_verifier(self) -> ClosedLoopLyapunovConditionVerifier:
         """Construct and initialize the closed-loop Lyapunov verifier.
 
@@ -291,7 +313,8 @@ class BaseCertifier(ABC):
             rho: float,
             collect_details: bool, 
             depth: int, 
-            max_depth: int
+            max_depth: int,
+            filter: bool = False,
     ) -> tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         """Recursively certify axis-aligned regions for a fixed ``rho``.
 
@@ -311,6 +334,8 @@ class BaseCertifier(ABC):
             Current recursion depth.
         max_depth : int
             Maximum subdivision depth for failed regions.
+        filter : bool, optional
+            Filter the regions beforehand.
 
         Returns
         -------
@@ -319,6 +344,12 @@ class BaseCertifier(ABC):
             Each bound tensor has shape ``(k, state_dim)`` and counterexamples has
             shape ``(m, state_dim)``.
         """
+        if len(lbs) == 0:
+            empty = th.empty((0, self.config.state_dim), device=self.device)
+            return empty, empty, empty, empty, empty
+
+        if filter:
+            lbs, ubs = self._filter_sublevel_regions(lbs, ubs, rho)
         if len(lbs) == 0:
             empty = th.empty((0, self.config.state_dim), device=self.device)
             return empty, empty, empty, empty, empty
@@ -403,7 +434,7 @@ class BaseCertifier(ABC):
         lbs, ubs = self.regions
         
         c_lbs, c_ubs, f_lbs, f_ubs, cex = self._certify_regions_recursive(
-            lbs, ubs, rho, collect_details, depth=0, max_depth=3
+            lbs, ubs, rho, collect_details, depth=0, max_depth=3, filter=not collect_details
         )
 
         # convert for output -> NumPy arrays for easier downstream use
@@ -509,12 +540,24 @@ class BaseCertifier(ABC):
         """
         origin_exclusion = self._resolve_origin_exclusion()
         lbx, ubx = self.bounds[0], self.bounds[1]
-        step = self.config.cert_step
+        bin_counts = self.config.cert_bins_per_dim
 
-        axes = [th.arange(lbx[i].item(), ubx[i].item(), step, device=self.device) for i in range(self.config.state_dim)]
-        mesh = th.meshgrid(*axes, indexing="ij")
-        lbs = th.stack([axis.flatten() for axis in mesh], dim=1)
-        ubs = th.minimum(lbs + step, ubx.unsqueeze(0))
+        lb_axes = []
+        ub_axes = []
+        for idx in range(self.config.state_dim):
+            edges = th.linspace(
+                lbx[idx],
+                ubx[idx],
+                steps=int(bin_counts[idx]) + 1,
+                device=self.device,
+            )
+            lb_axes.append(edges[:-1])
+            ub_axes.append(edges[1:])
+
+        lb_mesh = th.meshgrid(*lb_axes, indexing="ij")
+        ub_mesh = th.meshgrid(*ub_axes, indexing="ij")
+        lbs = th.stack([axis.flatten() for axis in lb_mesh], dim=1)
+        ubs = th.stack([axis.flatten() for axis in ub_mesh], dim=1)
 
         overlaps_origin_per_dim = (lbs < origin_exclusion.unsqueeze(0)) & (ubs > -origin_exclusion.unsqueeze(0))
         overlaps_origin = overlaps_origin_per_dim.all(dim=1)

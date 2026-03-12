@@ -22,8 +22,9 @@ class LyapunovCertificationConfig:
         Weight of the set-invariance penalty term.
     rho_min : float
         Minimum admissible sublevel value.
-    cert_step : float
-        Grid step size for certification region decomposition.
+    cert_bins_per_dim : int | Sequence[int]
+        Number of initial certification bins per state dimension. If a scalar is
+        provided, the same number of bins is used in every dimension.
     origin_exclusion : float | Sequence[float] | None
         Radius around the origin to skip during certification. If a sequence is
         provided, it is interpreted per state dimension.
@@ -46,7 +47,7 @@ class LyapunovCertificationConfig:
     kappa: float = 0.05
     invariance_weight: float = 1.0
     rho_min: float = 1e-6
-    cert_step: float = 1.0
+    cert_bins_per_dim: int | Sequence[int] = 4
     origin_exclusion: float | Sequence[float] | None = None
     rho_scaling: float = 1.2
     bisection_tol: float = 1e-3
@@ -60,7 +61,7 @@ class LyapunovCertificationConfig:
     def from_training_config(
         config: LyapunovTrainingConfig,
         state_bounds: Sequence[float] | None = None,
-        cert_step: float = 1.0,
+        cert_bins_per_dim: int | Sequence[int] = 4,
         cert_origin_exclusion: float | Sequence[float] | None = None,
         cert_rho_scaling: float = 1.2,
         cert_bisection_tol: float = 1e-3,
@@ -79,7 +80,7 @@ class LyapunovCertificationConfig:
             "kappa": config.kappa,
             "invariance_weight": config.invariance_weight,
             "rho_min": config.rho_min,
-            "cert_step": cert_step,
+            "cert_bins_per_dim": cert_bins_per_dim,
             "origin_exclusion": cert_origin_exclusion,
             "rho_scaling": cert_rho_scaling,
             "bisection_tol": cert_bisection_tol,
