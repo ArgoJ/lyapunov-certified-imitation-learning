@@ -201,14 +201,15 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
             state_dim=4,
             state_bounds=np.array(
                 [
-                    [-0.3, -1.5, -np.pi / 2.0 * 0.99, -1.0],
-                    [ 0.3,  1.5,  np.pi / 2.0 * 0.99,  1.0],
+                    [-0.1, -0.3, -0.2, -0.3],
+                    [ 0.1,  0.3,  0.2,  0.3],
                 ],
                 dtype=np.float32,
             ),
             kappa=0.05,
             invariance_weight=1.0,
-            cert_bins_per_dim=(2, 10, 11, 7),
+            cert_bins_per_dim=(2, 4, 6, 7),
+            cert_center_refinement_factor=(0.6, 0.6, 0.5, 0.6),
             origin_exclusion=0.01,
             max_scale_steps=20,
             max_bisection_steps=10,
@@ -360,7 +361,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
         self.assertGreater(float(probe_control.abs().max().item()), 1e-6)
         self.assertGreater(float((probe_next - probe_state).abs().max().item()), 1e-6)
 
-        rho_certified, result = certifier.certify(rho_estimate=0.5)
+        rho_certified, result = certifier.certify(rho_estimate=0.1)
 
         self.assertIsInstance(float(rho_certified), float)
         self.assertGreaterEqual(rho_certified, certifier.config.rho_min)

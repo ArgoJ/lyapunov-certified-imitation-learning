@@ -57,7 +57,7 @@ class BaseCertifier(ABC):
             Device used for all model parameters and certification tensors,
             by default ``th.device("cpu")``.
         """
-        self.config = self._resolve_config(config)
+        self.config = config
         self.device = device
 
         self.policy_model = policy_model.to(self.device).eval()
@@ -125,41 +125,45 @@ class BaseCertifier(ABC):
     # ==========================================
 
     @staticmethod
-    def _resolve_config(config: LyapunovCertificationConfig) -> LyapunovCertificationConfig:
-        """Normalize and validate certification configuration.
+    def _build_center_refined_axis_edges(
+        lb: th.Tensor,
+        ub: th.Tensor,
+        num_bins: int,
+        refinement_factor: float,
+    ) -> th.Tensor:
+        """Build 1D grid edges with optional geometric refinement toward zero."""
+        if refinement_factor == 1.0 or lb >= 0.0 or ub <= 0.0:
+            return th.linspace(lb, ub, steps=num_bins + 1, device=lb.device)
 
-        Parameters
-        ----------
-        config : LyapunovCertificationConfig
-            Raw certification configuration.
+        neg_span = float((-lb).item())
+        pos_span = float(ub.item())
 
-        Returns
-        -------
-        LyapunovCertificationConfig
-            Copy of ``config`` with normalized fields.
+        neg_bins = int(round(num_bins * neg_span / (neg_span + pos_span))) if neg_span + pos_span > 0 else 0
+        neg_bins = max(1, min(num_bins - 1, neg_bins))
+        pos_bins = num_bins - neg_bins
 
-        Raises
-        ------
-        ValueError
-            If ``cert_bins_per_dim`` is invalid.
-        """
-        raw_bins = config.cert_bins_per_dim
-        if isinstance(raw_bins, (int, np.integer)):
-            bins_per_dim = (int(raw_bins),) * config.state_dim
-        else:
-            bins_per_dim = tuple(int(bins) for bins in raw_bins)
-            if len(bins_per_dim) != config.state_dim:
-                raise ValueError("cert_bins_per_dim must be scalar or match state_dim.")
-        if any(bins <= 0 for bins in bins_per_dim):
-            raise ValueError("cert_bins_per_dim must contain only positive integers.")
+        def _side_edges(span: float, bins: int, sign: float, device: th.device) -> th.Tensor:
+            if bins <= 0 or span <= 0.0:
+                return th.zeros(1, device=device)
+            if bins == 1:
+                distances = th.tensor([span], dtype=th.float32, device=device)
+            else:
+                powers = th.arange(bins - 1, -1, -1, dtype=th.float32, device=device)
+                weights = refinement_factor ** powers
+                widths = span * weights / weights.sum()
+                distances = th.cumsum(widths, dim=0)
+            return sign * distances
 
-        resolved_config = replace(
-            config,
-            cert_method=config.cert_method.strip().lower(),
-            rho_scaling=max(config.rho_scaling, 1.01),
-            cert_bins_per_dim=bins_per_dim,
-        )
-        return resolved_config
+        neg_edges = _side_edges(neg_span, neg_bins, -1.0, lb.device)
+        pos_edges = _side_edges(pos_span, pos_bins, 1.0, ub.device)
+
+        return th.cat([
+            th.tensor([lb.item()], dtype=th.float32, device=lb.device),
+            neg_edges.flip(0)[1:],
+            th.zeros(1, dtype=th.float32, device=lb.device),
+            pos_edges[:-1],
+            th.tensor([ub.item()], dtype=th.float32, device=lb.device),
+        ])
 
     @staticmethod
     def _resolve_bounds(state_bounds: Sequence[float], device: th.device) -> th.Tensor:
@@ -541,15 +545,16 @@ class BaseCertifier(ABC):
         origin_exclusion = self._resolve_origin_exclusion()
         lbx, ubx = self.bounds[0], self.bounds[1]
         bin_counts = self.config.cert_bins_per_dim
+        refinement_factors = self.config.cert_center_refinement_factor
 
         lb_axes = []
         ub_axes = []
         for idx in range(self.config.state_dim):
-            edges = th.linspace(
-                lbx[idx],
-                ubx[idx],
-                steps=int(bin_counts[idx]) + 1,
-                device=self.device,
+            edges = self._build_center_refined_axis_edges(
+                lb=lbx[idx],
+                ub=ubx[idx],
+                num_bins=int(bin_counts[idx]),
+                refinement_factor=float(refinement_factors[idx]),
             )
             lb_axes.append(edges[:-1])
             ub_axes.append(edges[1:])
