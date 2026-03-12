@@ -266,6 +266,7 @@ class TestABCrownCertifier(unittest.TestCase):
             kappa=0.1,
             invariance_weight=1.0,
             cert_bins_per_dim=4,
+            cert_center_refinement_factor=0.7,
             origin_exclusion=0.0,
             max_scale_steps=6,
             max_bisection_steps=6,
