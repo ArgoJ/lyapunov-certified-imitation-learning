@@ -2,22 +2,81 @@ import numpy as np
 
 from numpy.typing import NDArray
 from scipy.linalg import solve_discrete_are, block_diag
-from casadi import SX
+from casadi import SX, vertcat
+from dataclasses import dataclass
 
 from mpc_datagen import mdg_linalg
 
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 
 
+@dataclass
+class PendulumOnCartConfig:
+    """
+    Configuration class for the inverted pendulum on cart system.
+
+    Parameters
+    ----------
+    m_cart : float, optional
+        Mass of the cart, by default 1.0
+    m_pole : float, optional
+        Mass of the pendulum, by default 0.1
+    length : float, optional
+        Length of the pendulum, by default 0.5
+    gravity : float, optional
+        Gravitational acceleration, by default 9.81
+    damping : float, optional
+        Damping coefficient, by default 1.0
+    """
+    m_cart: float = 1.0
+    m_pole: float = 0.1
+    length: float = 0.5
+    gravity: float = 9.81
+    damping: float = 1.0
+
+
+def _linearized_inverted_pendulum_on_cart_matrices(
+    cfg: PendulumOnCartConfig
+) -> tuple[np.ndarray, np.ndarray]:    
+    """Discretize the linearized inverted pendulum on cart dynamics 
+    around the upright (`s=1`) or down (`s=-1`) equilibrium 
+    with optional damping and sign flip.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Discrete-time state transition matrix (Ad) and control input matrix (Bd)
+    """
+    m_c = cfg.m_cart
+    m_p = cfg.m_pole
+    l = cfg.length
+    g = cfg.gravity
+    d = cfg.damping
+    ac = np.array(
+        [
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, -d / m_c, -(m_p * g) / m_c, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, - d / (m_c * l), ((m_c + m_p) * g) / (m_c * l), 0.0],
+        ],
+        dtype=np.float64,
+    )
+    bc = np.array(
+        [
+            [0.0],
+            [1.0 / m_c],
+            [0.0],
+            [1.0 / (m_c * l)],
+        ],
+        dtype=np.float64,
+    )
+
+    return ac, bc
+
+
 # %% Model Definition
 def get_model(
-    m_cart: float = 1.0,
-    m_pole: float = 0.1,
-    length: float = 0.5,
-    gravity: float = 9.81,
-    dynamics_type: str = "continuous",
-    ad: NDArray | None = None,
-    bd: NDArray | None = None,
+    cfg: PendulumOnCartConfig,
 ) -> AcadosModel:
     """Create an acados model for inverted pendulum on cart.
 
@@ -38,89 +97,54 @@ def get_model(
     force = u[0]
     del cart_pos  # symbolic state is kept for readability.
 
+    m_c = cfg.m_cart
+    m_p = cfg.m_pole
+    l = cfg.length
+    g = cfg.gravity
+    d = cfg.damping
+
     sin_theta = SX.sin(theta)
     cos_theta = SX.cos(theta)
-    denom = m_cart + m_pole * sin_theta * sin_theta
+    total_mass = m_c + m_p
 
-    x_ddot = (
-        force + m_pole * sin_theta * (length * theta_dot * theta_dot + gravity * cos_theta)
+    effective_force = force - d * cart_vel
+
+    denom = total_mass - m_p * cos_theta * cos_theta # always positive for m_c > 0 and m_p > 0
+
+    p_ddot = (
+        effective_force
+        + m_p * l * theta_dot * theta_dot * sin_theta
+        - m_p * g * sin_theta * cos_theta
     ) / denom
-    theta_ddot = (
-        -force * cos_theta
-        - m_pole * length * theta_dot * theta_dot * cos_theta * sin_theta
-        - (m_cart + m_pole) * gravity * sin_theta
-    ) / (length * denom)
 
-    f_expl = SX.vertcat(cart_vel, x_ddot, theta_dot, theta_ddot)
+    theta_ddot = (
+        effective_force * cos_theta
+        + m_p * l * theta_dot * theta_dot * sin_theta * cos_theta
+        + total_mass * g * sin_theta
+    ) / (l * denom)
+
+    f_expl = vertcat(cart_vel, p_ddot, theta_dot, theta_ddot)
 
     model = AcadosModel()
     model.name = "inv_pend_cart"
     model.x = x
     model.u = u
     model.p_global = p_global
-
-    if dynamics_type == "continuous":
-        model.f_expl_expr = f_expl
-        model.disc_dyn_expr = None
-    elif dynamics_type == "discrete":
-        if ad is None or bd is None:
-            raise ValueError("ad and bd must be provided for discrete dynamics_type.")
-        ad_sx = SX(ad)
-        bd_sx = SX(bd)
-        model.f_expl_expr = None
-        model.disc_dyn_expr = ad_sx @ x + bd_sx @ u
-    else:
-        raise ValueError(
-            f"Unsupported dynamics_type '{dynamics_type}'. Use 'continuous' or 'discrete'."
-        )
-
+    model.f_expl_expr = f_expl
     return model
-
-
-def _upright_linearized_matrices(
-    m_cart: float,
-    m_pole: float,
-    length: float,
-    gravity: float,
-) -> tuple[NDArray, NDArray]:
-    """Linearization around upright equilibrium ``theta=0``."""
-    a_c = np.array(
-        [
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, -(m_pole * gravity) / m_cart, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-            [0.0, 0.0, -((m_cart + m_pole) * gravity) / (m_cart * length), 0.0],
-        ],
-        dtype=float,
-    )
-    b_c = np.array(
-        [
-            [0.0],
-            [1.0 / m_cart],
-            [0.0],
-            [-1.0 / (m_cart * length)],
-        ],
-        dtype=float,
-    )
-    return a_c, b_c
 
 
 # %% OCP Solver Definition
 def get_ocp_solver(
     Q: NDArray, 
     R: NDArray,
-    P: NDArray | None = None,
     dt: float = 0.1, 
     N: int = 20,
     tol: float = 1e-8,
     terminal_mode: str = "regional",
     bounds_scale: float = 10.0,
-    dynamics_type: str = "continuous",
     terminal_box_halfwidth: float = 1.0,
-    m_cart: float = 1.0,
-    m_pole: float = 0.1,
-    length: float = 0.5,
-    gravity: float = 9.81,
+    sys_cfg: PendulumOnCartConfig = PendulumOnCartConfig(),
 ) -> tuple[AcadosOcpSolver, dict]:
     """Create an acados OCP solver for inverted pendulum on cart.
 
@@ -147,42 +171,18 @@ def get_ocp_solver(
     nx = 4
     nu = 1
 
-    A_c, B_c = _upright_linearized_matrices(
-        m_cart=m_cart,
-        m_pole=m_pole,
-        length=length,
-        gravity=gravity,
+    A_c, B_c = _linearized_inverted_pendulum_on_cart_matrices(
+        sys_cfg=sys_cfg
     )
-    A_d, B_d = mdg_linalg.lin_c2d_rk4(A_c, B_c, dt, num_steps=1)
 
     ocp = AcadosOcp()
-    if dynamics_type == "continuous":
-        ocp.model = get_model(
-            m_cart=m_cart,
-            m_pole=m_pole,
-            length=length,
-            gravity=gravity,
-            dynamics_type="continuous",
-        )
-        ocp.solver_options.integrator_type = "ERK"
-    elif dynamics_type == "discrete":
-        ocp.model = get_model(
-            m_cart=m_cart,
-            m_pole=m_pole,
-            length=length,
-            gravity=gravity,
-            dynamics_type="discrete",
-            ad=A_d,
-            bd=B_d,
-        )
-        ocp.solver_options.integrator_type = "DISCRETE"
-    else:
-        raise ValueError(f"Unsupported dynamics_type '{dynamics_type}'. Use 'continuous' or 'discrete'.")
+    ocp.model = get_model(cfg=sys_cfg)
+    ocp.solver_options.integrator_type = "ERK"
 
     ocp.p_global_values = np.zeros((1,))
 
-    if P is None and terminal_mode == "regional":
-        P = solve_discrete_are(A_d, B_d, Q, R)
+    A_d, B_d = mdg_linalg.lin_c2d_rk4(A_c, B_c, dt, num_steps=1)
+    P = solve_discrete_are(A_d, B_d, Q, R)
 
     # Solver options
     ocp.solver_options.N_horizon = N
@@ -194,8 +194,6 @@ def get_ocp_solver(
     ocp.solver_options.qp_solver_tol_eq   = tol  # Equality constraints
     ocp.solver_options.qp_solver_tol_ineq = tol  # Inequality constraints
     ocp.solver_options.qp_solver_tol_comp = tol  # Complementarity
-
-    # Erhöhe zur Sicherheit die maximalen Iterationen, falls er länger braucht
     ocp.solver_options.qp_solver_iter_max = 100
 
     # Cost setup
@@ -255,7 +253,6 @@ def get_ocp_solver(
         "terminal_mode": terminal_mode,
         "bounds_scale": bounds_scale,
     }
-
     
     solver = AcadosOcpSolver(ocp, json_file=f"{ocp.model.name}_ocp.json")
     return solver, info

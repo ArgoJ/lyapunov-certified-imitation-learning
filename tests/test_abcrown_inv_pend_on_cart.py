@@ -4,14 +4,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 import numpy as np
 import torch as th
 import torch.nn as nn
 from scipy.linalg import solve_discrete_are
 from scipy.signal import cont2discrete
-from tqdm import tqdm
 from dataclasses import dataclass
 
 plot_module = importlib.import_module("lcil.utils.plot")
@@ -242,18 +240,20 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
         sys_cfg = PendulumOnCartConfig()
         k_gain, p_value = _riccati_gain_and_value_matrix(sys_cfg)
         lyap_model = _RiccatiQuadraticLyapunov(p_value)
+        theta_bound = np.pi * 4.0 / 5.0
         config = cls.LyapunovCertificationConfig(
             state_dim=4,
             state_bounds=np.array(
                 [
-                    [-1.0, -1.0, -0.5, -1.0],
-                    [ 1.0,  1.0,  0.5,  1.0]
+                    [-5.0, -1.0, -theta_bound, -1.0],
+                    [ 5.0,  1.0,  theta_bound,  1.0]
                 ],
                 dtype=np.float32,
             ),
             kappa=0.001,
             invariance_weight=1.0,
-            cert_bins_per_dim=(2, 4, 6, 7),
+            rho_scaling=1.1,
+            cert_bins_per_dim=(3, 4, 6, 7),
             cert_center_refinement_factor=(0.6, 0.6, 0.5, 0.6),
             origin_exclusion=0.01,
             max_scale_steps=20,
@@ -396,7 +396,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
 
     def test_inverted_pendulum_on_cart_lqr(self) -> None:
         certifier = self._make_certifier()
-        rho_certified, result = certifier.certify(rho_estimate=10.0)
+        rho_certified, result = certifier.certify(rho_estimate=3.7)
 
         self.assertIsInstance(float(rho_certified), float)
         self.assertGreaterEqual(rho_certified, certifier.config.rho_min)

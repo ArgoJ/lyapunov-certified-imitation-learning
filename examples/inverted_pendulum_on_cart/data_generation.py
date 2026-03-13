@@ -20,7 +20,7 @@ from acados_ocp import get_ocp_solver
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate MPC imitation datasets for the double integrator."
+        description="Generate MPC imitation datasets for the inverted pendulum on cart."
     )
     parser.add_argument(
         "--n-samples",
@@ -43,7 +43,7 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--base-path",
         type=str,
-        default="results/double_integrator/data",
+        default="results/inverted_pendulum_on_cart/data",
         help="Base output path for generated datasets and plots.",
     )
     return parser
@@ -54,14 +54,8 @@ if __name__ == "__main__":
     parser = setup_parser()
     args = parser.parse_args()
 
-    # Continuous-time double integrator matrices (standard)
-    A_c = np.array([[0, 1],
-                    [0, 0]])
-    B_c = np.array([[0],
-                    [1]])
-
     # Cost matrices
-    Q = np.diag([15.0, 1.0])
+    Q = np.diag([1.0, 1.0, 10.0, 10.0])
     R = np.diag([0.1])
 
     base_path = args.base_path
@@ -72,16 +66,24 @@ if __name__ == "__main__":
     terminal_box_halfwidth = 2.0
 
     dt = 0.1
-    solver = get_ocp_solver(
+    solver, info = get_ocp_solver(
+        Q=Q,
+        R=R,
+        dt=dt,
+        N=T_sim,
+        tol=1e-8,
+        terminal_mode="regional",
+        bounds_scale=bounds_scale,
+        terminal_box_halfwidth=terminal_box_halfwidth,
     )
 
     sampler = UniqueBoundedSampler(
         bounds=np.array([solver.acados_ocp.constraints.lbx, solver.acados_ocp.constraints.ubx]),
-        min_dist=np.array([1e-2, 1e-3]),
+        min_dist=np.array([1e-2, 1e-3, 1e-2, 1e-3]),
         seed=4597525,
     )
     eps_cfg = EpsBandConfig(
-        eps_band=np.array([0.2, 1e-2]), 
+        eps_band=np.array([1.0, 1e-2, 1e-2, 1e-1]), 
         eps_consecutive=3
     )
     generator = MPCDataGenerator(
@@ -93,11 +95,12 @@ if __name__ == "__main__":
     )
     dataset = generator.generate(n_samples=n_samples)
     dataset.validate()
-    dataset.save(f"{base_path}/double_integrator_N{N}_data.hdf5")
+    dataset.save(f"{base_path}/inverted_pendulum_on_cart_N{T_sim}_data.hdf5")
 
     veri_stats = StabilityVerifier.verify(dataset, solver, alpha_required=1e-4)
     VerificationRender(veri_stats).render()
 
+    P = info["P"]
     lyap_fun = lambda x: 0.5 * mdg_linalg.weighted_quadratic_norm(x, P)
     roa_lyap_fun = lambda x: mdg_linalg.weighted_quadratic_norm(x, P)
     roa_cert = ROAVerifier(dataset[0].config)
@@ -117,5 +120,5 @@ if __name__ == "__main__":
         roa_lyapunov_func=roa_lyap_fun,
         c_level=c_min,
         roa_bounds=roa_bounds,
-        base_path=f"{base_path}/double_integrator_N{N}",
+        base_path=f"{base_path}/inverted_pendulum_on_cart_N{T_sim}_plots",
     )
