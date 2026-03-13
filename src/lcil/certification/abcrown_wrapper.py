@@ -3,9 +3,6 @@ from __future__ import annotations
 import torch as th
 import torch.nn as nn
 
-import os
-os.environ.setdefault("PYTORCH_JIT", "0")
-
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 from abcrown import (
     ABCrownSolver, 

@@ -6,9 +6,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-# Ensure abcrown/auto_LiRPA runs without TorchScript JIT in tests.
-os.environ["PYTORCH_JIT"] = "0"
-
 import numpy as np
 import torch as th
 import torch.nn as nn
@@ -18,6 +15,7 @@ from tqdm import tqdm
 from dataclasses import dataclass
 
 plot_module = importlib.import_module("lcil.utils.plot")
+base_models_module = importlib.import_module("lcil.utils.base_models")
 certified_regions_2d = plot_module.certified_regions_2d
 lyapunov = plot_module.lyapunov
 
@@ -29,8 +27,6 @@ class PendulumOnCartConfig:
 
     Parameters
     ----------
-    dt : float
-        Sampling time step for discretization
     m_cart : float, optional
         Mass of the cart, by default 1.0
     m_pole : float, optional
@@ -41,16 +37,15 @@ class PendulumOnCartConfig:
         Gravitational acceleration, by default 9.81
     damping : float, optional
         Damping coefficient, by default 1.0
-    s : int, optional
-        Sign of the equilibrium point (1 for upright, -1 for down), by default 1
+    dt : float
+        Sampling time step for discretization, by default 0.01
     """
     m_cart: float = 1.0
     m_pole: float = 0.1
     length: float = 0.5
     gravity: float = 9.81
     damping: float = 1.0
-    dt: float = 0.1
-    s: int = 1
+    dt: float = 0.01
 
 
 def _discrete_inverted_pendulum_on_cart_matrices(
@@ -67,27 +62,26 @@ def _discrete_inverted_pendulum_on_cart_matrices(
     tuple[np.ndarray, np.ndarray]
         Discrete-time state transition matrix (Ad) and control input matrix (Bd)
     """
-    M = config.m_cart
-    m = config.m_pole
+    m_c = config.m_cart
+    m_p = config.m_pole
     l = config.length
     g = config.gravity
-    s = config.s
     d = config.damping
     ac = np.array(
         [
             [0.0, 1.0, 0.0, 0.0],
-            [0.0, -d / M, -(m * g) / M, 0.0],
+            [0.0, -d / m_c, -(m_p * g) / m_c, 0.0],
             [0.0, 0.0, 0.0, 1.0],
-            [0.0, -s * d / (M * l), -s * ((M + m) * g) / (M * l), 0.0],
+            [0.0, - d / (m_c * l), ((m_c + m_p) * g) / (m_c * l), 0.0],
         ],
         dtype=np.float64,
     )
     bc = np.array(
         [
             [0.0],
-            [1.0 / M],
+            [1.0 / m_c],
             [0.0],
-            [s * 1.0 / (M * l)],
+            [1.0 / (m_c * l)],
         ],
         dtype=np.float64,
     )
@@ -146,7 +140,7 @@ class _NonlinearInvertedPendulumOnCartDynamics(nn.Module):
         super().__init__()
         self.cfg = cfg
 
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+    def _continuous_dynamics(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
         p = x[:, 0]
         p_dot = x[:, 1]
         theta = x[:, 2]
@@ -166,22 +160,24 @@ class _NonlinearInvertedPendulumOnCartDynamics(nn.Module):
         effective_force = force - d * p_dot
 
         denom = total_mass - m_p * cos_theta * cos_theta
-        denom = th.maximum(denom, th.full_like(denom, 1e-6))
 
         p_ddot = (
             effective_force
-            - m_p * l * theta_dot.pow(2) * sin_theta
+            + m_p * l * theta_dot.pow(2) * sin_theta
             - m_p * g * sin_theta * cos_theta
         ) / denom
 
         theta_ddot = (
             effective_force * cos_theta
-            - m_p * l * theta_dot.pow(2) * sin_theta * cos_theta
-            - total_mass * g * sin_theta
+            + m_p * l * theta_dot.pow(2) * sin_theta * cos_theta
+            + total_mass * g * sin_theta
         ) / (l * denom)
 
-        x_dot = th.stack([p_dot, p_ddot, theta_dot, theta_ddot], dim=1)
-        return 
+        return th.stack([p_dot, p_ddot, theta_dot, theta_ddot], dim=1)
+
+    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+        x_dot = self._continuous_dynamics(x, u)
+        return x + self.cfg.dt * x_dot
 
 
 class _RiccatiQuadraticLyapunov(nn.Module):
@@ -241,31 +237,21 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
         except Exception as exc:  # pragma: no cover - depends on local environment
             raise unittest.SkipTest(f"Could not import certifier modules: {exc}") from exc
 
-        cls._patchers = [
-            mock.patch.object(cls.certifier_base.__logger__, "tqdm", tqdm),
-        ]
-        for patcher in cls._patchers:
-            patcher.start()
-
     @classmethod
-    def tearDownClass(cls) -> None:
-        for patcher in getattr(cls, "_patchers", []):
-            patcher.stop()
-
-    @classmethod
-    def _make_certifier(cls, lyap_model: nn.Module):
+    def _make_certifier(cls):
         sys_cfg = PendulumOnCartConfig()
-        k_gain, _ = _riccati_gain_and_value_matrix(sys_cfg)
+        k_gain, p_value = _riccati_gain_and_value_matrix(sys_cfg)
+        lyap_model = _RiccatiQuadraticLyapunov(p_value)
         config = cls.LyapunovCertificationConfig(
             state_dim=4,
             state_bounds=np.array(
                 [
-                    [-0.1, -0.3, -0.2, -0.3],
-                    [ 0.1,  0.3,  0.2,  0.3],
+                    [-1.0, -1.0, -0.5, -1.0],
+                    [ 1.0,  1.0,  0.5,  1.0]
                 ],
                 dtype=np.float32,
             ),
-            kappa=0.05,
+            kappa=0.001,
             invariance_weight=1.0,
             cert_bins_per_dim=(2, 4, 6, 7),
             cert_center_refinement_factor=(0.6, 0.6, 0.5, 0.6),
@@ -409,10 +395,8 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
         )
 
     def test_inverted_pendulum_on_cart_lqr(self) -> None:
-        _, p_matrix = _riccati_gain_and_value_matrix(dt=0.1)
-        certifier = self._make_certifier(_RiccatiQuadraticLyapunov(p_matrix))
-
-        rho_certified, result = certifier.certify(rho_estimate=0.1)
+        certifier = self._make_certifier()
+        rho_certified, result = certifier.certify(rho_estimate=1.0)
 
         self.assertIsInstance(float(rho_certified), float)
         self.assertGreaterEqual(rho_certified, certifier.config.rho_min)

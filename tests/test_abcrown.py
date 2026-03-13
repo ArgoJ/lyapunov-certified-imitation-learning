@@ -6,9 +6,6 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-# Ensure abcrown/auto_LiRPA runs without TorchScript JIT in tests.
-os.environ["PYTORCH_JIT"] = "0"
-
 import numpy as np
 import torch as th
 import torch.nn as nn
