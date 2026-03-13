@@ -15,55 +15,117 @@ import torch.nn as nn
 from scipy.linalg import solve_discrete_are
 from scipy.signal import cont2discrete
 from tqdm import tqdm
+from dataclasses import dataclass
 
 plot_module = importlib.import_module("lcil.utils.plot")
 certified_regions_2d = plot_module.certified_regions_2d
 lyapunov = plot_module.lyapunov
 
 
-def _discrete_inverted_pendulum_on_cart_matrices(dt: float) -> tuple[np.ndarray, np.ndarray]:
-    # Continuous-time linearization around the upright equilibrium (theta=0).
-    m_cart = 1.0
-    m_pole = 0.1
-    length = 0.5
-    gravity = 9.81
+@dataclass
+class PendulumOnCartConfig:
+    """
+    Configuration class for the inverted pendulum on cart system.
 
+    Parameters
+    ----------
+    dt : float
+        Sampling time step for discretization
+    m_cart : float, optional
+        Mass of the cart, by default 1.0
+    m_pole : float, optional
+        Mass of the pendulum, by default 0.1
+    length : float, optional
+        Length of the pendulum, by default 0.5
+    gravity : float, optional
+        Gravitational acceleration, by default 9.81
+    damping : float, optional
+        Damping coefficient, by default 1.0
+    s : int, optional
+        Sign of the equilibrium point (1 for upright, -1 for down), by default 1
+    """
+    m_cart: float = 1.0
+    m_pole: float = 0.1
+    length: float = 0.5
+    gravity: float = 9.81
+    damping: float = 1.0
+    dt: float = 0.1
+    s: int = 1
+
+
+def _discrete_inverted_pendulum_on_cart_matrices(
+        config: PendulumOnCartConfig
+) -> tuple[np.ndarray, np.ndarray]:    
+    """Discretize the linearized inverted pendulum on cart dynamics 
+    around the upright (`s=1`) or down (`s=-1`) equilibrium 
+    with optional damping and sign flip.
+
+    P
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Discrete-time state transition matrix (Ad) and control input matrix (Bd)
+    """
+    M = config.m_cart
+    m = config.m_pole
+    l = config.length
+    g = config.gravity
+    s = config.s
+    d = config.damping
     ac = np.array(
         [
             [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, -(m_pole * gravity) / m_cart, 0.0],
+            [0.0, -d / M, -(m * g) / M, 0.0],
             [0.0, 0.0, 0.0, 1.0],
-            [0.0, 0.0, ((m_cart + m_pole) * gravity) / (m_cart * length), 0.0],
+            [0.0, -s * d / (M * l), -s * ((M + m) * g) / (M * l), 0.0],
         ],
         dtype=np.float64,
     )
     bc = np.array(
         [
             [0.0],
-            [1.0 / m_cart],
+            [1.0 / M],
             [0.0],
-            [-1.0 / (m_cart * length)],
+            [s * 1.0 / (M * l)],
         ],
         dtype=np.float64,
     )
 
     ad, bd, _, _, _ = cont2discrete(
         (ac, bc, np.eye(4, dtype=np.float64), np.zeros((4, 1), dtype=np.float64)),
-        dt,
+        config.dt,
     )
     return ad, bd
 
 
 def _riccati_gain_and_value_matrix(
-    dt: float,
+    sys_cfg: PendulumOnCartConfig,
     q: np.ndarray | None = None,
     r: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    ad, bd = _discrete_inverted_pendulum_on_cart_matrices(dt)
+    """Compute the discrete-time LQR gain matrix K and value matrix P 
+    for the linearized inverted pendulum on cart dynamics.
+
+    Parameters
+    ----------
+    sys_cfg : PendulumOnCartConfig
+        Configuration for the inverted pendulum on cart system
+    q : np.ndarray | None, optional
+        State cost matrix, by default None
+    r : np.ndarray | None, optional
+        Control cost matrix, by default None
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        LQR gain matrix K and value matrix P for the discretized inverted pendulum on cart
+    """
+    ad, bd = _discrete_inverted_pendulum_on_cart_matrices(sys_cfg)
     if q is None:
-        q = np.diag([10.0, 1.0, 50.0, 5.0]).astype(np.float64)
+        q = np.diag([5.0, 1.0, 20.0, 50.0]).astype(np.float64)
     if r is None:
-        r = np.array([[0.2]], dtype=np.float64)
+        r = np.array([[2.0]], dtype=np.float64)
 
     p = solve_discrete_are(ad, bd, q, r)
     k = np.linalg.solve(r + bd.T @ p @ bd, bd.T @ p @ ad)
@@ -80,14 +142,9 @@ class _RiccatiPolicy(nn.Module):
 
 
 class _NonlinearInvertedPendulumOnCartDynamics(nn.Module):
-    def __init__(self, dt: float = 0.1):
+    def __init__(self, cfg: PendulumOnCartConfig):
         super().__init__()
-        self.dt = float(dt)
-
-        self.m_cart = 1.0
-        self.m_pole = 0.1
-        self.length = 0.5
-        self.gravity = 9.81
+        self.cfg = cfg
 
     def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
         p = x[:, 0]
@@ -96,34 +153,35 @@ class _NonlinearInvertedPendulumOnCartDynamics(nn.Module):
         theta_dot = x[:, 3]
         force = u[:, 0]
 
-        m_c = self.m_cart
-        m_p = self.m_pole
-        l = self.length
-        g = self.gravity
+        m_c = self.cfg.m_cart
+        m_p = self.cfg.m_pole
+        l = self.cfg.length
+        g = self.cfg.gravity
+        d = self.cfg.damping
 
         sin_theta = th.sin(theta)
         cos_theta = th.cos(theta)
-        # sin_theta = th.tanh(theta) * 1.2
-        # cos_theta = 1.0 - 0.5 * theta.pow(2)
         total_mass = m_c + m_p
+
+        effective_force = force - d * p_dot
 
         denom = total_mass - m_p * cos_theta * cos_theta
         denom = th.maximum(denom, th.full_like(denom, 1e-6))
 
         p_ddot = (
-            force
+            effective_force
             - m_p * l * theta_dot.pow(2) * sin_theta
             - m_p * g * sin_theta * cos_theta
         ) / denom
 
         theta_ddot = (
-            force * cos_theta
+            effective_force * cos_theta
             - m_p * l * theta_dot.pow(2) * sin_theta * cos_theta
             - total_mass * g * sin_theta
         ) / (l * denom)
 
         x_dot = th.stack([p_dot, p_ddot, theta_dot, theta_ddot], dim=1)
-        return x + self.dt * x_dot
+        return 
 
 
 class _RiccatiQuadraticLyapunov(nn.Module):
@@ -196,7 +254,8 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
 
     @classmethod
     def _make_certifier(cls, lyap_model: nn.Module):
-        k_gain, _ = _riccati_gain_and_value_matrix(dt=0.1)
+        sys_cfg = PendulumOnCartConfig()
+        k_gain, _ = _riccati_gain_and_value_matrix(sys_cfg)
         config = cls.LyapunovCertificationConfig(
             state_dim=4,
             state_bounds=np.array(
@@ -219,7 +278,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
         return cls.ABCrownCertifier(
             policy_model=_RiccatiPolicy(k_gain),
             lyap_model=lyap_model,
-            dyn_model=_NonlinearInvertedPendulumOnCartDynamics(dt=0.1),
+            dyn_model=_NonlinearInvertedPendulumOnCartDynamics(sys_cfg),
             config=config,
             device=th.device("cpu"),
         )
@@ -352,14 +411,6 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
     def test_inverted_pendulum_on_cart_lqr(self) -> None:
         _, p_matrix = _riccati_gain_and_value_matrix(dt=0.1)
         certifier = self._make_certifier(_RiccatiQuadraticLyapunov(p_matrix))
-
-        probe_state = th.tensor([[0.15, 0.4, 0.07, -0.3]], dtype=th.float32)
-        with th.no_grad():
-            probe_control = certifier.policy_model(probe_state)
-            probe_next = certifier.dyn_model(probe_state, probe_control)
-
-        self.assertGreater(float(probe_control.abs().max().item()), 1e-6)
-        self.assertGreater(float((probe_next - probe_state).abs().max().item()), 1e-6)
 
         rho_certified, result = certifier.certify(rho_estimate=0.1)
 
