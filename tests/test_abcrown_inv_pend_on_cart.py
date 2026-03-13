@@ -159,7 +159,7 @@ class _NonlinearInvertedPendulumOnCartDynamics(nn.Module):
 
         effective_force = force - d * p_dot
 
-        denom = total_mass - m_p * cos_theta * cos_theta
+        denom = total_mass - m_p * cos_theta * cos_theta # always positive for m_c > 0 and m_p > 0
 
         p_ddot = (
             effective_force
@@ -396,7 +396,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
 
     def test_inverted_pendulum_on_cart_lqr(self) -> None:
         certifier = self._make_certifier()
-        rho_certified, result = certifier.certify(rho_estimate=1.0)
+        rho_certified, result = certifier.certify(rho_estimate=10.0)
 
         self.assertIsInstance(float(rho_certified), float)
         self.assertGreaterEqual(rho_certified, certifier.config.rho_min)
