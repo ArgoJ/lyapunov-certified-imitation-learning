@@ -171,16 +171,13 @@ def get_ocp_solver(
     nx = 4
     nu = 1
 
-    A_c, B_c = _linearized_inverted_pendulum_on_cart_matrices(
-        sys_cfg=sys_cfg
-    )
-
     ocp = AcadosOcp()
     ocp.model = get_model(cfg=sys_cfg)
     ocp.solver_options.integrator_type = "ERK"
 
     ocp.p_global_values = np.zeros((1,))
 
+    A_c, B_c = _linearized_inverted_pendulum_on_cart_matrices(cfg=sys_cfg)
     A_d, B_d = mdg_linalg.lin_c2d_rk4(A_c, B_c, dt, num_steps=1)
     P = solve_discrete_are(A_d, B_d, Q, R)
 

@@ -71,8 +71,8 @@ if __name__ == "__main__":
         R=R,
         dt=dt,
         N=T_sim,
-        tol=1e-8,
-        terminal_mode="regional",
+        tol=1e-4,
+        terminal_mode="none",
         bounds_scale=bounds_scale,
         terminal_box_halfwidth=terminal_box_halfwidth,
     )
@@ -108,7 +108,7 @@ if __name__ == "__main__":
 
     mdg_plots.all(
         dataset=dataset[:min(150, n_samples)],
-        state_labels=["x", "v"],
+        state_labels=["x", "v", "theta", "theta_dot"],
         control_labels=["a"],
         time_bound=T_sim * dt,
         plot_3d=True,
