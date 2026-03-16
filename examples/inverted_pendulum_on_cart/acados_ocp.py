@@ -110,16 +110,17 @@ def get_model(
     effective_force = force - d * cart_vel
 
     denom = total_mass - m_p * cos_theta * cos_theta # always positive for m_c > 0 and m_p > 0
+    theta2_sin_ml = m_p * l * theta_dot * theta_dot * sin_theta
 
     p_ddot = (
         effective_force
-        + m_p * l * theta_dot * theta_dot * sin_theta
+        + theta2_sin_ml
         - m_p * g * sin_theta * cos_theta
     ) / denom
 
     theta_ddot = (
         effective_force * cos_theta
-        + m_p * l * theta_dot * theta_dot * sin_theta * cos_theta
+        + theta2_sin_ml * cos_theta
         + total_mass * g * sin_theta
     ) / (l * denom)
 
@@ -142,8 +143,6 @@ def get_ocp_solver(
     N: int = 20,
     tol: float = 1e-8,
     terminal_mode: str = "regional",
-    bounds_scale: float = 10.0,
-    terminal_box_halfwidth: float = 1.0,
     sys_cfg: PendulumOnCartConfig = PendulumOnCartConfig(),
 ) -> tuple[AcadosOcpSolver, dict]:
     """Create an acados OCP solver for inverted pendulum on cart.
@@ -152,14 +151,17 @@ def get_ocp_solver(
     ----------
     Q, R : NDArray
         Stage cost matrices (x'Qx + u'Ru).
-    P : NDArray, optional
-        Terminal cost matrix (x_N' P x_N). If None, calculated via DARE on discretized system.
     dt : float
         Sampling time in seconds.
     N : int
         Number of control intervals.
     tol : float
         Solver tolerances for the QP solver.
+    terminal_mode : str
+        Terminal ingredients mode:
+        - "regional" (terminal constraints, DARE cost), 
+        - "lqr" (DARE cost only, no terminal constraints),
+        - "none" (no terminal constraints, no terminal cost),
 
     Returns
     -------
@@ -185,7 +187,7 @@ def get_ocp_solver(
     ocp.solver_options.N_horizon = N
     ocp.solver_options.tf = dt * N
     ocp.solver_options.qp_solver = "FULL_CONDENSING_HPIPM"
-    ocp.solver_options.hessian_approx = "EXACT"
+    ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
     ocp.solver_options.nlp_solver_type = "SQP"
     ocp.solver_options.qp_solver_tol_stat = tol  # Gradienten-Check
     ocp.solver_options.qp_solver_tol_eq   = tol  # Equality constraints
@@ -209,7 +211,7 @@ def get_ocp_solver(
 
     # Terminal cost / ingredients
     ocp.cost.cost_type_e = "LINEAR_LS"
-    if terminal_mode == "regional":
+    if terminal_mode in ("regional", "lqr"):
         ocp.cost.W_e = P
     else:
         # For "no terminal" scheme and for equilibrium terminal constraints,
@@ -220,26 +222,25 @@ def get_ocp_solver(
     # Constraints
     ocp.constraints.x0 = np.zeros((nx,))
 
-    # (Large) box constraints, used for feasibility and for the LQR terminal certificate sizing.
-    ocp.constraints.lbu = -bounds_scale * np.ones((nu,))
-    ocp.constraints.ubu = bounds_scale * np.ones((nu,))
+    # Hardcoded realistic bounds
+    F_MAX = 80.0
+    X_MAX = 2.0
+    V_MAX = 10.0
+    THETA_MAX = np.pi
+    THETA_DOT_MAX = 10.0
+
+    ocp.constraints.lbu = np.array([-F_MAX])
+    ocp.constraints.ubu = np.array([F_MAX])
     ocp.constraints.idxbu = np.arange(nu)
 
-    ocp.constraints.lbx = -bounds_scale * np.ones((nx,))
-    ocp.constraints.ubx = bounds_scale * np.ones((nx,))
+    ocp.constraints.lbx = np.array([-X_MAX, -V_MAX, -THETA_MAX, -THETA_DOT_MAX])
+    ocp.constraints.ubx = np.array([X_MAX, V_MAX, THETA_MAX, THETA_DOT_MAX])
     ocp.constraints.idxbx = np.arange(nx)
 
     if terminal_mode == "regional":
-        # A small terminal box around the equilibrium (proxy for a local terminal set X_f).
-        hw = float(terminal_box_halfwidth)
-        ocp.constraints.lbx_e = -hw * np.ones((nx,))
-        ocp.constraints.ubx_e = hw * np.ones((nx,))
-        ocp.constraints.idxbx_e = np.arange(nx)
-    if terminal_mode == "equilibrium":
-        # Exact equilibrium terminal constraint x(N) = 0.
-        ocp.constraints.lbx_e = np.zeros((nx,))
-        ocp.constraints.ubx_e = np.zeros((nx,))
-        ocp.constraints.idxbx_e = np.arange(nx)
+        ocp.constraints.lbx_e = ocp.constraints.lbx.copy()
+        ocp.constraints.ubx_e = ocp.constraints.ubx.copy()
+        ocp.constraints.idxbx_e = ocp.constraints.idxbx.copy()
 
     info = {
         "A_c": A_c,
@@ -248,7 +249,6 @@ def get_ocp_solver(
         "B_d": B_d,
         "P": P,
         "terminal_mode": terminal_mode,
-        "bounds_scale": bounds_scale,
     }
     
     solver = AcadosOcpSolver(ocp, json_file=f"{ocp.model.name}_ocp.json")

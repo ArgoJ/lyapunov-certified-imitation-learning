@@ -1,10 +1,15 @@
 # %% [markdown] 
-# # Double Integrator Example
+# # Inverted Pendulum on Cart - Data Generation
+# This script generates MPC closed-loop datasets for the inverted pendulum on cart 
+# system using an actual MPC solver. 
+# It simulates trajectories starting from random initial states, collects the data, and
+# performs some verification and visualization.
 
 
 # %% General Imports
 import argparse
 import numpy as np
+import logging
 
 import mpc_datagen.linalg as mdg_linalg
 import mpc_datagen.plots as mdg_plots
@@ -16,7 +21,9 @@ from mpc_datagen.verification import (
 )
 
 from acados_ocp import get_ocp_solver
+from pkg_logger import get_package_logger
 
+__logger__ = get_package_logger("mpc_datagen")
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -31,20 +38,19 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--t-sim",
         type=int,
-        default=40,
+        default=200,
         help="Simulation horizon length (number of MPC steps).",
-    )
-    parser.add_argument(
-        "--bound-scale",
-        type=float,
-        default=10.0,
-        help="Scale for box constraints on states and inputs in the OCP.",
     )
     parser.add_argument(
         "--base-path",
         type=str,
         default="results/inverted_pendulum_on_cart/data",
         help="Base output path for generated datasets and plots.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="If set, runs in debug mode with fewer samples and shorter simulation time.",
     )
     return parser
 
@@ -53,28 +59,26 @@ def setup_parser() -> argparse.ArgumentParser:
 if __name__ == "__main__":
     parser = setup_parser()
     args = parser.parse_args()
+    if args.debug:
+        __logger__.setLevel(logging.DEBUG)
 
     # Cost matrices
-    Q = np.diag([1.0, 1.0, 10.0, 10.0])
-    R = np.diag([0.1])
+    Q = np.diag([1.0, 1e-4, 2.0, 1e-4])
+    R = np.diag([1e-4])
 
     base_path = args.base_path
 
     T_sim = args.t_sim
     n_samples = args.n_samples
-    bounds_scale = args.bound_scale
-    terminal_box_halfwidth = 2.0
 
-    dt = 0.1
+    dt = 0.01
     solver, info = get_ocp_solver(
         Q=Q,
         R=R,
         dt=dt,
-        N=T_sim,
-        tol=1e-4,
-        terminal_mode="none",
-        bounds_scale=bounds_scale,
-        terminal_box_halfwidth=terminal_box_halfwidth,
+        N=20,
+        tol=1e-6,
+        terminal_mode="regional",
     )
 
     sampler = UniqueBoundedSampler(
@@ -83,7 +87,7 @@ if __name__ == "__main__":
         seed=4597525,
     )
     eps_cfg = EpsBandConfig(
-        eps_band=np.array([1.0, 1e-2, 1e-2, 1e-1]), 
+        eps_band=np.array([1e-1, 1e-2, 1e-2, 1e-1]), 
         eps_consecutive=3
     )
     generator = MPCDataGenerator(
@@ -93,7 +97,7 @@ if __name__ == "__main__":
         reset_solver=True,
         xeps_cfg=eps_cfg,
     )
-    dataset = generator.generate(n_samples=n_samples)
+    dataset = generator.generate(n_samples=n_samples, only_feasible=True)
     dataset.validate()
     dataset.save(f"{base_path}/inverted_pendulum_on_cart_N{T_sim}_data.hdf5")
 
@@ -111,12 +115,13 @@ if __name__ == "__main__":
         state_labels=["x", "v", "theta", "theta_dot"],
         control_labels=["a"],
         time_bound=T_sim * dt,
-        plot_3d=True,
+        plot_3d=False,
         plot_predictions=False,
-        alpha=1.0, # veri_stats.details["asym_stab_report"].min_alpha,
+        alpha=1.0, 
         use_optimal_v=False,
         lyapunov_func=lyap_fun,
-        lyap_use_optimal_v=True,
+        lyap_state_indices=[1, 2],
+        lyap_use_dataset_v=True,
         roa_lyapunov_func=roa_lyap_fun,
         c_level=c_min,
         roa_bounds=roa_bounds,
