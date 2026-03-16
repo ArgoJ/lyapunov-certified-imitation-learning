@@ -8,12 +8,12 @@ Act like a control + DL engineer: keep changes small, numerically careful, and c
 
 - Work from the repo root: `/home/josua/programming_stuff/projects/lyapunov-certified-imitation-learning`.
 - Before running anything that touches Python/acados, activate:
-  - `source ~/.ma_env/bin/activate`
+  - `source ~/.ma/bin/activate`
   - then run `python3 ...` from the repo root.
 
 ## Where To Look First
 
-- Data Generation: in mpc-datagen package (`/home/josua/programming_stuff/projects/mpc-datagen`)
+- Data Generation: in mpc-datagen package (`/home/josua/projects/ma/mpc-datagen`)
 - Imitation Learning: `src/lcil/imitation_learning`
 - Lyapunov Learning: `src/lcil/lypunov_learning/`
 - Certification: `src/lcil/certification/`
