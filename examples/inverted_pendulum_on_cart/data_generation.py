@@ -63,8 +63,13 @@ if __name__ == "__main__":
         __logger__.setLevel(logging.DEBUG)
 
     # Cost matrices
-    Q = np.diag([1.0, 1e-4, 2.0, 1e-4])
+    Q = np.diag([1.0, 1e-4, 1e-1, 1e-4])
     R = np.diag([1e-4])
+
+    # Sample only in a local region around the equilibrium to improve feasibility.
+    sample_percentages = np.array([0.75, 0.5, 0.25, 0.7], dtype=float)
+    sample_bias = np.array([0.0, 0.0, np.pi, 0.0], dtype=float)
+
 
     base_path = args.base_path
 
@@ -76,13 +81,15 @@ if __name__ == "__main__":
         Q=Q,
         R=R,
         dt=dt,
-        N=20,
+        N=22,
         tol=1e-6,
         terminal_mode="regional",
     )
 
     sampler = UniqueBoundedSampler(
         bounds=np.array([solver.acados_ocp.constraints.lbx, solver.acados_ocp.constraints.ubx]),
+        bias=sample_bias,
+        percentages=sample_percentages,
         min_dist=np.array([1e-2, 1e-3, 1e-2, 1e-3]),
         seed=4597525,
     )
@@ -99,7 +106,7 @@ if __name__ == "__main__":
     )
     dataset = generator.generate(n_samples=n_samples, only_feasible=True)
     dataset.validate()
-    dataset.save(f"{base_path}/inverted_pendulum_on_cart_N{T_sim}_data.hdf5")
+    dataset.save(f"{base_path}/inverted_pendulum_on_cart_N22_data.hdf5")
 
     veri_stats = StabilityVerifier.verify(dataset, solver, alpha_required=1e-4)
     VerificationRender(veri_stats).render()
@@ -125,5 +132,5 @@ if __name__ == "__main__":
         roa_lyapunov_func=roa_lyap_fun,
         c_level=c_min,
         roa_bounds=roa_bounds,
-        base_path=f"{base_path}/inverted_pendulum_on_cart_N{T_sim}_plots",
+        base_path=f"{base_path}/inverted_pendulum_on_cart_N22_plots",
     )

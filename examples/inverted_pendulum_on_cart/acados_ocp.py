@@ -38,9 +38,8 @@ class PendulumOnCartConfig:
 def _linearized_inverted_pendulum_on_cart_matrices(
     cfg: PendulumOnCartConfig
 ) -> tuple[np.ndarray, np.ndarray]:    
-    """Discretize the linearized inverted pendulum on cart dynamics 
-    around the upright (`s=1`) or down (`s=-1`) equilibrium 
-    with optional damping and sign flip.
+    """Linearized inverted pendulum on cart dynamics around the upright equilibrium
+    with optional damping.
 
     Returns
     -------
@@ -175,8 +174,6 @@ def get_ocp_solver(
 
     ocp = AcadosOcp()
     ocp.model = get_model(cfg=sys_cfg)
-    ocp.solver_options.integrator_type = "ERK"
-
     ocp.p_global_values = np.zeros((1,))
 
     A_c, B_c = _linearized_inverted_pendulum_on_cart_matrices(cfg=sys_cfg)
@@ -188,12 +185,17 @@ def get_ocp_solver(
     ocp.solver_options.tf = dt * N
     ocp.solver_options.qp_solver = "FULL_CONDENSING_HPIPM"
     ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
-    ocp.solver_options.nlp_solver_type = "SQP"
+    ocp.solver_options.nlp_solver_type = "SQP_RTI"
+    ocp.solver_options.sim_method_num_stages = 4
+    ocp.solver_options.sim_method_num_steps = 1
+    # ocp.solver_options.as_rti_iter = 3
+    # ocp.solver_options.as_rti_level = 3
     ocp.solver_options.qp_solver_tol_stat = tol  # Gradienten-Check
     ocp.solver_options.qp_solver_tol_eq   = tol  # Equality constraints
     ocp.solver_options.qp_solver_tol_ineq = tol  # Inequality constraints
     ocp.solver_options.qp_solver_tol_comp = tol  # Complementarity
     ocp.solver_options.qp_solver_iter_max = 100
+
 
     # Cost setup
     ocp.cost.cost_type_0 = "LINEAR_LS"
@@ -226,7 +228,7 @@ def get_ocp_solver(
     F_MAX = 80.0
     X_MAX = 2.0
     V_MAX = 10.0
-    THETA_MAX = np.pi
+    THETA_MAX = 6*np.pi
     THETA_DOT_MAX = 10.0
 
     ocp.constraints.lbu = np.array([-F_MAX])
