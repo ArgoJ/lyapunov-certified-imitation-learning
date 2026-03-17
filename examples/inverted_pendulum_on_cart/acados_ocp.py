@@ -184,12 +184,10 @@ def get_ocp_solver(
     ocp.solver_options.N_horizon = N
     ocp.solver_options.tf = dt * N
     ocp.solver_options.qp_solver = "FULL_CONDENSING_HPIPM"
-    ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
-    ocp.solver_options.nlp_solver_type = "SQP_RTI"
+    ocp.solver_options.hessian_approx = "EXACT"
+    ocp.solver_options.nlp_solver_type = "SQP"
     ocp.solver_options.sim_method_num_stages = 4
     ocp.solver_options.sim_method_num_steps = 1
-    # ocp.solver_options.as_rti_iter = 3
-    # ocp.solver_options.as_rti_level = 3
     ocp.solver_options.qp_solver_tol_stat = tol  # Gradienten-Check
     ocp.solver_options.qp_solver_tol_eq   = tol  # Equality constraints
     ocp.solver_options.qp_solver_tol_ineq = tol  # Inequality constraints
@@ -228,7 +226,7 @@ def get_ocp_solver(
     F_MAX = 80.0
     X_MAX = 2.0
     V_MAX = 10.0
-    THETA_MAX = 6*np.pi
+    THETA_MAX = 3*np.pi
     THETA_DOT_MAX = 10.0
 
     ocp.constraints.lbu = np.array([-F_MAX])
@@ -253,5 +251,5 @@ def get_ocp_solver(
         "terminal_mode": terminal_mode,
     }
     
-    solver = AcadosOcpSolver(ocp, json_file=f"{ocp.model.name}_ocp.json")
+    solver = AcadosOcpSolver(ocp, json_file=f"{ocp.model.name}_ocp.json", verbose=False)
     return solver, info
