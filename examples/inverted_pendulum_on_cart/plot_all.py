@@ -33,7 +33,7 @@ def main(args: argparse.Namespace) -> None:
         state_labels=["x", "v", "theta", "theta_dot"],
         control_labels=["a"],
         plot_predictions=False,
-        html_path=data_path.with_suffix(".html"),
+        html_path=data_path.parent / data_path.name.replace("data.hdf5", "plot_trajectories.html"),
     )
 
 

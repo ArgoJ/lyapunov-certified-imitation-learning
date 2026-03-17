@@ -139,7 +139,7 @@ def main():
         time_bound=T_sim * dt,
         plot_3d=False,
         plot_predictions=False,
-        alpha=1.0, 
+        alpha=veri_stats["asym_stab_report"].min_alpha, 
         use_optimal_v=False,
         lyapunov_func=lyap_fun,
         lyap_state_indices=[1, 2],
