@@ -3,36 +3,10 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.linalg import solve_discrete_are, block_diag
 from casadi import SX, vertcat
-from dataclasses import dataclass
-
 from mpc_datagen import mdg_linalg
+from sys_cfg import PendulumOnCartConfig
 
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
-
-
-@dataclass
-class PendulumOnCartConfig:
-    """
-    Configuration class for the inverted pendulum on cart system.
-
-    Parameters
-    ----------
-    m_cart : float, optional
-        Mass of the cart, by default 1.0
-    m_pole : float, optional
-        Mass of the pendulum, by default 0.1
-    length : float, optional
-        Length of the pendulum, by default 0.5
-    gravity : float, optional
-        Gravitational acceleration, by default 9.81
-    damping : float, optional
-        Damping coefficient, by default 1.0
-    """
-    m_cart: float = 1.0
-    m_pole: float = 0.1
-    length: float = 0.5
-    gravity: float = 9.81
-    damping: float = 1.0
 
 
 def _linearized_inverted_pendulum_on_cart_matrices(

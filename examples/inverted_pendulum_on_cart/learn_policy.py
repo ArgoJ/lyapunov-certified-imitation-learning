@@ -8,16 +8,18 @@ from mpc_datagen import MPCDataset
 from lcil.utils import EarlyStopping
 from lcil.imitation_learning_mlp import *
 
-from double_integrator_dyn import DoubleIntegratorDynamics
+from inv_pend_cart_dyn import InvertedPendulumOnCartDynamics
+from sys_cfg import PendulumOnCartConfig
+from model import InvertedPendulumOnCartPolicy
 
 
 def parse_cli_args() -> argparse.Namespace:
     """Parse command-line arguments for policy training."""
-    parser = argparse.ArgumentParser(description="Train a double-integrator imitation policy.")
+    parser = argparse.ArgumentParser(description="Train a inverted pendulum on cart imitation policy.")
     parser.add_argument(
         "--dataset-path",
         type=str,
-        default="/home/josua/programming_stuff/projects/mpc-datagen/data/double_integrator_regional_N20_data.hdf5",
+        default="/home/josua/programming_stuff/projects/mpc-datagen/data/inverted_pendulum_on_cart_regional_N20_data.hdf5",
         help="Path to the source MPC dataset (HDF5).",
     )
     parser.add_argument("--epochs", type=int, default=100, help="Number of policy training epochs.")
@@ -26,7 +28,7 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument(
         "--save-folder",
         type=str,
-        default="results/double_integrator",
+        default="results/inverted_pendulum_on_cart",
         help="Path where the trained model state dict will be saved.",
     )
     parser.add_argument(
@@ -49,12 +51,15 @@ def main() -> None:
         raise ValueError("MPCDataset is empty; cannot extract configuration.")
     dataset_cfg = source_dataset.global_config
 
-    net = MLPPolicy(
-        [dataset_cfg.nx, 16, 16, dataset_cfg.nu],
-        ["relu", "relu", "identity"],
+    feature_net = MLPPolicy(
+        [5, 24, 24, 24, dataset_cfg.nu],
+        ["relu", "relu", "relu", "identity"],
         u_min=dataset_cfg.constraints.lbu,
         u_max=dataset_cfg.constraints.ubu,
     )
+    net = InvertedPendulumOnCartPolicy(feature_net=feature_net).to(device)
+    
+    sys_cfg = PendulumOnCartConfig()
 
     train_loader, val_loader = create_train_and_val_dataloader(
         mpc_dataset=dataset_path,
@@ -75,8 +80,8 @@ def main() -> None:
             max_weight=1.0,
             min_weight=0.7),
         dynamics_loss=DynamicsAwareLoss(
-            dynamics=DoubleIntegratorDynamics(dt=dataset_cfg.dt), 
-            x_min=th.tensor(dataset_cfg.constraints.lbx), 
+            dynamics=InvertedPendulumOnCartDynamics(dt=dataset_cfg.dt, sys_cfg=sys_cfg),
+            x_min=th.tensor(dataset_cfg.constraints.lbx),
             x_max=th.tensor(dataset_cfg.constraints.ubx)),
         lambda_dyn=2.0,
     )

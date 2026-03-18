@@ -3,6 +3,8 @@ import torch.nn as nn
 
 from lcil.utils import RK4Integrator
 
+from sys_cfg import PendulumOnCartConfig
+
 
 class InvertedPendulumOnCartContinuousDynamics(nn.Module):
     """Continuous-time inverted pendulum on a cart dynamics.
@@ -13,18 +15,14 @@ class InvertedPendulumOnCartContinuousDynamics(nn.Module):
 
     def __init__(
         self,
-        m_cart: float = 1.0,
-        m_pole: float = 0.1,
-        length: float = 0.5,
-        gravity: float = 9.81,
-        damping: float = 1.0,
+        sys_cfg: PendulumOnCartConfig,
     ):
         super().__init__()
-        self.m_cart = float(m_cart)
-        self.m_pole = float(m_pole)
-        self.length = float(length)
-        self.gravity = float(gravity)
-        self.damping = float(damping)
+        self.m_cart = float(sys_cfg.m_cart)
+        self.m_pole = float(sys_cfg.m_pole)
+        self.length = float(sys_cfg.length)
+        self.gravity = float(sys_cfg.gravity)
+        self.damping = float(sys_cfg.damping)
 
     def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
         cart_vel = x[:, 1]
@@ -59,21 +57,11 @@ class InvertedPendulumOnCartDynamics(nn.Module):
     def __init__(
         self,
         dt: float = 0.1,
-        m_cart: float = 1.0,
-        m_pole: float = 0.1,
-        length: float = 0.5,
-        gravity: float = 9.81,
-        damping: float = 1.0,
+        sys_cfg: PendulumOnCartConfig = PendulumOnCartConfig(),
     ):
         super().__init__()
         self.dt = float(dt)
-        self.sys = InvertedPendulumOnCartContinuousDynamics(
-            m_cart=m_cart,
-            m_pole=m_pole,
-            length=length,
-            gravity=gravity,
-            damping=damping,
-        )
+        self.sys = InvertedPendulumOnCartContinuousDynamics(sys_cfg=sys_cfg)
         self.integrator = RK4Integrator(self.sys, dt=dt)
 
     def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
