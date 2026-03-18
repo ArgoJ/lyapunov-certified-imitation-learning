@@ -9,7 +9,7 @@ from typing import Sequence
 from dataclasses import dataclass, replace
 from abc import ABC, abstractmethod
 from numpy.typing import NDArray
-from pkg_logger import get_package_logger, PackageLogger
+from pkg_logger import get_package_logger, suppress_native_output
 
 from .config import LyapunovCertificationConfig
 from .models import ClosedLoopLyapunovConditionVerifier
@@ -64,7 +64,7 @@ class BaseCertifier(ABC):
         self.lyap_model = lyap_model.to(self.device).eval()
         self.dyn_model = dyn_model.to(self.device).eval()
 
-        self.bounds = self._resolve_bounds(config.state_bounds, device)
+        self.bounds = self._resolve_bounds(config.cert_bounds, device)
         
         self.regions = None
         self.verifier = None
@@ -166,12 +166,12 @@ class BaseCertifier(ABC):
         ])
 
     @staticmethod
-    def _resolve_bounds(state_bounds: Sequence[float], device: th.device) -> th.Tensor:
+    def _resolve_bounds(bounds: Sequence[float], device: th.device) -> th.Tensor:
         """Convert state bounds to a tensor on the target device.
 
         Parameters
         ----------
-        state_bounds : Sequence[float]
+        bounds : Sequence[float]
             Lower and upper bounds as ``(2, state_dim)``.
         device : th.device
             Device where the tensor should be allocated.
@@ -186,9 +186,9 @@ class BaseCertifier(ABC):
         ValueError
             If the bounds do not have shape ``(2, state_dim)``.
         """
-        bounds = th.as_tensor(state_bounds, dtype=th.float32, device=device)
+        bounds = th.as_tensor(bounds, dtype=th.float32, device=device)
         if bounds.ndim != 2 or bounds.shape[0] != 2:
-            raise ValueError("state_bounds must be a sequence of shape (2, nx) [lb, ub].")
+            raise ValueError("bounds must be a sequence of shape (2, nx) [lb, ub].")
         return bounds
 
     @staticmethod
@@ -232,7 +232,7 @@ class BaseCertifier(ABC):
             Suppression context if enabled, otherwise ``nullcontext``.
         """
         if self.config.suppress_native_output:
-            lirpa_ctx = PackageLogger.suppress_native_output(suppress_stderr=True)
+            lirpa_ctx = suppress_native_output(suppress_stderr=True)
         else:
             lirpa_ctx = nullcontext()
         return lirpa_ctx

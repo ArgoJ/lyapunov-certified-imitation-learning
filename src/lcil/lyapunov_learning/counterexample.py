@@ -71,9 +71,6 @@ def estimate_rho_from_boundary(
     device: th.device = th.device("cpu"),
 ) -> float:
     """Estimate a sublevel value rho from low-Lyapunov points on the boundary of B."""
-    if len(config.state_bounds) != config.state_dim:
-        raise ValueError("state_bounds must match state_dim.")
-
     bounds = _bounds_tensor(config.state_bounds, device)
     lbx, ubx = bounds[0], bounds[1]
     boundary_x, face_dims, is_ub = sample_boundary_points(

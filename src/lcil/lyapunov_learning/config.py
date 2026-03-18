@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from numpy.typing import NDArray
 
 
 @dataclass(frozen=True)
@@ -12,7 +12,7 @@ class LyapunovTrainingConfig:
     ----------
     state_dim : int
         Dimension of the system state.
-    state_bounds : tuple[Sequence[float], Sequence[float]]
+    state_bounds : NDArray
         Lower and upper bounds for each state dimension, used for sampling and certification. [lbx, ubx]
     initial_sample_size : int
         Number of initial random samples used for training.
@@ -72,7 +72,7 @@ class LyapunovTrainingConfig:
     """
 
     state_dim: int
-    state_bounds: tuple[Sequence[float], Sequence[float]]
+    state_bounds: NDArray
     initial_sample_size: int = 1000
     batch_size: int = 512
     outer_epochs: int = 10
@@ -100,3 +100,24 @@ class LyapunovTrainingConfig:
     l1_weight: float = 1e-5
     condition_tolerance: float = 1e-6
     condition_margin: float = 0.0
+
+    def __post_init__(self):
+        if self.learning_rate <= 0:
+            raise ValueError("Learning rate must be positive.")
+        if self.batch_size <= 0:
+            raise ValueError("Batch size must be positive.")
+        if self.roa_candidate_size <= 0:
+            raise ValueError("ROA candidate size must be positive.")
+        if self.outer_epochs <= 0:
+            raise ValueError("Outer epochs must be positive.")
+        if self.steps_per_epoch <= 0:
+            raise ValueError("Steps per epoch must be positive.")
+        if self.counterexample_every < 0:
+            raise ValueError("Counterexample mining interval must be non-negative.")
+        if self.rho_min <= 0:
+            raise ValueError("Minimum rho estimate must be positive.")
+        if self.state_bounds.shape[1] != self.state_dim:
+            raise ValueError(
+                "state_bounds must match state_dim. "
+                f"Expected {self.state_dim}, got {self.state_bounds.shape[1]} (maybe transposed, bound shape: {self.state_bounds.shape})."
+            )

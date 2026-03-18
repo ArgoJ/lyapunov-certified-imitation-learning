@@ -1,6 +1,5 @@
 import torch as th
 import torch.nn as nn
-from pathlib import Path
 
 
 class InvertedPendulumOnCartPolicy(nn.Module):

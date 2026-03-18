@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from numpy.typing import NDArray
 
 from ..lyapunov_learning.config import LyapunovTrainingConfig
 
@@ -14,8 +15,8 @@ class LyapunovCertificationConfig:
     ----------
     state_dim : int
         Dimension of the system state.
-    state_bounds : Sequence[float]
-        Per-dimension absolute bounds defining the certification region.
+    cert_bounds : NDArray
+        Per-dimension bounds defining the certification region with shape (2, state_dim): [lb, ub].
     kappa : float
         Exponential decay factor in the Lyapunov decrease condition.
     invariance_weight : float
@@ -47,7 +48,7 @@ class LyapunovCertificationConfig:
     """
 
     state_dim: int
-    state_bounds: Sequence[float]
+    cert_bounds: NDArray
     kappa: float = 0.05
     invariance_weight: float = 1.0
     rho_min: float = 1e-6
@@ -88,9 +89,9 @@ class LyapunovCertificationConfig:
             raise ValueError(
                 "cert_center_refinement_factor must be scalar or match state_dim."
             )
-        if any(factor <= 0.0 or factor > 1.0 for factor in refinement_factors):
+        if any((factor <= 0.0 or factor > 1.0) for factor in refinement_factors):
             raise ValueError(
-                "cert_center_refinement_factor must contain values in (0, 1]."
+                f"cert_center_refinement_factor must contain values in (0, 1]. Got: {str(refinement_factors)}"
             )
 
         # object.__setattr__, because of frozen=True
@@ -102,7 +103,7 @@ class LyapunovCertificationConfig:
     @staticmethod
     def from_training_config(
         config: LyapunovTrainingConfig,
-        state_bounds: Sequence[float] | None = None,
+        cert_bounds: NDArray | None = None,
         cert_bins_per_dim: int | Sequence[int] = 4,
         cert_center_refinement_factor: float | Sequence[float] = 1.0,
         cert_origin_exclusion: float | Sequence[float] | None = None,
@@ -119,7 +120,7 @@ class LyapunovCertificationConfig:
         """
         config_values = {
             "state_dim": config.state_dim,
-            "state_bounds": config.state_bounds if state_bounds is None else state_bounds,
+            "cert_bounds": config.state_bounds if cert_bounds is None else cert_bounds,
             "kappa": config.kappa,
             "invariance_weight": config.invariance_weight,
             "rho_min": config.rho_min,

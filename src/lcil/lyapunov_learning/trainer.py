@@ -47,8 +47,11 @@ class LyapunovTrainer:
         config: LyapunovTrainingConfig,
         device: th.device | str = "cpu"
     ) -> None:
-        self.config = self._resolve_config(config)
+        self.config = config
         self.device = th.device(device)
+        if self.config.seed is not None:
+            th.manual_seed(self.config.seed)
+            np.random.seed(self.config.seed)
 
         self.policy_model = policy_model.to(self.device)
         self.lyap_model = lyap_model.to(self.device)
@@ -61,33 +64,6 @@ class LyapunovTrainer:
         self.verifier: ClosedLoopLyapunovConditionVerifier | None = None
         self.trainable_params: list[nn.Parameter] = []
         self.results: LyapunovTrainingResult | None = None
-
-    @staticmethod
-    def _resolve_config(config: LyapunovTrainingConfig) -> LyapunovTrainingConfig:
-        """Utility to resolve and validate the training configuration."""
-        if config.learning_rate <= 0:
-            raise ValueError("Learning rate must be positive.")
-        if config.batch_size <= 0:
-            raise ValueError("Batch size must be positive.")
-        if config.roa_candidate_size <= 0:
-            raise ValueError("ROA candidate size must be positive.")
-        if config.outer_epochs <= 0:
-            raise ValueError("Outer epochs must be positive.")
-        if config.steps_per_epoch <= 0:
-            raise ValueError("Steps per epoch must be positive.")
-        if config.counterexample_every < 0:
-            raise ValueError("Counterexample mining interval must be non-negative.")
-        if config.rho_min <= 0:
-            raise ValueError("Minimum rho estimate must be positive.")
-        if len(config.state_bounds) != config.state_dim:
-            raise ValueError(
-                "state_bounds must match state_dim. "
-                f"Expected {config.state_dim}, got {len(config.state_bounds)}"
-            )
-        if config.seed is not None:
-            th.manual_seed(config.seed)
-            np.random.seed(config.seed)
-        return config
 
     @staticmethod
     def _resolve_bounds(state_bounds: NDArray, device: th.device) -> tuple[th.Tensor, th.Tensor]:
