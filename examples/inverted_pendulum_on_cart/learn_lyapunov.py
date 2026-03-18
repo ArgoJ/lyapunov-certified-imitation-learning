@@ -25,9 +25,9 @@ def parse_cli_args() -> argparse.Namespace:
         "--policy-path", type=str, default="results/inverted_pendulum_on_cart/20260318_114317/model.pt",
         help="Path to the trained fixed policy model checkpoint.")
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string.")
-    parser.add_argument("--initial-sample-size", type=int, default=50000, help="Training sample size.")
-    parser.add_argument("--batch-size", type=int, default=4096, help="Training batch size.")
-    parser.add_argument("--outer-epochs", type=int, default=1000, help="Number of outer epochs.")
+    parser.add_argument("--initial-sample-size", type=int, default=5000, help="Training sample size.")
+    parser.add_argument("--batch-size", type=int, default=2048, help="Training batch size.")
+    parser.add_argument("--outer-epochs", type=int, default=500, help="Number of outer epochs.")
     parser.add_argument("--steps-per-epoch", type=int, default=10, help="Gradient steps per epoch.")
     parser.add_argument(
         "--counterexample-every", type=int, default=10,
@@ -35,10 +35,10 @@ def parse_cli_args() -> argparse.Namespace:
     
     # Grid Search Parameters (accept multiple values)
     parser.add_argument("--learning-rate", nargs='+', type=float, default=[5e-3], help="Optimizer learning rate(s).")
-    parser.add_argument("--kappa", nargs='+', type=float, default=[0.05, 0.08], help="Lyapunov decrease margin kappa(s).")
+    parser.add_argument("--kappa", nargs='+', type=float, default=[0.005, 0.015], help="Lyapunov decrease margin kappa(s).")
     parser.add_argument("--invariance-weight", nargs='+', type=float, default=[1.0], help="Invariance loss weight(s).")
-    parser.add_argument("--rho-growth-gamma", nargs='+', type=float, default=[1.1], help="ROA rho growth factor(s).")
-    parser.add_argument("--roa-weight", nargs='+', type=float, default=[0.5], help="ROA objective weight(s).")
+    parser.add_argument("--rho-growth-gamma", nargs='+', type=float, default=[1.5], help="ROA rho growth factor(s).")
+    parser.add_argument("--roa-weight", nargs='+', type=float, default=[2.0], help="ROA objective weight(s).")
     parser.add_argument("--l1-weight", nargs='+', type=float, default=[1e-5], help="L1 regularization weight(s).")
 
     parser.add_argument("--seed", type=int, default=5912354, help="Random seed.")
@@ -91,9 +91,17 @@ def main() -> None:
         rollout_dataset = MPCDataset.load(rollout_dataset_path)
 
     state_bounds = np.vstack([feature_net.global_config.constraints.lbx, feature_net.global_config.constraints.ubx])
-    cert_percentage = np.array([0.8, 0.6, 0.2, 0.6])
+    
+    # Pendulum is only stabilizable in a much smaller region around the upward position
+    # The full state bounds [-2, 10, -9.4, 10] are too large for the policy to stabilize everywhere.
+    # We restrict training and certification bounds to a realistic stabilizable region.
+    training_bounds_percentage = np.array([0.5, 0.4, 0.15, 0.4])
+    cert_percentage = np.array([0.4, 0.3, 0.1, 0.3])
+    
+    training_bounds = state_bounds * training_bounds_percentage[:, None].T
     cert_bounds = state_bounds * cert_percentage[:, None].T # Shape (2, state_dim)
     print(f"State bounds:\n{state_bounds}")
+    print(f"Using training bounds:\n{training_bounds}")
     print(f"Using certification bounds:\n{cert_bounds}")
 
     # Generate all combinations for the grid search
@@ -132,7 +140,7 @@ def main() -> None:
         # ---------------------------------------------------------------------
         training_config = LyapunovTrainingConfig(
             state_dim=feature_net.global_config.nx,
-            state_bounds=state_bounds,
+            state_bounds=training_bounds,
             initial_sample_size=args.initial_sample_size,
             batch_size=args.batch_size,
             outer_epochs=args.outer_epochs,
