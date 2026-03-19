@@ -1,9 +1,9 @@
 import numpy as np
+import casadi as ca
 
 from numpy.typing import NDArray
 from scipy.linalg import solve_discrete_are, block_diag
-from casadi import SX, vertcat
-from mpc_datagen import mdg_linalg
+from mpc_datagen import mdg_linalg, get_temp_solver
 from sys_cfg import PendulumOnCartConfig
 
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
@@ -14,6 +14,11 @@ def _linearized_inverted_pendulum_on_cart_matrices(
 ) -> tuple[np.ndarray, np.ndarray]:    
     """Linearized inverted pendulum on cart dynamics around the upright equilibrium
     with optional damping.
+
+    Parameters
+    ----------
+    cfg : PendulumOnCartConfig
+        System configuration parameters.
 
     Returns
     -------
@@ -53,58 +58,81 @@ def get_model(
 ) -> AcadosModel:
     """Create an acados model for inverted pendulum on cart.
 
+    Parameters
+    ----------
+    cfg : PendulumOnCartConfig
+        System configuration parameters.
+    
+    Returns
+    -------
+    AcadosModel
+        Acados model object representing the inverted pendulum on cart dynamics.
+
+    Note
+    ----
     State is ``x = [cart_pos, cart_vel, pole_angle, pole_ang_vel]`` and input is
     cart force ``u``.
     """
-    nx = 4
-    nu = 1
+    model_name = 'pendulum'
 
-    x = SX.sym("x", nx)
-    u = SX.sym("u", nu)
-    p_global = SX.sym("p_global", 1)
-
-    cart_pos = x[0]
-    cart_vel = x[1]
-    theta = x[2]
-    theta_dot = x[3]
-    force = u[0]
-    del cart_pos  # symbolic state is kept for readability.
-
+    # constants
     m_c = cfg.m_cart
     m_p = cfg.m_pole
     l = cfg.length
     g = cfg.gravity
     d = cfg.damping
 
-    sin_theta = SX.sin(theta)
-    cos_theta = SX.cos(theta)
+    # set up states & controls
+    x1      = ca.SX.sym('x1')
+    theta   = ca.SX.sym('theta')
+    v1      = ca.SX.sym('v1')
+    dtheta  = ca.SX.sym('dtheta')
+
+    x = ca.vertcat(x1, v1, theta, dtheta)
+
+    F = ca.SX.sym('F')
+    u = ca.vertcat(F)
+
+    # parameters
+    p = []
+
+    # dynamics
+    cos_theta = ca.cos(theta)
+    sin_theta = ca.sin(theta)
+    
     total_mass = m_c + m_p
 
-    effective_force = force - d * cart_vel
+    effective_force = F - d * v1
 
     denom = total_mass - m_p * cos_theta * cos_theta # always positive for m_c > 0 and m_p > 0
-    theta2_sin_ml = m_p * l * theta_dot * theta_dot * sin_theta
+    theta2_sin_ml = m_p * l * dtheta * dtheta * sin_theta
 
     p_ddot = (
         effective_force
-        + theta2_sin_ml
-        - m_p * g * sin_theta * cos_theta
+        - theta2_sin_ml
+        + m_p * g * sin_theta * cos_theta
     ) / denom
 
     theta_ddot = (
         effective_force * cos_theta
-        + theta2_sin_ml * cos_theta
+        - theta2_sin_ml * cos_theta
         + total_mass * g * sin_theta
     ) / (l * denom)
 
-    f_expl = vertcat(cart_vel, p_ddot, theta_dot, theta_ddot)
+    f_expl = ca.vertcat(v1, p_ddot, dtheta, theta_ddot)
 
     model = AcadosModel()
-    model.name = "inv_pend_cart"
+
+    model.f_expl_expr = f_expl
     model.x = x
     model.u = u
-    model.p_global = p_global
-    model.f_expl_expr = f_expl
+    model.p = p
+    model.name = model_name
+
+    model.x_labels = ['$x$ [m]', r'$\theta$ [rad]', '$v$ [m]', r'$\dot{\theta}$ [rad/s]']
+    model.u_labels = ['$F$ [N]']
+    model.t_label = '$t$ [s]'
+
     return model
 
 
@@ -112,11 +140,11 @@ def get_model(
 def get_ocp_solver(
     Q: NDArray, 
     R: NDArray,
-    dt: float = 0.1, 
-    N: int = 20,
-    tol: float = 1e-8,
+    dt: float = 0.05, 
+    N: int = 40,
     terminal_mode: str = "regional",
     sys_cfg: PendulumOnCartConfig = PendulumOnCartConfig(),
+    use_temp_dir: bool = True,
 ) -> tuple[AcadosOcpSolver, dict]:
     """Create an acados OCP solver for inverted pendulum on cart.
 
@@ -145,10 +173,10 @@ def get_ocp_solver(
     """
     nx = 4
     nu = 1
+    ny = nx + nu
 
     ocp = AcadosOcp()
     ocp.model = get_model(cfg=sys_cfg)
-    ocp.p_global_values = np.zeros((1,))
 
     A_c, B_c = _linearized_inverted_pendulum_on_cart_matrices(cfg=sys_cfg)
     A_d, B_d = mdg_linalg.lin_c2d_rk4(A_c, B_c, dt, num_steps=1)
@@ -158,43 +186,44 @@ def get_ocp_solver(
     ocp.solver_options.N_horizon = N
     ocp.solver_options.tf = dt * N
     ocp.solver_options.qp_solver = "FULL_CONDENSING_HPIPM"
-    ocp.solver_options.hessian_approx = "EXACT"
+    ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
     ocp.solver_options.nlp_solver_type = "SQP"
+    ocp.solver_options.integrator_type = 'ERK'
+    ocp.solver_options.print_level = 0
     ocp.solver_options.sim_method_num_stages = 4
     ocp.solver_options.sim_method_num_steps = 1
-    ocp.solver_options.qp_solver_tol_stat = tol  # Gradienten-Check
-    ocp.solver_options.qp_solver_tol_eq   = tol  # Equality constraints
-    ocp.solver_options.qp_solver_tol_ineq = tol  # Inequality constraints
-    ocp.solver_options.qp_solver_tol_comp = tol  # Complementarity
-    ocp.solver_options.qp_solver_iter_max = 100
+    ocp.solver_options.qp_solver_iter_max = 200
+    ocp.solver_options.nlp_solver_max_iter = 200
 
 
     # Cost setup
     ocp.cost.cost_type_0 = "LINEAR_LS"
     ocp.cost.cost_type = "LINEAR_LS"
+    ocp.cost.cost_type_e = "LINEAR_LS"
 
     W = block_diag(Q, R)
     ocp.cost.W_0 = W
     ocp.cost.W = W
     ocp.cost.Vx_0 = np.vstack((np.eye(nx), np.zeros((nu, nx))))
     ocp.cost.Vu_0 = np.vstack((np.zeros((nx, nu)), np.eye(nu)))
-    ocp.cost.yref_0 = np.zeros((nx + nu,))
+    ocp.cost.yref_0 = np.zeros((ny,))
     ocp.cost.Vx = np.vstack((np.eye(nx), np.zeros((nu, nx))))
     ocp.cost.Vu = np.vstack((np.zeros((nx, nu)), np.eye(nu)))
-    ocp.cost.yref = np.zeros((nx + nu,))
+    ocp.cost.yref = np.zeros((ny,))
 
-    # Terminal cost / ingredients
-    ocp.cost.cost_type_e = "LINEAR_LS"
+    # Terminal cost
     if terminal_mode in ("regional", "lqr"):
         ocp.cost.W_e = P
+    elif terminal_mode == "stage":
+        ocp.cost.W_e = Q
     else:
-        # For "no terminal" scheme and for equilibrium terminal constraints,
         ocp.cost.W_e = np.zeros((nx, nx))
     ocp.cost.Vx_e = np.eye(nx)
     ocp.cost.yref_e = np.zeros((nx,))
 
     # Constraints
-    ocp.constraints.x0 = np.zeros((nx,))
+    ocp.constraints.x0 = np.array([0.0, np.pi, 0.0, 0.0])
+    # ocp.remove_x0_elimination()
 
     # Hardcoded realistic bounds
     F_MAX = 80.0
@@ -225,5 +254,11 @@ def get_ocp_solver(
         "terminal_mode": terminal_mode,
     }
     
-    solver = AcadosOcpSolver(ocp, json_file=f"{ocp.model.name}_ocp.json", verbose=False)
+
+    if use_temp_dir:
+        solver = get_temp_solver(ocp, verbose=False)
+    else:
+        solver = AcadosOcpSolver(ocp, json_file=f"{ocp.model.name}_ocp.json", verbose=False)
     return solver, info
+
+# %%

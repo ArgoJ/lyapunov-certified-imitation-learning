@@ -10,6 +10,8 @@
 import argparse
 import numpy as np
 import logging
+from pathlib import Path
+from datetime import datetime
 
 import mpc_datagen.linalg as mdg_linalg
 import mpc_datagen.plots as mdg_plots
@@ -75,14 +77,14 @@ def main():
         __logger__.setLevel(logging.DEBUG)
 
     # Cost matrices
-    Q = np.diag([1.0, 1e-4, 1e-1, 1e-4])
-    R = np.diag([1e-4])
+    Q = np.diag([1e1, 1e-2, 1e2, 1e-2])
+    R = np.diag([1e-2])
 
-    # Sample only in a local region around the equilibrium to improve feasibility.
+    # Sample in a tighter local region around the equilibrium to improve feasibility
     sample_percentages = np.array([1.0, 1.0, 0.333, 1.0], dtype=float)
     sample_bias = np.array([0.0, 0.0, 0.0, 0.0], dtype=float)
 
-    base_path = args.base_path
+    base_path = Path(args.base_path) / datetime.now().strftime('%Y%m%d_%H%M%S')
 
     T_sim = args.t_sim
     n_samples = args.n_samples
@@ -90,23 +92,23 @@ def main():
 
     dt = 0.05
     solver, info = get_ocp_solver(
-        Q=Q,
-        R=R,
+        Q, R,
         dt=dt,
         N=N,
-        tol=1e-6,
-        terminal_mode="regional",
+        terminal_mode="none",
     )
+    
+    bounds = np.vstack((solver.acados_ocp.constraints.lbx, solver.acados_ocp.constraints.ubx))
 
     sampler = UniqueBoundedSampler(
-        bounds=np.array([solver.acados_ocp.constraints.lbx, solver.acados_ocp.constraints.ubx]),
+        bounds=bounds,
         bias=sample_bias,
         percentages=sample_percentages,
-        min_dist=np.array([1e-2, 1e-3, 1e-4, 1e-3]),
+        min_dist=np.array([1e-2, 1e-3, 1e-3, 1e-3]),
         seed=4597525,
     )
     eps_cfg = EpsBandConfig(
-        eps_band=np.array([1e-1, 1e-2, 1e-2, 1e-1]), 
+        eps_band=np.array([1e-3, 1e-2, 1e-3, 1e-2]), 
         eps_consecutive=3
     )
     generator = MPCDataGenerator(
@@ -115,12 +117,11 @@ def main():
         sampler=sampler,
         xeps_cfg=eps_cfg,
         reset_solver=True,
-        solver_regen_interval=50,
+        solver_regen_interval=20,
     )
     dataset = generator.generate(n_samples=n_samples, only_feasible=True)
     dataset = normalize_dataset(dataset)
-    report = dataset.validate()
-    __logger__.info(f"Dataset generation report:\n{report}")
+    dataset.validate(tol_stability=0.1)
     dataset.save(f"{base_path}/inverted_pendulum_on_cart_N{N}_data.hdf5")
 
     veri_stats = StabilityVerifier.verify(dataset, solver, alpha_required=1e-4)
@@ -132,6 +133,7 @@ def main():
     roa_cert = ROAVerifier(dataset[0].config)
     roa_bounds, c_min = roa_cert.roa_bounds()
 
+    alpha = 1.0 if veri_stats.details.get("asym_stab_report", None) is None else veri_stats.details["asym_stab_report"].min_alpha
     mdg_plots.all(
         dataset=dataset[:min(150, n_samples)],
         state_labels=["x", "v", "theta", "theta_dot"],
@@ -139,7 +141,7 @@ def main():
         time_bound=T_sim * dt,
         plot_3d=False,
         plot_predictions=False,
-        alpha=veri_stats["asym_stab_report"].min_alpha, 
+        alpha=alpha,
         use_optimal_v=False,
         lyapunov_func=lyap_fun,
         lyap_state_indices=[1, 2],

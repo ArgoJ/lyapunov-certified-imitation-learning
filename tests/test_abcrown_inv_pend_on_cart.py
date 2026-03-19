@@ -240,7 +240,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
         sys_cfg = PendulumOnCartConfig()
         k_gain, p_value = _riccati_gain_and_value_matrix(sys_cfg)
         lyap_model = _RiccatiQuadraticLyapunov(p_value)
-        theta_bound = np.pi * 4.0 / 5.0
+        theta_bound = np.pi * 0.999 # TODO: maybe increas to 2/3 pi to test more challenging region shapes?
         config = cls.LyapunovCertificationConfig(
             state_dim=4,
             state_bounds=np.array(
