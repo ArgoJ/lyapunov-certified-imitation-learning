@@ -154,7 +154,7 @@ def main() -> None:
 
         certification_config = LyapunovCertificationConfig.from_training_config(
             training_config,
-            cert_bins_per_dim=args.cert_bins_per_dim,
+            bins_per_dim=args.cert_bins_per_dim,
             cert_origin_exclusion=None,
             cert_rho_scaling=args.cert_rho_scaling,
             cert_bisection_tol=args.cert_bisection_tol,

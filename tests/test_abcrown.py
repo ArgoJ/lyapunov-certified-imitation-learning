@@ -104,15 +104,18 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
     def _make_certifier(cls, lyap_model: nn.Module):
         config = cls.LyapunovCertificationConfig(
             state_dim=3,
-            state_bounds=np.array([[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]], dtype=np.float32),
+            cert_bounds=np.array([[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]], dtype=np.float32),
             kappa=0.1,
             invariance_weight=1.0,
-            cert_bins_per_dim=4,
+            bins_per_dim=4,
             origin_exclusion=0.0,
             max_scale_steps=6,
             max_bisection_steps=6,
             cert_method="alpha-crown",
             condition_tolerance=1e-6,
+            suppress_native_output=True,
+            batch_size=512,
+            max_recursion_depth=5,
         )
         return cls.ABCrownCertifier(
             policy_model=_ZeroPolicy(),

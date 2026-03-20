@@ -6,9 +6,10 @@ import numpy as np
 
 from contextlib import nullcontext
 from typing import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from numpy.typing import NDArray
+from auto_LiRPA import BoundedTensor, PerturbationLpNorm, BoundedModule
 from pkg_logger import get_package_logger, suppress_native_output
 
 from .config import LyapunovCertificationConfig
@@ -24,6 +25,17 @@ class RegionCertificationResult:
     counter_examples: NDArray
     failed_regions: NDArray
     certified_regions: NDArray
+
+
+class _NegatedLyapunovModelWrapper(nn.Module):
+    """Wrap ``V(x)`` as ``-V(x)`` for outside-sublevel proofs."""
+
+    def __init__(self, lyap_model: nn.Module):
+        super().__init__()
+        self.lyap_model = lyap_model
+
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        return -self.lyap_model(x)
 
 
 class BaseCertifier(ABC):
@@ -65,7 +77,9 @@ class BaseCertifier(ABC):
         self.dyn_model = dyn_model.to(self.device).eval()
 
         self.bounds = self._resolve_bounds(config.cert_bounds, device)
-        
+        self.ibp_filter_model = self._get_ibp_filter(
+            self.lyap_model, config.state_dim, device
+        ) if config.use_ibp_filter else None
         self.regions = None
         self.verifier = None
 
@@ -237,18 +251,63 @@ class BaseCertifier(ABC):
             lirpa_ctx = nullcontext()
         return lirpa_ctx
 
+    @staticmethod
+    def _get_ibp_filter(lyap_model: nn.Module, input_size: int, device: th.device) -> BoundedModule:
+        if not isinstance(lyap_model, nn.Module):
+            raise ValueError("Lyapunov model must be provided to construct IBP filter.")
+    
+        negated_lyap_model = _NegatedLyapunovModelWrapper(lyap_model).to(device)
+        negated_lyap_model.eval()
+        dummy_x = th.zeros(1, input_size, device=device)
+        return BoundedModule(
+            negated_lyap_model,
+            (dummy_x,),
+            device=device,
+            verbose=False,
+            bound_opts={"perturb_bound": True},
+        )
+
     def _filter_sublevel_regions(
         self,
         lbs: th.Tensor,
         ubs: th.Tensor,
         rho: float,
     ) -> tuple[th.Tensor, th.Tensor]:
-        """Optionally prune boxes proven to lie completely outside ``V(x) <= rho``.
+        """Keep only boxes not proven to satisfy ``V(x) > rho`` everywhere."""
+        if len(lbs) == 0:
+            return lbs, ubs
 
-        The default implementation performs no pruning. Backends may override
-        this with a sound lower-bound check for the Lyapunov model.
-        """
-        return lbs, ubs
+        keep_mask = th.ones(len(lbs), dtype=th.bool, device=self.device)
+        negated_threshold = -float(rho)
+
+        for start_idx in range(0, len(lbs), self.config.batch_size):
+            end_idx = min(start_idx + self.config.batch_size, len(lbs))
+            batch_lbs = lbs[start_idx:end_idx]
+            batch_ubs = ubs[start_idx:end_idx]
+            batch_centers = 0.5 * (batch_lbs + batch_ubs)
+
+            ptb = PerturbationLpNorm(norm=float("inf"), x_L=batch_lbs, x_U=batch_ubs)
+            bounded_input = BoundedTensor(batch_centers, ptb)
+
+            with th.no_grad():
+                _, ub_out = self.ibp_filter_model.compute_bounds(
+                    x=(bounded_input,),
+                    method="ibp",
+                )
+
+            batch_is_outside = ub_out.flatten() <= negated_threshold
+            keep_mask[start_idx:end_idx] = ~batch_is_outside
+
+        if keep_mask.all():
+            return lbs, ubs
+
+        __logger__.info(
+            "Pruned %d / %d regions proven outside V(x) <= %.6f.",
+            int((~keep_mask).sum().item()),
+            len(lbs),
+            float(rho),
+        )
+        return lbs[keep_mask], ubs[keep_mask]
 
     def _setup_verifier(self) -> ClosedLoopLyapunovConditionVerifier:
         """Construct and initialize the closed-loop Lyapunov verifier.
@@ -258,15 +317,18 @@ class BaseCertifier(ABC):
         ClosedLoopLyapunovConditionVerifier
             Verifier module moved to ``self.device`` and set to eval mode.
         """
+        lbx_batched = self.bounds[0].unsqueeze(0)
+        ubx_batched = self.bounds[1].unsqueeze(0)
+
         verifier = ClosedLoopLyapunovConditionVerifier(
             policy_model=self.policy_model,
             lyap_model=self.lyap_model,
             dyn_model=self.dyn_model,
-            lbx=self.bounds[0],
-            ubx=self.bounds[1],
+            lbx=lbx_batched,
+            ubx=ubx_batched,
             invariance_weight=self.config.invariance_weight,
-        ).to(self.device)
-        verifier.eval()
+        )
+
         return verifier
 
     def _resolve_origin_exclusion(self) -> th.Tensor:
@@ -318,7 +380,7 @@ class BaseCertifier(ABC):
             collect_details: bool, 
             depth: int, 
             max_depth: int,
-            filter: bool = False,
+            use_filter: bool = True
     ) -> tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         """Recursively certify axis-aligned regions for a fixed ``rho``.
 
@@ -338,7 +400,7 @@ class BaseCertifier(ABC):
             Current recursion depth.
         max_depth : int
             Maximum subdivision depth for failed regions.
-        filter : bool, optional
+        use_filter : bool, optional
             Filter the regions beforehand.
 
         Returns
@@ -352,8 +414,9 @@ class BaseCertifier(ABC):
             empty = th.empty((0, self.config.state_dim), device=self.device)
             return empty, empty, empty, empty, empty
 
-        if filter:
+        if not self.config.use_ibp_filter or not use_filter or self.ibp_filter_model is None:
             lbs, ubs = self._filter_sublevel_regions(lbs, ubs, rho)
+
         if len(lbs) == 0:
             empty = th.empty((0, self.config.state_dim), device=self.device)
             return empty, empty, empty, empty, empty
@@ -438,7 +501,7 @@ class BaseCertifier(ABC):
         lbs, ubs = self.regions
         
         c_lbs, c_ubs, f_lbs, f_ubs, cex = self._certify_regions_recursive(
-            lbs, ubs, rho, collect_details, depth=0, max_depth=3, filter=not collect_details
+            lbs, ubs, rho, collect_details, depth=0, max_depth=self.config.max_recursion_depth, use_filter=not collect_details
         )
 
         # convert for output -> NumPy arrays for easier downstream use
@@ -534,7 +597,7 @@ class BaseCertifier(ABC):
         else:
             return False, rho_lo, rho_up
     
-    def build_regions(self) -> tuple[th.Tensor, th.Tensor]:
+    def _build_regions(self) -> tuple[th.Tensor, th.Tensor]:
         """Build axis-aligned grid cells and remove cells intersecting the origin window.
 
         Returns
@@ -544,8 +607,8 @@ class BaseCertifier(ABC):
         """
         origin_exclusion = self._resolve_origin_exclusion()
         lbx, ubx = self.bounds[0], self.bounds[1]
-        bin_counts = self.config.cert_bins_per_dim
-        refinement_factors = self.config.cert_center_refinement_factor
+        bin_counts = self.config.bins_per_dim
+        refinement_factors = self.config.center_refinement_factor
 
         lb_axes = []
         ub_axes = []
@@ -612,7 +675,7 @@ class BaseCertifier(ABC):
         __logger__.info("Starting Lyapunov certification with %s method.", self.config.cert_method.upper())
 
         self.verifier = self._setup_verifier()
-        self.regions = self.build_regions()
+        self.regions = self._build_regions()
         __logger__.info("Built %d certification regions (state_dim=%d).", len(self.regions[0]), self.config.state_dim)
         self.setup_backend()
 

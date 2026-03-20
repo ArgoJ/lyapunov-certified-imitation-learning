@@ -6,6 +6,7 @@ from numpy.typing import NDArray
 from typing import Callable
 
 from mpc_datagen.mpc_data import MPCDataset
+from mpc_datagen.plots import lyapunov as _lyapunov
 from pkg_logger import get_package_logger
 
 __logger__ = get_package_logger(__name__)
@@ -58,26 +59,101 @@ def _collapse_projected_regions(
     cert_unique = _dedupe_regions(cert_projected, decimals)
     uncert_unique = _dedupe_regions(uncert_projected, decimals)
 
-    if cert_unique.shape[0] == 0 or uncert_unique.shape[0] == 0:
-        return cert_unique, uncert_unique
+    if cert_unique.shape[0] > 0 and cert_unique.shape[2] == 2 and \
+       uncert_unique.shape[0] > 0 and uncert_unique.shape[2] == 2:
+        return _make_regions_disjoint_2d(
+            cert_unique,
+            uncert_unique,
+            decimals=decimals,
+        )
 
-    cert_lbs = cert_unique[:, 0, :]
-    cert_ubs = cert_unique[:, 1, :]
-    uncert_lbs = uncert_unique[:, 0, :]
-    uncert_ubs = uncert_unique[:, 1, :]
+    return cert_unique, uncert_unique
 
-    # certified[i] contains uncertified[j] iff
-    # cert_lb <= uncert_lb and cert_ub >= uncert_ub (component-wise).
-    contains_matrix = (
-        (cert_lbs[:, None, :] <= uncert_lbs[None, :, :])
-        & (cert_ubs[:, None, :] >= uncert_ubs[None, :, :])
-    ).all(axis=2)
 
-    # Remove any certified region that contains at least one uncertified region.
-    keep_cert_mask = ~contains_matrix.any(axis=1)
-    cert_filtered = cert_unique[keep_cert_mask]
+def _make_regions_disjoint_2d(
+    cert_regs: NDArray,
+    uncert_regs: NDArray,
+    decimals: int = 12,
+) -> tuple[NDArray, NDArray]:
+    """Make two 2D rectangle sets disjoint via grid-cell partitioning.
 
-    return cert_filtered, uncert_unique
+    The returned sets are non-overlapping in 2D. If both classes cover the
+    same projected cell, the cell is assigned to ``uncertified``.
+    """
+    cert_regs = _regions_to_np(cert_regs)
+    uncert_regs = _regions_to_np(uncert_regs)
+
+    if cert_regs.shape[0] == 0 and uncert_regs.shape[0] == 0:
+        return cert_regs, uncert_regs
+
+    if cert_regs.shape[0] > 0 and cert_regs.shape[2] != 2:
+        return cert_regs, uncert_regs
+    if uncert_regs.shape[0] > 0 and uncert_regs.shape[2] != 2:
+        return cert_regs, uncert_regs
+
+    def _boundaries(regs_a: NDArray, regs_b: NDArray, axis: int) -> NDArray:
+        vals = []
+        if regs_a.shape[0] > 0:
+            vals.extend([regs_a[:, 0, axis], regs_a[:, 1, axis]])
+        if regs_b.shape[0] > 0:
+            vals.extend([regs_b[:, 0, axis], regs_b[:, 1, axis]])
+        if len(vals) == 0:
+            return np.empty((0,), dtype=np.float64)
+        merged = np.concatenate(vals)
+        return np.unique(np.round(merged, decimals=decimals))
+
+    x_edges = _boundaries(cert_regs, uncert_regs, axis=0)
+    y_edges = _boundaries(cert_regs, uncert_regs, axis=1)
+
+    if x_edges.shape[0] < 2 or y_edges.shape[0] < 2:
+        return cert_regs, uncert_regs
+
+    x_l = x_edges[:-1]
+    x_u = x_edges[1:]
+    y_l = y_edges[:-1]
+    y_u = y_edges[1:]
+
+    def _coverage(regs: NDArray) -> NDArray:
+        nx, ny = len(x_l), len(y_l)
+        if regs.shape[0] == 0:
+            return np.zeros((nx, ny), dtype=bool)
+
+        lbs = np.round(regs[:, 0, :], decimals=decimals)
+        ubs = np.round(regs[:, 1, :], decimals=decimals)
+
+        ix_min = np.searchsorted(x_edges, lbs[:, 0])
+        ix_max = np.searchsorted(x_edges, ubs[:, 0])
+        iy_min = np.searchsorted(y_edges, lbs[:, 1])
+        iy_max = np.searchsorted(y_edges, ubs[:, 1])
+
+        diff = np.zeros((nx + 1, ny + 1), dtype=np.int32)
+        
+        np.add.at(diff, (ix_min, iy_min), 1)
+        np.add.at(diff, (ix_max, iy_max), 1)
+        np.add.at(diff, (ix_min, iy_max), -1)
+        np.add.at(diff, (ix_max, iy_min), -1)
+
+        coverage = np.cumsum(np.cumsum(diff, axis=0), axis=1)[:-1, :-1] > 0
+        return coverage
+
+    cert_cover = _coverage(cert_regs)
+    uncert_cover = _coverage(uncert_regs)
+
+    cert_only = cert_cover & ~uncert_cover
+    uncert_final = uncert_cover
+
+    def _cells_to_regions(mask: NDArray) -> NDArray:
+        if not np.any(mask):
+            return np.empty((0, 2, 2), dtype=np.float64)
+        x_idx, y_idx = np.nonzero(mask)
+        lbs = np.column_stack([x_l[x_idx], y_l[y_idx]])
+        ubs = np.column_stack([x_u[x_idx], y_u[y_idx]])
+        return np.stack([lbs, ubs], axis=1)
+
+    cert_disjoint = _dedupe_regions(_cells_to_regions(cert_only), decimals=decimals)
+    uncert_disjoint = _dedupe_regions(_cells_to_regions(uncert_final), decimals=decimals)
+
+    return cert_disjoint, uncert_disjoint
 
 
 def _build_X_Y(regions: NDArray) -> tuple[NDArray, NDArray]:
@@ -181,27 +257,6 @@ def lyapunov(
     if min(state_indices) < 0:
         raise ValueError("state_indices must be non-negative.")
 
-    has_dataset = dataset is not None and len(dataset) > 0
-
-    # Infer state dimension from dataset if present, otherwise from indices.
-    if has_dataset:
-        first_traj = dataset[0].trajectory
-        num_states = first_traj.states.shape[1]
-    else:
-        num_states = max(state_indices) + 1
-
-    idx_x, idx_y = state_indices
-
-    if idx_x >= num_states or idx_y >= num_states:
-        raise ValueError(
-            f"state_indices {state_indices} exceed inferred state dimension {num_states}."
-        )
-
-    if state_labels is None:
-        state_labels = [f"State {idx_x}", f"State {idx_y}"]
-    if len(state_labels) != 2:
-        raise ValueError("state_labels must contain exactly 2 labels.")
-
     certified_regions, uncertified_regions = _collapse_projected_regions(
         certified_regions,
         uncertified_regions,
@@ -211,13 +266,6 @@ def lyapunov(
     # Determine limits if not provided
     if limits is None:
         min_x = max_x = min_y = max_y = None
-
-        if has_dataset:
-            all_states = np.vstack([d.trajectory.states for d in dataset])
-            min_x = all_states[:, idx_x].min()
-            max_x = all_states[:, idx_x].max()
-            min_y = all_states[:, idx_y].min()
-            max_y = all_states[:, idx_y].max()
 
         if certified_regions.shape[0] + uncertified_regions.shape[0] > 0:
             all_lbs = np.vstack([certified_regions[:, 0, :], uncertified_regions[:, 0, :]])
@@ -234,78 +282,28 @@ def lyapunov(
                 min_y = min(min_y, all_lbs[:, 1].min())
                 max_y = max(max_y, all_ubs[:, 1].max())
 
-        if min_x is None:
-            __logger__.warning(
-                "Could not infer limits without dataset/regions. Falling back to [-1, 1]^2."
-            )
-            limits = [(-1.0, 1.0), (-1.0, 1.0)]
-        else:
-            # Add some padding
-            pad_x = (max_x - min_x) * 0.1 if max_x != min_x else 1.0
-            pad_y = (max_y - min_y) * 0.1 if max_y != min_y else 1.0
+        # Add some padding
+        pad_x = (max_x - min_x) * 0.1 if max_x != min_x else 1.0
+        pad_y = (max_y - min_y) * 0.1 if max_y != min_y else 1.0
 
-            limits = [
-                (min_x - pad_x, max_x + pad_x),
-                (min_y - pad_y, max_y + pad_y)
-            ]
+        limits = [
+            (min_x - pad_x, max_x + pad_x),
+            (min_y - pad_y, max_y + pad_y)
+        ]
 
-    # === LYAPUNOV FUNCTION PLOT ===
-    # Create grid for Lyapunov function
-    x_range = np.linspace(limits[0][0], limits[0][1], resolution)
-    y_range = np.linspace(limits[1][0], limits[1][1], resolution)
-    X, Y = np.meshgrid(x_range, y_range)
-    
-    # Prepare grid points for evaluation
-    grid_points = np.zeros((X.size, num_states))
-    grid_points[:, idx_x] = X.flatten()
-    grid_points[:, idx_y] = Y.flatten()
-    
-    # Evaluate Lyapunov function
-    try:
-        Z_flat = lyapunov_func(grid_points)
-    except Exception:
-        Z_flat = np.array([lyapunov_func(s) for s in grid_points])
-        
-    if hasattr(Z_flat, 'ndim') and Z_flat.ndim > 1:
-        Z_flat = Z_flat.flatten()
-    elif isinstance(Z_flat, list):
-        Z_flat = np.array(Z_flat)
-        
-    Z = Z_flat.reshape(X.shape)
-
-    fig = go.Figure()
-
-    # Plot Lyapunov Landscape
-    if plot_3d:
-        fig.add_trace(
-            go.Surface(
-                z=Z,
-                x=x_range,
-                y=y_range,
-                colorscale='Viridis',
-                name='Lyapunov Function',
-                opacity=0.8,
-                showscale=True
-            )
-        )
-    else:
-        fig.add_trace(
-            go.Contour(
-                z=Z,
-                x=x_range,
-                y=y_range,
-                colorscale='Viridis',
-                name='Lyapunov Function',
-                showscale=True,
-                contours=dict(
-                    coloring='heatmap',
-                    showlabels=True,
-                )
-            )
-        )
+    fig = _lyapunov(
+        lyapunov_func=lyapunov_func,
+        dataset=dataset,
+        state_indices=state_indices,
+        state_labels=state_labels,
+        limits=limits,
+        resolution=resolution,
+        plot_3d=plot_3d,
+        use_dataset_v=False
+    )
 
     # === CERTIFIED/UNCERTIFIED REGIONS ===
-    z_overlay = float(np.nanmin(Z)) if plot_3d else None
+    z_overlay = 0.0 if plot_3d else None
     _add_regions(
         certified_regions,
         fig,
@@ -324,111 +322,6 @@ def lyapunov(
         fill=False
     )
 
-
-    # === MPC TRAJECTORIES ===
-    trajectory_indices = []
-    colors = [
-        '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
-        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
-    ]
-
-    if has_dataset:
-        for idx, entry in enumerate(dataset):
-            traj = entry.trajectory
-            color = colors[idx % len(colors)]
-
-            if plot_3d:
-                try:
-                    v_traj = lyapunov_func(traj.states)
-                except Exception:
-                    v_traj = np.array([lyapunov_func(s) for s in traj.states])
-
-                if hasattr(v_traj, 'ndim') and v_traj.ndim > 1:
-                    v_traj = v_traj.flatten()
-                elif isinstance(v_traj, list):
-                    v_traj = np.array(v_traj)
-
-                fig.add_trace(
-                    go.Scatter3d(
-                        x=traj.states[:, idx_x],
-                        y=traj.states[:, idx_y],
-                        z=v_traj,
-                        mode='lines',
-                        name=f'Run {idx+1}',
-                        line=dict(color=color, width=4),
-                        showlegend=False
-                    )
-                )
-            else:
-                fig.add_trace(
-                    go.Scatter(
-                        x=traj.states[:, idx_x],
-                        y=traj.states[:, idx_y],
-                        mode='lines',
-                        name=f'Run {idx+1}',
-                        line=dict(color=color, width=2),
-                        opacity=0.7,
-                        showlegend=False
-                    )
-                )
-            trajectory_indices.append(len(fig.data) - 1)
-
-
-    # === CONFIGURE LAYOUT ===
-    if plot_3d:
-        fig.update_layout(
-            title_text=(
-                f"Lyapunov Landscape + Regions 3D "
-                f"({state_labels[0]} vs {state_labels[1]})"
-            ),
-            scene=dict(
-                xaxis_title=state_labels[0],
-                yaxis_title=state_labels[1],
-                zaxis_title="V(x)",
-            ),
-            width=1000,
-            height=800,
-            autosize=True
-        )
-    else:
-        fig.update_layout(
-            title_text=(
-                f"Lyapunov Landscape + Regions "
-                f"({state_labels[0]} vs {state_labels[1]})"
-            ),
-            xaxis_title=state_labels[0],
-            yaxis_title=state_labels[1],
-            yaxis=dict(
-                scaleanchor="x",
-                scaleratio=1,
-            )
-        )
-    
-    # Toggle Button for Trajectories
-    if trajectory_indices:
-        fig.update_layout(
-            updatemenus=[
-                dict(
-                    type="buttons",
-                    direction="left",
-                    buttons=list([
-                        dict(
-                            args=[{"visible": True}, trajectory_indices],
-                            args2=[{"visible": False}, trajectory_indices],
-                            label="Trajectories",
-                            method="restyle"
-                        )
-                    ]),
-                    pad={"r": 10, "t": 10},
-                    showactive=True,
-                    x=1.0,
-                    xanchor="right",
-                    y=-0.05,
-                    yanchor="top"
-                ),
-            ]
-        )
-
     if html_path is not None:
         dir_path = os.path.dirname(html_path)
         if dir_path:
@@ -436,7 +329,7 @@ def lyapunov(
         fig.write_html(html_path)
         __logger__.info(f"Trajectories plot saved to {html_path}.")
     else:   
-        fig.show()
+        return fig
 
 
 def certified_regions_2d(
@@ -516,7 +409,7 @@ def certified_regions_2d(
         xaxis_title=state_labels[0],
         yaxis_title=state_labels[1],
         xaxis=dict(range=[bounds[0][0], bounds[0][1]]),
-        yaxis=dict(range=[bounds[1][0], bounds[1][1]], scaleanchor="x", scaleratio=1),
+        yaxis=dict(range=[bounds[1][0], bounds[1][1]]),
     )
 
     if html_path is not None:

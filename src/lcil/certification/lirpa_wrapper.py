@@ -55,7 +55,6 @@ class LiRPACertifier(BaseCertifier):
             ubs: th.Tensor,
             rho: float,
             early_exit: bool = True,
-            max_batch_size: int = 512,
     ) -> tuple[th.Tensor, th.Tensor]:
         """_summary_
 
@@ -69,8 +68,6 @@ class LiRPACertifier(BaseCertifier):
             _description_
         early_exit : bool, optional
             _description_, by default True
-        max_batch_size : int, optional
-            _description_, by default 512
 
         Returns
         -------
@@ -87,18 +84,15 @@ class LiRPACertifier(BaseCertifier):
             raise ValueError("lbs and ubs must have the same length.")
         
         # Preallocate output tensors
-        is_certified = th.empty(num_regions, dtype=th.bool, device=self.device)
-        centers_out = th.empty_like(lbs)
+        is_certified = th.zeros(num_regions, dtype=th.bool, device=self.device)
+        centers_out = (lbs + ubs) / 2.0
 
-        for idx in range(0, num_regions, max_batch_size):
-            end_idx = min(idx + max_batch_size, num_regions)
+        for idx in range(0, num_regions, self.config.batch_size):
+            end_idx = min(idx + self.config.batch_size, num_regions)
 
             b_lbs = lbs[idx : end_idx]
             b_ubs = ubs[idx : end_idx]
-            b_centers = (b_lbs + b_ubs) / 2.0
-
-            # write centers to preallocated output tensor
-            centers_out[idx : end_idx] = b_centers
+            b_centers = centers_out[idx : end_idx]
 
             ptb = PerturbationLpNorm(norm=float("inf"), x_L=b_lbs, x_U=b_ubs)
             bounded_input = BoundedTensor(b_centers, ptb)
@@ -113,7 +107,7 @@ class LiRPACertifier(BaseCertifier):
                     with self._get_suppress_ctx():
                         if candidate_method == "alpha-crown":
                             _, ub_out = self.lirpa_model.compute_bounds(
-                                x=(bounded_input, b_rho, b_kappa), 
+                                x=(bounded_input, b_rho, b_kappa),
                                 method=candidate_method
                             )
                         else:
@@ -127,7 +121,6 @@ class LiRPACertifier(BaseCertifier):
                     __logger__.warning(f"Method '{candidate_method}' failed on batch: {exc}")
 
             if ub_out is None:
-                # Fallback on failure
                 is_certified[idx : end_idx] = False
             else:
                 max_u = ub_out.flatten()
@@ -138,6 +131,7 @@ class LiRPACertifier(BaseCertifier):
             # if self.device.type == "cuda":
             #     th.cuda.empty_cache()
 
+            # Early exit check
             if early_exit and not is_certified[idx : end_idx].all():
                 return is_certified, centers_out
 

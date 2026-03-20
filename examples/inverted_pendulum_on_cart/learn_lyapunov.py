@@ -159,7 +159,7 @@ def main() -> None:
 
         certification_config = LyapunovCertificationConfig.from_training_config(
             training_config,
-            cert_bins_per_dim=args.cert_bins_per_dim,
+            bins_per_dim=args.cert_bins_per_dim,
             cert_center_refinement_factor=args.cert_center_refinement_factor,
             cert_origin_exclusion=0.01,
             cert_rho_scaling=args.cert_rho_scaling,
