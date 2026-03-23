@@ -123,11 +123,16 @@ mkdir -p build
 cd build
 
 echo "Konfiguriere das Build-System mit CMake..."
-cmake .. \
-    -DACADOS_WITH_OPENMP=${ACADOS_WITH_OPENMP} \
+CMAKE_OPTS="-DACADOS_WITH_OPENMP=${ACADOS_WITH_OPENMP} \
     -DACADOS_WITH_OSQP=${ACADOS_WITH_OSQP} \
     -DACADOS_WITH_QPOASES=${ACADOS_WITH_QPOASES} \
-    -DACADOS_PYTHON=${ACADOS_PYTHON}
+    -DACADOS_PYTHON=${ACADOS_PYTHON}"
+
+if [[ "${ACADOS_WITH_OPENMP}" == "ON" ]]; then
+    CMAKE_OPTS="${CMAKE_OPTS} -DACADOS_NUM_THREADS=1"
+fi
+
+cmake .. $CMAKE_OPTS
 
 CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
 echo "Kompiliere und installiere acados mit $CPU_CORES Kernen..." 
