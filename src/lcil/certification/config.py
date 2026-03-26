@@ -44,7 +44,23 @@ class LyapunovCertificationConfig:
     cert_method : str
         AutoLiRPA bound method (e.g., "crown", "alpha-crown").
     condition_tolerance : float
-        Numerical tolerance for condition satisfaction.
+        Numerical tolerance for condition satisfaction. Positive values can be used 
+        to relax the condition for improved numerical stability.
+    suppress_native_output : bool
+        Whether to suppress native solver output (e.g., from AutoLiRPA or ABCrown) 
+        during certification.
+    use_ibp_filter : bool
+        Whether to use an IBP filter to pre-filter candidate regions before 
+        running the main certification method. This can speed up certification by 
+        quickly discarding regions that are clearly not certified, at the cost of 
+        additional false negatives. Using conservative IBP filtering.
+    batch_size : int
+        Batch size to use during certification. Larger batch sizes can improve 
+        GPU utilization and speed up certification, but require more memory.
+    max_recursion_depth : int
+        Maximum recursion depth for the certification process. 
+        This limits how many times the certification will recursively subdivide 
+        regions if they fail certification, to prevent infinite recursion in edge cases.
     """
 
     state_dim: int

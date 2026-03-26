@@ -124,7 +124,7 @@ class PolicyTrainer:
         self,
         learning_rate: float = 1e-3,
         scheduler_type: Literal["none", "step", "cosine", "plateau"] = "none",
-        scheduler_params: Mapping[str, Any] | None = None,
+        scheduler_kwargs: Mapping[str, Any] | None = None,
     ) -> None:
         """Configure the trainer to use the Adam optimizer with the specified learning rate and optional LR scheduler.
         
@@ -134,7 +134,7 @@ class PolicyTrainer:
             Learning rate for the Adam optimizer. Default is 1e-3.
         scheduler_type : str, optional
             Type of learning rate scheduler to use. One of "none", "step", "cosine", or "plateau". Default is "none" (no scheduler).
-        scheduler_params : dict or None, optional
+        scheduler_kwargs : dict or None, optional
             Optional dictionary of parameters for the specified scheduler. The required keys depend on the scheduler type:
             - For "step": {"step_size": int, "gamma": float}
             - For "cosine": {"eta_min": float}
@@ -147,7 +147,7 @@ class PolicyTrainer:
         self.optimizer = th.optim.Adam(self.model.parameters(), lr=learning_rate)
 
         self.scheduler_type = scheduler_type
-        self.scheduler_params = dict(scheduler_params) if scheduler_params is not None else {}
+        self.scheduler_params = dict(scheduler_kwargs) if scheduler_kwargs is not None else {}
 
     def _configure_scheduler(self, num_epochs: int) -> None:
         """Initialize the LR scheduler using the stored scheduler config.

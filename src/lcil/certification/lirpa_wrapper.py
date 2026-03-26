@@ -13,6 +13,10 @@ __logger__ = get_package_logger(__name__)
 class LiRPACertifier(BaseCertifier):
     """_summary_
     """
+    def __init__(self, policy_model, lyap_model, dyn_model, config, device = ...):
+        super().__init__(policy_model, lyap_model, dyn_model, config, device)
+        self.lirpa_model = None
+        self.fallback_methods = None
 
     @staticmethod
     def _get_fallback_methods(method : str) -> list[str]:
@@ -79,6 +83,9 @@ class LiRPACertifier(BaseCertifier):
         ValueError
             _description_
         """
+        if self.lirpa_model is None or self.fallback_methods is None:
+            raise RuntimeError("LiRPACertifier backend is not properly initialized.")
+
         num_regions = len(lbs)
         if num_regions != len(ubs):
             raise ValueError("lbs and ubs must have the same length.")

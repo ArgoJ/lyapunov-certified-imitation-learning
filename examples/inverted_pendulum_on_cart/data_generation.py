@@ -22,7 +22,7 @@ from mpc_datagen.verification import (
     ROAVerifier,
 )
 
-from acados_ocp import get_ocp_solver
+from acados_ocp import get_batch_ocp_solver, get_ocp_solver
 from pkg_logger import get_package_logger
 
 __logger__ = get_package_logger("mpc_datagen")
@@ -34,7 +34,7 @@ def _setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--n-samples",
         type=int,
-        default=20000,
+        default=2000,
         help="Number of trajectories to generate.",
     )
     parser.add_argument(
@@ -77,8 +77,8 @@ def main():
         __logger__.setLevel(logging.DEBUG)
 
     # Cost matrices
-    Q = np.diag([1e1, 1e-2, 1e2, 1e-2])
-    R = np.diag([1e-2])
+    Q = np.diag([1e2, 1e1, 1e2, 1e-2])
+    R = np.diag([5e-1])
 
     # Sample in a tighter local region around the equilibrium to improve feasibility
     sample_percentages = np.array([1.0, 1.0, 0.333, 1.0], dtype=float)
@@ -91,14 +91,15 @@ def main():
     N = 40
 
     dt = 0.05
-    solver, info = get_ocp_solver(
+    solver, info = get_batch_ocp_solver(
         Q, R,
         dt=dt,
         N=N,
-        terminal_mode="none",
+        terminal_mode="regional",
     )
-    
-    bounds = np.vstack((solver.acados_ocp.constraints.lbx, solver.acados_ocp.constraints.ubx))
+
+    constraints = solver.ocp_solvers[0].acados_ocp.constraints if hasattr(solver, "ocp_solvers") else solver.acados_ocp.constraints
+    bounds = np.vstack((constraints.lbx, constraints.ubx))
 
     sampler = UniqueBoundedSampler(
         bounds=bounds,
@@ -116,15 +117,15 @@ def main():
         T_sim=T_sim,
         sampler=sampler,
         xeps_cfg=eps_cfg,
-        reset_solver=True,
         solver_regen_interval=20,
+        # noise_std=1e-4,
     )
     dataset = generator.generate(n_samples=n_samples, only_feasible=True)
-    dataset = normalize_dataset(dataset)
+    # dataset = normalize_dataset(dataset)
     dataset.validate(tol_stability=0.1)
     dataset.save(f"{base_path}/inverted_pendulum_on_cart_N{N}_data.hdf5")
 
-    veri_stats = StabilityVerifier.verify(dataset, solver, alpha_required=1e-4)
+    veri_stats = StabilityVerifier.verify(dataset, alpha_required=1e-4)
     VerificationRender(veri_stats).render()
 
     P = info["P"]
@@ -136,15 +137,15 @@ def main():
     alpha = 1.0 if veri_stats.details.get("asym_stab_report", None) is None else veri_stats.details["asym_stab_report"].min_alpha
     mdg_plots.all(
         dataset=dataset[:min(150, n_samples)],
-        state_labels=["x", "v", "theta", "theta_dot"],
-        control_labels=["a"],
+        state_labels=["$x$", "$v$", "$\\theta$", "$\\dot{\\theta}$"],
+        control_labels=["$a$"],
         time_bound=T_sim * dt,
         plot_3d=False,
         plot_predictions=False,
         alpha=alpha,
         use_optimal_v=False,
         lyapunov_func=lyap_fun,
-        lyap_state_indices=[1, 2],
+        # lyap_state_indices=[1, 2],
         lyap_use_dataset_v=True,
         roa_lyapunov_func=roa_lyap_fun,
         c_level=c_min,

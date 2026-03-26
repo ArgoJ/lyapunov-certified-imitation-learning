@@ -26,12 +26,6 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=5e-4, help="Optimizer learning rate.")
     parser.add_argument("--batch-size", type=int, default=256, help="Training batch size.")
     parser.add_argument(
-        "--save-folder",
-        type=str,
-        default="results/inverted_pendulum_on_cart",
-        help="Path where the trained model state dict will be saved.",
-    )
-    parser.add_argument(
         "--near-duplicate-radius",
         type=float,
         default=1e-4,
@@ -90,14 +84,14 @@ def main() -> None:
         model=net,
         dataloader=train_loader,
         val_dataloader=val_loader,
-        early_stopper=EarlyStopping(patience=10, delta=1e-4),
+        early_stopper=EarlyStopping(patience=10, delta=1e-5),
         loss_fn=loss_fn,
         device=device,
     )
-    trainer.set_adam_optimizer(learning_rate=args.lr, scheduler_type="cosine")
+    trainer.set_adam_optimizer(learning_rate=args.lr, scheduler_type="plateau", scheduler_kwargs={"mode": "min", "factor": 0.5, "patience": 4})
     trainer.train(num_epochs=args.epochs)
     trainer.save(
-        save_folder=Path(args.save_folder) / datetime.now().strftime('%Y%m%d_%H%M%S'), 
+        save_folder=Path("results/inverted_pendulum_on_cart") / datetime.now().strftime('%Y%m%d_%H%M%S'), 
         global_config=source_dataset.global_config
     )
 

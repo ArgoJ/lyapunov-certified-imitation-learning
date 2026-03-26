@@ -414,7 +414,7 @@ class BaseCertifier(ABC):
             empty = th.empty((0, self.config.state_dim), device=self.device)
             return empty, empty, empty, empty, empty
 
-        if not self.config.use_ibp_filter or not use_filter or self.ibp_filter_model is None:
+        if self.config.use_ibp_filter and use_filter and self.ibp_filter_model is not None:
             lbs, ubs = self._filter_sublevel_regions(lbs, ubs, rho)
 
         if len(lbs) == 0:
@@ -466,7 +466,7 @@ class BaseCertifier(ABC):
 
                 # Rekursiv certification of all sub-boxes
                 sub_c_lbs, sub_c_ubs, sub_f_lbs, sub_f_ubs, sub_cex = self._certify_regions_recursive(
-                    sub_lbs, sub_ubs, rho, collect_details, depth + 1, max_depth
+                    sub_lbs, sub_ubs, rho, collect_details, depth + 1, max_depth, use_filter
                 )
 
                 certified_lbs = th.cat([certified_lbs, sub_c_lbs], dim=0)
@@ -498,6 +498,9 @@ class BaseCertifier(ABC):
             Aggregated success flag plus certified regions, failed regions, and
             counterexamples as NumPy arrays.
         """
+        if rho <= 0.0:
+            raise ValueError(f"rho must be non-negative, got {rho}.")
+
         lbs, ubs = self.regions
         
         c_lbs, c_ubs, f_lbs, f_ubs, cex = self._certify_regions_recursive(
@@ -701,7 +704,6 @@ class BaseCertifier(ABC):
             
             if rho_lo == rho_up:
                 __logger__.warning("Maximum scaling steps reached without finding an upper bound.")
-                return rho_lo, self._certify_regions(rho=rho_lo, collect_details=True)
 
         # Scale down
         else:
@@ -714,21 +716,19 @@ class BaseCertifier(ABC):
 
             # Fallback
             if rho_lo is None:
-                if not self.is_rho_certified(rho=self.config.rho_min):
-                    __logger__.error("Could not even certify rho_min (%.4f).", self.config.rho_min)
-                    return self.config.rho_min, self._certify_regions(rho=self.config.rho_min, collect_details=True)
-                
                 rho_lo = self.config.rho_min
-                if rho_up <= rho_lo:
-                    rho_up = rho_lo * self.config.rho_scaling
+                if rho_up <= self.config.rho_min or not self.is_rho_certified(rho=self.config.rho_min):
+                    __logger__.error("Could not even certify rho_min (%.4f).", self.config.rho_min)
+                    rho_up = self.config.rho_min # no bisection
 
         # Bisect
-        rho_lo, rho_up = self._iterative_rho_search(
-            total=self.config.max_bisection_steps,
-            desc="Bisect rho",
-            initial_values=(rho_lo, rho_up),
-            step_fn=self._bisect_rho
-        )
+        if rho_up - rho_lo <= self.config.bisection_tol:
+            rho_lo, rho_up = self._iterative_rho_search(
+                total=self.config.max_bisection_steps,
+                desc="Bisect rho",
+                initial_values=(rho_lo, rho_up),
+                step_fn=self._bisect_rho
+            )
 
         details = self._certify_regions(rho=rho_lo, collect_details=True)
         return rho_lo, details

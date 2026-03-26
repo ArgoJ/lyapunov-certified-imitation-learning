@@ -1,12 +1,13 @@
 import numpy as np
 import casadi as ca
+import os
 
 from numpy.typing import NDArray
 from scipy.linalg import solve_discrete_are, block_diag
-from mpc_datagen import mdg_linalg, get_temp_solver
+from mpc_datagen import mdg_linalg, add_temp_folder
 from sys_cfg import PendulumOnCartConfig
 
-from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
+from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver, AcadosOcpBatchSolver
 
 
 def _linearized_inverted_pendulum_on_cart_matrices(
@@ -137,15 +138,14 @@ def get_model(
 
 
 # %% OCP Solver Definition
-def get_ocp_solver(
+def get_ocp(
     Q: NDArray, 
     R: NDArray,
     dt: float = 0.05, 
     N: int = 40,
     terminal_mode: str = "regional",
-    sys_cfg: PendulumOnCartConfig = PendulumOnCartConfig(),
-    use_temp_dir: bool = True,
-) -> tuple[AcadosOcpSolver, dict]:
+    sys_cfg: PendulumOnCartConfig = PendulumOnCartConfig()
+) -> tuple[AcadosOcp, dict]:
     """Create an acados OCP solver for inverted pendulum on cart.
 
     Parameters
@@ -186,7 +186,9 @@ def get_ocp_solver(
     ocp.solver_options.N_horizon = N
     ocp.solver_options.tf = dt * N
     ocp.solver_options.qp_solver = "FULL_CONDENSING_HPIPM"
+    # ocp.solver_options.qp_solver_cond_N = int(N/4)
     ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
+    # ocp.solver_options.regularize_method = 'PROJECT'
     ocp.solver_options.nlp_solver_type = "SQP"
     ocp.solver_options.integrator_type = 'ERK'
     ocp.solver_options.print_level = 0
@@ -254,11 +256,51 @@ def get_ocp_solver(
         "terminal_mode": terminal_mode,
     }
     
+    return ocp, info
 
+
+def get_ocp_solver(
+    Q: NDArray, 
+    R: NDArray,
+    dt: float = 0.05, 
+    N: int = 40,
+    terminal_mode: str = "regional",
+    sys_cfg: PendulumOnCartConfig = PendulumOnCartConfig(),
+    use_temp_dir: bool = True,
+) -> tuple[AcadosOcpSolver, dict]:
+    """Convenience function to directly get the OCP solver instance."""
+    ocp, info = get_ocp(Q, R, dt, N, terminal_mode, sys_cfg)
     if use_temp_dir:
-        solver = get_temp_solver(ocp, verbose=False)
-    else:
-        solver = AcadosOcpSolver(ocp, json_file=f"{ocp.model.name}_ocp.json", verbose=False)
+        ocp, file_name = add_temp_folder(ocp, f"{ocp.model.name}_ocp.json")
+
+    solver = AcadosOcpSolver(ocp, json_file=file_name, verbose=False)
     return solver, info
 
-# %%
+
+def get_batch_ocp_solver(
+    Q: NDArray, 
+    R: NDArray,
+    dt: float = 0.05, 
+    N: int = 40,
+    batch_size: int = 100,
+    terminal_mode: str = "regional",
+    sys_cfg: PendulumOnCartConfig = PendulumOnCartConfig(),
+    use_temp_dir: bool = True,
+) -> tuple[AcadosOcpBatchSolver, dict]:
+    ocp, info = get_ocp(Q, R, dt, N, terminal_mode, sys_cfg)
+    
+    num_threads = min(batch_size, os.cpu_count() or 1)
+    # Acados batch solver template requires these attributes
+    ocp.solver_options.with_batch_functionality = True
+    ocp.solver_options.num_threads_in_batch_solve = num_threads
+    if use_temp_dir:
+        ocp, file_name = add_temp_folder(ocp, f"{ocp.model.name}_batch_ocp.json")
+
+    batch_solver = AcadosOcpBatchSolver(
+        ocp,
+        N_batch_init=batch_size,
+        num_threads_in_batch_solve=num_threads,
+        json_file=file_name,
+        verbose=False
+    )
+    return batch_solver, info

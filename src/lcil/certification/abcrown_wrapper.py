@@ -13,6 +13,7 @@ from abcrown import (
 from pkg_logger import get_package_logger
 
 from .certifier_base import BaseCertifier
+from .config import LyapunovCertificationConfig
 
 
 __logger__ = get_package_logger(__name__)
@@ -36,6 +37,10 @@ class ABCrownCertifier(BaseCertifier):
     Lyapunov certifier using the full Alpha-Beta-CROWN framework.
     Combines spatial branch-and-bound with neural activation branch-and-bound.
     """
+    def __init__(self, policy_model, lyap_model, dyn_model, config, device = ...):
+        super().__init__(policy_model, lyap_model, dyn_model, config, device)
+        self.abcrown_config = None
+        self.wrapped_model = None
 
     def setup_backend(self) -> None:
         """Set up the ABCrownSolver and its configuration."""
@@ -57,11 +62,8 @@ class ABCrownCertifier(BaseCertifier):
 
     def _solve_box_with_model(
         self,
-        model: nn.Module,
         lb: th.Tensor,
         ub: th.Tensor,
-        output_upper_bound: float,
-        config: dict | None = None,
     ) -> bool:
         if lb.ndim > 1:
             lb = lb.squeeze(0)
@@ -72,7 +74,7 @@ class ABCrownCertifier(BaseCertifier):
             y = output_vars(1)
 
             input_constraint = (x >= lb) & (x <= ub)
-            output_constraint = (y[0] < output_upper_bound)
+            output_constraint = (y[0] < self.config.condition_tolerance)
 
             spec = VerificationSpec.build_spec(
                 input_vars=x,
@@ -83,8 +85,8 @@ class ABCrownCertifier(BaseCertifier):
 
             solver = ABCrownSolver(
                 spec=spec,
-                computing_graph=model,
-                config=self.abcrown_config if config is None else config,
+                computing_graph=self.verifier,
+                config=self.abcrown_config,
             )
 
             res = solver.solve()
@@ -120,6 +122,9 @@ class ABCrownCertifier(BaseCertifier):
             - is_certified: A boolean tensor indicating whether each region is certified.
             - centers_out: A tensor containing the centers of the regions.
         """
+        if self.wrapped_model is None or self.abcrown_config is None:
+            raise RuntimeError("ABCrownCertifier backend is not properly initialized.")
+        
         num_regions = len(lbs)
         is_certified = th.zeros(num_regions, dtype=th.bool, device=self.device)
         centers_out = (lbs + ubs) / 2.0
@@ -128,14 +133,7 @@ class ABCrownCertifier(BaseCertifier):
         for idx in range(num_regions):
             lb = lbs[idx]
             ub = ubs[idx]
-
-            is_certified[idx] = self._solve_box_with_model(
-                model=self.wrapped_model,
-                lb=lb,
-                ub=ub,
-                output_upper_bound=self.config.condition_tolerance,
-                config=self.abcrown_config,
-            )
+            is_certified[idx] = self._solve_box_with_model(lb=lb, ub=ub)
             
             if early_exit and not is_certified[idx]:
                 break
