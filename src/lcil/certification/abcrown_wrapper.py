@@ -85,7 +85,7 @@ class ABCrownCertifier(BaseCertifier):
 
             solver = ABCrownSolver(
                 spec=spec,
-                computing_graph=self.verifier,
+                computing_graph=self.wrapped_model,
                 config=self.abcrown_config,
             )
 

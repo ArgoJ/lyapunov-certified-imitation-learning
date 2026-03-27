@@ -722,7 +722,7 @@ class BaseCertifier(ABC):
                     rho_up = self.config.rho_min # no bisection
 
         # Bisect
-        if rho_up - rho_lo <= self.config.bisection_tol:
+        if rho_up - rho_lo >= self.config.bisection_tol:
             rho_lo, rho_up = self._iterative_rho_search(
                 total=self.config.max_bisection_steps,
                 desc="Bisect rho",

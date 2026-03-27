@@ -6,7 +6,15 @@ from numpy.typing import NDArray
 from typing import Callable
 
 from mpc_datagen.mpc_data import MPCDataset
-from mpc_datagen.plots import lyapunov as _lyapunov
+from mpc_datagen.plots import (
+    lyapunov, 
+    _apply_pair_layout,
+    _save_pair_figures,
+    _resolve_indices,
+    _resolve_labels,
+    _infer_pair_limits,
+    _state_index_pairs,
+)
 from pkg_logger import get_package_logger
 
 __logger__ = get_package_logger(__name__)
@@ -68,6 +76,37 @@ def _collapse_projected_regions(
         )
 
     return cert_unique, uncert_unique
+
+
+def _limits_from_regions(
+    cert_regs: NDArray,
+    uncert_regs: NDArray,
+    pad_ratio: float = 0.0,
+    default_pad: float = 1.0,
+) -> list[tuple[float, float]] | None:
+    cert_regs_np = _regions_to_np(cert_regs)
+    uncert_regs_np = _regions_to_np(uncert_regs)
+
+    if cert_regs_np.shape[0] + uncert_regs_np.shape[0] == 0:
+        return None
+
+    all_lbs = np.vstack([cert_regs_np[:, 0, :], uncert_regs_np[:, 0, :]])
+    all_ubs = np.vstack([cert_regs_np[:, 1, :], uncert_regs_np[:, 1, :]])
+
+    min_x = all_lbs[:, 0].min()
+    max_x = all_ubs[:, 0].max()
+    min_y = all_lbs[:, 1].min()
+    max_y = all_ubs[:, 1].max()
+
+    span_x = max_x - min_x
+    span_y = max_y - min_y
+    pad_x = span_x * pad_ratio if span_x != 0 else default_pad
+    pad_y = span_y * pad_ratio if span_y != 0 else default_pad
+
+    return [
+        (min_x - pad_x, max_x + pad_x),
+        (min_y - pad_y, max_y + pad_y),
+    ]
 
 
 def _make_regions_disjoint_2d(
@@ -211,30 +250,37 @@ def _add_regions(
             )
         )
 
-def lyapunov(
+def lyapunov_cert_regions(
     lyapunov_func: Callable[[NDArray], NDArray],
+    certified_regions: NDArray,
+    uncertified_regions: NDArray,
     dataset: MPCDataset | None = None,
-    state_indices: list = [0, 1],
+    state_indices: list[int] | None = None,
     state_labels: list[str] | None = None,
     limits: list = None,
     resolution: int = 100,
     plot_3d: bool = False,
-    certified_regions: NDArray | None = None,
-    uncertified_regions: NDArray | None = None,
     html_path: str = None,
 ):
     """Plot Lyapunov landscape, trajectories, and optional certified regions in 2D/3D.
-    Only two state dimensions can be visualized at once.
+    If more than two state indices are provided, one figure per 2D state pair
+    is generated.
 
     Parameters
     ----------
     lyapunov_func : Callable[[NDArray], NDArray]
         A function that takes a state vector and returns the Lyapunov value.
+    certified_regions : NDArray
+        Certified boxes in state space overlaid in the same plot.
+        Certified regions are drawn with red outlines.
+    uncertified_regions : NDArray
+        Uncertified boxes in state space overlaid in the same plot.
     dataset : MPCDataset, optional
         The dataset containing trajectories to plot. If None, only the
         Lyapunov landscape and optional regions are shown. Default is None.
-    state_indices : list, optional
-        Indices of the two state variables to plot (x, y axes). Default is [0, 1].
+    state_indices : list[int], optional
+        State indices to consider. If None, all states are used and all pairwise
+        combinations are plotted.
     state_labels : list[str], optional
         Labels for the plotted state dimensions. Defaults to ["State i", "State j"].
     limits : list of tuples, optional
@@ -243,104 +289,132 @@ def lyapunov(
         Grid resolution for the Lyapunov function contour plot.
     plot_3d : bool, optional
         If True, plot a 3D surface and 3D trajectories. Default is False.
-    certified_regions : list of (lb, ub), optional
-        Certified boxes in state space overlaid in the same plot.
-        Certified regions are drawn with red outlines.
-    uncertified_regions : list of (lb, ub), optional
-        Uncertified boxes in state space overlaid in the same plot.
     html_path : str, optional
         If provided, saves the plot to the specified HTML file.
     """
-    if len(state_indices) != 2:
-        raise ValueError("state_indices must contain exactly 2 indices.")
+    cert_regs_np = _regions_to_np(certified_regions)
+    uncert_regs_np = _regions_to_np(uncertified_regions)
 
-    if min(state_indices) < 0:
-        raise ValueError("state_indices must be non-negative.")
+    has_dataset = dataset is not None and len(dataset) > 0
+    if has_dataset:
+        num_states = int(dataset[0].trajectory.states.shape[1])
+    else:
+        region_dims = []
+        if cert_regs_np.shape[0] > 0:
+            region_dims.append(int(cert_regs_np.shape[2]))
+        if uncert_regs_np.shape[0] > 0:
+            region_dims.append(int(uncert_regs_np.shape[2]))
 
-    certified_regions, uncertified_regions = _collapse_projected_regions(
-        certified_regions,
-        uncertified_regions,
-        indices=state_indices,
-    )
+        if len(region_dims) == 0 and state_indices is None:
+            raise ValueError(
+                "Without dataset or non-empty regions, state_indices must be provided."
+            )
 
-    # Determine limits if not provided
-    if limits is None:
-        min_x = max_x = min_y = max_y = None
+        max_state_idx = max(state_indices) if state_indices is not None else -1
+        num_states = max(region_dims + [max_state_idx + 1])
 
-        if certified_regions.shape[0] + uncertified_regions.shape[0] > 0:
-            all_lbs = np.vstack([certified_regions[:, 0, :], uncertified_regions[:, 0, :]])
-            all_ubs = np.vstack([certified_regions[:, 1, :], uncertified_regions[:, 1, :]])
+    state_indices = _resolve_indices(state_indices, num_states)
+    if state_labels is not None and len(state_labels) == len(state_indices):
+        labels_full = [f"State {i}" for i in range(num_states)]
+        for label_idx, state_idx in enumerate(state_indices):
+            labels_full[state_idx] = state_labels[label_idx]
+    else:
+        labels_full = _resolve_labels(state_labels, num_states)
+    pair_indices = _state_index_pairs(state_indices)
 
-            if min_x is None:
-                min_x = all_lbs[:, 0].min()
-                max_x = all_ubs[:, 0].max()
-                min_y = all_lbs[:, 1].min()
-                max_y = all_ubs[:, 1].max()
-            else:
-                min_x = min(min_x, all_lbs[:, 0].min())
-                max_x = max(max_x, all_ubs[:, 0].max())
-                min_y = min(min_y, all_lbs[:, 1].min())
-                max_y = max(max_y, all_ubs[:, 1].max())
+    regions_by_pair: dict[tuple[int, int], tuple[NDArray, NDArray]] = {}
+    pair_limits: dict[tuple[int, int], list[tuple[float, float]]] = {}
 
-        # Add some padding
-        pad_x = (max_x - min_x) * 0.1 if max_x != min_x else 1.0
-        pad_y = (max_y - min_y) * 0.1 if max_y != min_y else 1.0
+    for pair in pair_indices:
+        cert_pair, uncert_pair = _collapse_projected_regions(
+            cert_regs_np,
+            uncert_regs_np,
+            indices=list(pair),
+        )
+        regions_by_pair[pair] = (cert_pair, uncert_pair)
 
-        limits = [
-            (min_x - pad_x, max_x + pad_x),
-            (min_y - pad_y, max_y + pad_y)
-        ]
+        if limits is not None:
+            pair_limits[pair] = limits
+            continue
 
-    fig = _lyapunov(
-        lyapunov_func=lyapunov_func,
-        dataset=dataset,
-        state_indices=state_indices,
-        state_labels=state_labels,
-        limits=limits,
-        resolution=resolution,
-        plot_3d=plot_3d,
-        use_dataset_v=False
-    )
+        inferred_limits = _limits_from_regions(
+            cert_pair,
+            uncert_pair,
+            pad_ratio=0.1,
+            default_pad=1.0,
+        )
+        if inferred_limits is None:
+            inferred_limits = [(-1.0, 1.0), (-1.0, 1.0)]
 
-    # === CERTIFIED/UNCERTIFIED REGIONS ===
+        pair_limits[pair] = inferred_limits
+
     z_overlay = 0.0 if plot_3d else None
-    _add_regions(
-        certified_regions,
-        fig,
-        color="#209209",
-        z_level=z_overlay,
-        name="Certified",
-        fill=False,
-    )
-    _add_regions(
-        uncertified_regions,
-        fig,
-        color="#c53131",
-        z_level=z_overlay,
-        name="Uncertified",
-        dash="dash",
-        fill=False
-    )
+
+    figures: dict[tuple[int, int], go.Figure] = {}
+    for pair in pair_indices:
+        pair_num_states = int(max(pair) + 1)
+        pair_state_labels = [f"State {i}" for i in range(pair_num_states)]
+        for i in range(pair_num_states):
+            if i < len(labels_full):
+                pair_state_labels[i] = labels_full[i]
+
+        fig_pair = lyapunov(
+            lyapunov_func=lyapunov_func,
+            dataset=dataset,
+            state_indices=list(pair),
+            state_labels=pair_state_labels,
+            limits=pair_limits[pair],
+            resolution=resolution,
+            plot_3d=plot_3d,
+            use_dataset_v=False,
+        )
+
+        if isinstance(fig_pair, dict):
+            fig = fig_pair[pair]
+        else:
+            fig = fig_pair
+
+        cert_pair, uncert_pair = regions_by_pair[pair]
+        _add_regions(
+            cert_pair,
+            fig,
+            color="#209209",
+            z_level=z_overlay,
+            name="Certified",
+            fill=False,
+        )
+        _add_regions(
+            uncert_pair,
+            fig,
+            color="#c53131",
+            z_level=z_overlay,
+            name="Uncertified",
+            dash="dash",
+            fill=False,
+        )
+        figures[pair] = fig
 
     if html_path is not None:
-        dir_path = os.path.dirname(html_path)
-        if dir_path:
-            os.makedirs(dir_path, exist_ok=True)
-        fig.write_html(html_path)
-        __logger__.info(f"Trajectories plot saved to {html_path}.")
-    else:   
-        return fig
+        _save_pair_figures(figures, html_path, labels_full, kind="Lyapunov")
+        return None
+
+    if len(figures) == 1:
+        return next(iter(figures.values()))
+    return figures
 
 
 def certified_regions_2d(
     certified_regions: NDArray,
     uncertified_regions: NDArray,
-    state_indices: list[int] = [0, 1],
+    state_indices: list[int] | None = None,
     state_labels: list[str] | None = None,
     bounds: list[tuple[float, float]] | None = None,
     html_path: str | None = None,
 ):
-    """Plot certified vs uncertified 2D regions as rectangles.
+    """Plot certified vs uncertified regions as 2D rectangle overlays.
+
+    If more than two state indices are selected, one figure per 2D state pair
+    is generated.
 
     Parameters
     ----------
@@ -349,74 +423,100 @@ def certified_regions_2d(
     uncertified_regions : list of (lb, ub)
         Uncertified boxes in state space.
     state_indices : list[int], optional
-        Indices of the two state dimensions to visualize. If input regions
-        contain more than two state dimensions, they are projected to these
-        indices before plotting.
+        State indices to consider. If None, all states are used and all
+        pairwise combinations are plotted.
     state_labels : list of str, optional
-        Axis labels for the two states. Defaults to ["State 0", "State 1"].
+        Labels for all state dimensions.
     bounds : list of tuples, optional
-        ((min_x, max_x), (min_y, max_y)). If None, inferred from regions.
+        ((min_x, max_x), (min_y, max_y)). If provided, applied to every pair.
     html_path : str, optional
         If provided, saves the plot to the specified HTML file.
     """
-    # Validate and possibly project regions to the requested state indices.
-    if len(state_indices) != 2:
-        raise ValueError("state_indices must contain exactly 2 indices.")
-    if min(state_indices) < 0:
-        raise ValueError("state_indices must be non-negative.")
+    cert_regs_np = _regions_to_np(certified_regions)
+    uncert_regs_np = _regions_to_np(uncertified_regions)
 
-    certified_regions, uncertified_regions = _collapse_projected_regions(
-        certified_regions,
-        uncertified_regions,
-        indices=state_indices,
-    )
-
-    if certified_regions.shape[0] == 0 and uncertified_regions.shape[0] == 0:
+    if cert_regs_np.shape[0] == 0 and uncert_regs_np.shape[0] == 0:
         __logger__.warning("No regions provided for plotting.")
         return
 
-    if state_labels is None:
-        state_labels = ["State 0", "State 1"]
+    region_dims = []
+    if cert_regs_np.shape[0] > 0:
+        region_dims.append(int(cert_regs_np.shape[2]))
+    if uncert_regs_np.shape[0] > 0:
+        region_dims.append(int(uncert_regs_np.shape[2]))
+    if len(region_dims) == 0:
+        raise ValueError("Could not infer state dimension from empty regions.")
 
-    if bounds is None:
-        all_lbs = np.vstack([certified_regions[:, 0, :], uncertified_regions[:, 0, :]]) if (certified_regions.shape[0] + uncertified_regions.shape[0]) > 0 else np.empty((0,2))
-        all_ubs = np.vstack([certified_regions[:, 1, :], uncertified_regions[:, 1, :]]) if (certified_regions.shape[0] + uncertified_regions.shape[0]) > 0 else np.empty((0,2))
-        x_min = all_lbs[:, 0].min()
-        x_max = all_ubs[:, 0].max()
-        y_min = all_lbs[:, 1].min()
-        y_max = all_ubs[:, 1].max()
-        bounds = [(x_min, x_max), (y_min, y_max)]
+    max_state_idx = max(state_indices) if state_indices is not None else -1
+    num_states = max(region_dims + [max_state_idx + 1])
 
-    fig = go.Figure()
+    state_indices = _resolve_indices(state_indices, num_states)
 
-    _add_regions(
-        certified_regions, 
-        fig,
-        "#2ca02c", 
-        "Certified",
-        fill=True,
-    )
-    _add_regions(
-        uncertified_regions, 
-        fig,
-        "#d62728", 
-        "Uncertified",
-        fill=True,
-    )
+    if state_labels is not None and len(state_labels) == len(state_indices):
+        labels_full = [f"State {i}" for i in range(num_states)]
+        for label_idx, state_idx in enumerate(state_indices):
+            labels_full[state_idx] = state_labels[label_idx]
+    else:
+        labels_full = _resolve_labels(state_labels, num_states)
 
-    fig.update_layout(
-        title="Certified Regions",
-        xaxis_title=state_labels[0],
-        yaxis_title=state_labels[1],
-        xaxis=dict(range=[bounds[0][0], bounds[0][1]]),
-        yaxis=dict(range=[bounds[1][0], bounds[1][1]]),
-    )
+    pair_indices = _state_index_pairs(state_indices)
+
+    figures: dict[tuple[int, int], go.Figure] = {}
+    for pair in pair_indices:
+        cert_pair, uncert_pair = _collapse_projected_regions(
+            cert_regs_np,
+            uncert_regs_np,
+            indices=list(pair),
+        )
+
+        if cert_pair.shape[0] == 0 and uncert_pair.shape[0] == 0:
+            continue
+
+        pair_bounds = bounds
+        if pair_bounds is None:
+            pair_bounds = _limits_from_regions(
+                cert_pair,
+                uncert_pair,
+                pad_ratio=0.0,
+                default_pad=0.0,
+            )
+        if pair_bounds is None:
+            pair_bounds = [(-1.0, 1.0), (-1.0, 1.0)]
+
+        fig = go.Figure()
+
+        _add_regions(
+            cert_pair,
+            fig,
+            "#2ca02c",
+            "Certified",
+            fill=True,
+        )
+        _add_regions(
+            uncert_pair,
+            fig,
+            "#d62728",
+            "Uncertified",
+            fill=True,
+        )
+
+        fig.update_layout(
+            title=f"Certified Regions ({labels_full[pair[0]]} vs {labels_full[pair[1]]})",
+            xaxis_title=labels_full[pair[0]],
+            yaxis_title=labels_full[pair[1]],
+            xaxis=dict(range=[pair_bounds[0][0], pair_bounds[0][1]]),
+            yaxis=dict(range=[pair_bounds[1][0], pair_bounds[1][1]]),
+        )
+        figures[pair] = fig
+
+    if len(figures) == 0:
+        __logger__.warning("No projectable regions found for selected state indices.")
+        return
 
     if html_path is not None:
-        dir_path = os.path.dirname(html_path)
-        if dir_path:
-            os.makedirs(dir_path, exist_ok=True)
-        fig.write_html(html_path)
-        __logger__.info("Certified region plot saved to %s.", html_path)
-    else:
-        fig.show()
+        _save_pair_figures(figures, html_path, labels_full, kind="Certified region")
+        return None
+
+    if len(figures) == 1:
+        return next(iter(figures.values()))
+    return figures

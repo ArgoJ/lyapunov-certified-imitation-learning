@@ -20,7 +20,7 @@ from shared_inv_pend_on_cart import (
 plot_module = importlib.import_module("lcil.utils.plot")
 base_models_module = importlib.import_module("lcil.utils.base_models")
 certified_regions_2d = plot_module.certified_regions_2d
-lyapunov = plot_module.lyapunov
+lyapunov_cert_regions = plot_module.lyapunov_cert_regions
 
 
 class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
@@ -106,39 +106,21 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
             device=th.device("cpu"), # th.device("cuda" if th.cuda.is_available() else "cpu"),
         )
 
-    @staticmethod
-    def _project_regions_to_2d(
-        regions: np.ndarray,
-        state_indices: tuple[int, int] = (0, 1),
-    ) -> np.ndarray:
-        return regions[:, :, list(state_indices)]
-
     def _assert_region_plot_written(
         self,
         certified_regions: np.ndarray,
         uncertified_regions: np.ndarray,
         stem: str,
     ) -> None:
-        plot_state_indices = (2, 3)
-        state_labels = ["theta", "theta_dot"]
-
-        certified_regions_2d_view = self._project_regions_to_2d(
-            certified_regions,
-            state_indices=plot_state_indices,
-        )
-        uncertified_regions_2d_view = self._project_regions_to_2d(
-            uncertified_regions,
-            state_indices=plot_state_indices,
-        )
+        state_labels = ["x", "v", "theta", "theta_dot"]
 
         self._assert_plot_written(
             plot_fn=certified_regions_2d,
             stem=stem,
             plot_kwargs={
-                "certified_regions": certified_regions_2d_view,
-                "uncertified_regions": uncertified_regions_2d_view,
+                "certified_regions": certified_regions,
+                "uncertified_regions": uncertified_regions,
                 "state_labels": state_labels,
-                "state_indices": plot_state_indices
             },
         )
 
@@ -163,21 +145,21 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
     def _to_numpy_lyapunov(
         lyap_model: nn.Module,
         state_dim: int,
-        plot_state_indices: tuple[int, int],
     ):
         def _lyapunov_func(x: np.ndarray) -> np.ndarray | float:
             x_array = np.asarray(x, dtype=np.float32)
 
-            if x_array.shape[-1] == len(plot_state_indices):
-                x_lifted = np.zeros((*x_array.shape[:-1], state_dim), dtype=np.float32)
-                x_lifted[..., plot_state_indices[0]] = x_array[..., 0]
-                x_lifted[..., plot_state_indices[1]] = x_array[..., 1]
-            elif x_array.shape[-1] == state_dim:
+            if x_array.shape[-1] == state_dim:
                 x_lifted = x_array
+            elif x_array.shape[-1] < state_dim:
+                # mpc_datagen may evaluate pairwise projections with reduced tail dimensions.
+                # Preserve existing coordinates and pad missing higher dimensions with zeros.
+                x_lifted = np.zeros((*x_array.shape[:-1], state_dim), dtype=np.float32)
+                x_lifted[..., : x_array.shape[-1]] = x_array
             else:
                 raise ValueError(
                     f"Lyapunov input has invalid shape {x_array.shape}; expected last dim "
-                    f"{len(plot_state_indices)} or {state_dim}."
+                    f"<= {state_dim}."
                 )
 
             x_tensor = th.as_tensor(x_lifted, dtype=th.float32)
@@ -201,52 +183,40 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
         uncertified_regions: np.ndarray,
         stem: str,
     ) -> None:
-        plot_state_indices = (2, 3)
-        state_labels = ["theta", "theta_dot"]
+        state_labels = ["x", "v", "theta", "theta_dot"]
 
         lyap_func = self._to_numpy_lyapunov(
             lyap_model=lyap_model,
             state_dim=4,
-            plot_state_indices=plot_state_indices,
         )
-        certified_regions_2d_view = self._project_regions_to_2d(
-            certified_regions,
-            state_indices=plot_state_indices,
-        )
-        uncertified_regions_2d_view = self._project_regions_to_2d(
-            uncertified_regions,
-            state_indices=plot_state_indices,
-        )
-
         self._assert_plot_written(
-            plot_fn=lyapunov,
+            plot_fn=lyapunov_cert_regions,
             stem=stem,
             plot_kwargs={
-                "dataset": None,
                 "lyapunov_func": lyap_func,
-                "state_indices": list(plot_state_indices),
                 "state_labels": state_labels,
-                "certified_regions": certified_regions_2d_view,
-                "uncertified_regions": uncertified_regions_2d_view,
+                "certified_regions": certified_regions,
+                "uncertified_regions": uncertified_regions,
             },
         )
 
     def test_inverted_pendulum_on_cart_lqr(self) -> None:
         certifier = self._make_certifier()
         rho_certified, result = certifier.certify(rho_estimate=20.0)
+        base = "cartpole_abcrown_integration_dare"
 
         self.assertIsInstance(float(rho_certified), float)
         self.assertGreaterEqual(rho_certified, certifier.config.rho_min)
         self._assert_region_plot_written(
             certified_regions=result.certified_regions,
             uncertified_regions=result.failed_regions,
-            stem="inverted_pendulum_on_cart_riccati_regions_integration",
+            stem=f"{base}_regions",
         )
         self._assert_lyapunov_plot_written(
             lyap_model=certifier.lyap_model,
             certified_regions=result.certified_regions,
             uncertified_regions=result.failed_regions,
-            stem="inverted_pendulum_on_cart_riccati_lyapunov_integration",
+            stem=f"{base}_lyapunov",
         )
         self.assertGreater(result.failed_regions.shape[0], 0)
         self.assertGreater(result.certified_regions.shape[0], 0)

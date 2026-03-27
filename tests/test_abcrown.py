@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 plot_module = importlib.import_module("lcil.utils.plot")
 certified_regions_2d = plot_module.certified_regions_2d
-lyapunov = plot_module.lyapunov
+lyapunov_cert_regions = plot_module.lyapunov_cert_regions
 
 
 class _ZeroPolicy(nn.Module):
@@ -125,31 +125,21 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
             device=th.device("cpu"),
         )
 
-    @staticmethod
-    def _project_regions_to_2d(
-        regions: np.ndarray,
-        state_indices: tuple[int, int] = (0, 1),
-    ) -> np.ndarray:
-        return regions[:, :, list(state_indices)]
-
     def _assert_region_plot_written(
         self,
         certified_regions: np.ndarray,
         uncertified_regions: np.ndarray,
         stem: str,
     ) -> None:
-        certified_regions_2d_view = self._project_regions_to_2d(certified_regions)
-        uncertified_regions_2d_view = self._project_regions_to_2d(uncertified_regions)
-
         plot_dir = os.environ.get("LCIL_TEST_PLOT_DIR")
         if plot_dir:
             output_dir = Path(plot_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             html_path = output_dir / f"{stem}.html"
             certified_regions_2d(
-                certified_regions=certified_regions_2d_view,
-                uncertified_regions=uncertified_regions_2d_view,
-                state_labels=["x0", "x1"],
+                certified_regions=certified_regions,
+                uncertified_regions=uncertified_regions,
+                state_labels=["x0", "x1", "x2"],
                 html_path=str(html_path),
             )
             self.assertTrue(html_path.exists())
@@ -159,9 +149,9 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             html_path = Path(tmp_dir) / f"{stem}.html"
             certified_regions_2d(
-                certified_regions=certified_regions_2d_view,
-                uncertified_regions=uncertified_regions_2d_view,
-                state_labels=["x0", "x1"],
+                certified_regions=certified_regions,
+                uncertified_regions=uncertified_regions,
+                state_labels=["x0", "x1", "x2"],
                 html_path=str(html_path),
             )
             self.assertTrue(html_path.exists())
@@ -171,21 +161,20 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
     def _to_numpy_lyapunov(
         lyap_model: nn.Module,
         state_dim: int,
-        plot_state_indices: tuple[int, int],
     ):
         def _lyapunov_func(x: np.ndarray) -> np.ndarray | float:
             x_array = np.asarray(x, dtype=np.float32)
 
-            if x_array.shape[-1] == len(plot_state_indices):
-                x_lifted = np.zeros((*x_array.shape[:-1], state_dim), dtype=np.float32)
-                x_lifted[..., plot_state_indices[0]] = x_array[..., 0]
-                x_lifted[..., plot_state_indices[1]] = x_array[..., 1]
-            elif x_array.shape[-1] == state_dim:
+            if x_array.shape[-1] == state_dim:
                 x_lifted = x_array
+            elif x_array.shape[-1] < state_dim:
+                # Keep provided coordinates and pad trailing state dimensions with zeros.
+                x_lifted = np.zeros((*x_array.shape[:-1], state_dim), dtype=np.float32)
+                x_lifted[..., : x_array.shape[-1]] = x_array
             else:
                 raise ValueError(
                     f"Lyapunov input has invalid shape {x_array.shape}; expected last dim "
-                    f"{len(plot_state_indices)} or {state_dim}."
+                    f"<= {state_dim}."
                 )
 
             x_tensor = th.as_tensor(x_lifted, dtype=th.float32)
@@ -209,32 +198,21 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
         uncertified_regions: np.ndarray,
         stem: str,
     ) -> None:
-        plot_state_indices = (0, 1)
         lyap_func = self._to_numpy_lyapunov(
             lyap_model=lyap_model,
             state_dim=3,
-            plot_state_indices=plot_state_indices,
         )
-        certified_regions_2d_view = self._project_regions_to_2d(
-            certified_regions,
-            state_indices=plot_state_indices,
-        )
-        uncertified_regions_2d_view = self._project_regions_to_2d(
-            uncertified_regions,
-            state_indices=plot_state_indices,
-        )
-
         plot_dir = os.environ.get("LCIL_TEST_PLOT_DIR")
         if plot_dir:
             output_dir = Path(plot_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             html_path = output_dir / f"{stem}.html"
-            lyapunov(
+            lyapunov_cert_regions(
                 dataset=None,
                 lyapunov_func=lyap_func,
-                state_labels=["x0", "x1"],
-                certified_regions=certified_regions_2d_view,
-                uncertified_regions=uncertified_regions_2d_view,
+                state_labels=["x0", "x1", "x2"],
+                certified_regions=certified_regions,
+                uncertified_regions=uncertified_regions,
                 html_path=str(html_path),
             )
             self.assertTrue(html_path.exists())
@@ -243,12 +221,12 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             html_path = Path(tmp_dir) / f"{stem}.html"
-            lyapunov(
+            lyapunov_cert_regions(
                 dataset=None,
                 lyapunov_func=lyap_func,
-                state_labels=["x0", "x1"],
-                certified_regions=certified_regions_2d_view,
-                uncertified_regions=uncertified_regions_2d_view,
+                state_labels=["x0", "x1", "x2"],
+                certified_regions=certified_regions,
+                uncertified_regions=uncertified_regions,
                 html_path=str(html_path),
             )
             self.assertTrue(html_path.exists())
