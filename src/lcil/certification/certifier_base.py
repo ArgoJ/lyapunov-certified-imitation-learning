@@ -379,8 +379,7 @@ class BaseCertifier(ABC):
             rho: float,
             collect_details: bool, 
             depth: int, 
-            max_depth: int,
-            use_filter: bool = True
+            max_depth: int
     ) -> tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         """Recursively certify axis-aligned regions for a fixed ``rho``.
 
@@ -414,7 +413,7 @@ class BaseCertifier(ABC):
             empty = th.empty((0, self.config.state_dim), device=self.device)
             return empty, empty, empty, empty, empty
 
-        if self.config.use_ibp_filter and use_filter and self.ibp_filter_model is not None:
+        if self.config.use_ibp_filter and self.ibp_filter_model is not None:
             lbs, ubs = self._filter_sublevel_regions(lbs, ubs, rho)
 
         if len(lbs) == 0:
@@ -466,7 +465,7 @@ class BaseCertifier(ABC):
 
                 # Rekursiv certification of all sub-boxes
                 sub_c_lbs, sub_c_ubs, sub_f_lbs, sub_f_ubs, sub_cex = self._certify_regions_recursive(
-                    sub_lbs, sub_ubs, rho, collect_details, depth + 1, max_depth, use_filter
+                    sub_lbs, sub_ubs, rho, collect_details, depth + 1, max_depth
                 )
 
                 certified_lbs = th.cat([certified_lbs, sub_c_lbs], dim=0)
@@ -504,7 +503,7 @@ class BaseCertifier(ABC):
         lbs, ubs = self.regions
         
         c_lbs, c_ubs, f_lbs, f_ubs, cex = self._certify_regions_recursive(
-            lbs, ubs, rho, collect_details, depth=0, max_depth=self.config.max_recursion_depth, use_filter=not collect_details
+            lbs, ubs, rho, collect_details, depth=0, max_depth=self.config.max_recursion_depth
         )
 
         # convert for output -> NumPy arrays for easier downstream use
