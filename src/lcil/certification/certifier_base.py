@@ -6,7 +6,7 @@ import numpy as np
 
 from contextlib import nullcontext
 from typing import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from abc import ABC, abstractmethod
 from numpy.typing import NDArray
 from auto_LiRPA import BoundedTensor, PerturbationLpNorm, BoundedModule
@@ -25,6 +25,40 @@ class RegionCertificationResult:
     counter_examples: NDArray
     failed_regions: NDArray
     certified_regions: NDArray
+
+
+@dataclass(frozen=True)
+class RecursiveCertificationResult:
+    """Internal tensor result for recursive region certification."""
+
+    certified: th.Tensor
+    failed: th.Tensor
+    counterexamples: th.Tensor
+
+    @classmethod
+    def empty(cls, state_dim: int, device: th.device) -> RecursiveCertificationResult:
+        empty = th.empty((0, 2, state_dim), device=device)
+        return cls(
+            certified=empty,
+            failed=empty,
+            counterexamples=empty,
+        )
+
+    def with_certified(self, regions: th.Tensor) -> RecursiveCertificationResult:
+        return replace(self, certified=regions)
+
+    def with_failed(self, regions: th.Tensor) -> RecursiveCertificationResult:
+        return replace(self, failed=regions)
+
+    def with_counterexamples(self, regions: th.Tensor) -> RecursiveCertificationResult:
+        return replace(self, counterexamples=regions)
+
+    def __add__(self, other: RecursiveCertificationResult) -> RecursiveCertificationResult:
+        return RecursiveCertificationResult(
+            certified=th.cat([self.certified, other.certified], dim=0),
+            failed=th.cat([self.failed, other.failed], dim=0),
+            counterexamples=th.cat([self.counterexamples, other.counterexamples], dim=0),
+        )
 
 
 class _NegatedLyapunovModelWrapper(nn.Module):
@@ -103,8 +137,7 @@ class BaseCertifier(ABC):
     @abstractmethod
     def _certify_batched_regions(
             self,
-            lbs: th.Tensor,
-            ubs: th.Tensor,
+            bs: th.Tensor,
             rho: float,
             early_exit: bool = True,
             *args, **kwargs
@@ -113,10 +146,8 @@ class BaseCertifier(ABC):
 
         Parameters
         ----------
-        lbs : th.Tensor
-            Region lower bounds with shape ``(n, state_dim)``.
-        ubs : th.Tensor
-            Region upper bounds with shape ``(n, state_dim)``.
+        bs : th.Tensor
+            Packed region bounds with shape ``(n, 2, state_dim)``.
         rho : float
             Lyapunov level-set value to certify.
         early_exit : bool, optional
@@ -269,13 +300,14 @@ class BaseCertifier(ABC):
 
     def _filter_sublevel_regions(
         self,
-        lbs: th.Tensor,
-        ubs: th.Tensor,
+        bs: th.Tensor,
         rho: float,
     ) -> tuple[th.Tensor, th.Tensor]:
         """Keep only boxes not proven to satisfy ``V(x) > rho`` everywhere."""
-        if len(lbs) == 0:
-            return lbs, ubs
+        if len(bs) == 0:
+            return bs, bs
+
+        lbs, ubs = self._unpack_regions(bs)
 
         keep_mask = th.ones(len(lbs), dtype=th.bool, device=self.device)
         negated_threshold = -float(rho)
@@ -299,7 +331,7 @@ class BaseCertifier(ABC):
             keep_mask[start_idx:end_idx] = ~batch_is_outside
 
         if keep_mask.all():
-            return lbs, ubs
+            return bs, bs[:0]
 
         __logger__.info(
             "Pruned %d / %d regions proven outside V(x) <= %.6f.",
@@ -307,7 +339,38 @@ class BaseCertifier(ABC):
             len(lbs),
             float(rho),
         )
-        return lbs[keep_mask], ubs[keep_mask]
+        return bs[keep_mask], bs[~keep_mask]
+
+    def _regions_tensor_to_np(self, regions: th.Tensor) -> NDArray:
+        """Convert a region tensor ``(N, 2, state_dim)`` to NumPy."""
+        if regions.numel() == 0:
+            return np.empty((0, 2, self.config.state_dim), dtype=np.float32)
+        return regions.cpu().numpy()
+
+    def _split_failed_regions(self, failed_bs: th.Tensor) -> th.Tensor:
+        """Split each failed box along its widest dimension into two packed sub-boxes."""
+        mids = 0.5 * (failed_bs[:, 0] + failed_bs[:, 1])
+        widths = failed_bs[:, 1] - failed_bs[:, 0]
+        split_dims = th.argmax(widths, dim=1)
+        row_idx = th.arange(failed_bs.shape[0], device=self.device)
+
+        low_bs = failed_bs.clone()
+        high_bs = failed_bs.clone()
+
+        low_bs[row_idx, 1, split_dims] = mids[row_idx, split_dims]
+        high_bs[row_idx, 0, split_dims] = mids[row_idx, split_dims]
+
+        return th.cat([low_bs, high_bs], dim=0)
+
+    @staticmethod
+    def _pack_regions(lbs: th.Tensor, ubs: th.Tensor) -> th.Tensor:
+        """Pack lower/upper bounds into ``(N, 2, state_dim)`` format."""
+        return th.stack([lbs, ubs], dim=1)
+
+    @staticmethod
+    def _unpack_regions(bs: th.Tensor) -> tuple[th.Tensor, th.Tensor]:
+        """Unpack ``(N, 2, state_dim)`` regions into lower/upper bounds."""
+        return bs[:, 0], bs[:, 1]
 
     def _setup_verifier(self) -> ClosedLoopLyapunovConditionVerifier:
         """Construct and initialize the closed-loop Lyapunov verifier.
@@ -374,21 +437,18 @@ class BaseCertifier(ABC):
 
     def _certify_regions_recursive(
             self, 
-            lbs: th.Tensor, 
-            ubs: th.Tensor,
+            bs: th.Tensor,
             rho: float,
             collect_details: bool, 
             depth: int, 
             max_depth: int
-    ) -> tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+        ) -> RecursiveCertificationResult:
         """Recursively certify axis-aligned regions for a fixed ``rho``.
 
         Parameters
         ----------
-        lbs : th.Tensor
-            Lower bounds of regions with shape ``(n, state_dim)``.
-        ubs : th.Tensor
-            Upper bounds of regions with shape ``(n, state_dim)``.
+        bs : th.Tensor
+            Packed lower and upper bounds of regions with shape ``(n, 2, state_dim)``.
         rho : float
             Lyapunov level-set value to certify.
         collect_details : bool
@@ -399,82 +459,53 @@ class BaseCertifier(ABC):
             Current recursion depth.
         max_depth : int
             Maximum subdivision depth for failed regions.
-        use_filter : bool, optional
-            Filter the regions beforehand.
 
         Returns
         -------
-        tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]
-            ``(certified_lbs, certified_ubs, failed_lbs, failed_ubs, counter_examples)``.
-            Each bound tensor has shape ``(k, state_dim)`` and counterexamples has
-            shape ``(m, state_dim)``.
+        RecursiveCertificationResult
+            Tensor bundles for certified, failed and filtered (counterexample)
+            regions. Each tensor has shape ``(k, 2, state_dim)``.
         """
-        if len(lbs) == 0:
-            empty = th.empty((0, self.config.state_dim), device=self.device)
-            return empty, empty, empty, empty, empty
+        empty_result = RecursiveCertificationResult.empty(
+            state_dim=self.config.state_dim, device=self.device
+        )
+        if len(bs) == 0:
+            return empty_result
+
+        filtered_bs = bs[:0]
 
         if self.config.use_ibp_filter and self.ibp_filter_model is not None:
-            lbs, ubs = self._filter_sublevel_regions(lbs, ubs, rho)
+            bs, filtered_bs = self._filter_sublevel_regions(bs, rho)
 
-        if len(lbs) == 0:
-            empty = th.empty((0, self.config.state_dim), device=self.device)
-            return empty, empty, empty, empty, empty
+        result = empty_result.with_counterexamples(filtered_bs)
+        if len(bs) == 0:
+            return result
 
-        is_safe, centers = self._certify_batched_regions(
-            lbs, ubs, rho,
-            early_exit=not collect_details
+        is_safe, _ = self._certify_batched_regions(
+            bs, rho, early_exit=not collect_details
         )
 
-        certified_lbs = lbs[is_safe]
-        certified_ubs = ubs[is_safe]
+        certified_bs = bs[is_safe]
+        result = result.with_certified(certified_bs)
 
         failed_mask = ~is_safe
-        failed_lbs = lbs[failed_mask]
-        failed_ubs = ubs[failed_mask]
-        counter_examples = centers[failed_mask]
+        failed_bs = bs[failed_mask]
 
-        final_failed_lbs = th.empty((0, self.config.state_dim), device=self.device)
-        final_failed_ubs = th.empty((0, self.config.state_dim), device=self.device)
+        if len(failed_bs) == 0:
+            return result
 
-        if len(failed_lbs) > 0:
-            if not collect_details:
-                # Early Exit
-                return certified_lbs, certified_ubs, failed_lbs, failed_ubs, counter_examples
+        if not collect_details:
+            # Early Exit
+            return result.with_failed(failed_bs)
 
-            if depth >= max_depth:
-                final_failed_lbs = failed_lbs
-                final_failed_ubs = failed_ubs
-            else:
-                # Split each failed box into 2 sub-boxes along its widest dimension.
-                # This avoids the 2^state_dim combinatorial explosion in higher dimensions.
-                mids = (failed_lbs + failed_ubs) / 2.0
-                widths = failed_ubs - failed_lbs
-                split_dims = th.argmax(widths, dim=1)
-                row_idx = th.arange(failed_lbs.shape[0], device=self.device)
+        if depth >= max_depth:
+            return result.with_failed(failed_bs)
 
-                low_lbs = failed_lbs.clone()
-                low_ubs = failed_ubs.clone()
-                low_ubs[row_idx, split_dims] = mids[row_idx, split_dims]
-
-                high_lbs = failed_lbs.clone()
-                high_ubs = failed_ubs.clone()
-                high_lbs[row_idx, split_dims] = mids[row_idx, split_dims]
-
-                sub_lbs = th.cat([low_lbs, high_lbs], dim=0)
-                sub_ubs = th.cat([low_ubs, high_ubs], dim=0)
-
-                # Rekursiv certification of all sub-boxes
-                sub_c_lbs, sub_c_ubs, sub_f_lbs, sub_f_ubs, sub_cex = self._certify_regions_recursive(
-                    sub_lbs, sub_ubs, rho, collect_details, depth + 1, max_depth
-                )
-
-                certified_lbs = th.cat([certified_lbs, sub_c_lbs], dim=0)
-                certified_ubs = th.cat([certified_ubs, sub_c_ubs], dim=0)
-                final_failed_lbs = sub_f_lbs
-                final_failed_ubs = sub_f_ubs
-                counter_examples = th.cat([counter_examples, sub_cex], dim=0)
-
-        return certified_lbs, certified_ubs, final_failed_lbs, final_failed_ubs, counter_examples
+        sub_bs = self._split_failed_regions(failed_bs)
+        sub_result = self._certify_regions_recursive(
+            sub_bs, rho, collect_details, depth + 1, max_depth
+        )
+        return result + sub_result
 
     def _certify_regions(
             self, 
@@ -500,22 +531,13 @@ class BaseCertifier(ABC):
         if rho <= 0.0:
             raise ValueError(f"rho must be non-negative, got {rho}.")
 
-        lbs, ubs = self.regions
-        
-        c_lbs, c_ubs, f_lbs, f_ubs, cex = self._certify_regions_recursive(
-            lbs, ubs, rho, collect_details, depth=0, max_depth=self.config.max_recursion_depth
+        recursive_result = self._certify_regions_recursive(
+            self.regions, rho, collect_details, depth=0, max_depth=self.config.max_recursion_depth
         )
 
-        # convert for output -> NumPy arrays for easier downstream use
-        c_lbs_np = c_lbs.cpu().numpy() if c_lbs.numel() > 0 else np.empty((0, self.config.state_dim), dtype=np.float32)
-        c_ubs_np = c_ubs.cpu().numpy() if c_ubs.numel() > 0 else np.empty((0, self.config.state_dim), dtype=np.float32)
-        f_lbs_np = f_lbs.cpu().numpy() if f_lbs.numel() > 0 else np.empty((0, self.config.state_dim), dtype=np.float32)
-        f_ubs_np = f_ubs.cpu().numpy() if f_ubs.numel() > 0 else np.empty((0, self.config.state_dim), dtype=np.float32)
-
-        # Stack into shape (N, 2, state_dim): [:,0,:] = lb, [:,1,:] = ub
-        certified_regions_np = np.stack([c_lbs_np, c_ubs_np], axis=1) if c_lbs_np.shape[0] > 0 else np.empty((0, 2, self.config.state_dim), dtype=np.float32)
-        failed_regions_np = np.stack([f_lbs_np, f_ubs_np], axis=1) if f_lbs_np.shape[0] > 0 else np.empty((0, 2, self.config.state_dim), dtype=np.float32)
-        counter_examples_np = cex.cpu().numpy() if cex.numel() > 0 else np.empty((0, self.config.state_dim), dtype=np.float32)
+        certified_regions_np = self._regions_tensor_to_np(recursive_result.certified)
+        failed_regions_np = self._regions_tensor_to_np(recursive_result.failed)
+        counter_examples_np = self._regions_tensor_to_np(recursive_result.counterexamples)
 
         return RegionCertificationResult(
             success=failed_regions_np.shape[0] == 0,
@@ -599,13 +621,13 @@ class BaseCertifier(ABC):
         else:
             return False, rho_lo, rho_up
     
-    def _build_regions(self) -> tuple[th.Tensor, th.Tensor]:
-        """Build axis-aligned grid cells and remove cells intersecting the origin window.
+    def _build_regions(self) -> th.Tensor:
+        """Build packed axis-aligned grid cells excluding the origin window.
 
         Returns
         -------
-        tuple[th.Tensor, th.Tensor]
-            ``(lbs, ubs)`` where each tensor has shape ``(n, state_dim)``.
+        th.Tensor
+            Region bounds with shape ``(n, 2, state_dim)``.
         """
         origin_exclusion = self._resolve_origin_exclusion()
         lbx, ubx = self.bounds[0], self.bounds[1]
@@ -635,7 +657,7 @@ class BaseCertifier(ABC):
 
         lbs = lbs[valid_mask]
         ubs = ubs[valid_mask]
-        return lbs, ubs
+        return self._pack_regions(lbs, ubs)
 
     def is_rho_certified(self, rho: float) -> bool:
         """Check whether all regions satisfy Lyapunov conditions at ``rho``.
@@ -678,7 +700,7 @@ class BaseCertifier(ABC):
 
         self.verifier = self._setup_verifier()
         self.regions = self._build_regions()
-        __logger__.info("Built %d certification regions (state_dim=%d).", len(self.regions[0]), self.config.state_dim)
+        __logger__.info("Built %d certification regions (state_dim=%d).", len(self.regions), self.config.state_dim)
         self.setup_backend()
 
         if self.config.rho_min > rho_estimate:

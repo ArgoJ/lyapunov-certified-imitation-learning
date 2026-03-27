@@ -11,35 +11,30 @@ __logger__ = get_package_logger(__name__)
 
 
 class LiRPACertifier(BaseCertifier):
-    """_summary_
-    """
-    def __init__(self, policy_model, lyap_model, dyn_model, config, device = ...):
+    """Lyapunov certifier using auto_LiRPA bound propagation."""
+
+    def __init__(
+        self,
+        policy_model,
+        lyap_model,
+        dyn_model,
+        config,
+        device: th.device = th.device("cpu"),
+    ):
         super().__init__(policy_model, lyap_model, dyn_model, config, device)
         self.lirpa_model = None
         self.fallback_methods = None
 
     @staticmethod
     def _get_fallback_methods(method : str) -> list[str]:
-        """_summary_
-
-        Parameters
-        ----------
-        method : str
-            _description_
-
-        Returns
-        -------
-        list[str]
-            _description_
-        """
+        """Return backend fallback methods ordered from strongest to weakest."""
         fallback_methods = [method.strip().lower()]
         if fallback_methods[0] == "alpha-crown":
             fallback_methods.extend(["crown", "crown-ibp", "ibp"])
         return fallback_methods
 
     def setup_backend(self) -> None:
-        """_summary_
-        """
+        """Initialize the bounded LiRPA model and fallback method list."""
         dummy_x = th.zeros(1, self.config.state_dim, device=self.device)
         dummy_rho = th.zeros(1, 1, device=self.device)
         dummy_kappa = th.zeros(1, 1, device=self.device)
@@ -55,43 +50,34 @@ class LiRPACertifier(BaseCertifier):
 
     def _certify_batched_regions(
             self,
-            lbs: th.Tensor,
-            ubs: th.Tensor,
+            bs: th.Tensor,
             rho: float,
             early_exit: bool = True,
     ) -> tuple[th.Tensor, th.Tensor]:
-        """_summary_
+        """Certify a packed batch of regions with LiRPA bounds.
 
         Parameters
         ----------
-        lbs : th.Tensor
-            _description_
-        ubs : th.Tensor
-            _description_
+        bs : th.Tensor
+            Packed region bounds with shape ``(n, 2, state_dim)``.
         rho : float
-            _description_
+            Lyapunov level-set value to certify.
         early_exit : bool, optional
-            _description_, by default True
+            Stop after first failed region if ``True``.
 
         Returns
         -------
         tuple[th.Tensor, th.Tensor]
-            _description_
-
-        Raises
-        ------
-        ValueError
-            _description_
+            ``(is_certified, centers_out)`` for all regions in ``bs``.
         """
         if self.lirpa_model is None or self.fallback_methods is None:
             raise RuntimeError("LiRPACertifier backend is not properly initialized.")
 
-        num_regions = len(lbs)
-        if num_regions != len(ubs):
-            raise ValueError("lbs and ubs must have the same length.")
+        num_regions = len(bs)
         
         # Preallocate output tensors
         is_certified = th.zeros(num_regions, dtype=th.bool, device=self.device)
+        lbs, ubs = self._unpack_regions(bs)
         centers_out = (lbs + ubs) / 2.0
 
         for idx in range(0, num_regions, self.config.batch_size):

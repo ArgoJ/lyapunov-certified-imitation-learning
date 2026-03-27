@@ -112,7 +112,7 @@ def riccati_gain_and_value_matrix(
 
 
 class RiccatiPolicy(nn.Module):
-    def __init__(self, k_gain: np.ndarray, max_action: float = 10.0):
+    def __init__(self, k_gain: np.ndarray, max_action: float = 4.0):
         super().__init__()
         self.register_buffer("k_gain", th.as_tensor(k_gain, dtype=th.float32))
         self.register_buffer("max_action", th.as_tensor(max_action, dtype=th.float32))

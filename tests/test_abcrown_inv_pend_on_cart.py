@@ -74,7 +74,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
         sys_cfg = PendulumOnCartConfig()
         k_gain, p_value = riccati_gain_and_value_matrix(sys_cfg)
         lyap_model = RiccatiQuadraticLyapunov(p_value)
-        theta_bound = np.pi * 0.999 # TODO: maybe increas to 2/3 pi to test more challenging region shapes?
+        theta_bound = np.pi * 1.4999
         config = cls.LyapunovCertificationConfig(
             state_dim=4,
             cert_bounds=np.array(
@@ -184,7 +184,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
 
     def test_inverted_pendulum_on_cart_lqr(self) -> None:
         certifier = self._make_certifier()
-        rho_certified, result = certifier.certify(rho_estimate=30.0)
+        rho_certified, result = certifier.certify(rho_estimate=31.5)
         base = "cartpole_abcrown_integration_dare"
 
         self.assertIsInstance(float(rho_certified), float)

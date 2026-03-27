@@ -13,7 +13,6 @@ from abcrown import (
 from pkg_logger import get_package_logger
 
 from .certifier_base import BaseCertifier
-from .config import LyapunovCertificationConfig
 
 
 __logger__ = get_package_logger(__name__)
@@ -37,7 +36,14 @@ class ABCrownCertifier(BaseCertifier):
     Lyapunov certifier using the full Alpha-Beta-CROWN framework.
     Combines spatial branch-and-bound with neural activation branch-and-bound.
     """
-    def __init__(self, policy_model, lyap_model, dyn_model, config, device = ...):
+    def __init__(
+        self,
+        policy_model,
+        lyap_model,
+        dyn_model,
+        config,
+        device: th.device = th.device("cpu"),
+    ):
         super().__init__(policy_model, lyap_model, dyn_model, config, device)
         self.abcrown_config = None
         self.wrapped_model = None
@@ -96,8 +102,7 @@ class ABCrownCertifier(BaseCertifier):
 
     def _certify_batched_regions(
             self,
-            lbs: th.Tensor,
-            ubs: th.Tensor,
+            bs: th.Tensor,
             rho: float,
             early_exit: bool = True,
     ) -> tuple[th.Tensor, th.Tensor]:
@@ -106,10 +111,8 @@ class ABCrownCertifier(BaseCertifier):
 
         Parameters
         ----------
-        lbs : th.Tensor
-            Lower bounds of the regions.
-        ubs : th.Tensor
-            Upper bounds of the regions.
+        bs : th.Tensor
+            Packed region bounds with shape ``(n, 2, state_dim)``.
         rho : float
             The rho parameter for the certification.
         early_exit : bool, optional
@@ -125,8 +128,10 @@ class ABCrownCertifier(BaseCertifier):
         if self.wrapped_model is None or self.abcrown_config is None:
             raise RuntimeError("ABCrownCertifier backend is not properly initialized.")
         
-        num_regions = len(lbs)
+        num_regions = len(bs)
         is_certified = th.zeros(num_regions, dtype=th.bool, device=self.device)
+
+        lbs, ubs = self._unpack_regions(bs)
         centers_out = (lbs + ubs) / 2.0
         self.wrapped_model.rho.fill_(rho)
 
