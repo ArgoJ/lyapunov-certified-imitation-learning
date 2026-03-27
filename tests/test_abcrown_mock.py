@@ -283,16 +283,14 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
 
     def _assert_region_plot_written(
         self,
-        certified_regions: np.ndarray,
-        uncertified_regions: np.ndarray,
+        certification_result,
         stem: str,
     ) -> None:
         self._assert_plot_written(
             plot_fn=certified_regions_2d,
             stem=stem,
             plot_kwargs={
-                "certified_regions": certified_regions,
-                "uncertified_regions": uncertified_regions,
+                "certification_result": certification_result,
                 "state_labels": ["x0", "x1", "x2"],
             },
         )
@@ -335,8 +333,7 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
     def _assert_lyapunov_plot_written(
         self,
         lyap_model: nn.Module,
-        certified_regions: np.ndarray,
-        uncertified_regions: np.ndarray,
+        certification_result,
         stem: str,
     ) -> None:
         lyap_func = self._to_numpy_lyapunov(
@@ -350,8 +347,7 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
                 "dataset": None,
                 "lyapunov_func": lyap_func,
                 "state_labels": ["x0", "x1", "x2"],
-                "certified_regions": certified_regions,
-                "uncertified_regions": uncertified_regions,
+                "certification_result": certification_result,
             },
         )
 
@@ -364,14 +360,12 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
         self.assertEqual(result.failed_regions.shape[0], 0)
         self.assertGreater(result.certified_regions.shape[0], 0)
         self._assert_region_plot_written(
-            certified_regions=result.certified_regions,
-            uncertified_regions=result.failed_regions,
+            certification_result=result,
             stem="quadratic_regions",
         )
         self._assert_lyapunov_plot_written(
             lyap_model=certifier.lyap_model,
-            certified_regions=result.certified_regions,
-            uncertified_regions=result.failed_regions,
+            certification_result=result,
             stem="quadratic_lyapunov",
         )
 
@@ -385,14 +379,12 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
         self.assertGreater(result.failed_regions.shape[0], 0)
         self.assertGreaterEqual(result.counter_examples.shape[0], 0)
         self._assert_region_plot_written(
-            certified_regions=result.certified_regions,
-            uncertified_regions=result.failed_regions,
+            certification_result=result,
             stem="negative_regions",
         )
         self._assert_lyapunov_plot_written(
             lyap_model=certifier.lyap_model,
-            certified_regions=result.certified_regions,
-            uncertified_regions=result.failed_regions,
+            certification_result=result,
             stem="negative_lyapunov",
         )
 
@@ -410,14 +402,12 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
         self.assertTrue(np.any(np.linalg.norm(certified_centers, axis=1) < 1.0))
         self.assertTrue(np.any(np.linalg.norm(failed_centers, axis=1) > 1.5))
         self._assert_region_plot_written(
-            certified_regions=result.certified_regions,
-            uncertified_regions=result.failed_regions,
+            certification_result=result,
             stem="mixed_regions",
         )
         self._assert_lyapunov_plot_written(
             lyap_model=certifier.lyap_model,
-            certified_regions=result.certified_regions,
-            uncertified_regions=result.failed_regions,
+            certification_result=result,
             stem="mixed_lyapunov",
         )
 

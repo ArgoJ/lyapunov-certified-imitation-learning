@@ -126,16 +126,14 @@ class TestABCrownCertifierIntegration(PlotAssertionsMixin, unittest.TestCase):
 
     def _assert_region_plot_written(
         self,
-        certified_regions: np.ndarray,
-        uncertified_regions: np.ndarray,
+        certification_result,
         stem: str,
     ) -> None:
         self._assert_plot_written(
             plot_fn=certified_regions_2d,
             stem=stem,
             plot_kwargs={
-                "certified_regions": certified_regions,
-                "uncertified_regions": uncertified_regions,
+                "certification_result": certification_result,
                 "state_labels": ["x0", "x1", "x2"],
             },
         )
@@ -177,8 +175,7 @@ class TestABCrownCertifierIntegration(PlotAssertionsMixin, unittest.TestCase):
     def _assert_lyapunov_plot_written(
         self,
         lyap_model: nn.Module,
-        certified_regions: np.ndarray,
-        uncertified_regions: np.ndarray,
+        certification_result,
         stem: str,
     ) -> None:
         lyap_func = self._to_numpy_lyapunov(
@@ -192,8 +189,7 @@ class TestABCrownCertifierIntegration(PlotAssertionsMixin, unittest.TestCase):
                 "dataset": None,
                 "lyapunov_func": lyap_func,
                 "state_labels": ["x0", "x1", "x2"],
-                "certified_regions": certified_regions,
-                "uncertified_regions": uncertified_regions,
+                "certification_result": certification_result,
             },
         )
 
@@ -208,14 +204,12 @@ class TestABCrownCertifierIntegration(PlotAssertionsMixin, unittest.TestCase):
         self.assertGreater(result.failed_regions.shape[0], 0)
         self.assertGreaterEqual(result.counter_examples.shape[0], result.failed_regions.shape[0])
         self._assert_region_plot_written(
-            certified_regions=result.certified_regions,
-            uncertified_regions=result.failed_regions,
+            certification_result=result,
             stem="mixed_regions_integration",
         )
         self._assert_lyapunov_plot_written(
             lyap_model=certifier.lyap_model,
-            certified_regions=result.certified_regions,
-            uncertified_regions=result.failed_regions,
+            certification_result=result,
             stem="mixed_lyapunov_integration",
         )
 

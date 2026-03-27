@@ -3,7 +3,7 @@ import os
 import plotly.graph_objects as go
 
 from numpy.typing import NDArray
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
 
 from mpc_datagen.mpc_data import MPCDataset
 from mpc_datagen.plots import (
@@ -16,6 +16,7 @@ from mpc_datagen.plots import (
     _state_index_pairs,
 )
 from pkg_logger import get_package_logger
+from ..certification.certifier_base import RegionCertificationResult
 
 __logger__ = get_package_logger(__name__)
 
@@ -55,43 +56,52 @@ def _dedupe_regions(regs: NDArray, decimals: int = 12) -> NDArray:
 def _collapse_projected_regions(
     cert_regs: NDArray,
     uncert_regs: NDArray,
+    ctex_regs: NDArray,
     indices: list[int] = [0, 1],
     decimals: int = 12,
-) -> tuple[NDArray, NDArray]:
+) -> tuple[NDArray, NDArray, NDArray]:
     cert_regs_np = _regions_to_np(cert_regs)
     uncert_regs_np = _regions_to_np(uncert_regs)
+    ctex_regs_np = _regions_to_np(ctex_regs)
 
     cert_projected = _project_if_needed(cert_regs_np, indices)
     uncert_projected = _project_if_needed(uncert_regs_np, indices)
+    ctex_projected = _project_if_needed(ctex_regs_np, indices)
 
     cert_unique = _dedupe_regions(cert_projected, decimals)
     uncert_unique = _dedupe_regions(uncert_projected, decimals)
+    ctex_unique = _dedupe_regions(ctex_projected, decimals)
 
     if cert_unique.shape[0] > 0 and cert_unique.shape[2] == 2 and \
        uncert_unique.shape[0] > 0 and uncert_unique.shape[2] == 2:
-        return _make_regions_disjoint_2d(
+        cert_unique, uncert_unique = _make_regions_disjoint_2d(
             cert_unique,
             uncert_unique,
             decimals=decimals,
         )
 
-    return cert_unique, uncert_unique
+    return cert_unique, uncert_unique, ctex_unique
 
 
 def _limits_from_regions(
     cert_regs: NDArray,
     uncert_regs: NDArray,
+    ctex_regs: NDArray | None = None,
     pad_ratio: float = 0.0,
     default_pad: float = 1.0,
 ) -> list[tuple[float, float]] | None:
     cert_regs_np = _regions_to_np(cert_regs)
     uncert_regs_np = _regions_to_np(uncert_regs)
+    ctex_regs_np = _regions_to_np(ctex_regs)
 
-    if cert_regs_np.shape[0] + uncert_regs_np.shape[0] == 0:
+    if cert_regs_np.shape[0] + uncert_regs_np.shape[0] + ctex_regs_np.shape[0] == 0:
         return None
 
-    all_lbs = np.vstack([cert_regs_np[:, 0, :], uncert_regs_np[:, 0, :]])
-    all_ubs = np.vstack([cert_regs_np[:, 1, :], uncert_regs_np[:, 1, :]])
+    lb_parts = [arr[:, 0, :] for arr in (cert_regs_np, uncert_regs_np, ctex_regs_np) if arr.shape[0] > 0]
+    ub_parts = [arr[:, 1, :] for arr in (cert_regs_np, uncert_regs_np, ctex_regs_np) if arr.shape[0] > 0]
+
+    all_lbs = np.vstack(lb_parts)
+    all_ubs = np.vstack(ub_parts)
 
     min_x = all_lbs[:, 0].min()
     max_x = all_ubs[:, 0].max()
@@ -205,13 +215,14 @@ def _build_X_Y(regions: NDArray) -> tuple[NDArray, NDArray]:
 
 
 def _add_regions(
-        regions: NDArray | None,
-        fig: go.Figure,
-        color: str,
-        name: str,
-        z_level: float | None = None,
-        dash: str = "solid",
-        fill: bool = False,
+    regions: NDArray | None,
+    fig: go.Figure,
+    color: str,
+    name: str,
+    z_level: float | None = None,
+    dash: str = "solid",
+    fill: bool = False,
+    alpha: float | None = None,
 ) -> None:
     if regions is None or regions.shape[0] == 0:
         return
@@ -231,6 +242,7 @@ def _add_regions(
                 z=z_coords,
                 mode="lines",
                 line=dict(color=color, width=4, dash=dash),
+                opacity=alpha,
                 name=name,
                 showlegend=True,
             )
@@ -243,7 +255,7 @@ def _add_regions(
                 mode="lines",
                 fill="toself" if fill else None,
                 fillcolor=color if fill else None,
-                opacity=0.3 if fill else None,
+                opacity=alpha if alpha is not None else (0.3 if fill else None),
                 line=dict(color=color, width=2, dash=dash),
                 name=name,
                 showlegend=True,
@@ -252,8 +264,7 @@ def _add_regions(
 
 def lyapunov_cert_regions(
     lyapunov_func: Callable[[NDArray], NDArray],
-    certified_regions: NDArray,
-    uncertified_regions: NDArray,
+    certification_result: "RegionCertificationResult",
     dataset: MPCDataset | None = None,
     state_indices: list[int] | None = None,
     state_labels: list[str] | None = None,
@@ -270,11 +281,9 @@ def lyapunov_cert_regions(
     ----------
     lyapunov_func : Callable[[NDArray], NDArray]
         A function that takes a state vector and returns the Lyapunov value.
-    certified_regions : NDArray
-        Certified boxes in state space overlaid in the same plot.
-        Certified regions are drawn with red outlines.
-    uncertified_regions : NDArray
-        Uncertified boxes in state space overlaid in the same plot.
+    certification_result : RegionCertificationResult
+        Full certification output containing certified, failed and counterexample
+        region boxes. Counterexample boxes are rendered as a gray overlay.
     dataset : MPCDataset, optional
         The dataset containing trajectories to plot. If None, only the
         Lyapunov landscape and optional regions are shown. Default is None.
@@ -292,8 +301,9 @@ def lyapunov_cert_regions(
     html_path : str, optional
         If provided, saves the plot to the specified HTML file.
     """
-    cert_regs_np = _regions_to_np(certified_regions)
-    uncert_regs_np = _regions_to_np(uncertified_regions)
+    cert_regs_np = _regions_to_np(certification_result.certified_regions)
+    uncert_regs_np = _regions_to_np(certification_result.failed_regions)
+    counterexample_regs_np = _regions_to_np(certification_result.counter_examples)
 
     has_dataset = dataset is not None and len(dataset) > 0
     if has_dataset:
@@ -304,6 +314,8 @@ def lyapunov_cert_regions(
             region_dims.append(int(cert_regs_np.shape[2]))
         if uncert_regs_np.shape[0] > 0:
             region_dims.append(int(uncert_regs_np.shape[2]))
+        if counterexample_regs_np.shape[0] > 0:
+            region_dims.append(int(counterexample_regs_np.shape[2]))
 
         if len(region_dims) == 0 and state_indices is None:
             raise ValueError(
@@ -322,16 +334,17 @@ def lyapunov_cert_regions(
         labels_full = _resolve_labels(state_labels, num_states)
     pair_indices = _state_index_pairs(state_indices)
 
-    regions_by_pair: dict[tuple[int, int], tuple[NDArray, NDArray]] = {}
+    regions_by_pair: dict[tuple[int, int], tuple[NDArray, NDArray, NDArray]] = {}
     pair_limits: dict[tuple[int, int], list[tuple[float, float]]] = {}
 
     for pair in pair_indices:
-        cert_pair, uncert_pair = _collapse_projected_regions(
+        cert_pair, uncert_pair, ctex_pair = _collapse_projected_regions(
             cert_regs_np,
             uncert_regs_np,
+            counterexample_regs_np,
             indices=list(pair),
         )
-        regions_by_pair[pair] = (cert_pair, uncert_pair)
+        regions_by_pair[pair] = (cert_pair, uncert_pair, ctex_pair)
 
         if limits is not None:
             pair_limits[pair] = limits
@@ -340,6 +353,7 @@ def lyapunov_cert_regions(
         inferred_limits = _limits_from_regions(
             cert_pair,
             uncert_pair,
+            ctex_pair,
             pad_ratio=0.1,
             default_pad=1.0,
         )
@@ -374,7 +388,7 @@ def lyapunov_cert_regions(
         else:
             fig = fig_pair
 
-        cert_pair, uncert_pair = regions_by_pair[pair]
+        cert_pair, uncert_pair, ctex_pair = regions_by_pair[pair]
         _add_regions(
             cert_pair,
             fig,
@@ -392,6 +406,15 @@ def lyapunov_cert_regions(
             dash="dash",
             fill=False,
         )
+        _add_regions(
+            ctex_pair,
+            fig,
+            color="#808080",
+            z_level=z_overlay,
+            name="Counterexamples",
+            fill=False,
+            alpha=0.5,
+        )
         figures[pair] = fig
 
     if html_path is not None:
@@ -404,8 +427,7 @@ def lyapunov_cert_regions(
 
 
 def certified_regions_2d(
-    certified_regions: NDArray,
-    uncertified_regions: NDArray,
+    certification_result: "RegionCertificationResult",
     state_indices: list[int] | None = None,
     state_labels: list[str] | None = None,
     bounds: list[tuple[float, float]] | None = None,
@@ -418,10 +440,9 @@ def certified_regions_2d(
 
     Parameters
     ----------
-    certified_regions : list of (lb, ub)
-        Certified boxes in state space.
-    uncertified_regions : list of (lb, ub)
-        Uncertified boxes in state space.
+    certification_result : RegionCertificationResult
+        Full certification output containing certified, failed and counterexample
+        region boxes. Counterexample boxes are rendered as a gray overlay.
     state_indices : list[int], optional
         State indices to consider. If None, all states are used and all
         pairwise combinations are plotted.
@@ -432,10 +453,11 @@ def certified_regions_2d(
     html_path : str, optional
         If provided, saves the plot to the specified HTML file.
     """
-    cert_regs_np = _regions_to_np(certified_regions)
-    uncert_regs_np = _regions_to_np(uncertified_regions)
+    cert_regs_np = _regions_to_np(certification_result.certified_regions)
+    uncert_regs_np = _regions_to_np(certification_result.failed_regions)
+    ctex_regs_np = _regions_to_np(certification_result.counter_examples)
 
-    if cert_regs_np.shape[0] == 0 and uncert_regs_np.shape[0] == 0:
+    if cert_regs_np.shape[0] == 0 and uncert_regs_np.shape[0] == 0 and ctex_regs_np.shape[0] == 0:
         __logger__.warning("No regions provided for plotting.")
         return
 
@@ -444,6 +466,8 @@ def certified_regions_2d(
         region_dims.append(int(cert_regs_np.shape[2]))
     if uncert_regs_np.shape[0] > 0:
         region_dims.append(int(uncert_regs_np.shape[2]))
+    if ctex_regs_np.shape[0] > 0:
+        region_dims.append(int(ctex_regs_np.shape[2]))
     if len(region_dims) == 0:
         raise ValueError("Could not infer state dimension from empty regions.")
 
@@ -463,13 +487,14 @@ def certified_regions_2d(
 
     figures: dict[tuple[int, int], go.Figure] = {}
     for pair in pair_indices:
-        cert_pair, uncert_pair = _collapse_projected_regions(
+        cert_pair, uncert_pair, ctex_pair = _collapse_projected_regions(
             cert_regs_np,
             uncert_regs_np,
+            ctex_regs_np,
             indices=list(pair),
         )
 
-        if cert_pair.shape[0] == 0 and uncert_pair.shape[0] == 0:
+        if cert_pair.shape[0] == 0 and uncert_pair.shape[0] == 0 and ctex_pair.shape[0] == 0:
             continue
 
         pair_bounds = bounds
@@ -477,6 +502,7 @@ def certified_regions_2d(
             pair_bounds = _limits_from_regions(
                 cert_pair,
                 uncert_pair,
+                ctex_pair,
                 pad_ratio=0.0,
                 default_pad=0.0,
             )
@@ -498,6 +524,14 @@ def certified_regions_2d(
             "#d62728",
             "Uncertified",
             fill=True,
+        )
+        _add_regions(
+            ctex_pair,
+            fig,
+            "#808080",
+            "Counterexamples",
+            fill=True,
+            alpha=0.5,
         )
 
         fig.update_layout(

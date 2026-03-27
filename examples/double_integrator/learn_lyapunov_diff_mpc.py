@@ -214,8 +214,7 @@ def main() -> None:
         )
 
     lcil_plt.certified_regions_2d(
-        cert_results.certified_regions,
-        cert_results.failed_regions,
+        certification_result=cert_results,
         state_labels=["x", "v"],
         html_path=save_dir / "certified_regions.html",
     )

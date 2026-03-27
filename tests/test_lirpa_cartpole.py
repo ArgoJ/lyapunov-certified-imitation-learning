@@ -8,7 +8,7 @@ import torch as th
 import torch.nn as nn
 from plot_assertions_mixin import PlotAssertionsMixin
 
-from shared_inv_pend_on_cart import (
+from shared_cartpole import (
     PendulumOnCartConfig,
     riccati_gain_and_value_matrix,
     RiccatiPolicy,
@@ -22,46 +22,34 @@ certified_regions_2d = plot_module.certified_regions_2d
 lyapunov_cert_regions = plot_module.lyapunov_cert_regions
 
 
-class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest.TestCase):
+class TestLiRPAInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        if os.environ.get("LCIL_RUN_ABCROWN_INTEGRATION", "0") != "1":
+        if os.environ.get("LCIL_RUN_LIRPA_INTEGRATION", "0") != "1":
             raise unittest.SkipTest(
-                "Set LCIL_RUN_ABCROWN_INTEGRATION=1 to run real ABCrown integration tests."
+                "Set LCIL_RUN_LIRPA_INTEGRATION=1 to run real auto_LiRPA integration tests."
             )
 
         try:
-            abcrown = importlib.import_module("abcrown")
-
-            is_stubbed_module = (
-                getattr(abcrown, "__file__", None) is None
-                or not hasattr(getattr(abcrown, "ConfigBuilder", object), "from_defaults")
-            )
-            if is_stubbed_module:
-                sys.modules.pop("abcrown", None)
-                abcrown = importlib.import_module("abcrown")
+            auto_LiRPA = importlib.import_module("auto_LiRPA")
         except Exception as exc:  # pragma: no cover - depends on local environment
-            raise unittest.SkipTest(f"abcrown is not importable: {exc}") from exc
+            raise unittest.SkipTest(f"auto_LiRPA is not importable: {exc}") from exc
 
         required_symbols = [
-            "ABCrownSolver",
-            "VerificationSpec",
-            "ConfigBuilder",
-            "input_vars",
-            "output_vars",
+            "BoundedModule",
+            "BoundedTensor",
+            "PerturbationLpNorm",
         ]
-        missing = [name for name in required_symbols if not hasattr(abcrown, name)]
+        missing = [name for name in required_symbols if not hasattr(auto_LiRPA, name)]
         if missing:
             raise unittest.SkipTest(
-                f"abcrown is missing required symbols for wrapper integration: {missing}"
+                f"auto_LiRPA is missing required symbols for wrapper integration: {missing}"
             )
 
         try:
-            # Unit tests may import this module with stubbed abcrown symbols first.
-            # Ensure we bind to the real abcrown package for integration testing.
-            sys.modules.pop("lcil.certification.abcrown_wrapper", None)
-            abcrown_wrapper = importlib.import_module("lcil.certification.abcrown_wrapper")
-            cls.ABCrownCertifier = abcrown_wrapper.ABCrownCertifier
+            sys.modules.pop("lcil.certification.lirpa_wrapper", None)
+            lirpa_wrapper = importlib.import_module("lcil.certification.lirpa_wrapper")
+            cls.LiRPACertifier = lirpa_wrapper.LiRPACertifier
             cls.LyapunovCertificationConfig = importlib.import_module(
                 "lcil.certification.config"
             ).LyapunovCertificationConfig
@@ -74,7 +62,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
         sys_cfg = PendulumOnCartConfig()
         k_gain, p_value = riccati_gain_and_value_matrix(sys_cfg)
         lyap_model = RiccatiQuadraticLyapunov(p_value)
-        theta_bound = np.pi * 1.4999
+        theta_bound = np.pi * 0.999 
         config = cls.LyapunovCertificationConfig(
             state_dim=4,
             cert_bounds=np.array(
@@ -87,28 +75,29 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
             kappa=0.001,
             invariance_weight=1.0,
             rho_scaling=1.1,
-            bins_per_dim=(3, 4, 6, 7),
-            center_refinement_factor=(0.6, 0.6, 0.5, 0.6),
-            origin_exclusion=0.1,
+            bins_per_dim=(12, 12, 12, 12),
+            center_refinement_factor=(0.3, 0.3, 0.2, 0.3),
+            origin_exclusion=0.15,
             max_scale_steps=20,
             max_bisection_steps=10,
             cert_method="alpha-crown",
             condition_tolerance=1e-5,
-            max_recursion_depth=3,
+            suppress_native_output=True,
             batch_size=4096,
+            use_ibp_filter=True,
+            max_recursion_depth=10,
         )
-        return cls.ABCrownCertifier(
+        return cls.LiRPACertifier(
             policy_model=RiccatiPolicy(k_gain),
             lyap_model=lyap_model,
             dyn_model=NonlinearInvertedPendulumOnCartDynamics(sys_cfg),
             config=config,
-            device=th.device("cpu"), # th.device("cuda" if th.cuda.is_available() else "cpu"),
+            device=th.device("cuda" if th.cuda.is_available() else "cpu"),
         )
-
+        
     def _assert_region_plot_written(
         self,
-        certified_regions: np.ndarray,
-        uncertified_regions: np.ndarray,
+        certification_result,
         stem: str,
     ) -> None:
         state_labels = ["x", "v", "theta", "theta_dot"]
@@ -117,8 +106,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
             plot_fn=certified_regions_2d,
             stem=stem,
             plot_kwargs={
-                "certified_regions": certified_regions,
-                "uncertified_regions": uncertified_regions,
+                "certification_result": certification_result,
                 "state_labels": state_labels,
             },
         )
@@ -161,8 +149,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
     def _assert_lyapunov_plot_written(
         self,
         lyap_model: nn.Module,
-        certified_regions: np.ndarray,
-        uncertified_regions: np.ndarray,
+        certification_result,
         stem: str,
     ) -> None:
         state_labels = ["x", "v", "theta", "theta_dot"]
@@ -171,34 +158,31 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
             lyap_model=lyap_model,
             state_dim=4,
         )
+
         self._assert_plot_written(
             plot_fn=lyapunov_cert_regions,
             stem=stem,
             plot_kwargs={
                 "lyapunov_func": lyap_func,
+                "certification_result": certification_result,
                 "state_labels": state_labels,
-                "certified_regions": certified_regions,
-                "uncertified_regions": uncertified_regions,
             },
         )
 
-    def test_inverted_pendulum_on_cart_lqr(self) -> None:
+    def test_inverted_pendulum_on_cart_lqr_lirpa(self) -> None:
         certifier = self._make_certifier()
-        rho_certified, result = certifier.certify(rho_estimate=31.5)
-        base = "cartpole_abcrown_integration_dare"
+        rho_certified, result = certifier.certify(rho_estimate=20.0)
 
         self.assertIsInstance(float(rho_certified), float)
         self.assertGreaterEqual(rho_certified, certifier.config.rho_min)
         self._assert_region_plot_written(
-            certified_regions=result.certified_regions,
-            uncertified_regions=result.failed_regions,
-            stem=f"{base}_regions",
+            certification_result=result,
+            stem="inverted_pendulum_on_cart_lirpa_regions_integration",
         )
         self._assert_lyapunov_plot_written(
             lyap_model=certifier.lyap_model,
-            certified_regions=result.certified_regions,
-            uncertified_regions=result.failed_regions,
-            stem=f"{base}_lyapunov",
+            certification_result=result,
+            stem="inverted_pendulum_on_cart_lirpa_lyapunov_integration",
         )
         self.assertGreater(result.failed_regions.shape[0], 0)
         self.assertGreater(result.certified_regions.shape[0], 0)
