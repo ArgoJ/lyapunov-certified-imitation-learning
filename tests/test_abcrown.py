@@ -1,15 +1,14 @@
 import importlib
 import os
 import sys
-import tempfile
 import unittest
 from unittest import mock
-from pathlib import Path
 
 import numpy as np
 import torch as th
 import torch.nn as nn
 from tqdm import tqdm
+from plot_assertions_mixin import PlotAssertionsMixin
 
 plot_module = importlib.import_module("lcil.utils.plot")
 certified_regions_2d = plot_module.certified_regions_2d
@@ -42,7 +41,7 @@ class _MixedLyapunov(nn.Module):
         return self.beta * r2 - self.alpha * (r2 * r2)
 
 
-class TestABCrownCertifierIntegration(unittest.TestCase):
+class TestABCrownCertifierIntegration(PlotAssertionsMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         if os.environ.get("LCIL_RUN_ABCROWN_INTEGRATION", "0") != "1":
@@ -131,31 +130,15 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
         uncertified_regions: np.ndarray,
         stem: str,
     ) -> None:
-        plot_dir = os.environ.get("LCIL_TEST_PLOT_DIR")
-        if plot_dir:
-            output_dir = Path(plot_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            html_path = output_dir / f"{stem}.html"
-            certified_regions_2d(
-                certified_regions=certified_regions,
-                uncertified_regions=uncertified_regions,
-                state_labels=["x0", "x1", "x2"],
-                html_path=str(html_path),
-            )
-            self.assertTrue(html_path.exists())
-            self.assertGreater(html_path.stat().st_size, 0)
-            return
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            html_path = Path(tmp_dir) / f"{stem}.html"
-            certified_regions_2d(
-                certified_regions=certified_regions,
-                uncertified_regions=uncertified_regions,
-                state_labels=["x0", "x1", "x2"],
-                html_path=str(html_path),
-            )
-            self.assertTrue(html_path.exists())
-            self.assertGreater(html_path.stat().st_size, 0)
+        self._assert_plot_written(
+            plot_fn=certified_regions_2d,
+            stem=stem,
+            plot_kwargs={
+                "certified_regions": certified_regions,
+                "uncertified_regions": uncertified_regions,
+                "state_labels": ["x0", "x1", "x2"],
+            },
+        )
 
     @staticmethod
     def _to_numpy_lyapunov(
@@ -202,35 +185,17 @@ class TestABCrownCertifierIntegration(unittest.TestCase):
             lyap_model=lyap_model,
             state_dim=3,
         )
-        plot_dir = os.environ.get("LCIL_TEST_PLOT_DIR")
-        if plot_dir:
-            output_dir = Path(plot_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            html_path = output_dir / f"{stem}.html"
-            lyapunov_cert_regions(
-                dataset=None,
-                lyapunov_func=lyap_func,
-                state_labels=["x0", "x1", "x2"],
-                certified_regions=certified_regions,
-                uncertified_regions=uncertified_regions,
-                html_path=str(html_path),
-            )
-            self.assertTrue(html_path.exists())
-            self.assertGreater(html_path.stat().st_size, 0)
-            return
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            html_path = Path(tmp_dir) / f"{stem}.html"
-            lyapunov_cert_regions(
-                dataset=None,
-                lyapunov_func=lyap_func,
-                state_labels=["x0", "x1", "x2"],
-                certified_regions=certified_regions,
-                uncertified_regions=uncertified_regions,
-                html_path=str(html_path),
-            )
-            self.assertTrue(html_path.exists())
-            self.assertGreater(html_path.stat().st_size, 0)
+        self._assert_plot_written(
+            plot_fn=lyapunov_cert_regions,
+            stem=stem,
+            plot_kwargs={
+                "dataset": None,
+                "lyapunov_func": lyap_func,
+                "state_labels": ["x0", "x1", "x2"],
+                "certified_regions": certified_regions,
+                "uncertified_regions": uncertified_regions,
+            },
+        )
 
     def test_mixed_lyapunov_pipeline_with_real_abcrown(self) -> None:
         certifier = self._make_certifier(_MixedLyapunov(alpha=0.3, beta=2.0))

@@ -1,13 +1,12 @@
 import importlib
 import os
 import sys
-import tempfile
 import unittest
-from pathlib import Path
 
 import numpy as np
 import torch as th
 import torch.nn as nn
+from plot_assertions_mixin import PlotAssertionsMixin
 
 from shared_inv_pend_on_cart import (
     PendulumOnCartConfig,
@@ -23,7 +22,7 @@ certified_regions_2d = plot_module.certified_regions_2d
 lyapunov_cert_regions = plot_module.lyapunov_cert_regions
 
 
-class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
+class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         if os.environ.get("LCIL_RUN_ABCROWN_INTEGRATION", "0") != "1":
@@ -124,23 +123,6 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
             },
         )
 
-    def _assert_plot_written(self, plot_fn, stem: str, plot_kwargs: dict) -> None:
-        plot_dir = os.environ.get("LCIL_TEST_PLOT_DIR")
-        if plot_dir:
-            output_dir = Path(plot_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            html_path = output_dir / f"{stem}.html"
-            plot_fn(**plot_kwargs, html_path=str(html_path))
-            self.assertTrue(html_path.exists())
-            self.assertGreater(html_path.stat().st_size, 0)
-            return
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            html_path = Path(tmp_dir) / f"{stem}.html"
-            plot_fn(**plot_kwargs, html_path=str(html_path))
-            self.assertTrue(html_path.exists())
-            self.assertGreater(html_path.stat().st_size, 0)
-
     @staticmethod
     def _to_numpy_lyapunov(
         lyap_model: nn.Module,
@@ -202,7 +184,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(unittest.TestCase):
 
     def test_inverted_pendulum_on_cart_lqr(self) -> None:
         certifier = self._make_certifier()
-        rho_certified, result = certifier.certify(rho_estimate=20.0)
+        rho_certified, result = certifier.certify(rho_estimate=30.0)
         base = "cartpole_abcrown_integration_dare"
 
         self.assertIsInstance(float(rho_certified), float)

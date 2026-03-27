@@ -1,13 +1,12 @@
 import importlib
 import os
 import sys
-import tempfile
 import unittest
-from pathlib import Path
 
 import numpy as np
 import torch as th
 import torch.nn as nn
+from plot_assertions_mixin import PlotAssertionsMixin
 
 from shared_inv_pend_on_cart import (
     PendulumOnCartConfig,
@@ -23,7 +22,7 @@ certified_regions_2d = plot_module.certified_regions_2d
 lyapunov = plot_module.lyapunov
 
 
-class TestLiRPAInvertedPendulumOnCartIntegration(unittest.TestCase):
+class TestLiRPAInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         if os.environ.get("LCIL_RUN_LIRPA_INTEGRATION", "0") != "1":
@@ -131,23 +130,6 @@ class TestLiRPAInvertedPendulumOnCartIntegration(unittest.TestCase):
                 "state_indices": plot_state_indices
             },
         )
-
-    def _assert_plot_written(self, plot_fn, stem: str, plot_kwargs: dict) -> None:
-        plot_dir = os.environ.get("LCIL_TEST_PLOT_DIR")
-        if plot_dir:
-            output_dir = Path(plot_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            html_path = output_dir / f"{stem}.html"
-            plot_fn(**plot_kwargs, html_path=str(html_path))
-            self.assertTrue(html_path.exists())
-            self.assertGreater(html_path.stat().st_size, 0)
-            return
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            html_path = Path(tmp_dir) / f"{stem}.html"
-            plot_fn(**plot_kwargs, html_path=str(html_path))
-            self.assertTrue(html_path.exists())
-            self.assertGreater(html_path.stat().st_size, 0)
 
     @staticmethod
     def _to_numpy_lyapunov(
