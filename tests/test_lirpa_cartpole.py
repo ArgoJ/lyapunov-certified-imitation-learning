@@ -25,10 +25,10 @@ lyapunov_cert_regions = plot_module.lyapunov_cert_regions
 class TestLiRPAInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        if os.environ.get("LCIL_RUN_LIRPA_INTEGRATION", "0") != "1":
-            raise unittest.SkipTest(
-                "Set LCIL_RUN_LIRPA_INTEGRATION=1 to run real auto_LiRPA integration tests."
-            )
+        # if os.environ.get("LCIL_RUN_LIRPA_INTEGRATION", "0") != "1":
+        #     raise unittest.SkipTest(
+        #         "Set LCIL_RUN_LIRPA_INTEGRATION=1 to run real auto_LiRPA integration tests."
+        #     )
 
         try:
             auto_LiRPA = importlib.import_module("auto_LiRPA")
@@ -81,7 +81,7 @@ class TestLiRPAInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest.T
             max_scale_steps=20,
             max_bisection_steps=10,
             cert_method="alpha-crown",
-            condition_tolerance=1e-5,
+            condition_tolerance=1e-7,
             suppress_native_output=True,
             batch_size=4096,
             use_ibp_filter=True,
@@ -132,7 +132,13 @@ class TestLiRPAInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest.T
                     f"<= {state_dim}."
                 )
 
-            x_tensor = th.as_tensor(x_lifted, dtype=th.float32)
+            # Keep input tensor on the same device as the Lyapunov model.
+            try:
+                model_device = next(lyap_model.parameters()).device
+            except StopIteration:
+                model_device = next(lyap_model.buffers()).device
+
+            x_tensor = th.as_tensor(x_lifted, dtype=th.float32, device=model_device)
             if x_tensor.ndim == 1:
                 x_tensor = x_tensor.unsqueeze(0)
 

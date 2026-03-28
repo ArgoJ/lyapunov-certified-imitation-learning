@@ -111,6 +111,11 @@ def riccati_gain_and_value_matrix(
     return k, p
 
 
+def smooth_sat_arctan(u_raw: th.Tensor, u_max: th.Tensor) -> th.Tensor:
+    # Range bleibt in [-u_max, u_max], glatt, monotonic
+    return u_max * (2.0 / th.pi) * th.atan((th.pi / 2.0) * (u_raw / u_max))
+
+
 class RiccatiPolicy(nn.Module):
     def __init__(self, k_gain: np.ndarray, max_action: float = 4.0):
         super().__init__()
@@ -118,8 +123,8 @@ class RiccatiPolicy(nn.Module):
         self.register_buffer("max_action", th.as_tensor(max_action, dtype=th.float32))
 
     def forward(self, x: th.Tensor) -> th.Tensor:
-        action = -(x @ self.k_gain.transpose(0, 1))
-        return th.clamp(action, min=-self.max_action, max=self.max_action)
+        u_raw = -(x @ self.k_gain.transpose(0, 1))
+        return smooth_sat_arctan(u_raw, self.max_action)
 
 
 class NonlinearInvertedPendulumOnCartDynamics(nn.Module):
@@ -128,11 +133,11 @@ class NonlinearInvertedPendulumOnCartDynamics(nn.Module):
         self.cfg = cfg
 
     def _continuous_dynamics(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        p = x[:, 0]
-        p_dot = x[:, 1]
-        theta = x[:, 2]
-        theta_dot = x[:, 3]
-        force = u[:, 0]
+        p = x[:, 0:1] 
+        p_dot = x[:, 1:2]
+        theta = x[:, 2:3]
+        theta_dot = x[:, 3:4]
+        force = u[:, 0:1]
 
         m_c = self.cfg.m_cart
         m_p = self.cfg.m_pole
@@ -142,25 +147,33 @@ class NonlinearInvertedPendulumOnCartDynamics(nn.Module):
 
         sin_theta = th.sin(theta)
         cos_theta = th.cos(theta)
-        total_mass = m_c + m_p
+        # sin_theta * cos_theta -> 0.5 * sin(2 * theta)
+        sin_2theta = th.sin(2.0 * theta)
 
+        total_mass = m_c + m_p
         effective_force = force - d * p_dot
 
-        denom = total_mass - m_p * cos_theta * cos_theta # always positive for m_c > 0 and m_p > 0
+        # always positive for m_c > 0 and m_p > 0
+        denom = total_mass - m_p * cos_theta.pow(2)
 
         p_ddot = (
             effective_force
             + m_p * l * theta_dot.pow(2) * sin_theta
-            - m_p * g * sin_theta * cos_theta
+            - m_p * g * 0.5 * sin_2theta
         ) / denom
 
         theta_ddot = (
             effective_force * cos_theta
-            + m_p * l * theta_dot.pow(2) * sin_theta * cos_theta
+            + m_p * l * theta_dot.pow(2) * 0.5 * sin_2theta
             + total_mass * g * sin_theta
         ) / (l * denom)
 
-        return th.stack([p_dot, p_ddot, theta_dot, theta_ddot], dim=1)
+        dense_anchor = 1e-5 * th.sum(x, dim=1, keepdim=True)
+        p_ddot = p_ddot + dense_anchor
+        theta_ddot = theta_ddot + dense_anchor
+
+        x_dot = th.cat([p_dot, p_ddot, theta_dot, theta_ddot], dim=1)
+        return x_dot
 
     def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
         x_dot = self._continuous_dynamics(x, u)

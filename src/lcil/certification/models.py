@@ -93,6 +93,11 @@ class ClosedLoopLyapunovConditionVerifier(nn.Module):
             is <= 0, the Lyapunov condition (decrease and invariance) is strictly 
             satisfied for the given input region.
         """
+        if rho.ndim == 1:
+            rho = rho.unsqueeze(1)
+        if kappa.ndim == 1:
+            kappa = kappa.unsqueeze(1)
+
         v_curr = self.lyap(x)
         u = self.policy(x)
         x_next = self.dyn(x, u)
