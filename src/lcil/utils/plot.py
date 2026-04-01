@@ -23,9 +23,9 @@ __logger__ = get_package_logger(__name__)
 
 
 def _regions_to_np(regs: NDArray | None) -> NDArray:
-        if regs is None or regs.shape[0] == 0:
-            return np.empty((0, 2, 2))
-        return np.asarray(regs, dtype=np.float64)
+    if regs is None or regs.shape[0] == 0:
+        return np.empty((0, 2, 2))
+    return np.asarray(regs, dtype=np.float64)
 
 
 def _plotly_multiline(x: NDArray, axis: int=0) -> NDArray:
@@ -73,11 +73,16 @@ def _collapse_projected_regions(
     uncert_unique = _dedupe_regions(uncert_projected, decimals)
     ctex_unique = _dedupe_regions(ctex_projected, decimals)
 
-    if cert_unique.shape[0] > 0 and cert_unique.shape[2] == 2 and \
-       uncert_unique.shape[0] > 0 and uncert_unique.shape[2] == 2:
-        cert_unique, uncert_unique = _make_regions_disjoint_2d(
+    has_2d_projection = (
+        (cert_unique.shape[0] == 0 or cert_unique.shape[2] == 2)
+        and (uncert_unique.shape[0] == 0 or uncert_unique.shape[2] == 2)
+        and (ctex_unique.shape[0] == 0 or ctex_unique.shape[2] == 2)
+    )
+    if has_2d_projection:
+        cert_unique, uncert_unique, ctex_unique = _make_regions_disjoint_3way_2d(
             cert_unique,
             uncert_unique,
+            ctex_unique,
             decimals=decimals,
         )
 
@@ -206,6 +211,132 @@ def _make_regions_disjoint_2d(
     return cert_disjoint, uncert_disjoint
 
 
+def _make_regions_disjoint_3way_2d(
+    cert_regs: NDArray,
+    uncert_regs: NDArray,
+    ctex_regs: NDArray,
+    decimals: int = 12,
+) -> tuple[NDArray, NDArray, NDArray]:
+    """Make certified, uncertified and outside-sublevel regions disjoint in 2D.
+
+    Priority for overlapping projected cells is:
+    1) uncertified
+    2) outside-sublevel (IBP-pruned)
+    3) certified
+    """
+    cert_regs = _regions_to_np(cert_regs)
+    uncert_regs = _regions_to_np(uncert_regs)
+    ctex_regs = _regions_to_np(ctex_regs)
+
+    if cert_regs.shape[0] == 0 and uncert_regs.shape[0] == 0 and ctex_regs.shape[0] == 0:
+        return cert_regs, uncert_regs, ctex_regs
+
+    if cert_regs.shape[0] > 0 and cert_regs.shape[2] != 2:
+        return cert_regs, uncert_regs, ctex_regs
+    if uncert_regs.shape[0] > 0 and uncert_regs.shape[2] != 2:
+        return cert_regs, uncert_regs, ctex_regs
+    if ctex_regs.shape[0] > 0 and ctex_regs.shape[2] != 2:
+        return cert_regs, uncert_regs, ctex_regs
+
+    def _boundaries(regs_a: NDArray, regs_b: NDArray, regs_c: NDArray, axis: int) -> NDArray:
+        vals = []
+        for regs in (regs_a, regs_b, regs_c):
+            if regs.shape[0] > 0:
+                vals.extend([regs[:, 0, axis], regs[:, 1, axis]])
+        if len(vals) == 0:
+            return np.empty((0,), dtype=np.float64)
+        merged = np.concatenate(vals)
+        return np.unique(np.round(merged, decimals=decimals))
+
+    x_edges = _boundaries(cert_regs, uncert_regs, ctex_regs, axis=0)
+    y_edges = _boundaries(cert_regs, uncert_regs, ctex_regs, axis=1)
+
+    if x_edges.shape[0] < 2 or y_edges.shape[0] < 2:
+        return cert_regs, uncert_regs, ctex_regs
+
+    x_l = x_edges[:-1]
+    x_u = x_edges[1:]
+    y_l = y_edges[:-1]
+    y_u = y_edges[1:]
+
+    def _coverage(regs: NDArray) -> NDArray:
+        nx, ny = len(x_l), len(y_l)
+        if regs.shape[0] == 0:
+            return np.zeros((nx, ny), dtype=bool)
+
+        lbs = np.round(regs[:, 0, :], decimals=decimals)
+        ubs = np.round(regs[:, 1, :], decimals=decimals)
+
+        ix_min = np.searchsorted(x_edges, lbs[:, 0])
+        ix_max = np.searchsorted(x_edges, ubs[:, 0])
+        iy_min = np.searchsorted(y_edges, lbs[:, 1])
+        iy_max = np.searchsorted(y_edges, ubs[:, 1])
+
+        diff = np.zeros((nx + 1, ny + 1), dtype=np.int32)
+
+        np.add.at(diff, (ix_min, iy_min), 1)
+        np.add.at(diff, (ix_max, iy_max), 1)
+        np.add.at(diff, (ix_min, iy_max), -1)
+        np.add.at(diff, (ix_max, iy_min), -1)
+
+        return np.cumsum(np.cumsum(diff, axis=0), axis=1)[:-1, :-1] > 0
+
+    cert_cover = _coverage(cert_regs)
+    uncert_cover = _coverage(uncert_regs)
+    ctex_cover = _coverage(ctex_regs)
+
+    uncert_mask = uncert_cover
+    ctex_mask = ctex_cover & ~uncert_mask
+    cert_mask = cert_cover & ~uncert_mask & ~ctex_mask
+
+    def _cells_to_regions(mask: NDArray) -> NDArray:
+        if not np.any(mask):
+            return np.empty((0, 2, 2), dtype=np.float64)
+        x_idx, y_idx = np.nonzero(mask)
+        lbs = np.column_stack([x_l[x_idx], y_l[y_idx]])
+        ubs = np.column_stack([x_u[x_idx], y_u[y_idx]])
+        return np.stack([lbs, ubs], axis=1)
+
+    cert_disjoint = _dedupe_regions(_cells_to_regions(cert_mask), decimals=decimals)
+    uncert_disjoint = _dedupe_regions(_cells_to_regions(uncert_mask), decimals=decimals)
+    ctex_disjoint = _dedupe_regions(_cells_to_regions(ctex_mask), decimals=decimals)
+
+    return cert_disjoint, uncert_disjoint, ctex_disjoint
+
+
+def _regions_area_2d(regions: NDArray) -> float:
+    regs = _regions_to_np(regions)
+    if regs.shape[0] == 0:
+        return 0.0
+    widths = np.maximum(0.0, regs[:, 1, 0] - regs[:, 0, 0])
+    heights = np.maximum(0.0, regs[:, 1, 1] - regs[:, 0, 1])
+    return float(np.sum(widths * heights))
+
+
+def _partition_annotation(cert_regs: NDArray, uncert_regs: NDArray, ctex_regs: NDArray) -> str:
+    cert_area = _regions_area_2d(cert_regs)
+    uncert_area = _regions_area_2d(uncert_regs)
+    ctex_area = _regions_area_2d(ctex_regs)
+    total = cert_area + uncert_area + ctex_area
+
+    if total <= 0.0:
+        cert_ratio = uncert_ratio = ctex_ratio = 0.0
+    else:
+        cert_ratio = cert_area / total
+        uncert_ratio = uncert_area / total
+        ctex_ratio = ctex_area / total
+
+    return (
+        "Projected partition: "
+        f"certified={cert_ratio:.1%}, "
+        f"failed={uncert_ratio:.1%}, "
+        f"outside V<=rho={ctex_ratio:.1%}<br>"
+        f"Box count: cert={cert_regs.shape[0]}, "
+        f"failed={uncert_regs.shape[0]}, "
+        f"outside={ctex_regs.shape[0]}"
+    )
+
+
 def _build_X_Y(regions: NDArray) -> tuple[NDArray, NDArray]:
     lbs = regions[:, 0, :]
     ubs = regions[:, 1, :]
@@ -283,8 +414,8 @@ def lyapunov_cert_regions(
     lyapunov_func : Callable[[NDArray], NDArray]
         A function that takes a state vector and returns the Lyapunov value.
     certification_result : RegionCertificationResult
-        Full certification output containing certified, failed and counterexample
-        region boxes. Counterexample boxes are rendered as a gray overlay.
+        Full certification output containing certified, failed and outside-sublevel
+        region boxes. The outside-sublevel boxes are rendered as a gray overlay.
     dataset : MPCDataset, optional
         The dataset containing trajectories to plot. If None, only the
         Lyapunov landscape and optional regions are shown. Default is None.
@@ -412,10 +543,26 @@ def lyapunov_cert_regions(
             fig,
             color="#808080",
             z_level=z_overlay,
-            name="Counterexamples",
+            name="Outside Sublevel",
             fill=False,
             alpha=0.5,
         )
+
+        if z_overlay is None:
+            fig.add_annotation(
+                x=0.01,
+                y=0.99,
+                xref="paper",
+                yref="paper",
+                xanchor="left",
+                yanchor="top",
+                align="left",
+                showarrow=False,
+                bgcolor="rgba(255,255,255,0.80)",
+                bordercolor="rgba(0,0,0,0.20)",
+                borderwidth=1,
+                text=_partition_annotation(cert_pair, uncert_pair, ctex_pair),
+            )
         figures[pair] = fig
 
     if html_path is not None:
@@ -434,7 +581,7 @@ def certified_regions_2d(
     bounds: list[tuple[float, float]] | None = None,
     html_path: str | None = None,
 ):
-    """Plot certified vs uncertified regions as 2D rectangle overlays.
+    """Plot certified, failed and outside-sublevel regions as 2D overlays.
 
     If more than two state indices are selected, one figure per 2D state pair
     is generated.
@@ -442,8 +589,8 @@ def certified_regions_2d(
     Parameters
     ----------
     certification_result : RegionCertificationResult
-        Full certification output containing certified, failed and counterexample
-        region boxes. Counterexample boxes are rendered as a gray overlay.
+        Full certification output containing certified, failed and outside-sublevel
+        region boxes. Outside-sublevel boxes are rendered as a gray overlay.
     state_indices : list[int], optional
         State indices to consider. If None, all states are used and all
         pairwise combinations are plotted.
@@ -530,17 +677,31 @@ def certified_regions_2d(
             ctex_pair,
             fig,
             "#808080",
-            "Counterexamples",
+            "Outside Sublevel",
             fill=True,
             alpha=0.5,
         )
 
         fig.update_layout(
-            title=f"Certified Regions ({labels_full[pair[0]]} vs {labels_full[pair[1]]})",
+            title=f"Certification Partition ({labels_full[pair[0]]} vs {labels_full[pair[1]]})",
             xaxis_title=labels_full[pair[0]],
             yaxis_title=labels_full[pair[1]],
             xaxis=dict(range=[pair_bounds[0][0], pair_bounds[0][1]]),
             yaxis=dict(range=[pair_bounds[1][0], pair_bounds[1][1]]),
+        )
+        fig.add_annotation(
+            x=0.01,
+            y=0.99,
+            xref="paper",
+            yref="paper",
+            xanchor="left",
+            yanchor="top",
+            align="left",
+            showarrow=False,
+            bgcolor="rgba(255,255,255,0.80)",
+            bordercolor="rgba(0,0,0,0.20)",
+            borderwidth=1,
+            text=_partition_annotation(cert_pair, uncert_pair, ctex_pair),
         )
         figures[pair] = fig
 
