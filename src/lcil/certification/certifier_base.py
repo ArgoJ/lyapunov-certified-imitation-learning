@@ -49,6 +49,13 @@ class RecursiveCertificationResult:
 
     def with_failed(self, regions: th.Tensor) -> RecursiveCertificationResult:
         return replace(self, failed=regions)
+    
+    def with_cert_and_failed(self, bs: th.Tensor, is_safe: th.Tensor) -> RecursiveCertificationResult:
+        failed_mask = ~is_safe
+
+        certified_bs = bs[is_safe]
+        failed_bs = bs[failed_mask]
+        return replace(self, certified=certified_bs, failed=failed_bs)
 
     def with_counterexamples(self, regions: th.Tensor) -> RecursiveCertificationResult:
         return replace(self, counterexamples=regions)
@@ -141,7 +148,7 @@ class BaseCertifier(ABC):
             rho: float,
             early_exit: bool = True,
             *args, **kwargs
-    ) -> tuple[th.Tensor, th.Tensor]:
+    ) -> th.Tensor:
         """Certify a batch of axis-aligned regions.
 
         Parameters
@@ -159,9 +166,8 @@ class BaseCertifier(ABC):
 
         Returns
         -------
-        tuple[th.Tensor, th.Tensor]
-            ``(is_safe, centers)`` where ``is_safe`` is boolean per region,
-            ``centers`` contains representative points.
+        th.Tensor
+            Boolean tensor indicating safe regions.
         """
         pass
 
@@ -435,15 +441,13 @@ class BaseCertifier(ABC):
         max_centered = th.clamp(th.minimum(-self.bounds[0], self.bounds[1]), min=0.0)
         return th.minimum(exclusion, max_centered)
 
-    def _certify_regions_recursive(
+    def _process_regions(
             self, 
             bs: th.Tensor,
             rho: float,
-            collect_details: bool, 
-            depth: int, 
-            max_depth: int
+            collect_details: bool,
         ) -> RecursiveCertificationResult:
-        """Recursively certify axis-aligned regions for a fixed ``rho``.
+        """Process one region batch and return step-level certification data.
 
         Parameters
         ----------
@@ -453,18 +457,13 @@ class BaseCertifier(ABC):
             Lyapunov level-set value to certify.
         collect_details : bool
             If ``False``, returns immediately once any failing region is found.
-            If ``True``, recursively subdivides failed regions to collect detailed
+            If ``True``, subdivides failed regions to collect detailed
             failed boxes and counterexamples.
-        depth : int
-            Current recursion depth.
-        max_depth : int
-            Maximum subdivision depth for failed regions.
 
         Returns
         -------
         RecursiveCertificationResult
-            Tensor bundles for certified, failed and filtered (counterexample)
-            regions. Each tensor has shape ``(k, 2, state_dim)``.
+            Step-level certified, failed and filtered (counterexample) regions.
         """
         empty_result = RecursiveCertificationResult.empty(
             state_dim=self.config.state_dim, device=self.device
@@ -481,31 +480,11 @@ class BaseCertifier(ABC):
         if len(bs) == 0:
             return result
 
-        is_safe, _ = self._certify_batched_regions(
+        is_safe = self._certify_batched_regions(
             bs, rho, early_exit=not collect_details
         )
 
-        certified_bs = bs[is_safe]
-        result = result.with_certified(certified_bs)
-
-        failed_mask = ~is_safe
-        failed_bs = bs[failed_mask]
-
-        if len(failed_bs) == 0:
-            return result
-
-        if not collect_details:
-            # Early Exit
-            return result.with_failed(failed_bs)
-
-        if depth >= max_depth:
-            return result.with_failed(failed_bs)
-
-        sub_bs = self._split_failed_regions(failed_bs)
-        sub_result = self._certify_regions_recursive(
-            sub_bs, rho, collect_details, depth + 1, max_depth
-        )
-        return result + sub_result
+        return result.with_cert_and_failed(bs, is_safe)
 
     def _certify_regions(
             self, 
@@ -528,12 +507,42 @@ class BaseCertifier(ABC):
             Aggregated success flag plus certified regions, failed regions, and
             counterexamples as NumPy arrays.
         """
-        if rho <= 0.0:
+        if rho < 0.0:
             raise ValueError(f"rho must be non-negative, got {rho}.")
 
-        recursive_result = self._certify_regions_recursive(
-            self.regions, rho, collect_details, depth=0, max_depth=self.config.max_recursion_depth
+        recursive_result = RecursiveCertificationResult.empty(
+            state_dim=self.config.state_dim, device=self.device
         )
+
+        pending_bs = self.regions
+        max_depth = self.config.max_recursion_depth if collect_details else 0
+
+        depth_iter = range(max_depth + 1)
+        if collect_details:
+            depth_iter = __logger__.tqdm(depth_iter, desc="Certify and split", unit="depth")
+
+        for depth in depth_iter:
+            if collect_details and hasattr(depth_iter, "set_postfix_str"):
+                depth_iter.set_postfix_str(f"Failed count: {len(pending_bs)}")
+
+            if len(pending_bs) == 0:
+                break
+
+            step_result = self._process_regions(
+                pending_bs,
+                rho,
+                collect_details,
+            )
+            if (not collect_details) or (depth >= max_depth):
+                recursive_result = recursive_result + step_result
+                break
+
+            recursive_result = recursive_result + step_result.with_failed(step_result.failed[:0])
+
+            if len(step_result.failed) == 0:
+                break
+
+            pending_bs = self._split_failed_regions(step_result.failed)
 
         certified_regions_np = self._regions_tensor_to_np(recursive_result.certified)
         failed_regions_np = self._regions_tensor_to_np(recursive_result.failed)

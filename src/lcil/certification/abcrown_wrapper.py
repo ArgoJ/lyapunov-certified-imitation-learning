@@ -132,7 +132,6 @@ class ABCrownCertifier(BaseCertifier):
         is_certified = th.zeros(num_regions, dtype=th.bool, device=self.device)
 
         lbs, ubs = self._unpack_regions(bs)
-        centers_out = (lbs + ubs) / 2.0
         self.wrapped_model.rho.fill_(rho)
 
         for idx in range(num_regions):
@@ -143,4 +142,4 @@ class ABCrownCertifier(BaseCertifier):
             if early_exit and not is_certified[idx]:
                 break
 
-        return is_certified, centers_out
+        return is_certified

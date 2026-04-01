@@ -92,7 +92,7 @@ class LiRPACertifier(BaseCertifier):
             bs: th.Tensor,
             rho: float,
             early_exit: bool = True,
-    ) -> tuple[th.Tensor, th.Tensor]:
+    ) -> th.Tensor:
         """Certify a packed batch of regions with LiRPA bounds.
 
         Parameters
@@ -106,18 +106,15 @@ class LiRPACertifier(BaseCertifier):
 
         Returns
         -------
-        tuple[th.Tensor, th.Tensor]
-            ``(is_certified, centers_out)`` for all regions in ``bs``.
+        th.Tensor
+            Boolean tensor indicating safe regions.
         """
         if self.lirpa_model is None or self.fallback_methods is None:
             raise RuntimeError("LiRPACertifier backend is not properly initialized.")
 
         num_regions = len(bs)
         if num_regions == 0:
-            return (
-                th.empty((0,), dtype=th.bool, device=self.device),
-                th.empty((0, self.config.state_dim), dtype=th.float32, device=self.device),
-            )
+            return th.empty((0,), dtype=th.bool, device=self.device)
         effective_batch_size = min(self.config.batch_size, num_regions)
         
         # Preallocate output tensors
@@ -184,6 +181,6 @@ class LiRPACertifier(BaseCertifier):
 
             # Early exit check
             if early_exit and not is_certified[idx : end_idx].all():
-                return is_certified, centers_out
+                return is_certified
 
-        return is_certified, centers_out
+        return is_certified

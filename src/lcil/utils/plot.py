@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 import numpy as np
-import os
 import plotly.graph_objects as go
 
 from numpy.typing import NDArray
@@ -8,15 +9,15 @@ from typing import Callable, TYPE_CHECKING
 from mpc_datagen.mpc_data import MPCDataset
 from mpc_datagen.plots import (
     lyapunov, 
-    _apply_pair_layout,
     _save_pair_figures,
     _resolve_indices,
     _resolve_labels,
-    _infer_pair_limits,
     _state_index_pairs,
 )
 from pkg_logger import get_package_logger
-from ..certification.certifier_base import RegionCertificationResult
+
+if TYPE_CHECKING:
+    from ..certification.certifier_base import RegionCertificationResult
 
 __logger__ = get_package_logger(__name__)
 

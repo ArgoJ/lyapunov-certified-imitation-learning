@@ -182,7 +182,7 @@ class _FakeProgressBar:
         return None
 
 
-def _fake_tqdm(iterable, desc: str | None = None) -> _FakeProgressBar:
+def _fake_tqdm(iterable, desc: str | None = None, *args, **kwargs) -> _FakeProgressBar:
     del desc
     return _FakeProgressBar(iterable)
 

@@ -202,7 +202,7 @@ class TestABCrownCertifierIntegration(PlotAssertionsMixin, unittest.TestCase):
         self.assertGreaterEqual(rho_certified, certifier.config.rho_min)
         self.assertGreater(result.certified_regions.shape[0], 0)
         self.assertGreater(result.failed_regions.shape[0], 0)
-        self.assertGreaterEqual(result.counter_examples.shape[0], result.failed_regions.shape[0])
+        self.assertEqual(result.counter_examples.shape[0], 0)
         self._assert_region_plot_written(
             certification_result=result,
             stem="mixed_regions_integration",
