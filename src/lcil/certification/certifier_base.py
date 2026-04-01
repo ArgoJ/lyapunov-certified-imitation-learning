@@ -748,7 +748,7 @@ class BaseCertifier(ABC):
             if rho_lo is None:
                 rho_lo = self.config.rho_min
                 if rho_up <= self.config.rho_min or not self.is_rho_certified(rho=self.config.rho_min):
-                    __logger__.error("Could not even certify rho_min (%.4f).", self.config.rho_min)
+                    __logger__.error(f"Could not even certify rho_min ({self.config.rho_min:.0e}).")
                     rho_up = self.config.rho_min # no bisection
 
         # Bisect
