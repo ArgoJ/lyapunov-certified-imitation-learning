@@ -517,32 +517,33 @@ class BaseCertifier(ABC):
         pending_bs = self.regions
         max_depth = self.config.max_recursion_depth if collect_details else 0
 
-        depth_iter = range(max_depth + 1)
+        depth_ctx = nullcontext(range(max_depth + 1))
         if collect_details:
-            depth_iter = __logger__.tqdm(depth_iter, desc="Certify and split", unit="depth")
+            depth_ctx = __logger__.tqdm(range(max_depth + 1), desc="Certify and split", unit="depth")
 
-        for depth in depth_iter:
-            if collect_details and hasattr(depth_iter, "set_postfix_str"):
-                depth_iter.set_postfix_str(f"Failed count: {len(pending_bs)}")
+        with depth_ctx as depth_iter:
+            for depth in depth_iter:
+                if collect_details and hasattr(depth_iter, "set_postfix_str"):
+                    depth_iter.set_postfix_str(f"Failed count: {len(pending_bs)}")
 
-            if len(pending_bs) == 0:
-                break
+                if len(pending_bs) == 0:
+                    break
 
-            step_result = self._process_regions(
-                pending_bs,
-                rho,
-                collect_details,
-            )
-            if (not collect_details) or (depth >= max_depth):
-                recursive_result = recursive_result + step_result
-                break
+                step_result = self._process_regions(
+                    pending_bs,
+                    rho,
+                    collect_details,
+                )
+                if (not collect_details) or (depth >= max_depth):
+                    recursive_result = recursive_result + step_result
+                    break
 
-            recursive_result = recursive_result + step_result.with_failed(step_result.failed[:0])
+                recursive_result = recursive_result + step_result.with_failed(step_result.failed[:0])
 
-            if len(step_result.failed) == 0:
-                break
+                if len(step_result.failed) == 0:
+                    break
 
-            pending_bs = self._split_failed_regions(step_result.failed)
+                pending_bs = self._split_failed_regions(step_result.failed)
 
         certified_regions_np = self._regions_tensor_to_np(recursive_result.certified)
         failed_regions_np = self._regions_tensor_to_np(recursive_result.failed)
