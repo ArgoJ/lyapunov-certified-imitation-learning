@@ -8,7 +8,7 @@ from mpc_datagen import MPCDataset
 from lcil.utils import EarlyStopping
 from lcil.imitation_learning_mlp import *
 
-from inv_pend_cart_dyn import InvertedPendulumOnCartDynamics
+from cartpole_dyn import InvertedPendulumOnCartDynamics
 from sys_cfg import PendulumOnCartConfig
 from model import InvertedPendulumOnCartPolicy
 

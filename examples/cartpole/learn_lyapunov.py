@@ -12,7 +12,7 @@ from lcil.utils import lcil_plt, ICNN, MLP
 from lcil.imitation_learning_mlp import MLPPolicy
 from mpc_datagen import MPCDataset
 
-from inv_pend_cart_dyn import InvertedPendulumOnCartDynamics
+from cartpole_dyn import InvertedPendulumOnCartDynamics
 from model import InvertedPendulumOnCartPolicy
 
 

@@ -12,7 +12,7 @@ from lcil.imitation_learning_mlp.policy_rollout import (
     PolicyRolloutConfig,
     FeasibleSetSampler,
 )
-from inv_pend_cart_dyn import InvertedPendulumOnCartDynamics
+from cartpole_dyn import InvertedPendulumOnCartDynamics
 from model import InvertedPendulumOnCartPolicy
 from sys_cfg import PendulumOnCartConfig
 from acados_ocp import _linearized_inverted_pendulum_on_cart_matrices
