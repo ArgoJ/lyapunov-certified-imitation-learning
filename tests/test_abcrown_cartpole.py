@@ -181,7 +181,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
 
     def test_inverted_pendulum_on_cart_lqr(self) -> None:
         certifier = self._make_certifier()
-        rho_certified, result = certifier.find_rho_max(rho_estimate=31.285)
+        rho_certified, result = certifier.find_max_rho(rho_estimate=31.285)
         base = "cartpole_abcrown_integration_dare"
         state_labels = ["$x$", "$v$", r"$\theta$", r"$\dot{\theta}$"]
 
