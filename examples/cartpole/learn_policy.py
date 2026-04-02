@@ -19,7 +19,7 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-path",
         type=str,
-        default="/home/josua/programming_stuff/projects/mpc-datagen/data/inverted_pendulum_on_cart_regional_N20_data.hdf5",
+        default=Path.cwd() / "results" / "cartpole" / "data" / "cartpole_N40_data.hdf5",
         help="Path to the source MPC dataset (HDF5).",
     )
     parser.add_argument("--epochs", type=int, default=100, help="Number of policy training epochs.")
@@ -91,7 +91,7 @@ def main() -> None:
     trainer.set_adam_optimizer(learning_rate=args.lr, scheduler_type="plateau", scheduler_kwargs={"mode": "min", "factor": 0.5, "patience": 4})
     trainer.train(num_epochs=args.epochs)
     trainer.save(
-        save_folder=Path("results/inverted_pendulum_on_cart") / datetime.now().strftime('%Y%m%d_%H%M%S'), 
+        save_folder=Path("results/cartpole") / datetime.now().strftime('%Y%m%d_%H%M%S'), 
         global_config=source_dataset.global_config
     )
 

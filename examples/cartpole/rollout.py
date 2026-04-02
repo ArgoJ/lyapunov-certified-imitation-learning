@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 from scipy.linalg import solve_discrete_are
 
-from mpc_datagen import mdg_plt, mdg_linalg
+from mpc_datagen import mdg_plt, mdg_linalg, MPCDataset
 from mpc_datagen.verification import StabilityVerifier, VerificationRender
 from lcil.imitation_learning_mlp import MLPPolicy, StateActionDataset
 from lcil.imitation_learning_mlp.policy_rollout import (
@@ -26,7 +26,7 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-path",
         type=str,
-        default="results/inverted_pendulum_on_cart/20260318_104704/model.pt",
+        default="results/cartpole/20260402_203645/model.pt",
         help="Path to a trained policy checkpoint.",
     )
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string (e.g. cpu, cuda).")
@@ -44,7 +44,7 @@ def _compute_mpc_quadratic_p(dt: float) -> np.ndarray:
     return solve_discrete_are(a_d, b_d, q, r)
 
 
-def _set_quadratic_vn(dataset, P: np.ndarray) -> None:
+def _set_quadratic_vn(dataset: MPCDataset, P: np.ndarray) -> None:
     """Populate ``trajectory.V_N`` with the quadratic surrogate ``x.T @ P @ x``."""
     for entry in dataset:
         x = np.asarray(entry.trajectory.states[:-1], dtype=np.float64).copy()

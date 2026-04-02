@@ -1,9 +1,9 @@
-from dataclasses import dataclass
-from typing import Protocol
-
 import numpy as np
 import torch as th
 
+from datetime import datetime, timezone
+from dataclasses import dataclass
+from typing import Protocol
 from torch import nn
 from numpy.typing import ArrayLike, NDArray
 
@@ -258,12 +258,14 @@ class PolicyRolloutGenerator:
                     )
                 traj.states[k + 1, :] = x_next_vec
 
-                traj.V_solver[k] = float(np.dot(x_k, x_k) + 0.1 * float(np.dot(u_vec, u_vec)))
+                traj.V_solver[k] = float(np.dot(x_k, x_k) + float(np.dot(u_vec, u_vec)))
 
         meta = MPCMeta(
             id=int(traj_id),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             steps_simulated=self.t_sim,
             status_codes=[0] * self.t_sim,
+            feasible=True,
         )
 
         return MPCData(trajectory=traj, meta=meta, config=self.mpc_config)
