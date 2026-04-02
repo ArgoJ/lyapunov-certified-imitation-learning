@@ -762,18 +762,3 @@ class BaseCertifier(ABC):
 
         details = self._certify_regions(rho=rho_lo, collect_details=True)
         return rho_lo, details
-
-    def certify(self, rho_estimate: float) -> tuple[float, RegionCertificationResult]:
-        """Backward-compatible alias for :meth:`find_max_rho`.
-
-        Parameters
-        ----------
-        rho_estimate : float
-            Positive initial guess for rho search.
-
-        Returns
-        -------
-        tuple[float, RegionCertificationResult]
-            Best certified ``rho`` and detailed region-level certification result.
-        """
-        return self.find_max_rho(rho_estimate=rho_estimate)

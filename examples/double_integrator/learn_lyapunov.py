@@ -187,7 +187,7 @@ def main() -> None:
             certification_config,
             device,
         )
-        _, cert_results = certifier.certify(max(train_results.rho_estimate, 1e-3))
+        _, cert_results = certifier.find_max_rho(max(train_results.rho_estimate, 1e-3))
 
         # ---------------------------------------------------------------------
         # 5. Plot & Save

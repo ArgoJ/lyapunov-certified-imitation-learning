@@ -353,7 +353,7 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
 
     def test_quadratic_lyapunov_certifies_all_regions(self) -> None:
         certifier = self._make_certifier(_QuadraticLyapunov())
-        rho_certified, result = certifier.certify(rho_estimate=1.0)
+        rho_certified, result = certifier.find_rho_max(rho_estimate=1.0)
 
         self.assertTrue(result.success)
         self.assertGreaterEqual(rho_certified, 1.0)
@@ -371,7 +371,7 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
 
     def test_negative_quadratic_produces_counterexamples(self) -> None:
         certifier = self._make_certifier(_NegativeQuadraticLyapunov())
-        rho_certified, result = certifier.certify(rho_estimate=1.0)
+        rho_certified, result = certifier.find_rho_max(rho_estimate=1.0)
 
         self.assertFalse(result.success)
         self.assertLessEqual(rho_certified, certifier.config.rho_min)
@@ -390,7 +390,7 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
 
     def test_mixed_lyapunov_has_safe_and_unsafe_regions(self) -> None:
         certifier = self._make_certifier(_MixedLyapunov(alpha=0.3, beta=2.0))
-        rho_certified, result = certifier.certify(rho_estimate=1.0)
+        rho_certified, result = certifier.find_rho_max(rho_estimate=1.0)
 
         self.assertFalse(result.success)
         self.assertLessEqual(rho_certified, certifier.config.rho_min)

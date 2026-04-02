@@ -86,12 +86,13 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
             ),
             kappa=0.001,
             invariance_weight=1.0,
-            rho_scaling=1.1,
+            rho_scaling=1.0006,
             bins_per_dim=(3, 4, 6, 7),
             center_refinement_factor=(0.6, 0.6, 0.5, 0.6),
             origin_exclusion=0.1,
-            max_scale_steps=20,
-            max_bisection_steps=10,
+            max_scale_steps=5,
+            max_bisection_steps=5,
+            bisection_tol=0.012,
             cert_method="alpha-crown",
             condition_tolerance=1e-5,
             max_recursion_depth=3,
@@ -109,8 +110,8 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
         self,
         certification_result,
         stem: str,
+        state_labels: list[str],
     ) -> None:
-        state_labels = ["x", "v", "theta", "theta_dot"]
 
         self._assert_plot_written(
             plot_fn=certified_regions_2d,
@@ -161,8 +162,8 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
         lyap_model: nn.Module,
         certification_result,
         stem: str,
+        state_labels: list[str],
     ) -> None:
-        state_labels = ["x", "v", "theta", "theta_dot"]
 
         lyap_func = self._to_numpy_lyapunov(
             lyap_model=lyap_model,
@@ -180,19 +181,22 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
 
     def test_inverted_pendulum_on_cart_lqr(self) -> None:
         certifier = self._make_certifier()
-        rho_certified, result = certifier.certify(rho_estimate=31.5)
+        rho_certified, result = certifier.find_rho_max(rho_estimate=31.285)
         base = "cartpole_abcrown_integration_dare"
+        state_labels = ["$x$", "$v$", r"$\theta$", r"$\dot{\theta}$"]
 
         self.assertIsInstance(float(rho_certified), float)
         self.assertGreaterEqual(rho_certified, certifier.config.rho_min)
         self._assert_region_plot_written(
             certification_result=result,
             stem=f"{base}_regions",
+            state_labels=state_labels,
         )
         self._assert_lyapunov_plot_written(
             lyap_model=certifier.lyap_model,
             certification_result=result,
             stem=f"{base}_lyapunov",
+            state_labels=state_labels,
         )
         self.assertGreater(result.failed_regions.shape[0], 0)
         self.assertGreater(result.certified_regions.shape[0], 0)

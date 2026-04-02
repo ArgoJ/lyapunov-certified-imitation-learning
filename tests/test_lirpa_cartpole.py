@@ -177,7 +177,7 @@ class TestLiRPAInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest.T
 
     def test_inverted_pendulum_on_cart_lqr_lirpa(self) -> None:
         certifier = self._make_certifier()
-        rho_certified, result = certifier.certify(rho_estimate=20.0)
+        rho_certified, result = certifier.find_rho_max(rho_estimate=20.0)
 
         self.assertIsInstance(float(rho_certified), float)
         self.assertGreaterEqual(rho_certified, certifier.config.rho_min)
