@@ -23,9 +23,8 @@ from mpc_datagen.verification import (
 )
 
 from acados_ocp import get_batch_ocp_solver, get_ocp_solver
-from pkg_logger import get_package_logger
 
-__logger__ = get_package_logger("mpc_datagen")
+__logger__ = logging.getLogger("mpc_datagen")
 
 def _setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -46,7 +45,7 @@ def _setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--base-path",
         type=str,
-        default="results/inverted_pendulum_on_cart/data",
+        default="results/cartpole/data",
         help="Base output path for generated datasets and plots.",
     )
     parser.add_argument(
@@ -123,7 +122,7 @@ def main():
     dataset = generator.generate(n_samples=n_samples, only_feasible=True)
     # dataset = normalize_dataset(dataset)
     dataset.validate(tol_stability=0.1)
-    dataset.save(f"{base_path}/inverted_pendulum_on_cart_N{N}_data.hdf5")
+    dataset.save(f"{base_path}/cartpole_N{N}_data.hdf5")
 
     veri_stats = StabilityVerifier.verify(dataset, alpha_required=1e-4)
     VerificationRender(veri_stats).render()
@@ -150,7 +149,7 @@ def main():
         roa_lyapunov_func=roa_lyap_fun,
         c_level=c_min,
         roa_bounds=roa_bounds,
-        base_path=f"{base_path}/inverted_pendulum_on_cart_N{N}_plots",
+        base_path=f"{base_path}/cartpole_N{N}_plots",
     )
 
 

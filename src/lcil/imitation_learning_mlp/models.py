@@ -1,6 +1,7 @@
 import torch as th
 import torch.nn as nn
 import json
+import logging
 
 from pathlib import Path
 from typing import Any
@@ -8,11 +9,10 @@ from dataclasses import is_dataclass, asdict
 from numpy.typing import NDArray
 
 from mpc_datagen import MPCConfig
-from pkg_logger import get_package_logger
 
 from ..utils.base_models import MLP
 
-__logger__ = get_package_logger(__name__)
+__logger__ = logging.getLogger(__name__)
 
 
 class ConfigEncoder(json.JSONEncoder):

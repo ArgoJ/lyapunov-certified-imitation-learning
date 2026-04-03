@@ -1,13 +1,11 @@
 from __future__ import annotations
-
+import logging
 import torch as th
-
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
-from pkg_logger import get_package_logger
 
 from .certifier_base import BaseCertifier
 
-__logger__ = get_package_logger(__name__)
+__logger__ = logging.getLogger(__name__)
 
 
 class LiRPACertifier(BaseCertifier):

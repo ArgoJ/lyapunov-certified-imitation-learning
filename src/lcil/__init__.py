@@ -1,3 +1,3 @@
-from pkg_logger import PackageLogger
 
-logger = PackageLogger.setup(__name__)
+from pkg_logger import setup_logger
+logger = setup_logger(__name__)

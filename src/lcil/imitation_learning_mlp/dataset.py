@@ -1,16 +1,16 @@
 from __future__ import annotations
 import os
-from pathlib import Path
-
+import logging
 import numpy as np
 import torch as th
 
+from pathlib import Path
 from numpy.typing import NDArray
 from torch.utils.data import DataLoader, Dataset, random_split
+from rich.progress import track
 from mpc_datagen import MPCDataset, MPCMeta, MPCTrajectory
-from pkg_logger import get_package_logger
 
-__logger__ = get_package_logger(__name__)
+__logger__ = logging.getLogger(__name__)
 
 
 class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
@@ -276,36 +276,31 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         expected_nu: int | None = None
 
         indices = list(mpc_dataset._indices)
-        with __logger__.tqdm(
-            indices,
-            desc="Preloading trajectories",
-            suppress_native_output=True,
-        ) as pbar:
-            for key in pbar:
-                grp = mpc_dataset._h5_file[key]
-                meta = MPCMeta.from_hdf5(grp)
-                steps = int(meta.steps_simulated)
-                if steps <= 0 or meta.feasible == False:
-                    continue
+        for key in track(indices, description="Extracting samples"):
+            grp = mpc_dataset._h5_file[key]
+            meta = MPCMeta.from_hdf5(grp)
+            steps = int(meta.steps_simulated)
+            if steps <= 0 or meta.feasible == False:
+                continue
 
-                traj = MPCTrajectory.from_hdf5(grp, fields=["states", "inputs"])
-                states = traj.states[:steps, :]
-                actions = traj.inputs[:steps, :]
+            traj = MPCTrajectory.from_hdf5(grp, fields=["states", "inputs"])
+            states = traj.states[:steps, :]
+            actions = traj.inputs[:steps, :]
 
-                nx = int(states.shape[1])
-                nu = int(actions.shape[1])
-                if expected_nx is None:
-                    expected_nx = nx
-                    expected_nu = nu
-                elif nx != expected_nx or nu != expected_nu:
-                    raise ValueError(
-                        "Inconsistent state/action dimensions across trajectories: "
-                        f"expected (nx={expected_nx}, nu={expected_nu}), "
-                        f"got (nx={nx}, nu={nu}) for trajectory ID {meta.id}."
-                    )
+            nx = int(states.shape[1])
+            nu = int(actions.shape[1])
+            if expected_nx is None:
+                expected_nx = nx
+                expected_nu = nu
+            elif nx != expected_nx or nu != expected_nu:
+                raise ValueError(
+                    "Inconsistent state/action dimensions across trajectories: "
+                    f"expected (nx={expected_nx}, nu={expected_nu}), "
+                    f"got (nx={nx}, nu={nu}) for trajectory ID {meta.id}."
+                )
 
-                states_chunks.append(states)
-                actions_chunks.append(actions)
+            states_chunks.append(states)
+            actions_chunks.append(actions)
 
         if not states_chunks or not actions_chunks:
             return np.empty((0, 0)), np.empty((0, 0))

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-
+import logging
 import os
 import inspect
 import numpy as np
@@ -13,12 +13,18 @@ from numpy.typing import NDArray
 from typing import Any, Literal
 from collections.abc import Mapping
 from torch.utils.data import DataLoader
-from pkg_logger import get_package_logger
+from rich.progress import (
+    Progress,
+    TextColumn,
+    BarColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn
+)
 
 from .dataset import save_state_action_dataset_subset
 from ..utils.early_stopping import EarlyStopping
 
-__logger__ = get_package_logger(__name__)
+__logger__ = logging.getLogger(__name__)
 
 
 @dataclass
@@ -239,12 +245,23 @@ class PolicyTrainer:
         metrics = PolicyTrainingMetrics.from_num_epochs(num_epochs)
         bar_step = 1.0 / (train_datapoints + val_datapoints)
 
-        with __logger__.tqdm(
-            total=float(num_epochs),
-            desc="Training Policy",
-            unit="epoch",
-            bar_format="{l_bar}{bar}| {n:.2f}/{total:.2f} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
-        ) as pbar:
+        with Progress(
+            TextColumn("[bold]{task.description}"),
+            BarColumn(),
+            TextColumn("epoch: {task.completed:.0f}/{task.total:.0f}"),
+            TextColumn("train: {task.fields[train_loss]:.4f}"),
+            TextColumn("val: {task.fields[val_loss]:.4f}"),
+            TextColumn("lr: {task.fields[lr]:.2e}"),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            task = progress.add_task(
+                "Train Policy",
+                total=float(num_epochs),
+                train_loss=float("nan"),
+                val_loss=float("nan"),
+                lr=float("nan"),
+            )
             for epoch in range(num_epochs):
                 train_epoch_loss = 0.0
                 self.model.train()
@@ -265,7 +282,7 @@ class PolicyTrainer:
                     self.optimizer.step()
 
                     train_epoch_loss += loss.item() * nn_inputs.size(0)
-                    pbar.update(bar_step * nn_inputs.size(0))
+                    progress.update(task, advance=bar_step * nn_inputs.size(0))
 
                 train_avg_loss = train_epoch_loss / train_datapoints
 
@@ -284,7 +301,7 @@ class PolicyTrainer:
                             else:
                                 val_epoch_loss += self.loss_fn(pred_actions, actions).item() * nn_inputs.size(0)
 
-                            pbar.update(bar_step * nn_inputs.size(0))
+                            progress.update(task, advance=bar_step * nn_inputs.size(0))
                     val_avg_loss = val_epoch_loss / val_datapoints
 
                 # Update metrics
@@ -314,14 +331,12 @@ class PolicyTrainer:
                         )
                         break
 
-                # Postfix for tqdm bar
-                postfix = {
-                    "Train": f"{train_avg_loss:.4f}",
-                    "LR": f"{self.optimizer.param_groups[0]['lr']:.2e}",
-                }
-                if val_avg_loss is not None:
-                    postfix["Val"] = f"{val_avg_loss:.4f}"
-                pbar.set_postfix(postfix)
+                progress.update(
+                    task,
+                    train_loss=float(train_avg_loss),
+                    val_loss=float(val_avg_loss) if val_avg_loss is not None else float("nan"),
+                    lr=float(self.optimizer.param_groups[0]["lr"]),
+                )
                 
         self.metrics = metrics
         

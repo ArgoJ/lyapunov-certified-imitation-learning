@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+import logging
 import numpy as np
 import torch as th
 import torch.nn as nn
@@ -9,7 +10,13 @@ import torch.nn as nn
 from numpy.typing import NDArray
 from pathlib import Path
 from dataclasses import dataclass
-from pkg_logger import get_package_logger
+from rich.progress import (
+    Progress,
+    TextColumn,
+    BarColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn
+)
 
 from .config import LyapunovTrainingConfig
 from .buffer import DynamicStateBuffer
@@ -21,7 +28,7 @@ from .counterexample import (
 from ..certification.models import ClosedLoopLyapunovConditionVerifier
 from ..utils.base_models import save_model_checkpoint
 
-__logger__ = get_package_logger(__name__)
+__logger__ = logging.getLogger(__name__)
 
 
 @dataclass
@@ -197,12 +204,24 @@ class LyapunovTrainer:
         total_steps = self.config.outer_epochs * self.config.steps_per_epoch
         
         start_time = time.time()
-        with __logger__.tqdm(
-            total=total_steps, 
-            desc="Lyapunov Training Iterations", 
-            unit="step",
-            suppress_native_output=True,
-        ) as pbar:
+        with Progress(
+            TextColumn("[bold]{task.description}"),
+            BarColumn(),
+            TextColumn("loss: {task.fields[loss]:.4f}"),
+            TextColumn("rho: {task.fields[rho]:.4f}"),
+            TextColumn("pool: {task.fields[pool]:.0f}"),
+            TextColumn("cex: {task.fields[cex]:.0f}"),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            task = progress.add_task(
+                "Lyapunov Training Iterations",
+                total=float(total_steps),
+                loss=float("nan"),
+                rho=float(rho_estimate),
+                pool=float(len(state_buffer)),
+                cex=float(num_mined_counterexamples),
+            )
             for outer_iter in range(self.config.outer_epochs):
                 
                 # Estimate current Region of Attraction
@@ -228,12 +247,14 @@ class LyapunovTrainer:
                     self.optimizer.step()
 
                     # Update Progress Bar
-                    pbar.update(1)
-                    pbar.set_postfix({
-                        "Loss": f"{loss.item():.4f}",
-                        "Rho": f"{rho_estimate:.4f}",
-                        "Pool": int(state_buffer.__len__()),
-                    })
+                    progress.update(
+                        task,
+                        advance=1.0,
+                        loss=float(loss.item()),
+                        rho=float(rho_estimate),
+                        pool=float(len(state_buffer)),
+                        cex=float(num_mined_counterexamples),
+                    )
 
         train_time = time.time() - start_time
         __logger__.debug("Lyapunov training finished in %.2fs", train_time)

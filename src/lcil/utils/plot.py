@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import logging
 import plotly.graph_objects as go
 
 from numpy.typing import NDArray
@@ -14,12 +15,11 @@ from mpc_datagen.plots import (
     _resolve_labels,
     _state_index_pairs,
 )
-from pkg_logger import get_package_logger
 
 if TYPE_CHECKING:
     from ..certification.certifier_base import RegionCertificationResult
 
-__logger__ = get_package_logger(__name__)
+__logger__ = logging.getLogger(__name__)
 
 
 def _regions_to_np(regs: NDArray | None) -> NDArray:

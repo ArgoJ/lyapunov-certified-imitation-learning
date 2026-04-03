@@ -1,18 +1,19 @@
 import numpy as np
 import torch as th
+import logging
 
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Protocol
 from torch import nn
 from numpy.typing import ArrayLike, NDArray
+from rich.progress import track
 
 from mpc_datagen import MPCConfig, MPCData, MPCDataset, MPCMeta, MPCTrajectory
-from pkg_logger import get_package_logger
 
 from .dataset import StateActionDataset
 
-__logger__ = get_package_logger(__name__)
+__logger__ = logging.getLogger(__name__)
 
 
 def _normalize_bounds(
@@ -280,11 +281,10 @@ class PolicyRolloutGenerator:
 
         dataset = MPCDataset()
 
-        with __logger__.tqdm(range(n_samples), desc="Generating Policy Rollouts") as pbar:
-            for idx in pbar:
-                x0 = self.sampler.sample_x0()
-                mpc_data = self._rollout_single(x0=x0, traj_id=idx)
-                dataset.add(mpc_data)
+        for idx in track(range(n_samples), description="Generating Rollouts"):
+            x0 = self.sampler.sample_x0()
+            mpc_data = self._rollout_single(x0=x0, traj_id=idx)
+            dataset.add(mpc_data)
 
         __logger__.info(f"Generated {len(dataset)} policy rollouts.")
         return dataset

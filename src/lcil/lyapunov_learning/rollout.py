@@ -1,17 +1,17 @@
 import torch as th
 import numpy as np
 import h5py
-from pathlib import Path
 import shutil
+import logging
 
+from pathlib import Path
 from contextlib import contextmanager
 from collections.abc import Iterator
 from numpy.typing import NDArray
 from mpc_datagen import MPCDataset
 
-from pkg_logger import get_package_logger
 
-__logger__ = get_package_logger(__name__)
+__logger__ = logging.getLogger(__name__)
 
 
 class LyapunovRollout:

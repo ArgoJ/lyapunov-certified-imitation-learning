@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch as th
 import torch.nn as nn
 import numpy as np
+import logging
 
 from contextlib import nullcontext
 from typing import Sequence
@@ -10,12 +11,19 @@ from dataclasses import dataclass, replace
 from abc import ABC, abstractmethod
 from numpy.typing import NDArray
 from auto_LiRPA import BoundedTensor, PerturbationLpNorm, BoundedModule
-from pkg_logger import get_package_logger, suppress_native_output
+from pkg_logger import suppress_native_output
+from rich.progress import (
+    Progress,
+    TextColumn,
+    BarColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn
+)
 
 from .config import LyapunovCertificationConfig
 from .models import ClosedLoopLyapunovConditionVerifier
 
-__logger__ = get_package_logger(__name__)
+__logger__ = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -263,15 +271,23 @@ class BaseCertifier(ABC):
             Final ``(rho_lo, rho_up)`` pair.
         """
         rho_lo, rho_up = initial_values
-        with __logger__.tqdm(range(total), desc=desc) as pbar:
-            for _ in pbar:
+        with Progress(
+            TextColumn("[bold]{task.description}"),
+            BarColumn(),
+            TextColumn("rho_lo: {task.fields[rho_lo]:.4f}"),
+            TextColumn("rho_up: {task.fields[rho_up]:.4f}"),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            task = progress.add_task("Lyapunov descent check", total=total, rho_lo=rho_lo, rho_up=rho_up)
+            for _ in range(total):
                 try:
                     stop, rho_lo, rho_up = step_fn(rho_lo, rho_up)
                     if stop: 
                         break
                 finally:
-                    lo_display = f"{rho_lo:.4f}" if rho_lo is not None else "None"
-                    pbar.set_postfix({"rho_lo": lo_display, "rho_up": f"{rho_up:.4f}"})
+                    lo_display = rho_lo if rho_lo is not None else float("nan")
+                    progress.update(task, rho_lo=lo_display, rho_up=rho_up)
         return rho_lo, rho_up
 
     def _get_suppress_ctx(self):
@@ -517,33 +533,51 @@ class BaseCertifier(ABC):
         pending_bs = self.regions
         max_depth = self.config.max_recursion_depth if collect_details else 0
 
-        depth_ctx = nullcontext(range(max_depth + 1))
-        if collect_details:
-            depth_ctx = __logger__.tqdm(range(max_depth + 1), desc="Certify and split", unit="depth")
-
-        with depth_ctx as depth_iter:
-            for depth in depth_iter:
-                if collect_details and hasattr(depth_iter, "set_postfix_str"):
-                    depth_iter.set_postfix_str(f"Failed count: {len(pending_bs)}")
-
-                if len(pending_bs) == 0:
-                    break
-
-                step_result = self._process_regions(
-                    pending_bs,
-                    rho,
-                    collect_details,
+        if not collect_details:
+            step_result = self._process_regions(
+                pending_bs,
+                rho,
+                collect_details=False,
+            )
+            recursive_result = recursive_result + step_result
+        else:
+            with Progress(
+                TextColumn("[bold]{task.description}"),
+                BarColumn(),
+                TextColumn("failed: {task.fields[failed]:.0f}"),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+            ) as progress:
+                task = progress.add_task(
+                    "Certify and split",
+                    total=float(max_depth + 1),
+                    failed=float(len(pending_bs)),
                 )
-                if (not collect_details) or (depth >= max_depth):
-                    recursive_result = recursive_result + step_result
-                    break
 
-                recursive_result = recursive_result + step_result.with_failed(step_result.failed[:0])
+                for depth in range(max_depth + 1):
+                    progress.update(task, failed=float(len(pending_bs)))
 
-                if len(step_result.failed) == 0:
-                    break
+                    if len(pending_bs) == 0:
+                        break
 
-                pending_bs = self._split_failed_regions(step_result.failed)
+                    step_result = self._process_regions(
+                        pending_bs,
+                        rho,
+                        collect_details=True,
+                    )
+                    if depth >= max_depth:
+                        recursive_result = recursive_result + step_result
+                        progress.update(task, advance=1.0)
+                        break
+
+                    recursive_result = recursive_result + step_result.with_failed(step_result.failed[:0])
+
+                    if len(step_result.failed) == 0:
+                        progress.update(task, advance=1.0)
+                        break
+
+                    pending_bs = self._split_failed_regions(step_result.failed)
+                    progress.update(task, advance=1.0)
 
         certified_regions_np = self._regions_tensor_to_np(recursive_result.certified)
         failed_regions_np = self._regions_tensor_to_np(recursive_result.failed)

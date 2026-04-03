@@ -1,12 +1,12 @@
 import argparse
 import numpy as np
 import torch as th
+import logging
 
 from datetime import datetime
 from pathlib import Path
 
 from mpc_datagen import MPCDataGenerator
-from pkg_logger import get_package_logger
 
 from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer
 from lcil.certification import LyapunovCertificationConfig, ABCrownCertifier
@@ -17,7 +17,7 @@ from diff_mpc import DiffMPCPolicy
 from double_integrator_dyn import DoubleIntegratorDynamics
 
 
-__logger__ = get_package_logger(__name__)
+__logger__ = logging.getLogger(__name__)
 
 
 def parse_cli_args() -> argparse.Namespace:

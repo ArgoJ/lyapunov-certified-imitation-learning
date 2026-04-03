@@ -29,6 +29,7 @@ def parse_cli_args() -> argparse.Namespace:
         default="results/cartpole/20260402_203645/model.pt",
         help="Path to a trained policy checkpoint.",
     )
+    parser.add_argument("--T-sim", type=float, default=40.0, help="Rollout horizon in seconds.")
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string (e.g. cpu, cuda).")
     return parser.parse_args()
 
@@ -66,9 +67,9 @@ def main() -> None:
     val_dataset_path = model_path.parent / "val_dataset.pt"
 
     print(f"dataset path: {val_dataset_path}")
-    cfg = PolicyRolloutConfig.from_mpc_config(net.net.global_config, t_sim=40.0)
-    dataset = StateActionDataset.load(val_dataset_path)
-    sampler = FeasibleSetSampler(dataset=dataset)
+    cfg = PolicyRolloutConfig.from_mpc_config(net.net.global_config, t_sim=args.T_sim)
+    val_dataset = StateActionDataset.load(val_dataset_path)
+    sampler = FeasibleSetSampler(dataset=val_dataset)
 
     simulator = InvertedPendulumOnCartDynamics(dt=cfg.dt)
     policy_rollout_generator = PolicyRolloutGenerator(
