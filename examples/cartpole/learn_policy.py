@@ -39,6 +39,8 @@ def main() -> None:
     args = parse_cli_args()
     device = args.device
     dataset_path = args.dataset_path
+    base_path = Path("results/cartpole")
+    iso = datetime.now().strftime('%Y%m%d_%H%M%S').replace(" ", "_").replace(":", "-")
 
     source_dataset = MPCDataset.load(Path(dataset_path))
     if len(source_dataset) == 0:
@@ -88,10 +90,14 @@ def main() -> None:
         loss_fn=loss_fn,
         device=device,
     )
-    trainer.set_adam_optimizer(learning_rate=args.lr, scheduler_type="plateau", scheduler_kwargs={"mode": "min", "factor": 0.5, "patience": 4})
-    trainer.train(num_epochs=args.epochs)
+    trainer.set_adam_optimizer(
+        learning_rate=args.lr,
+        scheduler_type="plateau",
+        scheduler_kwargs={"mode": "min", "factor": 0.5, "patience": 4}
+    )
+    trainer.train(num_epochs=args.epochs, tb_log_dir=(base_path / "tb" / iso))
     trainer.save(
-        save_folder=Path("results/cartpole") / datetime.now().strftime('%Y%m%d_%H%M%S'), 
+        save_folder=base_path / iso,
         global_config=source_dataset.global_config
     )
 
