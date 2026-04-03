@@ -13,12 +13,14 @@ from numpy.typing import NDArray
 from typing import Any, Literal
 from collections.abc import Mapping
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from rich.progress import (
     Progress,
     TextColumn,
     BarColumn,
     TimeElapsedColumn,
-    TimeRemainingColumn
+    TimeRemainingColumn,
+    TaskID
 )
 
 from .dataset import save_state_action_dataset_subset
@@ -208,11 +210,70 @@ class PolicyTrainer:
             actions = actions.to(device=self.device, non_blocking=True)
             nn_inputs = states
         return nn_inputs, states, actions
+
+    def _get_bar_step(self) -> float:
+        """Utility to compute progress bar step size based on dataloader sizes."""
+        train_datapoints = max(len(self.dataloader.dataset), 1)
+        val_datapoints = max(len(self.val_dataloader.dataset), 1) if self.val_dataloader is not None else 0
+        total_datapoints = train_datapoints + val_datapoints
+        return 1.0 / total_datapoints if total_datapoints > 0 else 1.0
+
+    def _train_epoch(self, progress: Progress, task: TaskID, bar_step: float) -> float:
+        """Executes a single training epoch."""
+        self.model.train()
+        train_epoch_loss = 0.0
+        num_datapoints = max(len(self.dataloader.dataset), 1)
+
+        for batch in self.dataloader:
+            nn_inputs, states, actions = self._extract_batch(batch)
+
+            self.optimizer.zero_grad(set_to_none=True)
+            pred_actions = self.model(nn_inputs)
+            
+            if self._loss_requires_states:
+                loss = self.loss_fn(pred_actions, actions, states=states)
+            else:
+                loss = self.loss_fn(pred_actions, actions)
+
+            loss.backward()
+            self.optimizer.step()
+
+            batch_size = nn_inputs.size(0)
+            train_epoch_loss += loss.item() * batch_size
+            progress.update(task, advance=bar_step * batch_size)
+
+        return train_epoch_loss / num_datapoints
+    
+    def _validate_epoch(self, progress: Progress, task: TaskID, bar_step: float) -> float | None:
+        """Executes a single validation epoch."""
+        if self.val_dataloader is None:
+            return None
+
+        self.model.eval()
+        val_epoch_loss = 0.0
+        num_datapoints = max(len(self.val_dataloader.dataset), 1)
+
+        with th.no_grad():
+            for batch in self.val_dataloader:
+                nn_inputs, states, actions = self._extract_batch(batch)
+                pred_actions = self.model(nn_inputs)
+
+                if self._loss_requires_states:
+                    loss = self.loss_fn(pred_actions, actions, states=states)
+                else:
+                    loss = self.loss_fn(pred_actions, actions)
+
+                batch_size = nn_inputs.size(0)
+                val_epoch_loss += loss.item() * batch_size
+                progress.advance(task, advance=bar_step * batch_size)
+
+        return val_epoch_loss / num_datapoints
     
     def train(
         self,
         num_epochs: int = 10,
         restore_best_model: bool = True,
+        tb_log_dir: str | os.PathLike[str] | None = None,
     ) -> PolicyTrainingMetrics:
         """
         Train a simple MLP policy model on the provided imitation-learning dataset.
@@ -223,6 +284,8 @@ class PolicyTrainer:
             Number of training epochs. Default is 10.
         restore_best_model : bool, optional
             If ``True`` and early stopping is enabled, restore best weights before returning.
+        tb_log_dir : str or PathLike or None, optional
+            If provided, enables TensorBoard logging of training and validation loss under the specified log directory.
 
         Returns
         -------
@@ -234,24 +297,19 @@ class PolicyTrainer:
         
         self.loss_fn.to(self.device)
         self.model.to(self.device)
-        self.model.train()
-        
         self._configure_scheduler(num_epochs=num_epochs)
 
-        train_datapoints = max(len(self.dataloader.dataset), 1)
-        use_validation = self.val_dataloader is not None
-        val_datapoints = max(len(self.val_dataloader.dataset), 1) if use_validation else 0
-        monitored_name = "Val" if use_validation else "Train"
+        tb_writer = SummaryWriter(log_dir=tb_log_dir) if SummaryWriter is not None else None
         metrics = PolicyTrainingMetrics.from_num_epochs(num_epochs)
-        bar_step = 1.0 / (train_datapoints + val_datapoints)
+        bar_step = self._get_bar_step()
 
         with Progress(
             TextColumn("[bold]{task.description}"),
             BarColumn(),
             TextColumn("epoch: {task.completed:.0f}/{task.total:.0f}"),
-            TextColumn("train: {task.fields[train_loss]:.4f}"),
-            TextColumn("val: {task.fields[val_loss]:.4f}"),
-            TextColumn("lr: {task.fields[lr]:.2e}"),
+            TextColumn("train: {task.fields[train_loss]:.3f}"),
+            TextColumn("val: {task.fields[val_loss]:.3f}"),
+            TextColumn("lr: {task.fields[lr]:.1e}"),
             TimeElapsedColumn(),
             TimeRemainingColumn(),
         ) as progress:
@@ -263,54 +321,26 @@ class PolicyTrainer:
                 lr=float("nan"),
             )
             for epoch in range(num_epochs):
-                train_epoch_loss = 0.0
-                self.model.train()
-
                 # Training loop
-                for batch in self.dataloader:
-                    nn_inputs, states, actions = self._extract_batch(batch)
+                train_avg_loss = self._train_epoch(progress, task, bar_step)
 
-                    self.optimizer.zero_grad(set_to_none=True)
-                    pred_actions = self.model(nn_inputs)
-                    
-                    if self._loss_requires_states:
-                        loss = self.loss_fn(pred_actions, actions, states=states)
-                    else:
-                        loss = self.loss_fn(pred_actions, actions)
-
-                    loss.backward()
-                    self.optimizer.step()
-
-                    train_epoch_loss += loss.item() * nn_inputs.size(0)
-                    progress.update(task, advance=bar_step * nn_inputs.size(0))
-
-                train_avg_loss = train_epoch_loss / train_datapoints
-
-                # Validation loop
-                val_avg_loss: float | None = None
-                if use_validation and self.val_dataloader is not None:
-                    self.model.eval()
-                    val_epoch_loss = 0.0
-                    with th.no_grad():
-                        for batch in self.val_dataloader:
-                            nn_inputs, states, actions = self._extract_batch(batch)
-                            pred_actions = self.model(nn_inputs)
-
-                            if self._loss_requires_states:
-                                val_epoch_loss += self.loss_fn(pred_actions, actions, states=states).item() * nn_inputs.size(0)
-                            else:
-                                val_epoch_loss += self.loss_fn(pred_actions, actions).item() * nn_inputs.size(0)
-
-                            progress.update(task, advance=bar_step * nn_inputs.size(0))
-                    val_avg_loss = val_epoch_loss / val_datapoints
+                # Validation
+                val_avg_loss = self._validate_epoch(progress, task, bar_step)
 
                 # Update metrics
+                current_lr = float(self.optimizer.param_groups[0]["lr"])
                 metrics.train_loss[epoch] = float(train_avg_loss)
                 metrics.val_loss[epoch] = float(val_avg_loss) if val_avg_loss is not None else np.nan
-                metrics.learning_rate[epoch] = float(self.optimizer.param_groups[0]["lr"])
+                metrics.learning_rate[epoch] = current_lr
                 metrics.epochs_completed = epoch + 1
-
                 monitored_metric = val_avg_loss if val_avg_loss is not None else train_avg_loss
+
+                # TensorBoard logging
+                if tb_writer is not None:
+                    tb_writer.add_scalar("Loss/Train", train_avg_loss, epoch)
+                    if val_avg_loss is not None:
+                        tb_writer.add_scalar("Loss/Validation", val_avg_loss, epoch)
+                    tb_writer.add_scalar("Optimization/Learning_Rate", current_lr, epoch)
 
                 # Scheduler step
                 if self.scheduler is not None:
@@ -324,21 +354,25 @@ class PolicyTrainer:
                     self.early_stopper(monitored_metric, self.model)
                     if self.early_stopper.early_stop:
                         __logger__.info(
-                            "Early stopping at epoch %d (%s loss %.6f).",
+                            "Early stopping at epoch %d (loss %.6f).",
                             epoch + 1,
-                            monitored_name,
                             monitored_metric,
                         )
                         break
 
+                # Update bar
                 progress.update(
                     task,
                     train_loss=float(train_avg_loss),
                     val_loss=float(val_avg_loss) if val_avg_loss is not None else float("nan"),
-                    lr=float(self.optimizer.param_groups[0]["lr"]),
+                    lr=float(current_lr),
                 )
                 
         self.metrics = metrics
+
+        if tb_writer is not None:
+            tb_writer.flush()
+            tb_writer.close()
         
         if self.early_stopper is not None and restore_best_model and self.early_stopper.best_model_state is not None:
             self.early_stopper.load_best_model(self.model)
