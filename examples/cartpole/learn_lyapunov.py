@@ -160,12 +160,12 @@ def main() -> None:
         certification_config = LyapunovCertificationConfig.from_training_config(
             training_config,
             bins_per_dim=args.cert_bins_per_dim,
-            cert_center_refinement_factor=args.cert_center_refinement_factor,
-            cert_origin_exclusion=0.01,
-            cert_rho_scaling=args.cert_rho_scaling,
-            cert_bisection_tol=args.cert_bisection_tol,
-            cert_max_scale_steps=args.cert_max_scale_steps,
-            cert_max_bisection_steps=args.cert_max_bisection_steps,
+            center_refinement_factor=args.cert_center_refinement_factor,
+            origin_exclusion=0.01,
+            rho_scaling=args.cert_rho_scaling,
+            bisection_tol=args.cert_bisection_tol,
+            max_scale_steps=args.cert_max_scale_steps,
+            max_bisection_steps=args.cert_max_bisection_steps,
             cert_bounds=cert_bounds,
         )
 
