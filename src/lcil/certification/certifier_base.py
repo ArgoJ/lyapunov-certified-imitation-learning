@@ -22,6 +22,7 @@ from rich.progress import (
 
 from .config import LyapunovCertificationConfig
 from .models import ClosedLoopLyapunovConditionVerifier
+from ..utils.helpers import none_to_float
 
 __logger__ = logging.getLogger(__name__)
 
@@ -182,7 +183,6 @@ class BaseCertifier(ABC):
     # ==========================================
     # CORE LOGIC
     # ==========================================
-
     @staticmethod
     def _build_center_refined_axis_edges(
         lb: th.Tensor,
@@ -251,7 +251,12 @@ class BaseCertifier(ABC):
         return bounds
 
     @staticmethod
-    def _iterative_rho_search(total:int, desc: str, initial_values: tuple[float, float], step_fn: callable) -> tuple[float | None, float]:
+    def _iterative_rho_search(
+        total:int, 
+        desc: str, 
+        initial_values: tuple[float, float], 
+        step_fn: callable
+    ) -> tuple[float | None, float]:
         """Run iterative rho updates until stopping criterion is met.
 
         Parameters
@@ -279,15 +284,23 @@ class BaseCertifier(ABC):
             TimeElapsedColumn(),
             TimeRemainingColumn(),
         ) as progress:
-            task = progress.add_task("Lyapunov descent check", total=total, rho_lo=rho_lo, rho_up=rho_up)
+            task = progress.add_task(
+                desc,
+                total=total,
+                rho_lo=none_to_float(rho_lo),
+                rho_up=none_to_float(rho_up),
+            )
             for _ in range(total):
                 try:
                     stop, rho_lo, rho_up = step_fn(rho_lo, rho_up)
                     if stop: 
                         break
                 finally:
-                    lo_display = rho_lo if rho_lo is not None else float("nan")
-                    progress.update(task, rho_lo=lo_display, rho_up=rho_up)
+                    progress.update(
+                        task, 
+                        rho_lo=none_to_float(rho_lo), 
+                        rho_up=none_to_float(rho_up)
+                    )
         return rho_lo, rho_up
 
     def _get_suppress_ctx(self):
@@ -567,17 +580,17 @@ class BaseCertifier(ABC):
                     )
                     if depth >= max_depth:
                         recursive_result = recursive_result + step_result
-                        progress.update(task, advance=1.0)
+                        progress.advance(task)
                         break
 
                     recursive_result = recursive_result + step_result.with_failed(step_result.failed[:0])
 
                     if len(step_result.failed) == 0:
-                        progress.update(task, advance=1.0)
+                        progress.advance(task)
                         break
 
                     pending_bs = self._split_failed_regions(step_result.failed)
-                    progress.update(task, advance=1.0)
+                    progress.advance(task)
 
         certified_regions_np = self._regions_tensor_to_np(recursive_result.certified)
         failed_regions_np = self._regions_tensor_to_np(recursive_result.failed)
@@ -740,17 +753,16 @@ class BaseCertifier(ABC):
         if rho_estimate <= 0:
             raise ValueError("rho_estimate must be positive.")
 
-        __logger__.info("Starting Lyapunov certification with %s method.", self.config.cert_method.upper())
+        __logger__.info(f"Starting Lyapunov certification with {self.config.cert_method.upper()} method.", )
 
         self.verifier = self._setup_verifier()
         self.regions = self._build_regions()
-        __logger__.info("Built %d certification regions (state_dim=%d).", len(self.regions), self.config.state_dim)
+        __logger__.info(f"Built {len(self.regions)} certification regions (state_dim={self.config.state_dim}).")
         self.setup_backend()
 
         if self.config.rho_min > rho_estimate:
             __logger__.warning(
-                "Provided rho_estimate (%.4f) is below rho_min (%.4f). Starting search from rho_min.", 
-                rho_estimate, self.config.rho_min
+                f"Provided rho_estimate ({rho_estimate:.4f}) is below rho_min ({self.config.rho_min:.4f}). Starting search from rho_min."
             )
             initial_rho = self.config.rho_min
         else:
@@ -768,7 +780,7 @@ class BaseCertifier(ABC):
             )
             
             if rho_lo == rho_up:
-                __logger__.warning("Maximum scaling steps reached without finding an upper bound.")
+                __logger__.warning(f"Maximum scaling steps ({self.config.max_scale_steps}) reached without finding an upper bound.")
 
         # Scale down
         else:

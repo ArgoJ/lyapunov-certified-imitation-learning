@@ -420,7 +420,7 @@ def save_state_action_dataset_subset(
         split_dataset.save(target_path)
         return True
 
-    __logger__.warning("Could not save dataset split for type '%s'.", type(dataset).__name__)
+    __logger__.warning(f"Could not save dataset split for type '{type(dataset).__name__}'.")
     return False
 
 

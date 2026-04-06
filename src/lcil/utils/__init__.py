@@ -1,4 +1,3 @@
-from . import linalg as lcil_linalg
 from . import plot as lcil_plt
 from . import base_models as lcil_base_models
 
@@ -12,3 +11,4 @@ from .base_models import (
 	save_model_checkpoint,
 )
 from .early_stopping import EarlyStopping
+from .helpers import none_to_float

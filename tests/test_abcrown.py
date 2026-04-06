@@ -2,12 +2,10 @@ import importlib
 import os
 import sys
 import unittest
-from unittest import mock
 
 import numpy as np
 import torch as th
 import torch.nn as nn
-from tqdm import tqdm
 from plot_assertions_mixin import PlotAssertionsMixin
 
 plot_module = importlib.import_module("lcil.utils.plot")
@@ -84,15 +82,10 @@ class TestABCrownCertifierIntegration(PlotAssertionsMixin, unittest.TestCase):
             cls.LyapunovCertificationConfig = importlib.import_module(
                 "lcil.certification.config"
             ).LyapunovCertificationConfig
-            cls.certifier_base = importlib.import_module("lcil.certification.certifier_base")
         except Exception as exc:  # pragma: no cover - depends on local environment
             raise unittest.SkipTest(f"Could not import certifier modules: {exc}") from exc
 
-        cls._patchers = [
-            mock.patch.object(cls.certifier_base.__logger__, "tqdm", tqdm),
-        ]
-        for patcher in cls._patchers:
-            patcher.start()
+        cls._patchers = []
 
     @classmethod
     def tearDownClass(cls) -> None:

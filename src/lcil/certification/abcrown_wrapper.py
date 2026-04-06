@@ -24,8 +24,8 @@ class _ABCrownModelWrapper(nn.Module):
     def __init__(self, verifier: nn.Module, device: th.device):
         super().__init__()
         self.verifier = verifier
-        self.register_buffer("rho", th.tensor([0.0], dtype=th.float32, device=device))
-        self.register_buffer("kappa", th.tensor([0.0], dtype=th.float32, device=device))
+        self.register_buffer("rho", th.tensor(0.0, dtype=th.float32, device=device))
+        self.register_buffer("kappa", th.tensor(0.0, dtype=th.float32, device=device))
 
     def forward(self, x: th.Tensor) -> th.Tensor:
         return self.verifier(x, self.rho, self.kappa)

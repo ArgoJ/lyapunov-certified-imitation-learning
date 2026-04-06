@@ -25,6 +25,7 @@ from rich.progress import (
 
 from .dataset import save_state_action_dataset_subset
 from ..utils.early_stopping import EarlyStopping
+from ..utils.helpers import none_to_float
 
 __logger__ = logging.getLogger(__name__)
 
@@ -240,7 +241,7 @@ class PolicyTrainer:
 
             batch_size = nn_inputs.size(0)
             train_epoch_loss += loss.item() * batch_size
-            progress.update(task, advance=bar_step * batch_size)
+            progress.advance(task, advance=bar_step * batch_size)
 
         return train_epoch_loss / num_datapoints
     
@@ -354,18 +355,16 @@ class PolicyTrainer:
                     self.early_stopper(monitored_metric, self.model)
                     if self.early_stopper.early_stop:
                         __logger__.info(
-                            "Early stopping at epoch %d (loss %.6f).",
-                            epoch + 1,
-                            monitored_metric,
+                            f"Early stopping at epoch {epoch + 1:d} (loss {monitored_metric:.6f}).",
                         )
                         break
 
                 # Update bar
                 progress.update(
                     task,
-                    train_loss=float(train_avg_loss),
-                    val_loss=float(val_avg_loss) if val_avg_loss is not None else float("nan"),
-                    lr=float(current_lr),
+                    train_loss=none_to_float(train_avg_loss),
+                    val_loss=none_to_float(val_avg_loss),
+                    lr=none_to_float(current_lr),
                 )
                 
         self.metrics = metrics
@@ -425,4 +424,4 @@ class PolicyTrainer:
             metrics_path = save_folder / "training_metrics.npz"
             self.metrics.save(metrics_path)
             
-            __logger__.info("Saved training results to %s", metrics_path.parent)
+            __logger__.info(f"Saved training results to {metrics_path.parent}")

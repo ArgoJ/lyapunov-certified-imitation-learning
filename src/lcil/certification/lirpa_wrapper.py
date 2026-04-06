@@ -56,8 +56,7 @@ class LiRPACertifier(BaseCertifier):
         if self.fallback_methods is not None:
             self.fallback_methods = [m for m in self.fallback_methods if m != "alpha-crown"]
         __logger__.warning(
-            "Disabling alpha-crown for this run due to backend shape mismatch: %s",
-            reason,
+            f"Disabling alpha-crown for this run due to backend shape mismatch: {reason}",
         )
 
     def _get_bounded_module(self) -> BoundedModule:

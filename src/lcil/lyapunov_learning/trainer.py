@@ -27,6 +27,7 @@ from .counterexample import (
 )
 from ..certification.models import ClosedLoopLyapunovConditionVerifier
 from ..utils.base_models import save_model_checkpoint
+from ..utils.helpers import none_to_float
 
 __logger__ = logging.getLogger(__name__)
 
@@ -250,10 +251,10 @@ class LyapunovTrainer:
                     progress.update(
                         task,
                         advance=1.0,
-                        loss=float(loss.item()),
-                        rho=float(rho_estimate),
-                        pool=float(len(state_buffer)),
-                        cex=float(num_mined_counterexamples),
+                        loss=none_to_float(loss.item()),
+                        rho=none_to_float(rho_estimate),
+                        pool=none_to_float(len(state_buffer)),
+                        cex=none_to_float(num_mined_counterexamples),
                     )
 
         train_time = time.time() - start_time
@@ -292,4 +293,4 @@ class LyapunovTrainer:
             self.results.lyap_model_path = str(lyap_model_path)
             self.results.policy_model_path = str(policy_model_path)
         
-        __logger__.info("Saved lyapunov results to %s", save_folder)
+        __logger__.info(f"Saved lyapunov results to {save_folder}")

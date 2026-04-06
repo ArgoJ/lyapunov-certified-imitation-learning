@@ -1,6 +1,5 @@
 import itertools
 import importlib
-import os
 import sys
 import types
 import unittest
@@ -35,7 +34,6 @@ ABCrownCertifier = abcrown_wrapper.ABCrownCertifier
 LyapunovCertificationConfig = importlib.import_module(
     "lcil.certification.config"
 ).LyapunovCertificationConfig
-certifier_base = importlib.import_module("lcil.certification.certifier_base")
 plot_module = importlib.import_module("lcil.utils.plot")
 certified_regions_2d = plot_module.certified_regions_2d
 lyapunov_cert_regions = plot_module.lyapunov_cert_regions
@@ -165,28 +163,6 @@ def _fake_output_vars(dim: int) -> _FakeOutputVars:
     return _FakeOutputVars(dim)
 
 
-class _FakeProgressBar:
-    def __init__(self, iterable):
-        self.iterable = iterable
-
-    def __enter__(self) -> "_FakeProgressBar":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        del exc_type, exc, tb
-
-    def __iter__(self):
-        return iter(self.iterable)
-
-    def set_postfix(self, _payload: dict) -> None:
-        return None
-
-
-def _fake_tqdm(iterable, desc: str | None = None, *args, **kwargs) -> _FakeProgressBar:
-    del desc
-    return _FakeProgressBar(iterable)
-
-
 class _ZeroPolicy(nn.Module):
     def __init__(self, nu: int = 1):
         super().__init__()
@@ -232,7 +208,6 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
             mock.patch.object(abcrown_wrapper, "ConfigBuilder", _FakeConfigBuilder),
             mock.patch.object(abcrown_wrapper, "input_vars", _fake_input_vars),
             mock.patch.object(abcrown_wrapper, "output_vars", _fake_output_vars),
-            mock.patch.object(certifier_base.__logger__, "tqdm", _fake_tqdm),
         ]
         for patcher in cls._patchers:
             patcher.start()
