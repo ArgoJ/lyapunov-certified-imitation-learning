@@ -211,7 +211,7 @@ class LyapunovTrainer:
             BarColumn(),
             MofNCompleteColumn(),
             TextColumn("loss: {task.fields[loss]:.4f}"),
-            TextColumn("rho: {task.fields[rho]:.4f}"),
+            TextColumn("ρ: {task.fields[rho]:.4f}"),
             TextColumn("pool: {task.fields[pool]:.0f}"),
             TextColumn("cex: {task.fields[cex]:.0f}"),
             TimeElapsedColumn(),
