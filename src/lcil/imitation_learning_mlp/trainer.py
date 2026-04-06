@@ -242,7 +242,7 @@ class PolicyTrainer:
 
             batch_size = nn_inputs.size(0)
             train_epoch_loss += loss.item() * batch_size
-            progress.advance(task, advance=bar_step * batch_size)
+            progress.update(task, advance=bar_step * batch_size)
 
         return train_epoch_loss / num_datapoints
     
@@ -267,7 +267,7 @@ class PolicyTrainer:
 
                 batch_size = nn_inputs.size(0)
                 val_epoch_loss += loss.item() * batch_size
-                progress.advance(task, advance=bar_step * batch_size)
+                progress.update(task, advance=bar_step * batch_size)
 
         return val_epoch_loss / num_datapoints
     

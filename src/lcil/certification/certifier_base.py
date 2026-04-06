@@ -584,17 +584,17 @@ class BaseCertifier(ABC):
                     )
                     if depth >= max_depth:
                         recursive_result = recursive_result + step_result
-                        progress.advance(task)
+                        progress.update(task, advance=1)
                         break
 
                     recursive_result = recursive_result + step_result.with_failed(step_result.failed[:0])
 
                     if len(step_result.failed) == 0:
-                        progress.advance(task)
+                        progress.update(task, advance=1)
                         break
 
                     pending_bs = self._split_failed_regions(step_result.failed)
-                    progress.advance(task)
+                    progress.update(task, advance=1)
 
         certified_regions_np = self._regions_tensor_to_np(recursive_result.certified)
         failed_regions_np = self._regions_tensor_to_np(recursive_result.failed)
