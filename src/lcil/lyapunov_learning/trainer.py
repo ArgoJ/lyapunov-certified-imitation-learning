@@ -15,7 +15,8 @@ from rich.progress import (
     TextColumn,
     BarColumn,
     TimeElapsedColumn,
-    TimeRemainingColumn
+    TimeRemainingColumn,
+    MofNCompleteColumn,
 )
 
 from .config import LyapunovTrainingConfig
@@ -208,6 +209,7 @@ class LyapunovTrainer:
         with Progress(
             TextColumn("[bold]{task.description}"),
             BarColumn(),
+            MofNCompleteColumn(),
             TextColumn("loss: {task.fields[loss]:.4f}"),
             TextColumn("rho: {task.fields[rho]:.4f}"),
             TextColumn("pool: {task.fields[pool]:.0f}"),

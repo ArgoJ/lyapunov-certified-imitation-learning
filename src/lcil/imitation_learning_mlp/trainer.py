@@ -20,7 +20,8 @@ from rich.progress import (
     BarColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
-    TaskID
+    TaskID,
+    MofNCompleteColumn,
 )
 
 from .dataset import save_state_action_dataset_subset
@@ -307,7 +308,7 @@ class PolicyTrainer:
         with Progress(
             TextColumn("[bold]{task.description}"),
             BarColumn(),
-            TextColumn("epoch: {task.completed:.0f}/{task.total:.0f}"),
+            MofNCompleteColumn(),
             TextColumn("train: {task.fields[train_loss]:.3f}"),
             TextColumn("val: {task.fields[val_loss]:.3f}"),
             TextColumn("lr: {task.fields[lr]:.1e}"),

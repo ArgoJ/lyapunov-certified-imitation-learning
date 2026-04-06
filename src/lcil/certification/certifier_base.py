@@ -17,7 +17,8 @@ from rich.progress import (
     TextColumn,
     BarColumn,
     TimeElapsedColumn,
-    TimeRemainingColumn
+    TimeRemainingColumn,
+    MofNCompleteColumn,
 )
 
 from .config import LyapunovCertificationConfig
@@ -279,6 +280,7 @@ class BaseCertifier(ABC):
         with Progress(
             TextColumn("[bold]{task.description}"),
             BarColumn(),
+            MofNCompleteColumn(),
             TextColumn("rho_lo: {task.fields[rho_lo]:.4f}"),
             TextColumn("rho_up: {task.fields[rho_up]:.4f}"),
             TimeElapsedColumn(),
@@ -298,6 +300,7 @@ class BaseCertifier(ABC):
                 finally:
                     progress.update(
                         task, 
+                        advance=1,
                         rho_lo=none_to_float(rho_lo), 
                         rho_up=none_to_float(rho_up)
                     )
@@ -557,6 +560,7 @@ class BaseCertifier(ABC):
             with Progress(
                 TextColumn("[bold]{task.description}"),
                 BarColumn(),
+                MofNCompleteColumn(),
                 TextColumn("failed: {task.fields[failed]:.0f}"),
                 TimeElapsedColumn(),
                 TimeRemainingColumn(),
