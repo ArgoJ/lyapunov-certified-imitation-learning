@@ -197,6 +197,7 @@ def main() -> None:
         # ---------------------------------------------------------------------
         # 5. Plot & Save
         # ---------------------------------------------------------------------
+        state_labels = [r"$x$", r"$v$", r"$\theta$", r"$\dot{\theta}$"]
         if rollout_dataset is not None:
             def lyapunov_func(states: np.ndarray) -> np.ndarray:
                 x = th.as_tensor(states, dtype=th.float32, device=device)
@@ -208,13 +209,13 @@ def main() -> None:
                 lyapunov_func=lyapunov_func,
                 certification_result=cert_results,
                 dataset=rollout_dataset[:100],
-                state_labels=["x", "v", r"\theta", r"\dot{\theta}"],
+                state_labels=state_labels,
                 html_path=base_path / "lyapunov_plot.html",
             )
 
         lcil_plt.certified_regions_2d(
             certification_result=cert_results,
-            state_labels=["x", "v", r"\theta", r"\dot{\theta}"],
+            state_labels=state_labels,
             html_path=base_path / "certified_regions.html",
         )
 

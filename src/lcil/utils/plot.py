@@ -14,6 +14,7 @@ from mpc_datagen.plots import (
     _resolve_indices,
     _resolve_labels,
     _state_index_pairs,
+    _to_latex,
 )
 
 if TYPE_CHECKING:
@@ -657,29 +658,31 @@ def certified_regions_2d(
             cert_pair,
             fig,
             "#2ca02c",
-            "Certified",
+            _to_latex("Certified"),
             fill=True,
         )
         _add_regions(
             uncert_pair,
             fig,
             "#d62728",
-            "Uncertified",
+            _to_latex("Uncertified"),
             fill=True,
         )
         _add_regions(
             ctex_pair,
             fig,
             "#808080",
-            "Outside Sublevel",
+            _to_latex("Outside Sublevel"),
             fill=True,
             alpha=0.5,
         )
 
         fig.update_layout(
-            title=f"Certification Partition ({labels_full[pair[0]]} vs {labels_full[pair[1]]})",
-            xaxis_title=labels_full[pair[0]],
-            yaxis_title=labels_full[pair[1]],
+            title=_to_latex(
+                f"Certification Partition ({labels_full[pair[0]]} vs {labels_full[pair[1]]})"
+            ),
+            xaxis_title=_to_latex(labels_full[pair[0]]),
+            yaxis_title=_to_latex(labels_full[pair[1]]),
             xaxis=dict(range=[pair_bounds[0][0], pair_bounds[0][1]]),
             yaxis=dict(range=[pair_bounds[1][0], pair_bounds[1][1]]),
         )
@@ -695,7 +698,7 @@ def certified_regions_2d(
             bgcolor="rgba(255,255,255,0.80)",
             bordercolor="rgba(0,0,0,0.20)",
             borderwidth=1,
-            text=_partition_annotation(cert_pair, uncert_pair, ctex_pair),
+            text=_to_latex(_partition_annotation(cert_pair, uncert_pair, ctex_pair)),
         )
         figures[pair] = fig
 
@@ -705,7 +708,7 @@ def certified_regions_2d(
 
     if html_path is not None:
         _save_pair_figures(figures, html_path, labels_full, kind="Certified region")
-        return None
+        return
 
     if len(figures) == 1:
         return next(iter(figures.values()))
