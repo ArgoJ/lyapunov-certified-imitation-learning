@@ -204,20 +204,17 @@ def main() -> None:
                     v = lyap_model(x)
                 return v.detach().cpu().numpy().reshape(-1)
 
-            lcil_plt.lyapunov(
+            lcil_plt.lyapunov_cert_regions(
                 lyapunov_func=lyapunov_func,
+                certification_result=cert_results,
                 dataset=rollout_dataset[:100],
-                state_indices=[2, 3],
-                state_labels=["theta", "theta_dot"],
-                plot_3d=True,
-                certified_regions=cert_results.certified_regions,
-                uncertified_regions=cert_results.failed_regions,
+                state_labels=["x", "v", r"\theta", r"\dot{\theta}"],
                 html_path=base_path / "lyapunov_plot.html",
             )
 
         lcil_plt.certified_regions_2d(
             certification_result=cert_results,
-            state_labels=["x", "v", "theta", "theta_dot"],
+            state_labels=["x", "v", r"\theta", r"\dot{\theta}"],
             html_path=base_path / "certified_regions.html",
         )
 

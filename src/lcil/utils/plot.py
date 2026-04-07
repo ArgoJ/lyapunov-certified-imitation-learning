@@ -498,17 +498,11 @@ def lyapunov_cert_regions(
 
     figures: dict[tuple[int, int], go.Figure] = {}
     for pair in pair_indices:
-        pair_num_states = int(max(pair) + 1)
-        pair_state_labels = [f"State {i}" for i in range(pair_num_states)]
-        for i in range(pair_num_states):
-            if i < len(labels_full):
-                pair_state_labels[i] = labels_full[i]
-
         fig_pair = lyapunov(
             lyapunov_func=lyapunov_func,
             dataset=dataset,
             state_indices=list(pair),
-            state_labels=pair_state_labels,
+            state_labels=labels_full,
             limits=pair_limits[pair],
             resolution=resolution,
             plot_3d=plot_3d,
