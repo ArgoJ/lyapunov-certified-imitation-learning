@@ -1,11 +1,12 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from numpy.typing import NDArray
 
+from ..utils.config_io import JsonConfigMixin
+
 
 @dataclass(frozen=True)
-class LyapunovTrainingConfig:
+class LyapunovTrainingConfig(JsonConfigMixin):
     """Configuration for Lyapunov training only.
 
     Parameters
@@ -100,6 +101,7 @@ class LyapunovTrainingConfig:
     l1_weight: float = 1e-5
     condition_tolerance: float = 1e-6
     condition_margin: float = 0.0
+    NP_ARRAY_FIELDS = ("state_bounds",)
 
     def __post_init__(self):
         if self.learning_rate <= 0:

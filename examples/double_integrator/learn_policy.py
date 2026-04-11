@@ -81,16 +81,22 @@ def main() -> None:
         lambda_dyn=2.0,
     )
 
+    training_cfg = ImitationTrainingConfig(
+        epochs=args.epochs,
+        learning_rate=args.lr,
+        scheduler_type="cosine",
+    )
+
     trainer = PolicyTrainer(
         model=net,
         dataloader=train_loader,
+        training_config=training_cfg,
         val_dataloader=val_loader,
         early_stopper=EarlyStopping(patience=10, delta=1e-4),
         loss_fn=loss_fn,
         device=device,
     )
-    trainer.set_adam_optimizer(learning_rate=args.lr, scheduler_type="cosine")
-    trainer.train(num_epochs=args.epochs)
+    trainer.train()
     trainer.save(
         save_folder=Path(args.save_folder) / datetime.now().strftime('%Y%m%d_%H%M%S'), 
         global_config=source_dataset.global_config

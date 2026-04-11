@@ -5,6 +5,7 @@ from .dataset import (
     save_state_action_dataset_subset,
 )
 from .trainer import PolicyTrainer
+from .config import ImitationTrainingConfig
 from .models import MLPPolicy
 from .loss import ReferenceWeightedMSELoss, DynamicsAwareLoss, ReferenceWeightedDynamicsAwareLoss
 
@@ -18,6 +19,7 @@ __all__ = [
     
     # Trainer
     "PolicyTrainer",
+    "ImitationTrainingConfig",
     
     # Models
     "MLPPolicy",

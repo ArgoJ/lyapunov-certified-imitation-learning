@@ -5,10 +5,11 @@ from dataclasses import dataclass
 from numpy.typing import NDArray
 
 from ..lyapunov_learning.config import LyapunovTrainingConfig
+from ..utils.config_io import JsonConfigMixin
 
 
 @dataclass(frozen=True)
-class LyapunovCertificationConfig:
+class LyapunovCertificationConfig(JsonConfigMixin):
     """Configuration for Lyapunov certification only.
 
     Parameters
@@ -81,6 +82,7 @@ class LyapunovCertificationConfig:
     suppress_native_output: bool = True
     batch_size: int = 512
     max_recursion_depth: int = 10
+    NP_ARRAY_FIELDS = ("cert_bounds",)
 
     def __post_init__(self) -> None:
         raw_bins = self.bins_per_dim

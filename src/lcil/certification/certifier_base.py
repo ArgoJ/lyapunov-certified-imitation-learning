@@ -3,11 +3,13 @@ from __future__ import annotations
 import torch as th
 import torch.nn as nn
 import numpy as np
+import os
 import logging
 
 from contextlib import nullcontext
 from typing import Sequence
 from dataclasses import dataclass, replace
+from pathlib import Path
 from abc import ABC, abstractmethod
 from numpy.typing import NDArray
 from auto_LiRPA import BoundedTensor, PerturbationLpNorm, BoundedModule
@@ -35,6 +37,13 @@ class RegionCertificationResult:
     counter_examples: NDArray
     failed_regions: NDArray
     certified_regions: NDArray
+
+    def save(self) -> None:
+        pass
+
+    @classmethod
+    def load(cls, path: str | Path) -> RegionCertificationResult:
+        pass
 
 
 @dataclass(frozen=True)

@@ -24,6 +24,7 @@ from rich.progress import (
     MofNCompleteColumn,
 )
 
+from .config import ImitationTrainingConfig
 from .dataset import save_state_action_dataset_subset
 from ..utils.early_stopping import EarlyStopping
 from ..utils.helpers import none_to_float
@@ -86,6 +87,7 @@ class PolicyTrainer:
         self, 
         model: nn.Module, 
         dataloader: DataLoader, 
+        training_config: ImitationTrainingConfig,
         val_dataloader: DataLoader | None = None, 
         early_stopper: EarlyStopping | None = None,
         loss_fn: nn.Module | None = None,
@@ -99,6 +101,10 @@ class PolicyTrainer:
             The model to be trained. Should take state tensors as input and output action tensors.
         dataloader : torch.utils.data.DataLoader
             The imitation learning dataloader providing ``(state, action)`` pairs for training.
+        training_config : ImitationTrainingConfig
+            Immutable training configuration controlling epochs, optimizer learning
+            rate, scheduler settings, TensorBoard logging, and whether to restore
+            the best early-stopping checkpoint.
         val_dataloader : torch.utils.data.DataLoader, optional
             Optional validation dataloader providing ``(state, action)`` pairs.
             If provided, validation loss is computed each epoch and used for
@@ -115,6 +121,7 @@ class PolicyTrainer:
         """
         self.model : nn.Module = model
         self.dataloader: DataLoader = dataloader
+        self.training_config = training_config
         self.val_dataloader: DataLoader | None = val_dataloader
         self.early_stopper: EarlyStopping | None = early_stopper
         self.loss_fn = nn.MSELoss() if loss_fn is None else loss_fn
@@ -124,79 +131,54 @@ class PolicyTrainer:
         self._loss_requires_states = "states" in loss_signature.parameters
         self._use_refs = hasattr(dataloader.dataset, "refs") and dataloader.dataset._refs is not None
         
-        self.optimizer: th.optim.Optimizer | None = None
-        self.scheduler: th.optim.lr_scheduler.LRScheduler | th.optim.lr_scheduler.ReduceLROnPlateau | None = None
-        self.scheduler_type: Literal["none", "step", "cosine", "plateau"] | None = None
-        self.scheduler_params: dict = {}
+        self.optimizer: th.optim.Optimizer = th.optim.Adam(
+            self.model.parameters(),
+            lr=float(self.training_config.learning_rate),
+        )
+        self.scheduler = self._configure_scheduler()
         self.metrics: PolicyTrainingMetrics | None = None
-        
-    def set_adam_optimizer(
-        self,
-        learning_rate: float = 1e-3,
-        scheduler_type: Literal["none", "step", "cosine", "plateau"] = "none",
-        scheduler_kwargs: Mapping[str, Any] | None = None,
-    ) -> None:
-        """Configure the trainer to use the Adam optimizer with the specified learning rate and optional LR scheduler.
-        
-        Parameters
-        ----------
-        learning_rate : float, optional
-            Learning rate for the Adam optimizer. Default is 1e-3.
-        scheduler_type : str, optional
-            Type of learning rate scheduler to use. One of "none", "step", "cosine", or "plateau". Default is "none" (no scheduler).
-        scheduler_kwargs : dict or None, optional
-            Optional dictionary of parameters for the specified scheduler. The required keys depend on the scheduler type:
-            - For "step": {"step_size": int, "gamma": float}
-            - For "cosine": {"eta_min": float}
-            - For "plateau": {"factor": float, "patience": int, "min_lr": float, "mode": str}
-            If ``None``, default parameters will be used for the chosen scheduler type.
+
+    def _configure_scheduler(self) -> (
+            th.optim.lr_scheduler.LRScheduler | 
+            th.optim.lr_scheduler.ReduceLROnPlateau | 
+            None
+        ):
+        """Utility to configure the learning rate scheduler based on the training configuration.
+
+        Returns
+        -------
+        torch.optim.lr_scheduler.LRScheduler, torch.optim.lr_scheduler.ReduceLROnPlateau, None
+            Configured learning rate scheduler instance, or ``None`` if no scheduler is used.
         """
-        if self.model is None:
-            raise ValueError("Model must be set before configuring optimizer.")
-        
-        self.optimizer = th.optim.Adam(self.model.parameters(), lr=learning_rate)
+        st = self.training_config.scheduler_type
+        params = dict(self.training_config.scheduler_kwargs) if self.training_config.scheduler_kwargs is not None else {}
 
-        self.scheduler_type = scheduler_type
-        self.scheduler_params = dict(scheduler_kwargs) if scheduler_kwargs is not None else {}
-
-    def _configure_scheduler(self, num_epochs: int) -> None:
-        """Initialize the LR scheduler using the stored scheduler config.
-
-        Some schedulers (e.g., CosineAnnealingLR) require knowledge of the
-        total number of epochs in advance, so this is called at the start of training.
-        """
-        if self.optimizer is None:
-            return
-
-        st = self.scheduler_type or "none"
-        params = self.scheduler_params or {}
-
-        if st == "none":
-            self.scheduler = None
-            return
-
-        if st == "step":
-            step_size = int(params.get("step_size", 10))
-            gamma = float(params.get("gamma", 0.5))
-            self.scheduler = th.optim.lr_scheduler.StepLR(self.optimizer, step_size=step_size, gamma=gamma)
-        elif st == "cosine":
-            t_max = max(int(num_epochs), 1)
-            eta_min = float(params.get("eta_min", 0.0))
-            self.scheduler = th.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=t_max, eta_min=eta_min)
-        elif st == "plateau":
-            factor = float(params.get("factor", 0.5))
-            patience = int(params.get("patience", 5))
-            min_lr = float(params.get("min_lr", 0.0))
-            mode = params.get("mode", "min")
-            self.scheduler = th.optim.lr_scheduler.ReduceLROnPlateau(
-                self.optimizer,
-                mode=mode,
-                factor=factor,
-                patience=patience,
-                min_lr=min_lr,
-            )
-        else:
-            raise ValueError(f"Unsupported scheduler '{st}'.")
+        match st:
+            case "none":
+                return None
+            case "step":
+                step_size = int(params.get("step_size", 10))
+                gamma = float(params.get("gamma", 0.5))
+                return th.optim.lr_scheduler.StepLR(self.optimizer, step_size=step_size, gamma=gamma)
+            case "cosine":
+                t_max = max(int(self.training_config.epochs), 1)
+                eta_min = float(params.get("eta_min", 0.0))
+                return th.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=t_max, eta_min=eta_min)
+            case "plateau":
+                factor = float(params.get("factor", 0.5))
+                patience = int(params.get("patience", 5))
+                min_lr = float(params.get("min_lr", 0.0))
+                mode = params.get("mode", "min")
+                return th.optim.lr_scheduler.ReduceLROnPlateau(
+                    self.optimizer,
+                    mode=mode,
+                    factor=factor,
+                    patience=patience,
+                    min_lr=min_lr,
+                )
+            case _:
+                __logger__.warning(f"Unsupported scheduler type: {st}. Using no scheduler.")
+                return None
 
     def _extract_batch(self, batch: tuple[th.Tensor, ...]) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
         """Utility to extract model inputs and action targets from a dataloader batch, handling optional references."""
@@ -273,36 +255,24 @@ class PolicyTrainer:
     
     def train(
         self,
-        num_epochs: int = 10,
-        restore_best_model: bool = True,
-        tb_log_dir: str | os.PathLike[str] | None = None,
     ) -> PolicyTrainingMetrics:
         """
         Train a simple MLP policy model on the provided imitation-learning dataset.
-        
-        Parameters
-        ----------
-        num_epochs : int, optional
-            Number of training epochs. Default is 10.
-        restore_best_model : bool, optional
-            If ``True`` and early stopping is enabled, restore best weights before returning.
-        tb_log_dir : str or PathLike or None, optional
-            If provided, enables TensorBoard logging of training and validation loss under the specified log directory.
 
         Returns
         -------
         PolicyTrainingMetrics
             Container with per-epoch training and validation loss, learning rates, and total epochs completed.
         """
-        if num_epochs <= 0:
-            raise ValueError("num_epochs must be positive.")
+        epochs = int(self.training_config.epochs)
         
         self.loss_fn.to(self.device)
         self.model.to(self.device)
-        self._configure_scheduler(num_epochs=num_epochs)
+        self._configure_scheduler(num_epochs=epochs)
 
-        tb_writer = SummaryWriter(log_dir=tb_log_dir) if SummaryWriter is not None else None
-        metrics = PolicyTrainingMetrics.from_num_epochs(num_epochs)
+        tb_writer = SummaryWriter(log_dir=self.training_config.tb_log_dir) \
+            if SummaryWriter is not None else None
+        metrics = PolicyTrainingMetrics.from_num_epochs(epochs)
         bar_step = self._get_bar_step()
 
         with Progress(
@@ -317,12 +287,12 @@ class PolicyTrainer:
         ) as progress:
             task = progress.add_task(
                 "Train Policy",
-                total=float(num_epochs),
+                total=float(epochs),
                 train_loss=float("nan"),
                 val_loss=float("nan"),
                 lr=float("nan"),
             )
-            for epoch in range(num_epochs):
+            for epoch in range(epochs):
                 # Training loop
                 train_avg_loss = self._train_epoch(progress, task, bar_step)
 
@@ -374,7 +344,11 @@ class PolicyTrainer:
             tb_writer.flush()
             tb_writer.close()
         
-        if self.early_stopper is not None and restore_best_model and self.early_stopper.best_model_state is not None:
+        if (
+            self.early_stopper is not None
+            and self.training_config.restore_best_model
+            and self.early_stopper.best_model_state is not None
+        ):
             self.early_stopper.load_best_model(self.model)
 
         return metrics

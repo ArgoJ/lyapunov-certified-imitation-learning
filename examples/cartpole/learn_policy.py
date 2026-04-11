@@ -82,20 +82,24 @@ def main() -> None:
         lambda_dyn=2.0,
     )
 
+    training_cfg = ImitationTrainingConfig(
+        epochs=args.epochs,
+        learning_rate=args.lr,
+        scheduler_type="plateau",
+        scheduler_kwargs={"mode": "min", "factor": 0.5, "patience": 4},
+        tb_log_dir=(base_path / "tb" / iso),
+    )
+
     trainer = PolicyTrainer(
         model=net,
         dataloader=train_loader,
+        training_config=training_cfg,
         val_dataloader=val_loader,
         early_stopper=EarlyStopping(patience=10, delta=1e-5),
         loss_fn=loss_fn,
         device=device,
     )
-    trainer.set_adam_optimizer(
-        learning_rate=args.lr,
-        scheduler_type="plateau",
-        scheduler_kwargs={"mode": "min", "factor": 0.5, "patience": 4}
-    )
-    trainer.train(num_epochs=args.epochs, tb_log_dir=(base_path / "tb" / iso))
+    trainer.train()
     trainer.save(
         save_folder=base_path / iso,
         global_config=source_dataset.global_config
