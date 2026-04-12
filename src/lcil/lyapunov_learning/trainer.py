@@ -10,6 +10,7 @@ import torch.nn as nn
 from numpy.typing import NDArray
 from pathlib import Path
 from dataclasses import dataclass
+from torch.utils.tensorboard import SummaryWriter
 from rich.progress import (
     Progress,
     TextColumn,
@@ -42,6 +43,50 @@ class LyapunovTrainingResult:
     policy_model_path: os.PathLike[str] | None = None
 
 
+@dataclass
+class LyapunovTrainingMetrics:
+    """Per-outer-iteration training metrics for Lyapunov optimization."""
+
+    loss: NDArray
+    rho_estimate: NDArray
+    kappa: NDArray
+    buffer_size: NDArray
+    num_mined_counterexamples: NDArray
+    outer_iterations_completed: int = 0
+    train_steps_completed: int = 0
+
+    @classmethod
+    def from_num_outer_epochs(cls, num_outer_epochs: int) -> LyapunovTrainingMetrics:
+        """Create NaN-initialized metric arrays for a fixed outer-epoch budget."""
+        if num_outer_epochs <= 0:
+            raise ValueError("num_outer_epochs must be positive.")
+
+        nan_array = np.full((num_outer_epochs,), np.nan, dtype=np.float64)
+        return cls(
+            loss=nan_array.copy(),
+            rho_estimate=nan_array.copy(),
+            kappa=nan_array.copy(),
+            buffer_size=nan_array.copy(),
+            num_mined_counterexamples=nan_array.copy(),
+            outer_iterations_completed=0,
+            train_steps_completed=0,
+        )
+
+    def save(self, path: os.PathLike[str]) -> None:
+        metrics_path = Path(path)
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            metrics_path,
+            loss=self.loss,
+            rho_estimate=self.rho_estimate,
+            kappa=self.kappa,
+            buffer_size=self.buffer_size,
+            num_mined_counterexamples=self.num_mined_counterexamples,
+            outer_iterations_completed=np.asarray(self.outer_iterations_completed, dtype=np.int64),
+            train_steps_completed=np.asarray(self.train_steps_completed, dtype=np.int64),
+        )
+
+
 def _parameter_l1_norm(model_params: list[nn.Parameter]) -> th.Tensor:
     return th.stack([param.abs().sum() for param in model_params]).sum()
 
@@ -67,52 +112,47 @@ class LyapunovTrainer:
         self.dyn_model = dyn_model.to(self.device)
 
         self.origin = th.zeros(1, self.config.state_dim, dtype=th.float32, device=self.device)
-        self.lbx, self.ubx = self._resolve_bounds(self.config.state_bounds, self.device)
+        self.lbx = self._to_tensor(self.config.state_bounds[0])
+        self.ubx = self._to_tensor(self.config.state_bounds[1])
 
-        self.optimizer: th.optim.Optimizer | None = None
-        self.verifier: ClosedLoopLyapunovConditionVerifier | None = None
-        self.trainable_params: list[nn.Parameter] = []
+        self.trainable_params = self._get_train_params()
+        self.optimizer = th.optim.Adam(self.trainable_params, self.config.learning_rate)
+        self.verifier = self._get_verifier()
         self.results: LyapunovTrainingResult | None = None
+        self.metrics: LyapunovTrainingMetrics | None = None
 
-    @staticmethod
-    def _resolve_bounds(state_bounds: NDArray, device: th.device) -> tuple[th.Tensor, th.Tensor]:
-        """Utility to convert state bounds from config into tensors."""
-        lbx = th.tensor(state_bounds[0], dtype=th.float32, device=device)
-        ubx = th.tensor(state_bounds[1], dtype=th.float32, device=device)
-        
-        if (lbx >= 0).any() or (ubx <= 0).any() or (lbx > ubx).any():
-            raise ValueError(
-                "State bounds do not appear to include the origin. " 
-                "Ensure that state_bounds are correctly specified for Lyapunov training."
-            )
-
-        return lbx, ubx
-
-    def _set_adam_optimizer(self) -> None:
-        """Configure the trainer to use the Adam optimizer based on the config."""
+    def _set_train_modes(self) -> None:
+        for param in self.lyap_model.parameters():
+            param.requires_grad_(True)
         self.lyap_model.train()
+
+        for param in self.dyn_model.parameters():
+            param.requires_grad_(False)
         self.dyn_model.eval()
 
         if not self.config.train_policy_model:
+            for param in self.policy_model.parameters():
+                param.requires_grad_(False)
             self.policy_model.eval()
-            policy_params = []
-            __logger__.debug("Policy model updates disabled; training only Lyapunov model parameters.")
         else:
+            for param in self.policy_model.parameters():
+                param.requires_grad_(True)
             self.policy_model.train()
-            policy_params = list(self.policy_model.parameters())
+    
+    def _get_train_params(self) -> list[nn.Parameter]:
+        """Utility to gather trainable parameters based on the config."""
+        if not self.config.train_policy_model:
+            __logger__.debug("Policy model updates disabled; training only Lyapunov model parameters.")
+            policy_params = []
+        else:
             __logger__.debug("Training both policy and Lyapunov model parameters.")
+            policy_params = list(self.policy_model.parameters())
 
-        lyap_params = list(self.lyap_model.parameters())
-        self.trainable_params = policy_params + lyap_params
+        return policy_params + list(self.lyap_model.parameters())
 
-        if not self.trainable_params:
-            raise ValueError("No trainable parameters found. Check model definitions and config.")
-
-        self.optimizer = th.optim.Adam(self.trainable_params, lr=self.config.learning_rate)
-
-    def _set_verifier(self) -> None:
+    def _get_verifier(self) -> None:
         """Utility to create and configure the Lyapunov condition verifier."""
-        self.verifier = ClosedLoopLyapunovConditionVerifier(
+        return ClosedLoopLyapunovConditionVerifier(
             policy_model=self.policy_model,
             lyap_model=self.lyap_model,
             dyn_model=self.dyn_model,
@@ -121,17 +161,17 @@ class LyapunovTrainer:
             invariance_weight=self.config.invariance_weight,
         ).to(self.device)
 
-    def _to_tensor(self, value: float) -> th.Tensor:
-        """Utility to convert scalar values to tensors on the correct device."""
-        return th.tensor([value], dtype=th.float32, device=self.device)
+    def _to_tensor(self, arr: NDArray | list[float]) -> th.Tensor:
+        """Utility to convert numpy arrays or lists to torch tensors on the correct device."""
+        return th.tensor(arr, dtype=th.float32, device=self.device)
 
     def _loss_fn(self, x_batch: th.Tensor, roa_candidates: th.Tensor, rho_estimate: float, current_kappa: float) -> th.Tensor:
         """Compute the combined loss for a training batch."""
         if self.verifier is None:
             raise ValueError("Verifier not initialized. Call _set_verifier() before computing loss.")
         
-        rho_t = self._to_tensor(rho_estimate)
-        kappa_t = self._to_tensor(current_kappa)
+        rho_t = self._to_tensor([rho_estimate])
+        kappa_t = self._to_tensor([current_kappa])
 
         # L_Vdot = ReLU(verifier(x, rho, kappa))
         loss_condition = th.relu(self.verifier(x_batch, rho_t, kappa_t)).mean()
@@ -166,8 +206,8 @@ class LyapunovTrainer:
             device=self.device,
         )
         
-        rho_t = self._to_tensor(rho_estimate)
-        kappa_t = self._to_tensor(current_kappa)
+        rho_t = self._to_tensor([rho_estimate])
+        kappa_t = self._to_tensor([current_kappa])
         
         new_kappa = current_kappa
         if new_cex.numel() > 0:
@@ -190,10 +230,8 @@ class LyapunovTrainer:
 
     def train(self) -> LyapunovTrainingResult:
         """Execute the CEGIS-style training loop."""
-        self._set_adam_optimizer()
-        self._set_verifier()
-
         roa_candidates = self._build_roa_candidates()
+        metrics = LyapunovTrainingMetrics.from_num_outer_epochs(self.config.outer_epochs)
         
         # Initial training pool sampled uniformly from the state space bounds
         initial_x = sample_uniform_box(self.config.initial_sample_size, self.lbx, self.ubx, self.device)
@@ -204,7 +242,11 @@ class LyapunovTrainer:
         current_kappa = self.config.kappa
         num_mined_counterexamples = 0
         total_steps = self.config.outer_epochs * self.config.steps_per_epoch
+
+        tb_writer = SummaryWriter(log_dir=self.config.tb_log_dir) \
+            if SummaryWriter is not None and self.config.tb_log_dir is not None else None
         
+        self._set_train_modes()
         start_time = time.time()
         with Progress(
             TextColumn("[bold]{task.description}"),
@@ -226,6 +268,7 @@ class LyapunovTrainer:
                 cex=float(num_mined_counterexamples),
             )
             for outer_iter in range(self.config.outer_epochs):
+                last_loss_value = np.nan
                 
                 # Estimate current Region of Attraction
                 rho_estimate = estimate_rho_from_boundary(
@@ -258,6 +301,26 @@ class LyapunovTrainer:
                         pool=none_to_float(len(state_buffer)),
                         cex=none_to_float(num_mined_counterexamples),
                     )
+                    last_loss_value = float(loss.item())
+
+                metrics.loss[outer_iter] = last_loss_value
+                metrics.rho_estimate[outer_iter] = float(rho_estimate)
+                metrics.kappa[outer_iter] = float(current_kappa)
+                metrics.buffer_size[outer_iter] = float(len(state_buffer))
+                metrics.num_mined_counterexamples[outer_iter] = float(num_mined_counterexamples)
+                metrics.outer_iterations_completed = outer_iter + 1
+                metrics.train_steps_completed = (outer_iter + 1) * int(self.config.steps_per_epoch)
+
+                if tb_writer is not None:
+                    tb_writer.add_scalar("Lyapunov/Loss", metrics.loss[outer_iter], outer_iter)
+                    tb_writer.add_scalar("Lyapunov/Rho", metrics.rho_estimate[outer_iter], outer_iter)
+                    tb_writer.add_scalar("Lyapunov/Kappa", metrics.kappa[outer_iter], outer_iter)
+                    tb_writer.add_scalar("Lyapunov/BufferSize", metrics.buffer_size[outer_iter], outer_iter)
+                    tb_writer.add_scalar(
+                        "Lyapunov/NumMinedCounterexamples",
+                        metrics.num_mined_counterexamples[outer_iter],
+                        outer_iter,
+                    )
 
         train_time = time.time() - start_time
         __logger__.debug("Lyapunov training finished in %.2fs", train_time)
@@ -267,6 +330,11 @@ class LyapunovTrainer:
             num_mined_counterexamples=num_mined_counterexamples,
             train_time=train_time,
         )
+        self.metrics = metrics
+
+        if tb_writer is not None:
+            tb_writer.flush()
+            tb_writer.close()
 
         return self.results
 
@@ -284,11 +352,21 @@ class LyapunovTrainer:
         save_folder = Path(save_folder)
         save_folder.mkdir(parents=True, exist_ok=True)
 
+        # Config saving
+        config_path = save_folder / "training_config.json"
+        self.config.save(config_path)
+
+        # Models saving 
         lyap_model_path = save_folder / f"lyapunov_model.pt"
         policy_model_path = save_folder / f"policy_model.pt"
 
         save_model_checkpoint(self.lyap_model, lyap_model_path)
         save_model_checkpoint(self.policy_model, policy_model_path)
+
+        # Metric saving
+        if self.metrics is not None:
+            metrics_path = save_folder / "training_metrics.npz"
+            self.metrics.save(metrics_path)
 
         # Optional: Update the results object with the paths if it exists
         if self.results is not None:

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 from dataclasses import dataclass
 from numpy.typing import NDArray
 
@@ -28,6 +29,8 @@ class LyapunovTrainingConfig(JsonConfigMixin):
     train_policy_model : bool
         Whether to jointly optimize policy parameters with Lyapunov parameters.
         If False, only the Lyapunov model is updated.
+    tb_log_dir : str | os.PathLike[str] | None
+        TensorBoard logging directory. If ``None``, TensorBoard logging is disabled.
     seed : int | None
         Random seed for reproducibility.
     kappa : float
@@ -80,6 +83,7 @@ class LyapunovTrainingConfig(JsonConfigMixin):
     steps_per_epoch: int = 500
     learning_rate: float = 1e-2
     train_policy_model: bool = True
+    tb_log_dir: str | os.PathLike[str] | None = None
     seed: int | None = None
     kappa: float = 0.05
     invariance_weight: float = 1.0
@@ -122,4 +126,12 @@ class LyapunovTrainingConfig(JsonConfigMixin):
             raise ValueError(
                 "state_bounds must match state_dim. "
                 f"Expected {self.state_dim}, got {self.state_bounds.shape[1]} (maybe transposed, bound shape: {self.state_bounds.shape})."
+            )
+                
+        lbx = self.state_bounds[0]
+        ubx = self.state_bounds[1]
+        if (lbx >= 0).any() or (ubx <= 0).any() or (lbx > ubx).any():
+            raise ValueError(
+                "State bounds do not appear to include the origin. " 
+                "Ensure that state_bounds are correctly specified for Lyapunov training."
             )

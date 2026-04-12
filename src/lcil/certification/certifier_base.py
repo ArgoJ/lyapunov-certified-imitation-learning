@@ -34,16 +34,47 @@ __logger__ = logging.getLogger(__name__)
 class RegionCertificationResult:
     """Result container for a full-region certification pass."""
     success: bool
+    rho: float
     counter_examples: NDArray
     failed_regions: NDArray
     certified_regions: NDArray
 
-    def save(self) -> None:
-        pass
+    def save(self, path: str | Path) -> None:
+        """Persist certification details to a NumPy ``.npz`` archive."""
+        target_path = Path(path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            target_path,
+            success=np.asarray(self.success, dtype=np.bool_),
+            rho=np.asarray(self.rho, dtype=np.float64),
+            counter_examples=self.counter_examples,
+            failed_regions=self.failed_regions,
+            certified_regions=self.certified_regions,
+        )
 
     @classmethod
     def load(cls, path: str | Path) -> RegionCertificationResult:
-        pass
+        """Load certification details from a NumPy ``.npz`` archive."""
+        data = np.load(Path(path), allow_pickle=False)
+        required_keys = {
+            "success",
+            "rho",
+            "counter_examples",
+            "failed_regions",
+            "certified_regions",
+        }
+        missing_keys = required_keys.difference(data.files)
+        if missing_keys:
+            missing = ", ".join(sorted(missing_keys))
+            raise ValueError(f"Missing keys in certification result file: {missing}")
+
+        return cls(
+            success=bool(np.asarray(data["success"]).item()),
+            rho=float(np.asarray(data["rho"]).item()),
+            counter_examples=np.asarray(data["counter_examples"]),
+            failed_regions=np.asarray(data["failed_regions"]),
+            certified_regions=np.asarray(data["certified_regions"]),
+        )
 
 
 @dataclass(frozen=True)
@@ -142,6 +173,7 @@ class BaseCertifier(ABC):
         ) if config.use_ibp_filter else None
         self.regions = None
         self.verifier = None
+        self.details = None
 
     # ==========================================
     # ABSTRACT METHODS
@@ -611,6 +643,7 @@ class BaseCertifier(ABC):
 
         return RegionCertificationResult(
             success=failed_regions_np.shape[0] == 0,
+            rho=rho,
             counter_examples=counter_examples_np,
             failed_regions=failed_regions_np,
             certified_regions=certified_regions_np,
@@ -745,7 +778,7 @@ class BaseCertifier(ABC):
         result = self._certify_regions(rho=rho, collect_details=False) 
         return result.success
 
-    def find_max_rho(self, rho_estimate: float) -> tuple[float, RegionCertificationResult]:
+    def find_max_rho(self, rho_estimate: float) -> float:
         """Search for the largest certifiable rho and return details.
 
         Parameters
@@ -755,8 +788,8 @@ class BaseCertifier(ABC):
 
         Returns
         -------
-        tuple[float, RegionCertificationResult]
-            Best certified ``rho`` and detailed region-level certification result.
+        float
+            Best certified ``rho``
 
         Raises
         ------
@@ -819,6 +852,53 @@ class BaseCertifier(ABC):
                 initial_values=(rho_lo, rho_up),
                 step_fn=self._bisect_rho
             )
+        return rho_lo
+    
+    def certify(self, rho_estimate: float) -> RegionCertificationResult:
+        """Convenience method to run the full certification and return details.
 
-        details = self._certify_regions(rho=rho_lo, collect_details=True)
-        return rho_lo, details
+        Parameters
+        ----------
+        rho_estimate : float
+            Positive initial guess for rho search.
+
+        Returns
+        -------
+        RegionCertificationResult
+            Detailed region-level certification result at the best certified rho.
+        """
+        best_rho = self.find_max_rho(rho_estimate)
+        __logger__.info(f"Found best certified rho: {best_rho:.6f}")
+        self.details = self._certify_regions(rho=best_rho, collect_details=True)
+        return self.details
+
+    def save(
+        self,
+        save_folder: str | os.PathLike[str],
+    ) -> Path:
+        """Save certification details and config to disk.
+
+        Parameters
+        ----------
+        save_folder : str | os.PathLike[str]
+            Target folder for certification artifacts.
+
+        Returns
+        -------
+        Path
+            Path to the saved certification details archive.
+        """
+        save_path = Path(save_folder)
+        save_path.mkdir(parents=True, exist_ok=True)
+
+        # Details saving
+        if self.details is not None:
+            details_path = save_path / "certification_details.npz"
+            self.details.save(details_path)
+
+        # Config saving
+        config_path = save_path / "certification_config.json"
+        self.config.save(config_path)
+
+        __logger__.info("Saved certification details to %s", save_path)
+        return details_path

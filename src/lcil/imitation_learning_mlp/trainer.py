@@ -268,7 +268,6 @@ class PolicyTrainer:
         
         self.loss_fn.to(self.device)
         self.model.to(self.device)
-        self._configure_scheduler(num_epochs=epochs)
 
         tb_writer = SummaryWriter(log_dir=self.training_config.tb_log_dir) \
             if SummaryWriter is not None else None
@@ -371,6 +370,10 @@ class PolicyTrainer:
         """
         if save_folder is not None:
             save_folder = Path(save_folder)
+
+            # Config saving
+            config_path = save_folder / "training_config.json"
+            self.training_config.save(config_path)
 
             # Dataset saving
             train_dataset_path = save_folder / "train_dataset.pt"

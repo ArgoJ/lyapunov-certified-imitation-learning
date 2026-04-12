@@ -150,18 +150,19 @@ def main() -> None:
             rho_growth_gamma=rho_gamma,
             roa_weight=roa_w,
             l1_weight=l1_w,
+            tb_log_dir=base_path / "tb",
         )
 
         certification_config = LyapunovCertificationConfig.from_training_config(
             training_config,
             bins_per_dim=args.cert_bins_per_dim,
-            cert_origin_exclusion=None,
-            cert_rho_scaling=args.cert_rho_scaling,
-            cert_bisection_tol=args.cert_bisection_tol,
-            cert_max_scale_steps=args.cert_max_scale_steps,
-            cert_max_bisection_steps=args.cert_max_bisection_steps,
+            origin_exclusion=None,
+            rho_scaling=args.cert_rho_scaling,
+            bisection_tol=args.cert_bisection_tol,
+            max_scale_steps=args.cert_max_scale_steps,
+            max_bisection_steps=args.cert_max_bisection_steps,
             cert_method=args.cert_method,
-            state_bounds=training_config.state_bounds * 0.8,
+            cert_bounds=training_config.state_bounds * 0.8,
         )
 
         # ---------------------------------------------------------------------
@@ -187,7 +188,8 @@ def main() -> None:
             certification_config,
             device,
         )
-        _, cert_results = certifier.find_max_rho(max(train_results.rho_estimate, 1e-3))
+        cert_results = certifier.certify(max(train_results.rho_estimate, 1e-3))
+        certifier.save(base_path)
 
         # ---------------------------------------------------------------------
         # 5. Plot & Save

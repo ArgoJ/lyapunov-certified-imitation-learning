@@ -155,6 +155,7 @@ def main() -> None:
             rho_growth_gamma=rho_gamma,
             roa_weight=roa_w,
             l1_weight=l1_w,
+            tb_log_dir=base_path / "tb",
         )
 
         certification_config = LyapunovCertificationConfig.from_training_config(
@@ -192,7 +193,8 @@ def main() -> None:
             certification_config,
             device,
         )
-        _, cert_results = certifier.find_max_rho(max(train_results.rho_estimate, 1e-3))
+        cert_results = certifier.certify(max(train_results.rho_estimate, 1e-3))
+        certifier.save(base_path)
 
         # ---------------------------------------------------------------------
         # 5. Plot & Save
