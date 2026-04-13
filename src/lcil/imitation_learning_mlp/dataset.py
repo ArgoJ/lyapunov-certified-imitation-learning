@@ -45,7 +45,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         raise ValueError(f"Invalid dtype in dataset file: {dtype_value}")
 
     @staticmethod
-    def _resolve_mpc_dataset(mpc_dataset: MPCDataset | os.PathLike[str]) -> MPCDataset:
+    def _resolve_mpc_dataset(mpc_dataset: MPCDataset | os.PathLike) -> MPCDataset:
         """Resolve `MPCDataset` input from object or filesystem path."""
         if isinstance(mpc_dataset, MPCDataset):
             return mpc_dataset
@@ -141,7 +141,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
             return self._states[idx], self._actions[idx], self._refs[idx]
         return self._states[idx], self._actions[idx]
 
-    def save(self, path: str | os.PathLike[str]) -> None:
+    def save(self, path: os.PathLike) -> None:
         """Save the preprocessed (optionally filtered) state-action pairs to a ``.pt`` file.
 
         Parameters
@@ -149,7 +149,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         path : str or os.PathLike
             Output path for ``torch.save``.
         """
-        target_path = Path(path)
+        target_path = Path(path).resolve()
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
         payload = {
@@ -163,7 +163,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         th.save(payload, target_path)
 
     @classmethod
-    def load(cls, path: str | os.PathLike) -> StateActionDataset:
+    def load(cls, path: os.PathLike) -> StateActionDataset:
         """Load a preprocessed state-action dataset from a ``.pt`` file.
 
         Parameters
@@ -207,7 +207,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
     @classmethod
     def from_mpc_dataset(
         cls,
-        mpc_dataset: MPCDataset | os.PathLike[str],
+        mpc_dataset: MPCDataset | os.PathLike,
         dtype: th.dtype = th.float32,
         use_references: bool = False,
         near_duplicate_radius: float | None = None,
@@ -392,7 +392,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
 
 def save_state_action_dataset_subset(
     dataset: Dataset[tuple[th.Tensor, th.Tensor]],
-    path: str | os.PathLike[str],
+    path: os.PathLike,
 ) -> bool:
     """Save a state-action dataset or subset split to ``.pt`` format.
 
@@ -425,7 +425,7 @@ def save_state_action_dataset_subset(
 
 
 def create_state_action_dataloader(
-    mpc_dataset: MPCDataset | str | os.PathLike[str],
+    mpc_dataset: MPCDataset | os.PathLike,
     batch_size: int = 256,
     shuffle: bool = True,
     drop_last: bool = False,
@@ -480,7 +480,7 @@ def create_state_action_dataloader(
     
 
 def create_train_and_val_dataloader(
-    mpc_dataset: MPCDataset | str | os.PathLike[str],
+    mpc_dataset: MPCDataset | os.PathLike,
     batch_size: int = 256,
     shuffle: bool = True,
     drop_last: bool = False,

@@ -39,8 +39,8 @@ class LyapunovTrainingResult:
     rho_estimate: float
     num_mined_counterexamples: int
     train_time: float
-    lyap_model_path: os.PathLike[str] | None = None
-    policy_model_path: os.PathLike[str] | None = None
+    lyap_model_path: os.PathLike | None = None
+    policy_model_path: os.PathLike | None = None
 
 
 @dataclass
@@ -72,7 +72,7 @@ class LyapunovTrainingMetrics:
             train_steps_completed=0,
         )
 
-    def save(self, path: os.PathLike[str]) -> None:
+    def save(self, path: os.PathLike) -> None:
         metrics_path = Path(path)
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(
@@ -340,7 +340,7 @@ class LyapunovTrainer:
 
     def save(
         self,
-        save_folder: os.PathLike[str],
+        save_folder: os.PathLike,
     ) -> None:
         """Utility function to save training results and model checkpoints.
 
@@ -349,7 +349,7 @@ class LyapunovTrainer:
         save_folder : PathLike[str]
             Folder where the models and config should be saved.
         """
-        save_folder = Path(save_folder)
+        save_folder = Path(save_folder).resolve()
         save_folder.mkdir(parents=True, exist_ok=True)
 
         # Config saving

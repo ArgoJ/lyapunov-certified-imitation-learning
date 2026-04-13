@@ -54,22 +54,15 @@ class TestMLPPolicyConfigSerialization(unittest.TestCase):
 		with tempfile.TemporaryDirectory() as tmp_dir:
 			tmp_path = Path(tmp_dir)
 			checkpoint_path = tmp_path / "model.pt"
-			train_path = tmp_path / "train_dataset.pt"
-			val_path = tmp_path / "val_dataset.pt"
 
 			model.save(
 				checkpoint_path,
-				train_dataset_path=train_path,
-				val_dataset_path=val_path,
 				global_config=cfg,
 			)
 
 			config_path = tmp_path / "config.json"
 			with open(config_path, "r") as handle:
 				payload = json.load(handle)
-
-		self.assertEqual(payload["train_dataset_path"], str(train_path))
-		self.assertEqual(payload["val_dataset_path"], str(val_path))
 		self.assertEqual(payload["global_config"], cfg.to_dict())
 
 	def test_load_reconstructs_mpc_config_from_dict(self) -> None:

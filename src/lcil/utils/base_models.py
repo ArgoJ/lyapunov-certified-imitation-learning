@@ -39,7 +39,7 @@ def _check_activations(activations: list[str], layer_dims: list[int]) -> None:
             "activations must have the same length as layer_dims minus one."
         )
 
-def save_model_checkpoint(model: nn.Module, save_path: str | os.PathLike[str]) -> None:
+def save_model_checkpoint(model: nn.Module, save_path: str | os.PathLike) -> None:
     """Save model checkpoint using custom ``save`` when available, else save state dict."""
     save_path = Path(save_path)
     if hasattr(model, "save") and callable(model.save):

@@ -67,7 +67,7 @@ class PolicyTrainingMetrics:
             epochs_completed=0,
         )
 
-    def save(self, path: os.PathLike[str]) -> None:
+    def save(self, path: os.PathLike) -> None:
         metrics_path = Path(path)
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(
@@ -354,7 +354,7 @@ class PolicyTrainer:
 
     def save(
         self,
-        save_folder: os.PathLike[str],
+        save_folder: os.PathLike,
         global_config: Any = None,
     ) -> None:
         """Utility function to save training results after training completes.
@@ -368,38 +368,38 @@ class PolicyTrainer:
             Optional metadata stored in the model checkpoint config file.
             ``MPCConfig`` objects are serialized via ``to_dict()``.
         """
-        if save_folder is not None:
-            save_folder = Path(save_folder)
+        save_folder = Path(save_folder).resolve()
+        save_folder.mkdir(parents=True, exist_ok=True)
 
-            # Config saving
-            config_path = save_folder / "training_config.json"
-            self.training_config.save(config_path)
 
-            # Dataset saving
-            train_dataset_path = save_folder / "train_dataset.pt"
-            train_saved = save_state_action_dataset_subset(self.dataloader.dataset, train_dataset_path)
+        # Dataset saving
+        train_dataset_path = save_folder / "train_dataset.pt"
+        train_saved = save_state_action_dataset_subset(self.dataloader.dataset, train_dataset_path)
 
-            val_saved = False
-            if self.val_dataloader is not None:
-                val_dataset_path = save_folder / "val_dataset.pt"
-                val_saved = save_state_action_dataset_subset(self.val_dataloader.dataset, val_dataset_path)
-            else:
-                val_dataset_path = None
+        val_saved = False
+        if self.val_dataloader is not None:
+            val_dataset_path = save_folder / "val_dataset.pt"
+            val_saved = save_state_action_dataset_subset(self.val_dataloader.dataset, val_dataset_path)
+        else:
+            val_dataset_path = None
+        
+        # Config saving
+        config_path = save_folder / "training_config.json"
+        self.training_config.register_datasets(
+            train_dataset_path=train_dataset_path if train_saved else None,
+            val_dataset_path=val_dataset_path if val_saved else None,
+        )
+        self.training_config.save(config_path)
 
-            resolved_train_dataset_path = str(train_dataset_path) if train_saved else None
-            resolved_val_dataset_path = str(val_dataset_path) if val_saved and val_dataset_path is not None else None
+        # Policy model saving
+        model_path = save_folder / "model.pt"
+        self.model.save(
+            model_path,
+            global_config=global_config,
+        )
 
-            # Policy model saving
-            model_path = save_folder / "model.pt"
-            self.model.save(
-                model_path,
-                train_dataset_path=resolved_train_dataset_path,
-                val_dataset_path=resolved_val_dataset_path,
-                global_config=global_config,
-            )
-
-            # Metrics
-            metrics_path = save_folder / "training_metrics.npz"
-            self.metrics.save(metrics_path)
-            
-            __logger__.info(f"Saved training results to {metrics_path.parent}")
+        # Metrics
+        metrics_path = save_folder / "training_metrics.npz"
+        self.metrics.save(metrics_path)
+        
+        __logger__.info(f"Saved training results to {metrics_path.parent}")

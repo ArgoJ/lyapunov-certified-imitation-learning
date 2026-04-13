@@ -874,13 +874,13 @@ class BaseCertifier(ABC):
 
     def save(
         self,
-        save_folder: str | os.PathLike[str],
+        save_folder: str | os.PathLike,
     ) -> Path:
         """Save certification details and config to disk.
 
         Parameters
         ----------
-        save_folder : str | os.PathLike[str]
+        save_folder : str | os.PathLike
             Target folder for certification artifacts.
 
         Returns
@@ -888,7 +888,7 @@ class BaseCertifier(ABC):
         Path
             Path to the saved certification details archive.
         """
-        save_path = Path(save_folder)
+        save_path = Path(save_folder).resolve()
         save_path.mkdir(parents=True, exist_ok=True)
 
         # Details saving

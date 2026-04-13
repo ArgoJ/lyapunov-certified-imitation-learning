@@ -1,6 +1,8 @@
 from __future__ import annotations
 import os
+
 from dataclasses import dataclass
+from pathlib import Path
 from numpy.typing import NDArray
 
 from ..utils.config_io import JsonConfigMixin
@@ -29,7 +31,7 @@ class LyapunovTrainingConfig(JsonConfigMixin):
     train_policy_model : bool
         Whether to jointly optimize policy parameters with Lyapunov parameters.
         If False, only the Lyapunov model is updated.
-    tb_log_dir : str | os.PathLike[str] | None
+    tb_log_dir : str | os.PathLike | None
         TensorBoard logging directory. If ``None``, TensorBoard logging is disabled.
     seed : int | None
         Random seed for reproducibility.
@@ -83,7 +85,7 @@ class LyapunovTrainingConfig(JsonConfigMixin):
     steps_per_epoch: int = 500
     learning_rate: float = 1e-2
     train_policy_model: bool = True
-    tb_log_dir: str | os.PathLike[str] | None = None
+    tb_log_dir: str | os.PathLike | None = None
     seed: int | None = None
     kappa: float = 0.05
     invariance_weight: float = 1.0
@@ -108,6 +110,10 @@ class LyapunovTrainingConfig(JsonConfigMixin):
     NP_ARRAY_FIELDS = ("state_bounds",)
 
     def __post_init__(self):
+        if not isinstance(self.tb_log_dir, (str, os.PathLike, None)):
+            raise ValueError("tb_log_dir must be a string, os.PathLike, or None.")
+        if self.tb_log_dir is not None:
+            object.__setattr__(self, "tb_log_dir", Path(self.tb_log_dir).resolve())
         if self.learning_rate <= 0:
             raise ValueError("Learning rate must be positive.")
         if self.batch_size <= 0:

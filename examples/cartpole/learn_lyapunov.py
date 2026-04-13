@@ -147,8 +147,7 @@ def main() -> None:
             steps_per_epoch=args.steps_per_epoch,
             counterexample_every=args.counterexample_every,
             train_policy_model=False,
-            seed=args.seed + run_idx, # Optional: vary seed slightly to avoid perfectly identical samples
-            # Variables from grid
+            seed=args.seed + run_idx,
             learning_rate=lr,
             kappa=kappa,
             invariance_weight=inv_w,

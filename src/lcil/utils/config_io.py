@@ -18,7 +18,12 @@ def _to_json_compatible(value: Any) -> Any:
         return value.tolist()
     if isinstance(value, np.generic):
         return value.item()
+    if isinstance(value, (PathLike, Path)):
+        return str(value)
     return value
+
+def resolve_path(p: str | Path | None) -> str | None:
+    return str(Path(p).resolve()) if p is not None else None
 
 
 class JsonConfigMixin:

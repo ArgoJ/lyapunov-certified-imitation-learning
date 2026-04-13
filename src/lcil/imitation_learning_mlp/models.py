@@ -129,42 +129,23 @@ class MLPPolicy(nn.Module):
     def save(
         self,
         path: str | Path,
-        train_dataset_path: str | Path | None = None,
-        val_dataset_path: str | Path | None = None,
         global_config: Any = None,
     ) -> None:
         checkpoint_path = Path(path)
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-
-        resolved_train = str(Path(train_dataset_path)) if train_dataset_path is not None else getattr(self, "train_dataset_path", None)
-        resolved_val = str(Path(val_dataset_path)) if val_dataset_path is not None else getattr(self, "val_dataset_path", None)
         
         resolved_cfg_source = global_config if global_config is not None else getattr(self, "global_config", None)
         resolved_cfg = self._serialize_global_config(resolved_cfg_source)
-        
-        self.train_dataset_path = resolved_train
-        self.val_dataset_path = resolved_val
         self.global_config = self._deserialize_global_config(resolved_cfg)
 
-        # Safetensors
+        # Pytorch checkpoint with model state and architecture metadata
         model_payload = {
             "state_dict": self.state_dict(),
             "layer_sizes": list(self.layer_sizes),
             "activations": list(self.activations),
+            "train_data_config": resolved_cfg
         }
         th.save(model_payload, checkpoint_path)
-
-        # JSON
-        config_payload = {
-            "train_dataset_path": resolved_train,
-            "val_dataset_path": resolved_val,
-            "global_config": resolved_cfg,
-        }
-        config_path = checkpoint_path.parent / "config.json"
-        
-        with open(config_path, "w") as f:
-            json.dump(config_payload, f, indent=4, cls=ConfigEncoder)
-            
         __logger__.info(f"Saved policy weights and config to {checkpoint_path.parent}")
 
 
@@ -187,31 +168,19 @@ class MLPPolicy(nn.Module):
         state_dict = checkpoint["state_dict"]
         layer_sizes = checkpoint.get("layer_sizes", None)
         activations = checkpoint.get("activations", None)
+        raw_global_cfg = checkpoint.get("train_data_config", None)
 
         if layer_sizes is None or activations is None:
             raise ValueError("Missing architecture metadata in model.pt.")
-
-        # load json
-        config_path = checkpoint_path.parent / "config.json"
-        train_path, val_path, global_cfg = None, None, None
         
-        if config_path.exists():
-            with open(config_path, "r") as f:
-                config_data = json.load(f)
-            train_path = config_data.get("train_dataset_path")
-            val_path = config_data.get("val_dataset_path")
-            raw_global_cfg = config_data.get("global_config")
-            global_cfg = cls._deserialize_global_config(raw_global_cfg)
+        global_cfg = cls._deserialize_global_config(raw_global_cfg)
 
-        # Modell instanziieren
+        # Model instantiation
         u_min = state_dict.get("_u_min", None)
         u_max = state_dict.get("_u_max", None)
         
         model = cls(layer_sizes=layer_sizes, activations=activations, u_min=u_min, u_max=u_max)
         model.load_state_dict(state_dict, strict=strict)
-        
-        model.train_dataset_path = train_path
-        model.val_dataset_path = val_path
         model.global_config = global_cfg
         
         __logger__.info(f"Loaded MLPPolicy from {checkpoint_path}")
