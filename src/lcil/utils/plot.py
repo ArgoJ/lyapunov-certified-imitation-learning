@@ -382,7 +382,7 @@ def _add_regions(
         )
     else:
         fig.add_trace(
-            go.Scatter(
+            go.Scattergl(
                 x=x_coords,
                 y=y_coords,
                 mode="lines",

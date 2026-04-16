@@ -5,6 +5,7 @@ import numpy as np
 
 from datetime import datetime
 from pathlib import Path
+from numpy.typing import NDArray
 
 from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer
 from lcil.certification import LyapunovCertificationConfig, ABCrownCertifier
@@ -25,7 +26,8 @@ def parse_cli_args() -> argparse.Namespace:
         "--policy-path", type=str, default="results/inverted_pendulum_on_cart/20260318_114317/model.pt",
         help="Path to the trained fixed policy model checkpoint.")
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string.")
-    parser.add_argument("--initial-sample-size", type=int, default=5000, help="Training sample size.")
+    parser.add_argument("num_neurons", type=int, default=32, help="Number of neurons per hidden layer.")
+    parser.add_argument("--initial-sample-size", type=int, default=500, help="Training sample size.")
     parser.add_argument("--batch-size", type=int, default=2048, help="Training batch size.")
     parser.add_argument("--outer-epochs", type=int, default=500, help="Number of outer epochs.")
     parser.add_argument("--steps-per-epoch", type=int, default=10, help="Gradient steps per epoch.")
@@ -35,7 +37,7 @@ def parse_cli_args() -> argparse.Namespace:
     
     # Grid Search Parameters (accept multiple values)
     parser.add_argument("--learning-rate", nargs='+', type=float, default=[5e-3], help="Optimizer learning rate(s).")
-    parser.add_argument("--kappa", nargs='+', type=float, default=[0.005, 0.015], help="Lyapunov decrease margin kappa(s).")
+    parser.add_argument("--kappa", nargs='+', type=float, default=[0.012], help="Lyapunov decrease margin kappa(s).")
     parser.add_argument("--invariance-weight", nargs='+', type=float, default=[1.0], help="Invariance loss weight(s).")
     parser.add_argument("--rho-growth-gamma", nargs='+', type=float, default=[1.5], help="ROA rho growth factor(s).")
     parser.add_argument("--roa-weight", nargs='+', type=float, default=[2.0], help="ROA objective weight(s).")
@@ -128,7 +130,7 @@ def main() -> None:
         # ---------------------------------------------------------------------
         # 1. Initialize fresh Lyapunov Model (so it trains from scratch)
         # ---------------------------------------------------------------------
-        lyap_feature = MLP([5, 128, 128, 128, 1], ["tanh", "tanh", "tanh", "identity"]).to(device)
+        lyap_feature = MLP([5, 32, 32, 32, 1], ["tanh", "tanh", "tanh", "identity"]).to(device)
         lyap_wrapper = CartpoleAngleWrapper(feature_net=lyap_feature)
         lyap_model = NeuralLyapunovCandidate(
             feature_net=lyap_wrapper,
@@ -201,7 +203,7 @@ def main() -> None:
         # ---------------------------------------------------------------------
         state_labels = [r"$x$", r"$v$", r"$\theta$", r"$\dot{\theta}$"]
         if rollout_dataset is not None:
-            def lyapunov_func(states: np.ndarray) -> np.ndarray:
+            def lyapunov_func(states: NDArray) -> NDArray:
                 x = th.as_tensor(states, dtype=th.float32, device=device)
                 with th.no_grad():
                     v = lyap_model(x)
