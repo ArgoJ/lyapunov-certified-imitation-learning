@@ -8,9 +8,9 @@ from mpc_datagen import MPCDataset
 from lcil.utils import EarlyStopping
 from lcil.imitation_learning_mlp import *
 
-from cartpole_dyn import InvertedPendulumOnCartDynamics
+from cartpole_dyn import CartpoleDynamics
 from sys_cfg import PendulumOnCartConfig
-from model import InvertedPendulumOnCartPolicy
+from model import CartpoleAngleWrapper
 
 
 def parse_cli_args() -> argparse.Namespace:
@@ -53,7 +53,7 @@ def main() -> None:
         u_min=dataset_cfg.constraints.lbu,
         u_max=dataset_cfg.constraints.ubu,
     )
-    net = InvertedPendulumOnCartPolicy(feature_net=feature_net).to(device)
+    net = CartpoleAngleWrapper(feature_net=feature_net).to(device)
     
     sys_cfg = PendulumOnCartConfig()
 
@@ -76,7 +76,7 @@ def main() -> None:
             max_weight=1.0,
             min_weight=0.7),
         dynamics_loss=DynamicsAwareLoss(
-            dynamics=InvertedPendulumOnCartDynamics(dt=dataset_cfg.dt, sys_cfg=sys_cfg),
+            dynamics=CartpoleDynamics(dt=dataset_cfg.dt, sys_cfg=sys_cfg),
             x_min=th.tensor(dataset_cfg.constraints.lbx),
             x_max=th.tensor(dataset_cfg.constraints.ubx)),
         lambda_dyn=2.0,

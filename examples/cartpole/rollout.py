@@ -12,8 +12,8 @@ from lcil.imitation_learning_mlp.policy_rollout import (
     PolicyRolloutConfig,
     FeasibleSetSampler,
 )
-from cartpole_dyn import InvertedPendulumOnCartDynamics
-from model import InvertedPendulumOnCartPolicy
+from cartpole_dyn import CartpoleDynamics
+from model import CartpoleAngleWrapper
 from sys_cfg import PendulumOnCartConfig
 from acados_ocp import _linearized_inverted_pendulum_on_cart_matrices
 
@@ -60,7 +60,7 @@ def main() -> None:
 
     feature_net_path = model_path
     feature_net = MLPPolicy.load(feature_net_path, map_location=device)
-    net = InvertedPendulumOnCartPolicy(feature_net=feature_net).to(device)
+    net = CartpoleAngleWrapper(feature_net=feature_net).to(device)
     net.eval()
     
     # Override dataset path using the absolute or relative location of the model path
@@ -71,7 +71,7 @@ def main() -> None:
     val_dataset = StateActionDataset.load(val_dataset_path)
     sampler = FeasibleSetSampler(dataset=val_dataset)
 
-    simulator = InvertedPendulumOnCartDynamics(dt=cfg.dt)
+    simulator = CartpoleDynamics(dt=cfg.dt)
     policy_rollout_generator = PolicyRolloutGenerator(
         policy=net,
         simulator=simulator,

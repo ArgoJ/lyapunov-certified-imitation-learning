@@ -91,59 +91,24 @@ class MLPPolicy(nn.Module):
         u = self.mlp(x)
         return th.clamp(u, min=self._u_min, max=self._u_max)
 
-    @staticmethod
-    def _serialize_global_config(global_config: Any) -> dict[str, Any] | None:
-        """Convert supported global config payloads to a JSON-serializable dict."""
-        if global_config is None:
-            return None
-
-        to_dict = getattr(global_config, "to_dict", None)
-        if callable(to_dict):
-            serialized = to_dict()
-            if not isinstance(serialized, dict):
-                raise TypeError("global_config.to_dict() must return a dict.")
-            return serialized
-
-        if is_dataclass(global_config):
-            return asdict(global_config)
-        if isinstance(global_config, dict):
-            return dict(global_config)
-        raise TypeError("global_config must provide to_dict(), be a dataclass, or be a dict.")
-
-    @staticmethod
-    def _deserialize_global_config(
-        global_config_data: dict[str, Any] | None,
-    ) -> MPCConfig | dict[str, Any] | None:
-        """Reconstruct ``MPCConfig`` from dict payloads when possible."""
-        if global_config_data is None:
-            return None
-
-        try:
-            return MPCConfig.from_dict(global_config_data)
-        except (KeyError, TypeError, ValueError):
-            __logger__.warning(
-                "Failed to parse global_config with MPCConfig.from_dict; keeping raw dict."
-            )
-            return global_config_data
-
     def save(
         self,
         path: str | Path,
-        global_config: Any = None,
+        global_config: MPCConfig = None,
     ) -> None:
         checkpoint_path = Path(path)
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         
-        resolved_cfg_source = global_config if global_config is not None else getattr(self, "global_config", None)
-        resolved_cfg = self._serialize_global_config(resolved_cfg_source)
-        self.global_config = self._deserialize_global_config(resolved_cfg)
+        if global_config is not None:
+            self.global_config = global_config
+        resolved_global_cfg = self.global_config.to_dict() 
 
         # Pytorch checkpoint with model state and architecture metadata
         model_payload = {
             "state_dict": self.state_dict(),
             "layer_sizes": list(self.layer_sizes),
             "activations": list(self.activations),
-            "train_data_config": resolved_cfg
+            "train_data_config": resolved_global_cfg
         }
         th.save(model_payload, checkpoint_path)
         __logger__.info(f"Saved policy weights and config to {checkpoint_path.parent}")
@@ -172,16 +137,16 @@ class MLPPolicy(nn.Module):
 
         if layer_sizes is None or activations is None:
             raise ValueError("Missing architecture metadata in model.pt.")
-        
-        global_cfg = cls._deserialize_global_config(raw_global_cfg)
+
+        global_cfg = MPCConfig.from_dict(raw_global_cfg)
 
         # Model instantiation
         u_min = state_dict.get("_u_min", None)
         u_max = state_dict.get("_u_max", None)
-        
+
         model = cls(layer_sizes=layer_sizes, activations=activations, u_min=u_min, u_max=u_max)
         model.load_state_dict(state_dict, strict=strict)
         model.global_config = global_cfg
-        
+
         __logger__.info(f"Loaded MLPPolicy from {checkpoint_path}")
         return model

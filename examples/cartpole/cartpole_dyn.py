@@ -6,8 +6,8 @@ from lcil.utils import RK4Integrator
 from sys_cfg import PendulumOnCartConfig
 
 
-class InvertedPendulumOnCartContinuousDynamics(nn.Module):
-    """Continuous-time inverted pendulum on a cart dynamics.
+class CartpoleContinuousDynamics(nn.Module):
+    """Continuous-time cartpole dynamics.
 
     State is ``[cart_pos, cart_vel, pole_angle, pole_ang_vel]`` and input is
     scalar force applied to the cart. Includes viscous damping on the cart.
@@ -51,8 +51,8 @@ class InvertedPendulumOnCartContinuousDynamics(nn.Module):
         return th.stack((cart_vel, x_ddot, theta_dot, theta_ddot), dim=1)
 
 
-class InvertedPendulumOnCartDynamics(nn.Module):
-    """Inverted pendulum on a cart dynamics with RK4-discretized continuous dynamics."""
+class CartpoleDynamics(nn.Module):
+    """Cartpole dynamics with RK4-discretized continuous dynamics."""
 
     def __init__(
         self,
@@ -61,7 +61,7 @@ class InvertedPendulumOnCartDynamics(nn.Module):
     ):
         super().__init__()
         self.dt = float(dt)
-        self.sys = InvertedPendulumOnCartContinuousDynamics(sys_cfg=sys_cfg)
+        self.sys = CartpoleContinuousDynamics(sys_cfg=sys_cfg)
         self.integrator = RK4Integrator(self.sys, dt=dt)
 
     def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:

@@ -2,13 +2,20 @@ import torch as th
 import torch.nn as nn
 
 
-class InvertedPendulumOnCartPolicy(nn.Module):
-    """MLP policy for the inverted pendulum on a cart system."""
+class CartpoleAngleWrapper(nn.Module):
+    """Feature net wrapper for the cartpole angle."""
 
     def __init__(
         self,
         feature_net: nn.Module,
     ):
+        """Wraps the third state (angle) in sin/cos before passing to the feature net.
+
+        Parameters
+        ----------
+        feature_net : nn.Module
+            The underlying feature net that takes in the transformed state.
+        """
         super().__init__()
         self.net = feature_net
     

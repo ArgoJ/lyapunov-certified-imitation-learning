@@ -12,8 +12,8 @@ from lcil.utils import lcil_plt, ICNN, MLP
 from lcil.imitation_learning_mlp import MLPPolicy
 from mpc_datagen import MPCDataset
 
-from cartpole_dyn import InvertedPendulumOnCartDynamics
-from model import InvertedPendulumOnCartPolicy
+from cartpole_dyn import CartpoleDynamics
+from model import CartpoleAngleWrapper
 
 
 def parse_cli_args() -> argparse.Namespace:
@@ -75,14 +75,14 @@ def main() -> None:
         path=policy_path,
         map_location=device,
     )
-    policy_model = InvertedPendulumOnCartPolicy(feature_net=feature_net).to(device)
+    policy_model = CartpoleAngleWrapper(feature_net=feature_net).to(device)
     policy_model.eval()
 
     # Parent directory for this entire grid search sweep
     sweep_base_path = policy_path.parent / "lyapunov" / datetime.now().strftime("%Y%m%d_%H%M%S")
     sweep_base_path.mkdir(parents=True, exist_ok=True)
     
-    dyn_model = InvertedPendulumOnCartDynamics(dt=feature_net.global_config.dt).to(device)
+    dyn_model = CartpoleDynamics(dt=feature_net.global_config.dt).to(device)
     dyn_model.eval()
     
     rollout_dataset_path = policy_path.parent / "policy_rollouts.hdf5"
@@ -128,9 +128,10 @@ def main() -> None:
         # ---------------------------------------------------------------------
         # 1. Initialize fresh Lyapunov Model (so it trains from scratch)
         # ---------------------------------------------------------------------
-        lyap_feature = MLP([4, 128, 128, 128, 1], ["tanh", "tanh", "tanh", "identity"]).to(device)
+        lyap_feature = MLP([5, 128, 128, 128, 1], ["tanh", "tanh", "tanh", "identity"]).to(device)
+        lyap_wrapper = CartpoleAngleWrapper(feature_net=lyap_feature)
         lyap_model = NeuralLyapunovCandidate(
-            feature_net=lyap_feature,
+            feature_net=lyap_wrapper,
             state_dim=4,
             eps=0.1,
         ).to(device)

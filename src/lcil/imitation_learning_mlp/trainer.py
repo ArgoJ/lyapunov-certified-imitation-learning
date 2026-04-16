@@ -386,8 +386,8 @@ class PolicyTrainer:
         # Config saving
         config_path = save_folder / "training_config.json"
         self.training_config.register_datasets(
-            train_dataset_path=train_dataset_path if train_saved else None,
-            val_dataset_path=val_dataset_path if val_saved else None,
+            train_path=train_dataset_path if train_saved else None,
+            val_path=val_dataset_path if val_saved else None,
         )
         self.training_config.save(config_path)
 
