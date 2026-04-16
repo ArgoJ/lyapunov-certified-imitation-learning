@@ -177,7 +177,7 @@ class PolicyRolloutGenerator:
         self,
         policy: nn.Module,
         simulator: nn.Module,
-        rollout_config: PolicyRolloutConfig | None = None,
+        cfg: PolicyRolloutConfig | MPCConfig,
         sampler: StateSampler | None = None,
         device: th.device | str = "cpu",
     ) -> None:
@@ -190,7 +190,7 @@ class PolicyRolloutGenerator:
             The policy to be rolled out. Should take state tensors as input and output action tensors.
         simulator : torch.nn.Module
             The simulator to be used for simulating the system dynamics. Should take (state, action) tensors as input and output next-state tensors.
-        rollout_config : PolicyRolloutConfig, optional
+        cfg : PolicyRolloutConfig or MPCConfig
             Rollout configuration independent from MPCConfig. Preferred interface.
         sampler : StateSampler, optional
             Sampler for generating initial states. If None, `RandomBoundsSampler` is used when
@@ -202,9 +202,15 @@ class PolicyRolloutGenerator:
         self.simulator = simulator
         self.device = th.device(device)
         
-        self.rollout_config = rollout_config
-        self.mpc_config = rollout_config.to_mpc_config()
-        
+        if isinstance(cfg, PolicyRolloutConfig):
+            self.rollout_config = cfg
+            self.mpc_config = cfg.to_mpc_config()
+        elif isinstance(cfg, MPCConfig):
+            self.rollout_config = PolicyRolloutConfig.from_mpc_config(cfg)
+            self.mpc_config = cfg
+        else:
+            raise ValueError("cfg must be an instance of PolicyRolloutConfig or MPCConfig.")
+
         self.t_sim = int(self.rollout_config.T_sim)
         self.dt = float(self.rollout_config.dt)
 

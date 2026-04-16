@@ -44,7 +44,7 @@ def main() -> None:
     policy_rollout_generator = PolicyRolloutGenerator(
         policy=net,
         simulator=simulator,
-        rollout_config=cfg,
+        cfg=cfg,
         sampler=sampler,
         device=device,
     )

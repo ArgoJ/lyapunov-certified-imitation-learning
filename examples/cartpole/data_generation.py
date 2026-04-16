@@ -31,13 +31,13 @@ def _setup_parser() -> argparse.ArgumentParser:
         description="Generate MPC imitation datasets for the inverted pendulum on cart."
     )
     parser.add_argument(
-        "--n-samples",
+        "--n-samples", "-n",
         type=int,
         default=2000,
         help="Number of trajectories to generate.",
     )
     parser.add_argument(
-        "--t-sim",
+        "--T-sim", "-T",
         type=int,
         default=200,
         help="Simulation horizon length (number of MPC steps).",
@@ -85,7 +85,7 @@ def main():
 
     base_path = Path(args.base_path) / datetime.now().strftime('%Y%m%d_%H%M%S')
 
-    T_sim = args.t_sim
+    T_sim = args.T_sim
     n_samples = args.n_samples
     N = 40
 

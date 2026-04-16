@@ -1,7 +1,8 @@
 import argparse
-from pathlib import Path
-
 import numpy as np
+
+from dataclasses import replace
+from pathlib import Path
 from scipy.linalg import solve_discrete_are
 
 from mpc_datagen import mdg_plt, mdg_linalg, MPCDataset
@@ -9,7 +10,6 @@ from mpc_datagen.verification import StabilityVerifier, VerificationRender
 from lcil.imitation_learning_mlp import MLPPolicy, StateActionDataset
 from lcil.imitation_learning_mlp.policy_rollout import (
     PolicyRolloutGenerator,
-    PolicyRolloutConfig,
     FeasibleSetSampler,
 )
 from cartpole_dyn import CartpoleDynamics
@@ -22,14 +22,14 @@ from acados_ocp import _linearized_inverted_pendulum_on_cart_matrices
 def parse_cli_args() -> argparse.Namespace:
     """Parse command-line arguments for policy rollout settings."""
     parser = argparse.ArgumentParser(description="Roll out a trained inverted pendulum on cart imitation policy.")
-    parser.add_argument("--n-samples", type=int, default=500, help="Number of rollout initial states.")
+    parser.add_argument("--n-samples", "-n", type=int, default=500, help="Number of rollout initial states.")
     parser.add_argument(
         "--model-path",
         type=str,
-        default="results/cartpole/20260402_203645/model.pt",
+        default="results/cartpole/20260416_154118/model.pt",
         help="Path to a trained policy checkpoint.",
     )
-    parser.add_argument("--T-sim", type=float, default=40.0, help="Rollout horizon in seconds.")
+    parser.add_argument("--T-sim", "-T", type=int, default=200, help="Rollout horizon in seconds.")
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string (e.g. cpu, cuda).")
     return parser.parse_args()
 
@@ -48,7 +48,7 @@ def _compute_mpc_quadratic_p(dt: float) -> np.ndarray:
 def _set_quadratic_vn(dataset: MPCDataset, P: np.ndarray) -> None:
     """Populate ``trajectory.V_N`` with the quadratic surrogate ``x.T @ P @ x``."""
     for entry in dataset:
-        x = np.asarray(entry.trajectory.states[:-1], dtype=np.float64).copy()
+        x = np.asarray(entry.trajectory.states, dtype=np.float64)
         entry.trajectory.V_N = np.einsum("bi,ij,bj->b", x, P, x)
 
 
@@ -62,12 +62,11 @@ def main() -> None:
     feature_net = MLPPolicy.load(feature_net_path, map_location=device)
     net = CartpoleAngleWrapper(feature_net=feature_net).to(device)
     net.eval()
-    
+
     # Override dataset path using the absolute or relative location of the model path
     val_dataset_path = model_path.parent / "val_dataset.pt"
 
-    print(f"dataset path: {val_dataset_path}")
-    cfg = PolicyRolloutConfig.from_mpc_config(net.net.global_config, t_sim=args.T_sim)
+    cfg = replace(net.net.global_config, T_sim=int(args.T_sim))
     val_dataset = StateActionDataset.load(val_dataset_path)
     sampler = FeasibleSetSampler(dataset=val_dataset)
 
@@ -75,7 +74,7 @@ def main() -> None:
     policy_rollout_generator = PolicyRolloutGenerator(
         policy=net,
         simulator=simulator,
-        rollout_config=cfg,
+        cfg=cfg,
         sampler=sampler,
         device=device,
     )
@@ -92,7 +91,7 @@ def main() -> None:
 
     veri_stats = StabilityVerifier.verify(solved_dataset)
     VerificationRender(veri_stats).render()
-    
+
     mdg_plt.mpc_trajectories(
         dataset=solved_dataset,
         state_labels=[r"$x$", r"$v$", r"$\theta$", r"$\dot{\theta}$"],

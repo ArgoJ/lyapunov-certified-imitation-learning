@@ -22,7 +22,7 @@ def parse_cli_args() -> argparse.Namespace:
         default=Path.cwd() / "results" / "cartpole" / "data" / "cartpole_N40_data.hdf5",
         help="Path to the source MPC dataset (HDF5).",
     )
-    parser.add_argument("--epochs", type=int, default=100, help="Number of policy training epochs.")
+    parser.add_argument("--epochs", type=int, default=200, help="Number of policy training epochs.")
     parser.add_argument("--lr", type=float, default=5e-4, help="Optimizer learning rate.")
     parser.add_argument("--batch-size", type=int, default=256, help="Training batch size.")
     parser.add_argument(
