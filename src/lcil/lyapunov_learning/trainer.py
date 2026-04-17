@@ -117,7 +117,7 @@ class LyapunovTrainer:
 
         self.trainable_params = self._get_train_params()
         self.optimizer = th.optim.Adam(self.trainable_params, self.config.learning_rate)
-        self.verifier = self._get_verifier()
+        self.cex_verifier = self._get_cex_verifier()
         self.results: LyapunovTrainingResult | None = None
         self.metrics: LyapunovTrainingMetrics | None = None
 
@@ -138,7 +138,7 @@ class LyapunovTrainer:
             for param in self.policy_model.parameters():
                 param.requires_grad_(True)
             self.policy_model.train()
-    
+
     def _get_train_params(self) -> list[nn.Parameter]:
         """Utility to gather trainable parameters based on the config."""
         if not self.config.train_policy_model:
@@ -150,7 +150,7 @@ class LyapunovTrainer:
 
         return policy_params + list(self.lyap_model.parameters())
 
-    def _get_verifier(self) -> None:
+    def _get_cex_verifier(self) -> None:
         """Utility to create and configure the Lyapunov condition verifier."""
         return ClosedLoopLyapunovConditionVerifier(
             policy_model=self.policy_model,
@@ -167,21 +167,33 @@ class LyapunovTrainer:
 
     def _loss_fn(self, x_batch: th.Tensor, roa_candidates: th.Tensor, rho_estimate: float, current_kappa: float) -> th.Tensor:
         """Compute the combined loss for a training batch."""
-        if self.verifier is None:
-            raise ValueError("Verifier not initialized. Call _set_verifier() before computing loss.")
-        
-        rho_t = self._to_tensor([rho_estimate])
-        kappa_t = self._to_tensor([current_kappa])
+        v_batch = self.lyap_model(x_batch)
+        v_origin = self.lyap_model(self.origin)
 
-        # L_Vdot = ReLU(verifier(x, rho, kappa))
-        loss_condition = th.relu(self.verifier(x_batch, rho_t, kappa_t)).mean()
+        u = self.policy_model(x_batch)
+        x_next = self.dyn_model(x_batch, u)
+        v_next = self.lyap_model(x_next)
+
+        # V(x_next) - (1 - kappa) * V(x) <= 0
+        f_term = v_next - (1.0 - current_kappa) * v_batch
+
+        # Invariance violation term
+        upper_violation = th.relu(x_next - self.ubx).sum(dim=1, keepdim=True)
+        lower_violation = th.relu(self.lbx - x_next).sum(dim=1, keepdim=True)
+        h_term = upper_violation + lower_violation
+
+        # L_Vdot = ReLU(V(x_next) - (1 - kappa) * V(x) + invariance_weight * h_term + margin)
+        loss_condition = th.relu(f_term + self.config.invariance_weight * h_term + self.config.condition_margin).mean()
 
         # L_roa = ReLU(V(x) / rho - 1)
         v_candidates = self.lyap_model(roa_candidates)
         loss_roa = th.relu(v_candidates / max(rho_estimate, self.config.rho_min) - 1.0).mean()
 
         # Keep V(0) near zero for generic Lyapunov parameterizations.
-        loss_origin = self.lyap_model(self.origin).pow(2).mean()
+        loss_origin = v_origin.pow(2).mean()
+        loss_positivity = th.relu(-(v_batch - v_origin) + 1e-4).mean()
+
+        # L1 regularization
         loss_l1 = _parameter_l1_norm(self.trainable_params)
 
         total_loss = (
@@ -189,33 +201,36 @@ class LyapunovTrainer:
             + self.config.roa_weight * loss_roa
             + self.config.l1_weight * loss_l1
             + self.config.pos_scale * loss_origin
+            + loss_positivity
         )
 
         return total_loss
 
     def _mine_new_counterexamples(self, rho_estimate: float, current_kappa: float) -> th.Tensor:
         """Mine new counterexamples using the verifier and add them to the training buffer."""
-        if self.verifier is None:
+        if self.cex_verifier is None:
             raise ValueError("Verifier not initialized. Call _set_verifier() before mining counterexamples.")
-        
+
         new_cex = find_counter_examples(
-            verifier=self.verifier,
+            verifier=self.cex_verifier,
             config=self.config,
             rho=rho_estimate,
             kappa=current_kappa,
             device=self.device,
         )
-        
+
         rho_t = self._to_tensor([rho_estimate])
         kappa_t = self._to_tensor([current_kappa])
-        
+
         new_kappa = current_kappa
         if new_cex.numel() > 0:
             # Margin dynamically adjusted based on the worst violation in the new counterexamples
             with th.no_grad():
-                cex_diffs = self.verifier(new_cex, rho_t, kappa_t).detach().cpu().numpy()
+                cex_diffs = (
+                    self.cex_verifier(new_cex, rho_t, kappa_t) + self.config.condition_margin
+                ).detach().cpu().numpy()
             new_kappa = max(self.config.kappa, -np.min(cex_diffs) + 0.01)
-        
+
         return new_cex, new_kappa
 
     def _build_roa_candidates(self) -> th.Tensor:
@@ -230,14 +245,14 @@ class LyapunovTrainer:
 
     def train(self) -> LyapunovTrainingResult:
         """Execute the CEGIS-style training loop."""
-        roa_candidates = self._build_roa_candidates()
         metrics = LyapunovTrainingMetrics.from_num_outer_epochs(self.config.outer_epochs)
         
         # Initial training pool sampled uniformly from the state space bounds
         initial_x = sample_uniform_box(self.config.initial_sample_size, self.lbx, self.ubx, self.device)
-        state_buffer = DynamicStateBuffer(initial_states=initial_x, max_size=self.config.max_buffer)
+        state_buffer = DynamicStateBuffer(initial_states=initial_x, max_size=self.config.max_buffer, device=self.device)
+        roa_candidates = self._build_roa_candidates()
 
-        mining_interval = max(1, self.config.counterexample_every // max(1, self.config.steps_per_epoch))
+        mining_interval = max(1, int(self.config.counterexample_every))
         rho_estimate = self.config.rho_min
         current_kappa = self.config.kappa
         num_mined_counterexamples = 0
@@ -281,7 +296,8 @@ class LyapunovTrainer:
                 if (outer_iter + 1) % mining_interval == 0:
                     new_cex, current_kappa = self._mine_new_counterexamples(rho_estimate, current_kappa)
                     num_mined_counterexamples += new_cex.shape[0]
-                    state_buffer.add(new_cex)
+                    state_buffer.register_cex(new_cex)
+                    roa_candidates = self._build_roa_candidates()
 
                 # Inner training loop
                 for _ in range(self.config.steps_per_epoch):

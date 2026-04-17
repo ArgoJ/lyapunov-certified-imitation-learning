@@ -53,6 +53,8 @@ class LyapunovTrainingConfig(JsonConfigMixin):
         Number of projected gradient steps for boundary-value descent.
     rho_step_size : float
         Relative step size for boundary-value descent.
+    rho_estimate_quantile : float
+        Quantile in ``(0, 1]`` used for robust boundary-value aggregation when estimating rho.
     rho_min : float
         Minimum admissible sublevel value.
     adversarial_samples : int
@@ -96,6 +98,7 @@ class LyapunovTrainingConfig(JsonConfigMixin):
     rho_boundary_samples: int = 512
     rho_descent_steps: int = 15
     rho_step_size: float = 0.05
+    rho_estimate_quantile: float = 0.1
     rho_min: float = 1e-6
     adversarial_samples: int = 1024
     counterexample_steps: int = 30
@@ -128,6 +131,8 @@ class LyapunovTrainingConfig(JsonConfigMixin):
             raise ValueError("Counterexample mining interval must be non-negative.")
         if self.rho_min <= 0:
             raise ValueError("Minimum rho estimate must be positive.")
+        if self.rho_estimate_quantile <= 0.0 or self.rho_estimate_quantile > 1.0:
+            raise ValueError("rho_estimate_quantile must be in the interval (0, 1].")
         if self.state_bounds.shape[1] != self.state_dim:
             raise ValueError(
                 "state_bounds must match state_dim. "

@@ -19,7 +19,8 @@ class ClosedLoopLyapunovConditionVerifier(nn.Module):
         dyn_model: nn.Module,
         lbx: th.Tensor, 
         ubx: th.Tensor,
-        invariance_weight: float
+        invariance_weight: float,
+        eps: float = 0.1
     ):
         """
         Initializes the verifier module.
@@ -40,12 +41,15 @@ class ClosedLoopLyapunovConditionVerifier(nn.Module):
         invariance_weight : float
             Penalty weight (lambda) applied to state constraint violations. 
             A higher weight strongly enforces forward invariance in the relaxed condition.
+        eps : float, optional
+            A small positive margin to exclude a neighborhood around the equilibrium from the certification region, by default 0.1.
         """
         super().__init__()
         self.policy = policy_model
         self.lyap = lyap_model
         self.dyn = dyn_model
         self.invariance_weight = float(invariance_weight)
+        self.eps = float(eps)
         
         self.register_buffer("lbx", lbx.reshape(-1))
         self.register_buffer("ubx", ubx.reshape(-1))
@@ -105,11 +109,11 @@ class ClosedLoopLyapunovConditionVerifier(nn.Module):
 
         f_term = v_next - (1.0 - kappa) * v_curr
         h_term = self._invariance_violation(x_next)
-        decrease_or_invariance = th.relu(f_term) + self.invariance_weight * h_term
+        decrease_or_invariance = f_term + self.invariance_weight * h_term
         sublevel_guard = rho - v_curr
+        eps_guard = v_curr - self.eps
 
-        # min(a, b) = a - ReLU(a - b)
-        relaxed_condition = decrease_or_invariance - th.relu(
-            decrease_or_invariance - sublevel_guard
-        )
+        sublevel_condition = th.minimum(decrease_or_invariance, sublevel_guard)
+        relaxed_condition = th.minimum(sublevel_condition, eps_guard)
+
         return relaxed_condition

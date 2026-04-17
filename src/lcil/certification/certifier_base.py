@@ -87,8 +87,12 @@ class RecursiveCertificationResult:
 
     @property
     def success(self) -> bool:
-        """Whether all regions are certified."""
-        return self.failed.numel() == 0
+        """Whether certification is successful and non-vacuous.
+
+        A result is considered successful only if no region failed and at least
+        one region is inside the tested sublevel set and certified.
+        """
+        return self.failed.numel() == 0 and self.certified.numel() > 0
 
     @classmethod
     def empty(cls, state_dim: int, device: th.device) -> RecursiveCertificationResult:
@@ -634,6 +638,12 @@ class BaseCertifier(ABC):
         failed_regions_np = self._regions_tensor_to_np(recursive_result.failed)
         counter_examples_np = self._regions_tensor_to_np(recursive_result.counterexamples)
 
+        if recursive_result.failed.numel() == 0 and recursive_result.certified.numel() == 0:
+            __logger__.warning(
+                "Certification at rho=%.6f is vacuous: all regions were filtered as outside V(x) <= rho.",
+                float(rho),
+            )
+
         return RegionCertificationResult(
             success=recursive_result.success,
             rho=rho,
@@ -664,7 +674,7 @@ class BaseCertifier(ABC):
         else:
             return True, rho_lo, trial
 
-    def _scale_rho_down(self, rho_lo: float, rho_up: float) -> tuple[bool, float, float]:
+    def _scale_rho_down(self, rho_lo: float | None, rho_up: float) -> tuple[bool, float | None, float]:
         """Scales down ``rho_up`` until the new trial is either certified 
         or it is below rho_min, in which case we stop and return the last certified rho as lower bound.
 
@@ -809,6 +819,8 @@ class BaseCertifier(ABC):
 
         initial_ok = self.is_rho_certified(rho=initial_rho)
 
+        has_certified_lower_bound = True
+
         # Scale up
         if initial_ok:
             rho_lo, rho_up = self._iterative_rho_search(
@@ -832,19 +844,31 @@ class BaseCertifier(ABC):
 
             # Fallback
             if rho_lo is None:
+                has_certified_lower_bound = False
                 rho_lo = self.config.rho_min
-                if rho_up <= self.config.rho_min or not self.is_rho_certified(rho=self.config.rho_min):
-                    __logger__.error(f"Could not even certify rho_min ({self.config.rho_min:.0e}).")
-                    rho_up = self.config.rho_min # no bisection
+                rho_up = self.config.rho_min
+                __logger__.error(
+                    "Could not find any certified rho >= rho_min (%.0e).",
+                    self.config.rho_min,
+                )
 
         # Bisect
-        if rho_up - rho_lo >= self.config.bisection_tol:
+        if has_certified_lower_bound and rho_up - rho_lo >= self.config.bisection_tol:
             rho_lo, rho_up = self._iterative_rho_search(
                 total=self.config.max_bisection_steps,
                 desc="Bisect rho",
                 initial_values=(rho_lo, rho_up),
                 step_fn=self._bisect_rho
             )
+
+        if not has_certified_lower_bound:
+            __logger__.warning(
+                "Returning rho_min fallback (%.0e); no non-vacuous certified rho found.",
+                self.config.rho_min,
+            )
+            return self.config.rho_min
+
+        __logger__.info(f"Found best certified rho: {rho_lo:.6f}")
         return rho_lo
     
     def certify(self, rho_estimate: float) -> RegionCertificationResult:
