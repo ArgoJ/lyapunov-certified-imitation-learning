@@ -110,7 +110,7 @@ class LyapunovTrainingConfig(JsonConfigMixin):
     NP_ARRAY_FIELDS = ("state_bounds",)
 
     def __post_init__(self):
-        if not isinstance(self.tb_log_dir, (str, os.PathLike, None)):
+        if self.tb_log_dir is not None and not isinstance(self.tb_log_dir, (str, os.PathLike)):
             raise ValueError("tb_log_dir must be a string, os.PathLike, or None.")
         if self.tb_log_dir is not None:
             object.__setattr__(self, "tb_log_dir", Path(self.tb_log_dir).resolve())

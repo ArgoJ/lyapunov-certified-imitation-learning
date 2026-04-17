@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from dataclasses import dataclass
 
 import numpy as np
 import torch as th
@@ -9,9 +9,37 @@ from numpy.typing import NDArray
 from .certifier_base import RegionCertificationResult
 from .config import LyapunovCertificationConfig
 from .models import ClosedLoopLyapunovConditionVerifier
+from ..utils.config_io import JsonConfigMixin
 
 __logger__ = logging.getLogger(__name__)
 
+
+@dataclass(frozen=True)
+class CertificationCategoryTestResult(JsonConfigMixin):
+    """Empirical Lyapunov-condition test summary for a single region category."""
+
+    NP_ARRAY_FIELDS = ("violations_per_step",)
+
+    violation_rate: float
+    max_violation: float
+    num_regions: int
+    violations_per_step: NDArray | None = None
+
+
+@dataclass(frozen=True)
+class CertificationTesterResults(JsonConfigMixin):
+    """Container for empirical rollout checks across certification result categories."""
+
+    DEFAULT_FILE_NAME = "CertificationTesterResults.json"
+
+    certified: CertificationCategoryTestResult
+    failed: CertificationCategoryTestResult
+    counter_examples: CertificationCategoryTestResult
+    rollout_steps: int
+    rho: float
+    kappa: float
+    tolerance: float
+    
 
 class CertificationResultTester:
     """
@@ -63,11 +91,64 @@ class CertificationResultTester:
             invariance_weight=config.invariance_weight,
         ).to(self.device).eval()
 
+    def _evaluate_regions(
+        self,
+        regions: NDArray | None,
+        *,
+        name: str,
+        rho_tensor: th.Tensor,
+        kappa_tensor: th.Tensor,
+        tolerance: float,
+        rollout_steps: int,
+    ) -> CertificationCategoryTestResult:
+        if regions is None or len(regions) == 0:
+            return CertificationCategoryTestResult(
+                violation_rate=0.0,
+                max_violation=0.0,
+                num_regions=0,
+                violations_per_step=None,
+            )
+
+        # regions shape: (N, 2, state_dim) -> axis 1: 0=lower bound, 1=upper bound
+        centers = 0.5 * (regions[:, 0, :] + regions[:, 1, :])
+        x_t = th.tensor(centers, dtype=th.float32, device=self.device)
+
+        violations_over_time = []
+        with th.no_grad():
+            for _ in range(rollout_steps):
+                condition_val = self.verifier(x_t, rho=rho_tensor, kappa=kappa_tensor).squeeze(-1)
+                violations_over_time.append(condition_val.cpu().numpy())
+
+                u_t = self.policy_model(x_t)
+                x_t = self.dyn_model(x_t, u_t)
+
+        violations_np = np.stack(violations_over_time, axis=0)
+        violation_mask = violations_np > tolerance
+        traj_has_violation = violation_mask.any(axis=0)
+
+        violation_rate = float(traj_has_violation.mean())
+        max_viol = float(violations_np.max()) if bool(traj_has_violation.any()) else 0.0
+
+        __logger__.info(
+            "Tested %d %s regions: violation rate = %.2f%%, max violation = %.2e",
+            len(regions),
+            name,
+            violation_rate * 100.0,
+            max_viol,
+        )
+
+        return CertificationCategoryTestResult(
+            violation_rate=violation_rate,
+            max_violation=float(np.maximum(max_viol, 0.0)),
+            num_regions=len(regions),
+            violations_per_step=violations_np,
+        )
+
     def test_result(
         self,
         cert_result: RegionCertificationResult,
         rollout_steps: int = 50,
-    ) -> dict[str, dict[str, Any]]:
+    ) -> CertificationTesterResults:
         """
         Run closed-loop rollouts from the center of all regions to test condition satisfaction.
 
@@ -80,74 +161,46 @@ class CertificationResultTester:
 
         Returns
         -------
-        dict[str, dict[str, Any]]
-            A dictionary tracking violations for each category of regions:
-            'certified', 'failed', 'counter_examples'.
+        CertificationTesterResults
+            Structured, persistable results for 'certified', 'failed',
+            and 'counter_examples' categories.
         """
-        results = {}
-        regions_dict = {
-            "certified": cert_result.certified_regions,
-            "failed": cert_result.failed_regions,
-            "counter_examples": cert_result.counter_examples,
-        }
-
         rho_tensor = th.tensor(cert_result.rho, dtype=th.float32, device=self.device)
         kappa_tensor = th.tensor(self.config.kappa, dtype=th.float32, device=self.device)
         tolerance = self.config.condition_tolerance
 
-        for name, regions in regions_dict.items():
-            if regions is None or len(regions) == 0:
-                results[name] = {
-                    "violation_rate": 0.0,
-                    "max_violation": 0.0,
-                    "num_regions": 0,
-                }
-                continue
+        certified = self._evaluate_regions(
+            cert_result.certified_regions,
+            name="certified",
+            rho_tensor=rho_tensor,
+            kappa_tensor=kappa_tensor,
+            tolerance=tolerance,
+            rollout_steps=rollout_steps,
+        )
+        failed = self._evaluate_regions(
+            cert_result.failed_regions,
+            name="failed",
+            rho_tensor=rho_tensor,
+            kappa_tensor=kappa_tensor,
+            tolerance=tolerance,
+            rollout_steps=rollout_steps,
+        )
+        counter_examples = self._evaluate_regions(
+            cert_result.counter_examples,
+            name="counter_examples",
+            rho_tensor=rho_tensor,
+            kappa_tensor=kappa_tensor,
+            tolerance=tolerance,
+            rollout_steps=rollout_steps,
+        )
 
-            # Compute the center point of the boxes
-            # regions shape: (N, 2, state_dim) -> axis 1: 0=lower bound, 1=upper bound
-            centers = 0.5 * (regions[:, 0, :] + regions[:, 1, :])
-            x_t = th.tensor(centers, dtype=th.float32, device=self.device)
-
-            violations_over_time = []
-
-            with th.no_grad():
-                for _ in range(rollout_steps):
-                    # `condition_val <= 0` means mathematically proven safe (with tolerance relaxation)
-                    condition_val = self.verifier(x_t, rho=rho_tensor, kappa=kappa_tensor).squeeze(-1)
-                    
-                    # Store conditions across batch
-                    violations_over_time.append(condition_val.cpu().numpy())
-
-                    # Forward step to next state
-                    u_t = self.policy_model(x_t)
-                    x_t = self.dyn_model(x_t, u_t)
-
-            # shape: (rollout_steps, num_regions)
-            violations_np = np.stack(violations_over_time, axis=0)
-
-            # A state trajectory has a violation if at ANY step the condition > tolerance
-            violation_mask = violations_np > tolerance
-            traj_has_violation = violation_mask.any(axis=0)
-            
-            violation_rate = traj_has_violation.mean()
-            # To compute max_violation, filter to just violations, baseline is 0
-            max_viol = violations_np.max() if traj_has_violation.any() else 0.0
-
-            results[name] = {
-                "violation_rate": float(violation_rate),
-                "max_violation": float(np.maximum(max_viol, 0.0)),
-                "num_regions": len(regions),
-                "violations_per_step": violations_np,
-            }
-
-            __logger__.info(
-                "Tested %d %s regions: violation rate = %.2f%%, max violation = %.2e",
-                len(regions),
-                name,
-                violation_rate * 100.0,
-                max_viol,
-            )
-
-        return results
+        return CertificationTesterResults(
+            certified=certified,
+            failed=failed,
+            counter_examples=counter_examples,
+            rollout_steps=rollout_steps,
+            rho=float(cert_result.rho),
+            kappa=float(self.config.kappa),
+            tolerance=float(tolerance),
+        )
 
