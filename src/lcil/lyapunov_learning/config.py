@@ -43,6 +43,8 @@ class LyapunovTrainingConfig(JsonConfigMixin):
         Deprecated compatibility field from the legacy trainer.
     pos_scale : float
         Weight for keeping V(0) near zero.
+    formal_positivity_weight : float
+        Weight for the IBP-based positivity penalty over the full training box.
     reg_clamp_max : float
         Deprecated compatibility field from the legacy trainer.
     rho_growth_gamma : float
@@ -93,6 +95,7 @@ class LyapunovTrainingConfig(JsonConfigMixin):
     invariance_weight: float = 1.0
     reg_scale: float = 0.1
     pos_scale: float = 0.01
+    formal_positivity_weight: float = 1.0
     reg_clamp_max: float = 5e-4
     rho_growth_gamma: float = 1.1
     rho_boundary_samples: int = 512
@@ -121,6 +124,8 @@ class LyapunovTrainingConfig(JsonConfigMixin):
             raise ValueError("Learning rate must be positive.")
         if self.batch_size <= 0:
             raise ValueError("Batch size must be positive.")
+        if self.formal_positivity_weight < 0.0:
+            raise ValueError("formal_positivity_weight must be non-negative.")
         if self.roa_candidate_size <= 0:
             raise ValueError("ROA candidate size must be positive.")
         if self.outer_epochs <= 0:

@@ -4,7 +4,8 @@ from .rollout import LyapunovRollout
 from .models import (
     LyapunovNet,
     NeuralLyapunovCandidate,
-    QuadraticLyapunovCandidate
+    QuadraticLyapunovCandidate,
+    ClosedLoopLyapunovTrainingVerifier
 )
 from .counterexample import (
     estimate_rho_from_boundary,
@@ -19,6 +20,7 @@ __all__ = [
     "LyapunovNet",
     "NeuralLyapunovCandidate",
     "QuadraticLyapunovCandidate",
+    "ClosedLoopLyapunovTrainingVerifier",
     "estimate_rho_from_boundary",
     "find_counter_examples",
     "sample_uniform_box",

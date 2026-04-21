@@ -189,10 +189,10 @@ class TestABCrownCertifierIntegration(PlotAssertionsMixin, unittest.TestCase):
     def test_mixed_lyapunov_pipeline_with_real_abcrown(self) -> None:
         certifier = self._make_certifier(_MixedLyapunov(alpha=0.3, beta=2.0))
 
-        rho_certified, result = certifier.find_max_rho(rho_estimate=1.0)
+        result = certifier.certify(rho_estimate=1.0)
 
-        self.assertIsInstance(float(rho_certified), float)
-        self.assertGreaterEqual(rho_certified, certifier.config.rho_min)
+        self.assertIsInstance(float(result.rho), float)
+        self.assertGreaterEqual(result.rho, certifier.config.rho_min)
         self.assertGreater(result.certified_regions.shape[0], 0)
         self.assertGreater(result.failed_regions.shape[0], 0)
         self.assertEqual(result.counter_examples.shape[0], 0)

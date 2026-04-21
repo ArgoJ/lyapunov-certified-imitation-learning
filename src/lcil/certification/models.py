@@ -1,15 +1,15 @@
 import torch as th
 import torch.nn as nn
 
+from ..utils.base_models import ClosedLoopLyapunovConditionCore
 
-class ClosedLoopLyapunovConditionVerifier(nn.Module):
+
+class ClosedLoopLyapunovCertificationVerifier(nn.Module):
     """
     Verification graph for the relaxed Lyapunov condition in Eq. (16b).
-    
-    This module constructs the computational graph to evaluate whether the 
-    closed-loop system satisfies the Lyapunov decrease condition and forward 
-    invariance within a specified sublevel set. It is specifically designed 
-    to be traced by AutoLiRPA for formal certification.
+
+    This wrapper adds the rho-sublevel gate on top of the shared closed-loop
+    Lyapunov core so it can be traced by certification backends.
     """
 
     def __init__(
@@ -17,63 +17,29 @@ class ClosedLoopLyapunovConditionVerifier(nn.Module):
         policy_model: nn.Module,
         lyap_model: nn.Module,
         dyn_model: nn.Module,
-        lbx: th.Tensor, 
+        lbx: th.Tensor,
         ubx: th.Tensor,
         invariance_weight: float,
-        eps: float = 0.1
+        kappa: float,
     ):
-        """
-        Initializes the verifier module.
-
-        Parameters
-        ----------
-        policy_model : nn.Module
-            The neural network representing the control policy (u = pi(x)).
-        lyap_model : nn.Module
-            The neural network representing the Lyapunov function candidate (V(x)).
-        dyn_model : nn.Module
-            The forward dynamics model of the system (x_next = f(x, u)).
-        lbx : th.Tensor
-            Lower bounds of the admissible state space. Used to penalize out-of-bound 
-            transitions to verify forward invariance.
-        ubx : th.Tensor
-            Upper bounds of the admissible state space.
-        invariance_weight : float
-            Penalty weight (lambda) applied to state constraint violations. 
-            A higher weight strongly enforces forward invariance in the relaxed condition.
-        eps : float, optional
-            A small positive margin to exclude a neighborhood around the equilibrium from the certification region, by default 0.1.
-        """
         super().__init__()
-        self.policy = policy_model
-        self.lyap = lyap_model
-        self.dyn = dyn_model
-        self.invariance_weight = float(invariance_weight)
-        self.eps = float(eps)
-        
-        self.register_buffer("lbx", lbx.reshape(-1))
-        self.register_buffer("ubx", ubx.reshape(-1))
+        self.core = ClosedLoopLyapunovConditionCore(
+            policy_model=policy_model,
+            lyap_model=lyap_model,
+            dyn_model=dyn_model,
+            lbx=lbx,
+            ubx=ubx,
+            invariance_weight=invariance_weight,
+            kappa=kappa,
+        )
 
-    def _invariance_violation(self, x_next: th.Tensor) -> th.Tensor:
-        """
-        Computes the state constraint violation penalty for the successor state.
+    @staticmethod
+    def _reshape_guard(value: th.Tensor) -> th.Tensor:
+        if value.ndim == 1 and value.numel() > 1:
+            return value.unsqueeze(1)
+        return value
 
-        Parameters
-        ----------
-        x_next : th.Tensor
-            The predicted successor states of shape (batch_size, state_dim).
-
-        Returns
-        -------
-        th.Tensor
-            A column tensor of shape (batch_size, 1) containing the L1-norm 
-            of the constraint violations (using ReLU activations).
-        """
-        upper_violation = th.relu(x_next - self.ubx).sum(dim=1, keepdim=True)
-        lower_violation = th.relu(self.lbx - x_next).sum(dim=1, keepdim=True)
-        return upper_violation + lower_violation
-
-    def forward(self, x: th.Tensor, rho: th.Tensor, kappa: th.Tensor) -> th.Tensor:
+    def forward(self, x: th.Tensor, rho: th.Tensor) -> th.Tensor:
         """
         Evaluates the relaxed Lyapunov verification condition.
 
@@ -87,8 +53,6 @@ class ClosedLoopLyapunovConditionVerifier(nn.Module):
             A batch of current states of shape (batch_size, state_dim).
         rho : th.Tensor
             A tensor representing the target level set bound.
-        kappa : th.Tensor
-            A tensor representing the required proportional decay rate (0 < kappa <= 1).
 
         Returns
         -------
@@ -97,23 +61,10 @@ class ClosedLoopLyapunovConditionVerifier(nn.Module):
             is <= 0, the Lyapunov condition (decrease and invariance) is strictly 
             satisfied for the given input region.
         """
-        if rho.ndim == 1 and rho.numel() > 1:
-            rho = rho.unsqueeze(1)
-        if kappa.ndim == 1 and kappa.numel() > 1:
-            kappa = kappa.unsqueeze(1)
-
-        v_curr = self.lyap(x)
-        u = self.policy(x)
-        x_next = self.dyn(x, u)
-        v_next = self.lyap(x_next)
-
-        f_term = v_next - (1.0 - kappa) * v_curr
-        h_term = self._invariance_violation(x_next)
-        decrease_or_invariance = f_term + self.invariance_weight * h_term
+        v_curr, positivity_or_decrease_violation = self.core.condition_terms(x)
+        
+        rho = self._reshape_guard(rho)
         sublevel_guard = rho - v_curr
-        eps_guard = v_curr - self.eps
+        sublevel_condition = th.minimum(positivity_or_decrease_violation, sublevel_guard)
 
-        sublevel_condition = th.minimum(decrease_or_invariance, sublevel_guard)
-        relaxed_condition = th.minimum(sublevel_condition, eps_guard)
-
-        return relaxed_condition
+        return sublevel_condition

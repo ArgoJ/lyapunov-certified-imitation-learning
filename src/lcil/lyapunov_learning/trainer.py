@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 from pathlib import Path
 from dataclasses import dataclass
 from torch.utils.tensorboard import SummaryWriter
+from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 from rich.progress import (
     Progress,
     TextColumn,
@@ -22,12 +23,12 @@ from rich.progress import (
 
 from .config import LyapunovTrainingConfig
 from .buffer import DynamicStateBuffer
+from .models import ClosedLoopLyapunovTrainingVerifier
 from .counterexample import (
     estimate_rho_from_boundary,
     find_counter_examples,
     sample_uniform_box,
 )
-from ..certification.models import ClosedLoopLyapunovConditionVerifier
 from ..utils.base_models import save_model_checkpoint
 from ..utils.helpers import none_to_float
 
@@ -49,7 +50,6 @@ class LyapunovTrainingMetrics:
 
     loss: NDArray
     rho_estimate: NDArray
-    kappa: NDArray
     buffer_size: NDArray
     num_mined_counterexamples: NDArray
     outer_iterations_completed: int = 0
@@ -65,7 +65,6 @@ class LyapunovTrainingMetrics:
         return cls(
             loss=nan_array.copy(),
             rho_estimate=nan_array.copy(),
-            kappa=nan_array.copy(),
             buffer_size=nan_array.copy(),
             num_mined_counterexamples=nan_array.copy(),
             outer_iterations_completed=0,
@@ -79,7 +78,6 @@ class LyapunovTrainingMetrics:
             metrics_path,
             loss=self.loss,
             rho_estimate=self.rho_estimate,
-            kappa=self.kappa,
             buffer_size=self.buffer_size,
             num_mined_counterexamples=self.num_mined_counterexamples,
             outer_iterations_completed=np.asarray(self.outer_iterations_completed, dtype=np.int64),
@@ -118,8 +116,23 @@ class LyapunovTrainer:
         self.trainable_params = self._get_train_params()
         self.optimizer = th.optim.Adam(self.trainable_params, self.config.learning_rate)
         self.cex_verifier = self._get_cex_verifier()
+        self.bounded_lyapunov = self._build_lyapunov_bounded_model()
         self.results: LyapunovTrainingResult | None = None
         self.metrics: LyapunovTrainingMetrics | None = None
+
+    def _build_lyapunov_bounded_model(self) -> BoundedModule:
+        """Construct a bounded model for direct lower bounds on ``V(x)``."""
+        if not isinstance(self.lyap_model, nn.Module):
+            raise ValueError("Lyapunov model must be provided to construct bounds.")
+        
+        dummy_x = th.zeros(1, self.config.state_dim, device=self.device)
+        return BoundedModule(
+            self.lyap_model,
+            (dummy_x,),
+            device=self.device,
+            verbose=False,
+            bound_opts={"perturb_bound": True},
+        )
 
     def _set_train_modes(self) -> None:
         for param in self.lyap_model.parameters():
@@ -152,20 +165,44 @@ class LyapunovTrainer:
 
     def _get_cex_verifier(self) -> None:
         """Utility to create and configure the Lyapunov condition verifier."""
-        return ClosedLoopLyapunovConditionVerifier(
+        return ClosedLoopLyapunovTrainingVerifier(
             policy_model=self.policy_model,
             lyap_model=self.lyap_model,
             dyn_model=self.dyn_model,
             lbx=self.lbx,
             ubx=self.ubx,
             invariance_weight=self.config.invariance_weight,
+            kappa=self.config.kappa,
         ).to(self.device)
 
     def _to_tensor(self, arr: NDArray | list[float]) -> th.Tensor:
         """Utility to convert numpy arrays or lists to torch tensors on the correct device."""
         return th.tensor(arr, dtype=th.float32, device=self.device)
 
-    def _loss_fn(self, x_batch: th.Tensor, roa_candidates: th.Tensor, rho_estimate: float, current_kappa: float) -> th.Tensor:
+    def _compute_lyapunov_lower_bound(self) -> th.Tensor:
+        """Compute a lower bound on ``V(x)`` over an axis-aligned box."""
+        batch_lbs = self._to_tensor(self.lbx)
+        batch_ubs = self._to_tensor(self.ubx)
+
+        if batch_lbs.ndim == 1:
+            batch_lbs = batch_lbs.unsqueeze(0)
+        if batch_ubs.ndim == 1:
+            batch_ubs = batch_ubs.unsqueeze(0)
+        if batch_lbs.shape != batch_ubs.shape:
+            raise ValueError("lbx and ubx must have the same shape.")
+
+        batch_centers = 0.5 * (batch_lbs + batch_ubs)
+        ptb = PerturbationLpNorm(norm=float("inf"), x_L=batch_lbs, x_U=batch_ubs)
+        bounded_input = BoundedTensor(batch_centers, ptb)
+        lower, _ = self.bounded_lyapunov.compute_bounds(x=(bounded_input,), method="backward", bound_opts={"perturb_bound": True})
+        return lower
+
+    def _formal_positivity_loss(self) -> th.Tensor:
+        """Compute a backward-bound positivity penalty over the full training box."""
+        lower_bound = self._compute_lyapunov_lower_bound()
+        return th.relu(-lower_bound).mean()
+
+    def _loss_fn(self, x_batch: th.Tensor, roa_candidates: th.Tensor, rho_estimate: float) -> th.Tensor:
         """Compute the combined loss for a training batch."""
         v_batch = self.lyap_model(x_batch)
         v_origin = self.lyap_model(self.origin)
@@ -175,7 +212,7 @@ class LyapunovTrainer:
         v_next = self.lyap_model(x_next)
 
         # V(x_next) - (1 - kappa) * V(x) <= 0
-        f_term = v_next - (1.0 - current_kappa) * v_batch
+        f_term = v_next - (1.0 - self.config.kappa) * v_batch
 
         # Invariance violation term
         upper_violation = th.relu(x_next - self.ubx).sum(dim=1, keepdim=True)
@@ -191,7 +228,9 @@ class LyapunovTrainer:
 
         # Keep V(0) near zero for generic Lyapunov parameterizations.
         loss_origin = v_origin.pow(2).mean()
-        loss_positivity = th.relu(-(v_batch - v_origin) + 1e-4).mean()
+        loss_formal_positivity = th.zeros((), dtype=th.float32, device=self.device)
+        if self.config.formal_positivity_weight > 0.0:
+            loss_formal_positivity = self._formal_positivity_loss()
 
         # L1 regularization
         loss_l1 = _parameter_l1_norm(self.trainable_params)
@@ -201,37 +240,26 @@ class LyapunovTrainer:
             + self.config.roa_weight * loss_roa
             + self.config.l1_weight * loss_l1
             + self.config.pos_scale * loss_origin
-            + loss_positivity
+            + self.config.formal_positivity_weight * loss_formal_positivity
         )
 
         return total_loss
 
-    def _mine_new_counterexamples(self, rho_estimate: float, current_kappa: float) -> th.Tensor:
-        """Mine new counterexamples using the verifier and add them to the training buffer."""
+    def _mine_new_counterexamples(self) -> th.Tensor:
+        """Mine global counterexamples for the training box.
+
+        Training-time mining should expose decrease and invariance violations
+        over the full training region rather than suppressing states that only
+        lie outside the current rho estimate.
+        """
         if self.cex_verifier is None:
             raise ValueError("Verifier not initialized. Call _set_verifier() before mining counterexamples.")
 
-        new_cex = find_counter_examples(
+        return find_counter_examples(
             verifier=self.cex_verifier,
             config=self.config,
-            rho=rho_estimate,
-            kappa=current_kappa,
             device=self.device,
         )
-
-        rho_t = self._to_tensor([rho_estimate])
-        kappa_t = self._to_tensor([current_kappa])
-
-        new_kappa = current_kappa
-        if new_cex.numel() > 0:
-            # Margin dynamically adjusted based on the worst violation in the new counterexamples
-            with th.no_grad():
-                cex_diffs = (
-                    self.cex_verifier(new_cex, rho_t, kappa_t) + self.config.condition_margin
-                ).detach().cpu().numpy()
-            new_kappa = max(self.config.kappa, -np.min(cex_diffs) + 0.01)
-
-        return new_cex, new_kappa
 
     def _build_roa_candidates(self) -> th.Tensor:
         """Create diverse candidate states near the boundary of the asymmetric B."""
@@ -254,7 +282,6 @@ class LyapunovTrainer:
 
         mining_interval = max(1, int(self.config.counterexample_every))
         rho_estimate = self.config.rho_min
-        current_kappa = self.config.kappa
         num_mined_counterexamples = 0
         total_steps = self.config.outer_epochs * self.config.steps_per_epoch
 
@@ -294,7 +321,7 @@ class LyapunovTrainer:
 
                 # Mine counterexamples (CEGIS)
                 if (outer_iter + 1) % mining_interval == 0:
-                    new_cex, current_kappa = self._mine_new_counterexamples(rho_estimate, current_kappa)
+                    new_cex = self._mine_new_counterexamples()
                     num_mined_counterexamples += new_cex.shape[0]
                     state_buffer.register_cex(new_cex)
                     roa_candidates = self._build_roa_candidates()
@@ -302,7 +329,7 @@ class LyapunovTrainer:
                 # Inner training loop
                 for _ in range(self.config.steps_per_epoch):
                     x_batch = state_buffer.sample(self.config.batch_size)
-                    loss = self._loss_fn(x_batch, roa_candidates, rho_estimate, current_kappa)
+                    loss = self._loss_fn(x_batch, roa_candidates, rho_estimate)
 
                     self.optimizer.zero_grad()
                     loss.backward()
@@ -321,7 +348,6 @@ class LyapunovTrainer:
 
                 metrics.loss[outer_iter] = last_loss_value
                 metrics.rho_estimate[outer_iter] = float(rho_estimate)
-                metrics.kappa[outer_iter] = float(current_kappa)
                 metrics.buffer_size[outer_iter] = float(len(state_buffer))
                 metrics.num_mined_counterexamples[outer_iter] = float(num_mined_counterexamples)
                 metrics.outer_iterations_completed = outer_iter + 1
@@ -330,7 +356,6 @@ class LyapunovTrainer:
                 if tb_writer is not None:
                     tb_writer.add_scalar("Lyapunov/Loss", metrics.loss[outer_iter], outer_iter)
                     tb_writer.add_scalar("Lyapunov/Rho", metrics.rho_estimate[outer_iter], outer_iter)
-                    tb_writer.add_scalar("Lyapunov/Kappa", metrics.kappa[outer_iter], outer_iter)
                     tb_writer.add_scalar("Lyapunov/BufferSize", metrics.buffer_size[outer_iter], outer_iter)
                     tb_writer.add_scalar(
                         "Lyapunov/NumMinedCounterexamples",

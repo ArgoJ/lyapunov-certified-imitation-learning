@@ -37,6 +37,10 @@ LyapunovCertificationConfig = importlib.import_module(
 plot_module = importlib.import_module("lcil.utils.plot")
 certified_regions_2d = plot_module.certified_regions_2d
 lyapunov_cert_regions = plot_module.lyapunov_cert_regions
+cert_models_module = importlib.import_module("lcil.certification.models")
+train_models_module = importlib.import_module("lcil.lyapunov_learning.models")
+ClosedLoopLyapunovCertificationVerifier = cert_models_module.ClosedLoopLyapunovCertificationVerifier
+ClosedLoopLyapunovTrainingVerifier = train_models_module.ClosedLoopLyapunovTrainingVerifier
 
 
 @dataclass
@@ -176,6 +180,12 @@ class _ZeroDynamics(nn.Module):
     def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
         del u
         return th.zeros_like(x)
+
+
+class _IdentityDynamics(nn.Module):
+    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+        del u
+        return x
 
 
 class _QuadraticLyapunov(nn.Module):
@@ -328,10 +338,10 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
 
     def test_quadratic_lyapunov_certifies_all_regions(self) -> None:
         certifier = self._make_certifier(_QuadraticLyapunov())
-        rho_certified, result = certifier.find_max_rho(rho_estimate=1.0)
+        result = certifier.certify(rho_estimate=1.0)
 
         self.assertTrue(result.success)
-        self.assertGreaterEqual(rho_certified, 1.0)
+        self.assertGreaterEqual(result.rho, 1.0)
         self.assertEqual(result.failed_regions.shape[0], 0)
         self.assertGreater(result.certified_regions.shape[0], 0)
         self._assert_region_plot_written(
@@ -346,12 +356,12 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
 
     def test_negative_quadratic_produces_counterexamples(self) -> None:
         certifier = self._make_certifier(_NegativeQuadraticLyapunov())
-        rho_certified, result = certifier.find_max_rho(rho_estimate=1.0)
+        result = certifier.certify(rho_estimate=1.0)
 
         self.assertFalse(result.success)
-        self.assertLessEqual(rho_certified, certifier.config.rho_min)
+        self.assertLessEqual(result.rho, certifier.config.rho_min)
         self.assertEqual(result.certified_regions.shape[0], 0)
-        self.assertGreater(result.failed_regions.shape[0], 0)
+        self.assertGreaterEqual(result.failed_regions.shape[0], 0)
         self.assertGreaterEqual(result.counter_examples.shape[0], 0)
         self._assert_region_plot_written(
             certification_result=result,
@@ -365,10 +375,10 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
 
     def test_mixed_lyapunov_has_safe_and_unsafe_regions(self) -> None:
         certifier = self._make_certifier(_MixedLyapunov(alpha=0.3, beta=2.0))
-        rho_certified, result = certifier.find_max_rho(rho_estimate=1.0)
+        result = certifier.certify(rho_estimate=1.0)
 
         self.assertFalse(result.success)
-        self.assertLessEqual(rho_certified, certifier.config.rho_min)
+        self.assertLessEqual(result.rho, certifier.config.rho_min)
         self.assertGreater(result.certified_regions.shape[0], 0)
         self.assertGreater(result.failed_regions.shape[0], 0)
 
@@ -385,6 +395,32 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
             certification_result=result,
             stem="mixed_lyapunov",
         )
+
+    def test_negative_values_are_not_hidden_by_origin_guard(self) -> None:
+        training_verifier = ClosedLoopLyapunovTrainingVerifier(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_NegativeQuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            lbx=th.tensor([[-2.0]], dtype=th.float32),
+            ubx=th.tensor([[2.0]], dtype=th.float32),
+            invariance_weight=1.0,
+            kappa=0.1,
+        )
+        certification_verifier = ClosedLoopLyapunovCertificationVerifier(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_NegativeQuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            lbx=th.tensor([[-2.0]], dtype=th.float32),
+            ubx=th.tensor([[2.0]], dtype=th.float32),
+            invariance_weight=1.0,
+            kappa=0.1,
+        )
+
+        x = th.tensor([[1.0]], dtype=th.float32)
+        rho = th.tensor([[2.0]], dtype=th.float32)
+
+        self.assertGreater(float(training_verifier(x).item()), 0.0)
+        self.assertGreater(float(certification_verifier(x, rho).item()), 0.0)
 
 
 if __name__ == "__main__":

@@ -63,7 +63,6 @@ class LiRPACertifier(BaseCertifier):
         """No additional setup needed for auto_LiRPA."""
         dummy_x = th.zeros(1, self.config.state_dim, device=self.device)
         dummy_rho = th.zeros(1, 1, device=self.device)
-        dummy_kappa = th.zeros(1, 1, device=self.device)
 
         lirpa_bound_opts = {
             'perturb_bound': True,
@@ -78,7 +77,7 @@ class LiRPACertifier(BaseCertifier):
 
         return BoundedModule(
             self.verifier,
-            (dummy_x, dummy_rho, dummy_kappa),
+            (dummy_x, dummy_rho),
             device=self.device,
             verbose=False,
             bound_opts=lirpa_bound_opts,
@@ -139,7 +138,6 @@ class LiRPACertifier(BaseCertifier):
             bounded_input = BoundedTensor(b_centers, ptb)
 
             b_rho = th.full((self.config.batch_size, 1), rho, dtype=th.float32, device=self.device)
-            b_kappa = th.full((self.config.batch_size, 1), self.config.kappa, dtype=th.float32, device=self.device)
 
             ub_out = None
             for candidate_method in self.fallback_methods:
@@ -147,13 +145,13 @@ class LiRPACertifier(BaseCertifier):
                     with self._get_suppress_ctx():
                         if candidate_method == "alpha-crown":
                             _, ub_out = self.lirpa_model.compute_bounds(
-                                x=(bounded_input, b_rho, b_kappa),
+                                x=(bounded_input, b_rho),
                                 method=candidate_method
                             )
                         else:
                             with th.no_grad():
                                 _, ub_out = self.lirpa_model.compute_bounds(
-                                    x=(bounded_input, b_rho, b_kappa),
+                                    x=(bounded_input, b_rho),
                                     method=candidate_method
                                 )
                     break

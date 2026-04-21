@@ -309,3 +309,89 @@ class ICNN(nn.Module):
             else:
                 z = activation(self.W_x[idx](x) + self.W_z[idx - 1](z))
         return z
+
+
+
+class ClosedLoopLyapunovConditionCore(nn.Module):
+    """
+    Shared closed-loop Lyapunov computations used by certification and training.
+    """
+
+    def __init__(
+        self,
+        policy_model: nn.Module,
+        lyap_model: nn.Module,
+        dyn_model: nn.Module,
+        lbx: th.Tensor, 
+        ubx: th.Tensor,
+        invariance_weight: float,
+        kappa: float,
+    ):
+        """
+        Initialize the shared closed-loop Lyapunov core.
+
+        Parameters
+        ----------
+        policy_model : nn.Module
+            The neural network representing the control policy (u = pi(x)).
+        lyap_model : nn.Module
+            The neural network representing the Lyapunov function candidate (V(x)).
+        dyn_model : nn.Module
+            The forward dynamics model of the system (x_next = f(x, u)).
+        lbx : th.Tensor
+            Lower bounds of the admissible state space. Used to penalize out-of-bound 
+            transitions to verify forward invariance.
+        ubx : th.Tensor
+            Upper bounds of the admissible state space.
+        invariance_weight : float
+            Penalty weight (lambda) applied to state constraint violations. 
+            A higher weight strongly enforces forward invariance in the relaxed condition.
+        kappa : float
+            The required proportional decay rate for the Lyapunov function (0 < kappa <= 1).
+        """
+        super().__init__()
+        self.policy = policy_model
+        self.lyap = lyap_model
+        self.dyn = dyn_model
+        self.invariance_weight = float(invariance_weight)
+        self.kappa = float(kappa)
+        
+        self.register_buffer("lbx", lbx.reshape(-1))
+        self.register_buffer("ubx", ubx.reshape(-1))
+
+    def _invariance_violation(self, x_next: th.Tensor) -> th.Tensor:
+        """
+        Computes the state constraint violation penalty for the successor state.
+
+        Parameters
+        ----------
+        x_next : th.Tensor
+            The predicted successor states of shape (batch_size, state_dim).
+
+        Returns
+        -------
+        th.Tensor
+            A column tensor of shape (batch_size, 1) containing the L1-norm 
+            of the constraint violations (using ReLU activations).
+        """
+        upper_violation = th.relu(x_next - self.ubx).sum(dim=1, keepdim=True)
+        lower_violation = th.relu(self.lbx - x_next).sum(dim=1, keepdim=True)
+        return upper_violation + lower_violation
+
+    def condition_terms(
+        self,
+        x: th.Tensor,
+    ) -> tuple[th.Tensor, th.Tensor]:
+        """Compute the shared terms of the relaxed Lyapunov condition."""
+        v_curr = self.lyap(x)
+        u = self.policy(x)
+        x_next = self.dyn(x, u)
+        v_next = self.lyap(x_next)
+
+        f_term = v_next - (1.0 - self.kappa) * v_curr
+        h_term = self._invariance_violation(x_next)
+        decrease_or_invariance = f_term + self.invariance_weight * h_term
+        positivity_or_decrease_violation = th.maximum(decrease_or_invariance, -v_curr)
+
+        return v_curr, positivity_or_decrease_violation
+

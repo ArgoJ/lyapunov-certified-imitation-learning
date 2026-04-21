@@ -1,7 +1,7 @@
 import torch as th
 import torch.nn as nn
 
-from ..utils.base_models import ICNN, MLP
+from ..utils.base_models import ICNN, MLP, ClosedLoopLyapunovConditionCore
 
 
 class LyapunovNet(nn.Module):
@@ -113,3 +113,33 @@ class QuadraticLyapunovCandidate(nn.Module):
         pd_matrix = self._pd_matrix()
         value = (delta @ pd_matrix) * delta
         return value.sum(dim=1, keepdim=True)
+
+
+class ClosedLoopLyapunovTrainingVerifier(nn.Module):
+    """Training-side verifier without rho-sublevel gating."""
+
+    def __init__(
+        self,
+        policy_model: nn.Module,
+        lyap_model: nn.Module,
+        dyn_model: nn.Module,
+        lbx: th.Tensor,
+        ubx: th.Tensor,
+        invariance_weight: float,
+        kappa: float,
+    ):
+        super().__init__()
+        self.core = ClosedLoopLyapunovConditionCore(
+            policy_model=policy_model,
+            lyap_model=lyap_model,
+            dyn_model=dyn_model,
+            lbx=lbx,
+            ubx=ubx,
+            invariance_weight=invariance_weight,
+            kappa=kappa,
+        )
+
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        """Evaluate decrease, invariance, and positivity over the full training box."""
+        _, positivity_or_decrease_violation = self.core.condition_terms(x)
+        return positivity_or_decrease_violation

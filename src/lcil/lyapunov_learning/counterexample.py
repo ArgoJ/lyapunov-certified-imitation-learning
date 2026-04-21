@@ -70,7 +70,7 @@ def estimate_rho_from_boundary(
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),
 ) -> float:
-    """Estimate a sublevel value rho from low-Lyapunov points on the boundary of B."""
+    """Estimate rho from a low quantile of optimized boundary Lyapunov values."""
     bounds = _bounds_tensor(config.state_bounds, device)
     lbx, ubx = bounds[0], bounds[1]
     boundary_x, face_dims, is_ub = sample_boundary_points(
@@ -105,32 +105,32 @@ def estimate_rho_from_boundary(
             )
 
     with th.no_grad():
-        min_boundary_value = lyap_model(boundary_x).min().item()
-    rho = max(config.rho_min, config.rho_growth_gamma * min_boundary_value)
+        boundary_values = lyap_model(boundary_x).flatten()
+        boundary_quantile = th.quantile(
+            boundary_values,
+            q=float(config.rho_estimate_quantile),
+        ).item()
+    rho = max(config.rho_min, config.rho_growth_gamma * boundary_quantile)
     return float(rho)
 
 
 def find_counter_examples(
     verifier: nn.Module,
     config: LyapunovTrainingConfig,
-    rho: float,
-    kappa: float,
     device: th.device = th.device("cpu"),
 ) -> th.Tensor:
-    """Find counterexamples via PGD on ReLU(verifier(x, rho, kappa))."""
+    """Find global training counterexamples via PGD on the verifier objective."""
     bounds = _bounds_tensor(config.state_bounds, device)
     lbx, ubx = bounds[0], bounds[1]
-    
-    # Convert scalar rho and kappa to tensors for the verifier's forward method
-    rho_t = th.tensor([max(config.rho_min, float(rho))], dtype=th.float32, device=device)
-    kappa_t = th.tensor([kappa], dtype=th.float32, device=device)
 
     adv_states = sample_uniform_box(config.adversarial_samples, lbx, ubx, device)
     step = config.adversarial_step_size * (ubx - lbx).unsqueeze(0)
 
     for _ in range(config.counterexample_steps):
         adv_states.requires_grad_(True)
-        violation = th.relu(verifier(adv_states, rho_t, kappa_t))
+        raw_violation = verifier(adv_states)
+
+        violation = th.relu(raw_violation)
         grad = th.autograd.grad(
             violation.mean(),
             adv_states,
@@ -143,7 +143,7 @@ def find_counter_examples(
             adv_states = project_to_box(adv_states, lbx, ubx)
 
     with th.no_grad():
-        violation = th.relu(verifier(adv_states, rho_t, kappa_t))
-        counter_mask = violation.flatten() > config.condition_tolerance
+        raw_violation = verifier(adv_states)
+        counter_mask = raw_violation.flatten() > config.condition_tolerance
 
     return adv_states[counter_mask].clone().detach()

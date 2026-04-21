@@ -1,28 +1,15 @@
 import torch as th
 import torch.nn as nn
-import json
 import logging
 
 from pathlib import Path
 from typing import Any
-from dataclasses import is_dataclass, asdict
-from numpy.typing import NDArray
 
 from mpc_datagen import MPCConfig
 
 from ..utils.base_models import MLP
 
 __logger__ = logging.getLogger(__name__)
-
-
-class ConfigEncoder(json.JSONEncoder):
-    """Custom JSON Encoder that converts Numpy arrays and Tensors to lists."""
-    def default(self, obj):
-        if isinstance(obj, NDArray):
-            return obj.tolist()
-        if isinstance(obj, th.Tensor):
-            return obj.detach().cpu().numpy().tolist()
-        return super().default(obj)
 
 
 class MLPPolicy(nn.Module):

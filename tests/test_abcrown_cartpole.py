@@ -86,7 +86,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
             ),
             kappa=0.001,
             invariance_weight=1.0,
-            rho_scaling=1.0001,
+            rho_scaling=1.3,
             bins_per_dim=(3, 4, 6, 7),
             center_refinement_factor=(0.6, 0.6, 0.5, 0.6),
             origin_exclusion=0.1,
@@ -181,12 +181,12 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
 
     def test_inverted_pendulum_on_cart_lqr(self) -> None:
         certifier = self._make_certifier()
-        rho_certified, result = certifier.find_max_rho(rho_estimate=32.835)
+        result = certifier.certify(rho_estimate=32.835)
         base = "cartpole_abcrown_integration_dare"
         state_labels = ["$x$", "$v$", r"$\theta$", r"$\dot{\theta}$"]
 
-        self.assertIsInstance(float(rho_certified), float)
-        self.assertGreaterEqual(rho_certified, certifier.config.rho_min)
+        self.assertIsInstance(float(result.rho), float)
+        self.assertGreaterEqual(result.rho, certifier.config.rho_min)
         self._assert_region_plot_written(
             certification_result=result,
             stem=f"{base}_regions",

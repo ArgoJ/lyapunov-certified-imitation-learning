@@ -1,38 +1,50 @@
 from __future__ import annotations
 
-import torch as th
-import torch.nn as nn
-import numpy as np
-import os
 import logging
-
+import os
+from abc import ABC, abstractmethod
 from contextlib import nullcontext
-from typing import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from abc import ABC, abstractmethod
+from typing import Sequence
+
+import numpy as np
+import torch as th
+import torch.nn as nn
+from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 from numpy.typing import NDArray
-from auto_LiRPA import BoundedTensor, PerturbationLpNorm, BoundedModule
 from pkg_logger import suppress_native_output
 from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
     Progress,
     TextColumn,
-    BarColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
-    MofNCompleteColumn,
 )
 
 from .config import LyapunovCertificationConfig
-from .models import ClosedLoopLyapunovConditionVerifier
+from .models import ClosedLoopLyapunovCertificationVerifier
 from ..utils.helpers import none_to_float
 
 __logger__ = logging.getLogger(__name__)
 
 
+class _NegatedLyapunovModelWrapper(nn.Module):
+    """Wrap ``V(x)`` as ``-V(x)`` for IBP-based sublevel filtering."""
+
+    def __init__(self, lyap_model: nn.Module):
+        super().__init__()
+        self.lyap_model = lyap_model
+
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        return -self.lyap_model(x)
+
+
 @dataclass(frozen=True)
 class RegionCertificationResult:
     """Result container for a full-region certification pass."""
+
     success: bool
     rho: float
     counter_examples: NDArray
@@ -108,10 +120,13 @@ class RecursiveCertificationResult:
 
     def with_failed(self, regions: th.Tensor) -> RecursiveCertificationResult:
         return replace(self, failed=regions)
-    
-    def with_cert_and_failed(self, bs: th.Tensor, is_safe: th.Tensor) -> RecursiveCertificationResult:
-        failed_mask = ~is_safe
 
+    def with_cert_and_failed(
+        self,
+        bs: th.Tensor,
+        is_safe: th.Tensor,
+    ) -> RecursiveCertificationResult:
+        failed_mask = ~is_safe
         certified_bs = bs[is_safe]
         failed_bs = bs[failed_mask]
         return replace(self, certified=certified_bs, failed=failed_bs)
@@ -127,30 +142,16 @@ class RecursiveCertificationResult:
         )
 
 
-class _NegatedLyapunovModelWrapper(nn.Module):
-    """Wrap ``V(x)`` as ``-V(x)`` for outside-sublevel proofs."""
-
-    def __init__(self, lyap_model: nn.Module):
-        super().__init__()
-        self.lyap_model = lyap_model
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return -self.lyap_model(x)
-
-
 class BaseCertifier(ABC):
-    """
-    Abstract base class for Lyapunov certifiers. 
-    Definie the core logic for the Certification, while delegating backend-specific details to subclasses via abstract methods.
-    """
+    """Abstract base class for Lyapunov certifiers."""
 
     def __init__(
-            self, 
-            policy_model: nn.Module,
-            lyap_model: nn.Module,
-            dyn_model: nn.Module,
-            config: LyapunovCertificationConfig,
-            device: th.device = th.device("cpu"),
+        self,
+        policy_model: nn.Module,
+        lyap_model: nn.Module,
+        dyn_model: nn.Module,
+        config: LyapunovCertificationConfig,
+        device: th.device = th.device("cpu"),
     ):
         """Initialize a backend-agnostic Lyapunov certifier.
 
@@ -177,9 +178,7 @@ class BaseCertifier(ABC):
         self.dyn_model = dyn_model.to(self.device).eval()
 
         self.bounds = self._resolve_bounds(config.cert_bounds, device)
-        self.ibp_filter_model = self._get_ibp_filter(
-            self.lyap_model, config.state_dim, device
-        ) if config.use_ibp_filter else None
+        self.negative_filter = self._build_negated_lyapunov_filter() if config.use_ibp_filter else None
         self.regions = None
         self.verifier = None
         self.details = None
@@ -190,50 +189,23 @@ class BaseCertifier(ABC):
 
     @abstractmethod
     def setup_backend(self, *args, **kwargs) -> None:
-        """Initialize backend-specific verifier state.
-
-        Parameters
-        ----------
-        *args
-            Backend-specific positional arguments.
-        **kwargs
-            Backend-specific keyword arguments.
-        """
-        pass
+        """Initialize backend-specific verifier state."""
 
     @abstractmethod
     def _certify_batched_regions(
-            self,
-            bs: th.Tensor,
-            rho: float,
-            early_exit: bool = True,
-            *args, **kwargs
+        self,
+        bs: th.Tensor,
+        rho: float,
+        early_exit: bool = True,
+        *args,
+        **kwargs,
     ) -> th.Tensor:
-        """Certify a batch of axis-aligned regions.
+        """Certify a batch of axis-aligned regions."""
 
-        Parameters
-        ----------
-        bs : th.Tensor
-            Packed region bounds with shape ``(n, 2, state_dim)``.
-        rho : float
-            Lyapunov level-set value to certify.
-        early_exit : bool, optional
-            If ``True``, backend may stop once a violation is found.
-        *args
-            Backend-specific positional arguments.
-        **kwargs
-            Backend-specific keyword arguments.
-
-        Returns
-        -------
-        th.Tensor
-            Boolean tensor indicating safe regions.
-        """
-        pass
 
     # ==========================================
-    # CORE LOGIC
-    # ==========================================
+    # COMMON UTILITIES
+    # =========================================
     @staticmethod
     def _build_center_refined_axis_edges(
         lb: th.Tensor,
@@ -277,25 +249,7 @@ class BaseCertifier(ABC):
 
     @staticmethod
     def _resolve_bounds(bounds: Sequence[float], device: th.device) -> th.Tensor:
-        """Convert state bounds to a tensor on the target device.
-
-        Parameters
-        ----------
-        bounds : Sequence[float]
-            Lower and upper bounds as ``(2, state_dim)``.
-        device : th.device
-            Device where the tensor should be allocated.
-
-        Returns
-        -------
-        th.Tensor
-            Bounds tensor with shape ``(2, state_dim)`` and dtype ``float32``.
-
-        Raises
-        ------
-        ValueError
-            If the bounds do not have shape ``(2, state_dim)``.
-        """
+        """Convert state bounds to a tensor on the target device."""
         bounds = th.as_tensor(bounds, dtype=th.float32, device=device)
         if bounds.ndim != 2 or bounds.shape[0] != 2:
             raise ValueError("bounds must be a sequence of shape (2, nx) [lb, ub].")
@@ -303,10 +257,10 @@ class BaseCertifier(ABC):
 
     @staticmethod
     def _iterative_rho_search(
-        total:int, 
-        desc: str, 
-        initial_values: tuple[float, float], 
-        step_fn: callable
+        total: int,
+        desc: str,
+        initial_values: tuple[float, float],
+        step_fn: callable,
     ) -> tuple[float | None, float]:
         """Run iterative rho updates until stopping criterion is met.
 
@@ -345,47 +299,42 @@ class BaseCertifier(ABC):
             for _ in range(total):
                 try:
                     stop, rho_lo, rho_up = step_fn(rho_lo, rho_up)
-                    if stop: 
+                    if stop:
                         break
                 finally:
                     progress.update(
-                        task, 
+                        task,
                         advance=1,
-                        rho_lo=none_to_float(rho_lo), 
-                        rho_up=none_to_float(rho_up)
+                        rho_lo=none_to_float(rho_lo),
+                        rho_up=none_to_float(rho_up),
                     )
                     progress.refresh()
         return rho_lo, rho_up
+    
+    def _build_negated_lyapunov_filter(self) -> BoundedModule:
+        """Construct a bounded model for upper bounds on ``-V(x)``."""
+        if not isinstance(self.lyap_model, nn.Module):
+            raise ValueError("Lyapunov model must be provided to construct IBP filter.")
+
+        negated_lyap_model = _NegatedLyapunovModelWrapper(self.lyap_model).to(self.device)
+        negated_lyap_model.eval()
+
+        dummy_x = th.zeros(1, self.config.state_dim, device=self.device)
+        return BoundedModule(
+            negated_lyap_model,
+            (dummy_x,),
+            device=self.device,
+            verbose=False,
+            bound_opts={"perturb_bound": True},
+        )
 
     def _get_suppress_ctx(self):
-        """Return context manager controlling native backend output.
-
-        Returns
-        -------
-        contextlib.AbstractContextManager
-            Suppression context if enabled, otherwise ``nullcontext``.
-        """
+        """Return context manager controlling native backend output."""
         if self.config.suppress_native_output:
             lirpa_ctx = suppress_native_output(suppress_stderr=True)
         else:
             lirpa_ctx = nullcontext()
         return lirpa_ctx
-
-    @staticmethod
-    def _get_ibp_filter(lyap_model: nn.Module, input_size: int, device: th.device) -> BoundedModule:
-        if not isinstance(lyap_model, nn.Module):
-            raise ValueError("Lyapunov model must be provided to construct IBP filter.")
-    
-        negated_lyap_model = _NegatedLyapunovModelWrapper(lyap_model).to(device)
-        negated_lyap_model.eval()
-        dummy_x = th.zeros(1, input_size, device=device)
-        return BoundedModule(
-            negated_lyap_model,
-            (dummy_x,),
-            device=device,
-            verbose=False,
-            bound_opts={"perturb_bound": True},
-        )
 
     def _filter_sublevel_regions(
         self,
@@ -393,11 +342,11 @@ class BaseCertifier(ABC):
         rho: float,
     ) -> tuple[th.Tensor, th.Tensor]:
         """Keep only boxes not proven to satisfy ``V(x) > rho`` everywhere."""
-        if len(bs) == 0:
-            return bs, bs
+        if len(bs) == 0 or self.negative_filter is None:
+            return bs, bs[:0]
 
-        lbs, ubs = self._unpack_regions(bs)
-
+        lbs = bs[:, 0]
+        ubs = bs[:, 1]
         keep_mask = th.ones(len(lbs), dtype=th.bool, device=self.device)
         negated_threshold = -float(rho)
 
@@ -411,7 +360,7 @@ class BaseCertifier(ABC):
             bounded_input = BoundedTensor(batch_centers, ptb)
 
             with th.no_grad():
-                _, ub_out = self.ibp_filter_model.compute_bounds(
+                _, ub_out = self.negative_filter.compute_bounds(
                     x=(bounded_input,),
                     method="ibp",
                 )
@@ -419,16 +368,19 @@ class BaseCertifier(ABC):
             batch_is_outside = ub_out.flatten() <= negated_threshold
             keep_mask[start_idx:end_idx] = ~batch_is_outside
 
-        if keep_mask.all():
+        kept_bs = bs[keep_mask]
+        filtered_bs = bs[~keep_mask]
+
+        if len(filtered_bs) == 0:
             return bs, bs[:0]
 
         __logger__.info(
             "Pruned %d / %d regions proven outside V(x) <= %.6f.",
-            int((~keep_mask).sum().item()),
-            len(lbs),
+            len(filtered_bs),
+            len(bs),
             float(rho),
         )
-        return bs[keep_mask], bs[~keep_mask]
+        return kept_bs, filtered_bs
 
     def _regions_tensor_to_np(self, regions: th.Tensor) -> NDArray:
         """Convert a region tensor ``(N, 2, state_dim)`` to NumPy."""
@@ -461,38 +413,25 @@ class BaseCertifier(ABC):
         """Unpack ``(N, 2, state_dim)`` regions into lower/upper bounds."""
         return bs[:, 0], bs[:, 1]
 
-    def _setup_verifier(self) -> ClosedLoopLyapunovConditionVerifier:
-        """Construct and initialize the closed-loop Lyapunov verifier.
-
-        Returns
-        -------
-        ClosedLoopLyapunovConditionVerifier
-            Verifier module moved to ``self.device`` and set to eval mode.
-        """
+    def _setup_verifier(self) -> ClosedLoopLyapunovCertificationVerifier:
+        """Construct and initialize the closed-loop Lyapunov verifier."""
         lbx_batched = self.bounds[0].unsqueeze(0)
         ubx_batched = self.bounds[1].unsqueeze(0)
 
-        verifier = ClosedLoopLyapunovConditionVerifier(
+        verifier = ClosedLoopLyapunovCertificationVerifier(
             policy_model=self.policy_model,
             lyap_model=self.lyap_model,
             dyn_model=self.dyn_model,
             lbx=lbx_batched,
             ubx=ubx_batched,
             invariance_weight=self.config.invariance_weight,
+            kappa=self.config.kappa,
         )
 
         return verifier
 
     def _resolve_origin_exclusion(self) -> th.Tensor:
-        """Resolve origin exclusion widths per state dimension.
-
-        Returns
-        -------
-        th.Tensor
-            Non-negative exclusion widths with shape ``(state_dim,)`` clipped to
-            remain within available bounds around the origin.
-        """
-        # Default: 1% of per-dimension bound radius, capped at 0.1.
+        """Resolve origin exclusion widths per state dimension."""
         default_exclusion = th.minimum(
             self.bounds.abs().max(dim=0).values * 0.01,
             th.full((self.config.state_dim,), 0.1, dtype=th.float32, device=self.device),
@@ -514,13 +453,10 @@ class BaseCertifier(ABC):
         else:
             exclusion = th.as_tensor(raw_exclusion, dtype=th.float32, device=self.device).reshape(-1)
             if exclusion.numel() != self.config.state_dim:
-                raise ValueError(
-                    "cert_origin_exclusion must be scalar or match state_dim."
-                )
+                raise ValueError("cert_origin_exclusion must be scalar or match state_dim.")
             if (exclusion < 0).any():
                 raise ValueError("cert_origin_exclusion must be non-negative.")
 
-        # Ensure the exclusion does not extend outside available bounds around zero.
         max_centered = th.clamp(th.minimum(-self.bounds[0], self.bounds[1]), min=0.0)
         return th.minimum(exclusion, max_centered)
 
@@ -548,26 +484,24 @@ class BaseCertifier(ABC):
         """
         if rho < 0.0:
             raise ValueError(f"rho must be non-negative, got {rho}.")
-        
+
         empty_result = RecursiveCertificationResult.empty(
-            state_dim=self.config.state_dim, device=self.device
+            state_dim=self.config.state_dim,
+            device=self.device,
         )
         if len(bs) == 0:
             return empty_result
 
         filtered_bs = bs[:0]
 
-        if self.config.use_ibp_filter and self.ibp_filter_model is not None:
+        if self.config.use_ibp_filter and self.negative_filter is not None:
             bs, filtered_bs = self._filter_sublevel_regions(bs, rho)
 
         result = empty_result.with_counterexamples(filtered_bs)
         if len(bs) == 0:
             return result
 
-        is_safe = self._certify_batched_regions(
-            bs, rho, early_exit
-        )
-
+        is_safe = self._certify_batched_regions(bs, rho, early_exit)
         return result.with_cert_and_failed(bs, is_safe)
 
     def _collect_certification_details(self, rho: float) -> RegionCertificationResult:
@@ -585,7 +519,8 @@ class BaseCertifier(ABC):
             counterexamples as NumPy arrays.
         """
         recursive_result = RecursiveCertificationResult.empty(
-            state_dim=self.config.state_dim, device=self.device
+            state_dim=self.config.state_dim,
+            device=self.device,
         )
 
         pending_bs = self.regions
@@ -671,8 +606,7 @@ class BaseCertifier(ABC):
         trial = rho_up * self.config.rho_scaling
         if self.is_rho_certified(rho=trial):
             return False, trial, trial
-        else:
-            return True, rho_lo, trial
+        return True, rho_lo, trial
 
     def _scale_rho_down(self, rho_lo: float | None, rho_up: float) -> tuple[bool, float | None, float]:
         """Scales down ``rho_up`` until the new trial is either certified 
@@ -694,7 +628,7 @@ class BaseCertifier(ABC):
         trial = max(self.config.rho_min, rho_up / self.config.rho_scaling)
         if self.is_rho_certified(rho=trial):
             return True, trial, rho_up
-         
+
         if trial <= self.config.rho_min:
             return True, None, trial
         return False, rho_lo, trial
@@ -724,17 +658,10 @@ class BaseCertifier(ABC):
 
         if rho_up - rho_lo <= self.config.bisection_tol:
             return True, rho_lo, rho_up
-        else:
-            return False, rho_lo, rho_up
-    
-    def _build_regions(self) -> th.Tensor:
-        """Build packed axis-aligned grid cells excluding the origin window.
+        return False, rho_lo, rho_up
 
-        Returns
-        -------
-        th.Tensor
-            Region bounds with shape ``(n, 2, state_dim)``.
-        """
+    def _build_regions(self) -> th.Tensor:
+        """Build packed axis-aligned grid cells excluding the origin window."""
         origin_exclusion = self._resolve_origin_exclusion()
         lbx, ubx = self.bounds[0], self.bounds[1]
         bin_counts = self.config.bins_per_dim
@@ -766,59 +693,40 @@ class BaseCertifier(ABC):
         return self._pack_regions(lbs, ubs)
 
     def is_rho_certified(self, rho: float) -> bool:
-        """Check whether all regions satisfy Lyapunov conditions at ``rho``.
-
-        Parameters
-        ----------
-        rho : float
-            Lyapunov level-set value to test.
-
-        Returns
-        -------
-        bool
-            ``True`` if certification succeeds for all regions.
-        """
+        """Check whether all regions satisfy Lyapunov conditions at ``rho``."""
         result = self._process_regions(self.regions, rho, early_exit=True)
         return result.success
 
     def find_max_rho(self, rho_estimate: float) -> float:
-        """Search for the largest certifiable rho and return details.
-
-        Parameters
-        ----------
-        rho_estimate : float
-            Positive initial guess for rho search.
-
-        Returns
-        -------
-        float
-            Best certified ``rho``
-
-        Raises
-        ------
-        ValueError
-            If ``rho_estimate`` is not positive.
-        """
+        """Search for the largest certifiable rho and return it."""
         if rho_estimate <= 0:
             raise ValueError("rho_estimate must be positive.")
 
-        __logger__.info(f"Starting Lyapunov certification with {self.config.cert_method.upper()} method.", )
+        __logger__.info(
+            "Starting Lyapunov certification with %s method.",
+            self.config.cert_method.upper(),
+        )
 
         self.verifier = self._setup_verifier()
         self.regions = self._build_regions()
-        __logger__.info(f"Built {len(self.regions)} certification regions (state_dim={self.config.state_dim}).")
+        __logger__.info(
+            "Built %d certification regions (state_dim=%d).",
+            len(self.regions),
+            self.config.state_dim,
+        )
         self.setup_backend()
 
         if self.config.rho_min > rho_estimate:
             __logger__.warning(
-                f"Provided rho_estimate ({rho_estimate:.4f}) is below rho_min ({self.config.rho_min:.4f}). Starting search from rho_min."
+                "Provided rho_estimate (%.4f) is below rho_min (%.4f). Starting search from rho_min.",
+                rho_estimate,
+                self.config.rho_min,
             )
             initial_rho = self.config.rho_min
         else:
             initial_rho = float(rho_estimate)
 
         initial_ok = self.is_rho_certified(rho=initial_rho)
-
         has_certified_lower_bound = True
 
         # Scale up
@@ -827,11 +735,13 @@ class BaseCertifier(ABC):
                 total=self.config.max_scale_steps,
                 desc="Scale up",
                 initial_values=(initial_rho, initial_rho),
-                step_fn=self._scale_rho_up
+                step_fn=self._scale_rho_up,
             )
-            
             if rho_lo == rho_up:
-                __logger__.warning(f"Maximum scaling steps ({self.config.max_scale_steps}) reached without finding an upper bound.")
+                __logger__.warning(
+                    "Maximum scaling steps (%d) reached without finding an upper bound.",
+                    self.config.max_scale_steps,
+                )
 
         # Scale down
         else:
@@ -839,7 +749,7 @@ class BaseCertifier(ABC):
                 total=self.config.max_scale_steps,
                 desc="Scale down",
                 initial_values=(None, initial_rho),
-                step_fn=self._scale_rho_down
+                step_fn=self._scale_rho_down,
             )
 
             # Fallback
@@ -858,7 +768,7 @@ class BaseCertifier(ABC):
                 total=self.config.max_bisection_steps,
                 desc="Bisect rho",
                 initial_values=(rho_lo, rho_up),
-                step_fn=self._bisect_rho
+                step_fn=self._bisect_rho,
             )
 
         if not has_certified_lower_bound:
@@ -868,24 +778,13 @@ class BaseCertifier(ABC):
             )
             return self.config.rho_min
 
-        __logger__.info(f"Found best certified rho: {rho_lo:.6f}")
+        __logger__.info("Found best certified rho: %.6f", rho_lo)
         return rho_lo
-    
+
     def certify(self, rho_estimate: float) -> RegionCertificationResult:
-        """Convenience method to run the full certification and return details.
-
-        Parameters
-        ----------
-        rho_estimate : float
-            Positive initial guess for rho search.
-
-        Returns
-        -------
-        RegionCertificationResult
-            Detailed region-level certification result at the best certified rho.
-        """
+        """Convenience method to run the full certification and return details."""
         best_rho = self.find_max_rho(rho_estimate)
-        __logger__.info(f"Found best certified rho: {best_rho:.6f}")
+        __logger__.info("Found best certified rho: %.6f", best_rho)
         self.details = self._collect_certification_details(rho=best_rho)
         return self.details
 
@@ -893,27 +792,14 @@ class BaseCertifier(ABC):
         self,
         save_folder: str | os.PathLike,
     ) -> Path:
-        """Save certification details and config to disk.
-
-        Parameters
-        ----------
-        save_folder : str | os.PathLike
-            Target folder for certification artifacts.
-
-        Returns
-        -------
-        Path
-            Path to the saved certification details archive.
-        """
+        """Save certification details and config to disk."""
         save_path = Path(save_folder).resolve()
         save_path.mkdir(parents=True, exist_ok=True)
 
-        # Details saving
+        details_path = save_path / "certification_details.npz"
         if self.details is not None:
-            details_path = save_path / "certification_details.npz"
             self.details.save(details_path)
 
-        # Config saving
         config_path = save_path / "certification_config.json"
         self.config.save(config_path)
 

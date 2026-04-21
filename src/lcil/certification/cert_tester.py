@@ -8,7 +8,7 @@ from numpy.typing import NDArray
 
 from .certifier_base import RegionCertificationResult
 from .config import LyapunovCertificationConfig
-from .models import ClosedLoopLyapunovConditionVerifier
+from .models import ClosedLoopLyapunovCertificationVerifier
 from ..utils.config_io import JsonConfigMixin
 
 __logger__ = logging.getLogger(__name__)
@@ -82,13 +82,14 @@ class CertificationResultTester:
         lbx = th.tensor(config.cert_bounds[0], dtype=th.float32, device=self.device).unsqueeze(0)
         ubx = th.tensor(config.cert_bounds[1], dtype=th.float32, device=self.device).unsqueeze(0)
 
-        self.verifier = ClosedLoopLyapunovConditionVerifier(
+        self.verifier = ClosedLoopLyapunovCertificationVerifier(
             policy_model=self.policy_model,
             lyap_model=self.lyap_model,
             dyn_model=self.dyn_model,
             lbx=lbx,
             ubx=ubx,
             invariance_weight=config.invariance_weight,
+            kappa=config.kappa,
         ).to(self.device).eval()
 
     def _evaluate_regions(
@@ -97,7 +98,6 @@ class CertificationResultTester:
         *,
         name: str,
         rho_tensor: th.Tensor,
-        kappa_tensor: th.Tensor,
         tolerance: float,
         rollout_steps: int,
     ) -> CertificationCategoryTestResult:
@@ -116,7 +116,7 @@ class CertificationResultTester:
         violations_over_time = []
         with th.no_grad():
             for _ in range(rollout_steps):
-                condition_val = self.verifier(x_t, rho=rho_tensor, kappa=kappa_tensor).squeeze(-1)
+                condition_val = self.verifier(x_t, rho=rho_tensor).squeeze(-1)
                 violations_over_time.append(condition_val.cpu().numpy())
 
                 u_t = self.policy_model(x_t)
@@ -166,14 +166,12 @@ class CertificationResultTester:
             and 'counter_examples' categories.
         """
         rho_tensor = th.tensor(cert_result.rho, dtype=th.float32, device=self.device)
-        kappa_tensor = th.tensor(self.config.kappa, dtype=th.float32, device=self.device)
         tolerance = self.config.condition_tolerance
 
         certified = self._evaluate_regions(
             cert_result.certified_regions,
             name="certified",
             rho_tensor=rho_tensor,
-            kappa_tensor=kappa_tensor,
             tolerance=tolerance,
             rollout_steps=rollout_steps,
         )
@@ -181,7 +179,6 @@ class CertificationResultTester:
             cert_result.failed_regions,
             name="failed",
             rho_tensor=rho_tensor,
-            kappa_tensor=kappa_tensor,
             tolerance=tolerance,
             rollout_steps=rollout_steps,
         )
@@ -189,7 +186,6 @@ class CertificationResultTester:
             cert_result.counter_examples,
             name="counter_examples",
             rho_tensor=rho_tensor,
-            kappa_tensor=kappa_tensor,
             tolerance=tolerance,
             rollout_steps=rollout_steps,
         )

@@ -25,10 +25,9 @@ class _ABCrownModelWrapper(nn.Module):
         super().__init__()
         self.verifier = verifier
         self.register_buffer("rho", th.tensor(0.0, dtype=th.float32, device=device))
-        self.register_buffer("kappa", th.tensor(0.0, dtype=th.float32, device=device))
 
     def forward(self, x: th.Tensor) -> th.Tensor:
-        return self.verifier(x, self.rho, self.kappa)
+        return self.verifier(x, self.rho)
 
 class ABCrownCertifier(BaseCertifier):
     """
@@ -57,7 +56,6 @@ class ABCrownCertifier(BaseCertifier):
             ()
         )
         self.wrapped_model = _ABCrownModelWrapper(self.verifier, self.device)
-        self.wrapped_model.kappa.fill_(self.config.kappa)
         self.wrapped_model.eval()
 
     @staticmethod
