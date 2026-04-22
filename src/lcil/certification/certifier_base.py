@@ -689,7 +689,7 @@ class BaseCertifier(ABC):
             )
 
         if not has_certified_lower_bound:
-            __logger__.warning("No certified rho found, all regions filtered.")
+            __logger__.warning("No certified rho found.")
             return 0.0
 
         __logger__.info("Found best certified rho: %.6f", rho_lo)
@@ -787,6 +787,13 @@ class BaseCertifier(ABC):
 
         if best_rho >= self.config.rho_min:
             __logger__.info("Found best certified rho: %.6f", best_rho)
+        else:
+            best_rho = rho_estimate
+            __logger__.warning(
+                "No certified rho found above rho_min (%.0e). Returning provided estimate (%.6f) for details collection, which may be fully filtered.",
+                self.config.rho_min,
+                best_rho,
+            )
 
         self.details = self.collect_certification_details(rho=best_rho)
         return self.details
