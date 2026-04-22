@@ -50,7 +50,7 @@ def save_model_checkpoint(model: nn.Module, save_path: str | os.PathLike) -> Non
 
 
 class LinearDynamics(nn.Module):
-    """Simple linear dynamics model :math:`\dot{x} = A x + B u`."""
+    """Simple linear dynamics model $\dot{x} = A x + B u$."""
 
     def __init__(self, A: th.Tensor, B: th.Tensor):
         super().__init__()

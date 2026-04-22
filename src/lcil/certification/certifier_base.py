@@ -99,7 +99,7 @@ class RecursiveCertificationResult:
 
     @property
     def success(self) -> bool:
-        """Whether certification is successful and non-vacuous.
+        """Whether certification is successful and not all filtered.
 
         A result is considered successful only if no region failed and at least
         one region is inside the tested sublevel set and certified.
@@ -504,89 +504,6 @@ class BaseCertifier(ABC):
         is_safe = self._certify_batched_regions(bs, rho, early_exit)
         return result.with_cert_and_failed(bs, is_safe)
 
-    def _collect_certification_details(self, rho: float) -> RegionCertificationResult:
-        """Certify all pre-built regions for a fixed ``rho`` and collect result details.
-
-        Parameters
-        ----------
-        rho : float
-            Lyapunov level-set value to test.
-
-        Returns
-        -------
-        RegionCertificationResult
-            Aggregated success flag plus certified regions, failed regions, and
-            counterexamples as NumPy arrays.
-        """
-        recursive_result = RecursiveCertificationResult.empty(
-            state_dim=self.config.state_dim,
-            device=self.device,
-        )
-
-        pending_bs = self.regions
-        max_depth = self.config.max_recursion_depth
-
-        with Progress(
-            TextColumn("[bold]{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TextColumn("failed: {task.fields[failed]:.0f}"),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-        ) as progress:
-            task = progress.add_task(
-                "Certify and split",
-                total=float(max_depth + 1),
-                failed=float(len(pending_bs)),
-            )
-
-            for depth in range(max_depth + 1):
-                progress.update(task, failed=float(len(pending_bs)))
-
-                if len(pending_bs) == 0:
-                    progress.update(task, completed=max_depth + 1)
-                    __logger__.info("All regions failed or filtered out.")
-                    break
-
-                step_result = self._process_regions(
-                    pending_bs,
-                    rho,
-                    early_exit=False,
-                )
-                if depth >= max_depth:
-                    recursive_result = recursive_result + step_result
-                    progress.update(task, completed=max_depth + 1)
-                    break
-
-                recursive_result = recursive_result + step_result.with_failed(step_result.failed[:0])
-
-                if len(step_result.failed) == 0:
-                    progress.update(task, completed=max_depth + 1)
-                    __logger__.info("All regions certified.")
-                    break
-
-                pending_bs = self._split_failed_regions(step_result.failed)
-                progress.update(task, advance=1)
-                progress.refresh()
-
-        certified_regions_np = self._regions_tensor_to_np(recursive_result.certified)
-        failed_regions_np = self._regions_tensor_to_np(recursive_result.failed)
-        counter_examples_np = self._regions_tensor_to_np(recursive_result.counterexamples)
-
-        if recursive_result.failed.numel() == 0 and recursive_result.certified.numel() == 0:
-            __logger__.warning(
-                "Certification at rho=%.6f is vacuous: all regions were filtered as outside V(x) <= rho.",
-                float(rho),
-            )
-
-        return RegionCertificationResult(
-            success=recursive_result.success,
-            rho=rho,
-            counter_examples=counter_examples_np,
-            failed_regions=failed_regions_np,
-            certified_regions=certified_regions_np,
-        )
-
     def _scale_rho_up(self, rho_lo: float, rho_up: float) -> tuple[bool, float, float]:
         """Scales up ``rho_lo`` until the new trial is not certified.
 
@@ -772,21 +689,114 @@ class BaseCertifier(ABC):
             )
 
         if not has_certified_lower_bound:
-            __logger__.warning(
-                "Returning rho_min fallback (%.0e); no non-vacuous certified rho found.",
-                self.config.rho_min,
-            )
-            return self.config.rho_min
+            __logger__.warning("No certified rho found, all regions filtered.")
+            return 0.0
 
         __logger__.info("Found best certified rho: %.6f", rho_lo)
         return rho_lo
 
+
+    def collect_certification_details(self, rho: float) -> RegionCertificationResult:
+        """Certify all pre-built regions for a fixed ``rho`` and collect result details.
+
+        Parameters
+        ----------
+        rho : float
+            Lyapunov level-set value to test.
+
+        Returns
+        -------
+        RegionCertificationResult
+            Aggregated success flag plus certified regions, failed regions, and
+            counterexamples as NumPy arrays.
+        """
+        recursive_result = RecursiveCertificationResult.empty(
+            state_dim=self.config.state_dim,
+            device=self.device,
+        )
+
+        pending_bs = self.regions
+        max_depth = self.config.max_recursion_depth
+
+        with Progress(
+            TextColumn("[bold]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TextColumn("failed: {task.fields[failed]:.0f}"),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            task = progress.add_task(
+                "Certify and split",
+                total=float(max_depth + 1),
+                failed=float(len(pending_bs)),
+            )
+
+            for depth in range(max_depth + 1):
+                progress.update(task, failed=float(len(pending_bs)))
+
+                if len(pending_bs) == 0:
+                    progress.update(task, completed=max_depth + 1)
+                    __logger__.info("All regions failed or filtered out.")
+                    break
+
+                step_result = self._process_regions(
+                    pending_bs,
+                    rho,
+                    early_exit=False,
+                )
+                if depth >= max_depth:
+                    recursive_result = recursive_result + step_result
+                    progress.update(task, completed=max_depth + 1)
+                    break
+
+                recursive_result = recursive_result + step_result.with_failed(step_result.failed[:0])
+
+                if len(step_result.failed) == 0:
+                    progress.update(task, completed=max_depth + 1)
+                    __logger__.info("All regions certified.")
+                    break
+
+                pending_bs = self._split_failed_regions(step_result.failed)
+                progress.update(task, advance=1)
+                progress.refresh()
+
+        certified_regions_np = self._regions_tensor_to_np(recursive_result.certified)
+        failed_regions_np = self._regions_tensor_to_np(recursive_result.failed)
+        counter_examples_np = self._regions_tensor_to_np(recursive_result.counterexamples)
+
+        if recursive_result.failed.numel() == 0 and recursive_result.certified.numel() == 0:
+            __logger__.warning(
+                "Certification at rho=%.6f is completely filtered: all regions are outside V(x) <= rho.",
+                float(rho),
+            )
+
+        self.details = RegionCertificationResult(
+            success=recursive_result.success,
+            rho=rho,
+            counter_examples=counter_examples_np,
+            failed_regions=failed_regions_np,
+            certified_regions=certified_regions_np,
+        )
+        self.log_details()
+        return self.details
+
     def certify(self, rho_estimate: float) -> RegionCertificationResult:
         """Convenience method to run the full certification and return details."""
         best_rho = self.find_max_rho(rho_estimate)
-        __logger__.info("Found best certified rho: %.6f", best_rho)
-        self.details = self._collect_certification_details(rho=best_rho)
+
+        if best_rho >= self.config.rho_min:
+            __logger__.info("Found best certified rho: %.6f", best_rho)
+
+        self.details = self.collect_certification_details(rho=best_rho)
         return self.details
+    
+    def log_details(self) -> None:
+        __logger__.info("Certification success: %s", self.details.success)
+        __logger__.info("Certified rho: %.6f", self.details.rho)
+        __logger__.info("Certified regions: %d", len(self.details.certified_regions))
+        __logger__.info("Failed regions: %d", len(self.details.failed_regions))
+        __logger__.info("Counterexamples: %d", len(self.details.counter_examples))
 
     def save(
         self,

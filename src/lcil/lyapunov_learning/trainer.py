@@ -112,27 +112,16 @@ class LyapunovTrainer:
         self.origin = th.zeros(1, self.config.state_dim, dtype=th.float32, device=self.device)
         self.lbx = self._to_tensor(self.config.state_bounds[0])
         self.ubx = self._to_tensor(self.config.state_bounds[1])
+        self.center = 0.5 * (self.lbx + self.ubx)
 
         self.trainable_params = self._get_train_params()
         self.optimizer = th.optim.Adam(self.trainable_params, self.config.learning_rate)
         self.cex_verifier = self._get_cex_verifier()
-        self.bounded_lyapunov = self._build_lyapunov_bounded_model()
+        self.bounded_lyapunov = self._get_lyapunov_bounded_model()
+        self.bounded_lyapunov_input = self._build_bounded_positivity_input()
+
         self.results: LyapunovTrainingResult | None = None
         self.metrics: LyapunovTrainingMetrics | None = None
-
-    def _build_lyapunov_bounded_model(self) -> BoundedModule:
-        """Construct a bounded model for direct lower bounds on ``V(x)``."""
-        if not isinstance(self.lyap_model, nn.Module):
-            raise ValueError("Lyapunov model must be provided to construct bounds.")
-        
-        dummy_x = th.zeros(1, self.config.state_dim, device=self.device)
-        return BoundedModule(
-            self.lyap_model,
-            (dummy_x,),
-            device=self.device,
-            verbose=False,
-            bound_opts={"perturb_bound": True},
-        )
 
     def _set_train_modes(self) -> None:
         for param in self.lyap_model.parameters():
@@ -174,27 +163,40 @@ class LyapunovTrainer:
             invariance_weight=self.config.invariance_weight,
             kappa=self.config.kappa,
         ).to(self.device)
+    
+    def _get_lyapunov_bounded_model(self) -> BoundedModule:
+        """Construct a bounded model for direct lower bounds on ``V(x)``."""
+        if not isinstance(self.lyap_model, nn.Module):
+            raise ValueError("Lyapunov model must be provided to construct bounds.")
+
+        device = th.device(self.device)
+        dummy_x = th.zeros(1, self.config.state_dim, device=device)
+        return BoundedModule(
+            self.lyap_model,
+            (dummy_x,),
+            device=device,
+            verbose=False,
+            bound_opts={"perturb_bound": True},
+        )
+
+    def _build_bounded_positivity_input(self) -> BoundedTensor:
+        """Create the reusable bounded input describing the fixed training box."""
+        batch_lbs = self.lbx.reshape(1, -1)
+        batch_ubs = self.ubx.reshape(1, -1)
+        batch_centers = self.center.reshape(1, -1)
+        ptb = PerturbationLpNorm(norm=float("inf"), x_L=batch_lbs, x_U=batch_ubs)
+        return BoundedTensor(batch_centers, ptb)
 
     def _to_tensor(self, arr: NDArray | list[float]) -> th.Tensor:
         """Utility to convert numpy arrays or lists to torch tensors on the correct device."""
         return th.tensor(arr, dtype=th.float32, device=self.device)
 
-    def _compute_lyapunov_lower_bound(self) -> th.Tensor:
-        """Compute a lower bound on ``V(x)`` over an axis-aligned box."""
-        batch_lbs = self._to_tensor(self.lbx)
-        batch_ubs = self._to_tensor(self.ubx)
-
-        if batch_lbs.ndim == 1:
-            batch_lbs = batch_lbs.unsqueeze(0)
-        if batch_ubs.ndim == 1:
-            batch_ubs = batch_ubs.unsqueeze(0)
-        if batch_lbs.shape != batch_ubs.shape:
-            raise ValueError("lbx and ubx must have the same shape.")
-
-        batch_centers = 0.5 * (batch_lbs + batch_ubs)
-        ptb = PerturbationLpNorm(norm=float("inf"), x_L=batch_lbs, x_U=batch_ubs)
-        bounded_input = BoundedTensor(batch_centers, ptb)
-        lower, _ = self.bounded_lyapunov.compute_bounds(x=(bounded_input,), method="backward", bound_opts={"perturb_bound": True})
+    def _compute_lyapunov_lower_bound(self, method: str = "backward") -> th.Tensor:
+        """Compute the bounded lower positivity estimate over the fixed training box."""
+        lower, _ = self.bounded_lyapunov.compute_bounds(
+            x=(self.bounded_lyapunov_input,),
+            method=method,
+        )
         return lower
 
     def _formal_positivity_loss(self) -> th.Tensor:
@@ -239,7 +241,7 @@ class LyapunovTrainer:
             loss_condition
             + self.config.roa_weight * loss_roa
             + self.config.l1_weight * loss_l1
-            + self.config.pos_scale * loss_origin
+            + self.config.equilibrium_weight * loss_origin
             + self.config.formal_positivity_weight * loss_formal_positivity
         )
 
@@ -267,9 +269,8 @@ class LyapunovTrainer:
         directions = directions / directions.norm(dim=1, keepdim=True).clamp(min=1e-8)
         radii = th.rand(self.config.roa_candidate_size, 1, device=self.device) * 0.4 + 0.6
         z_candidates = directions * radii  # between 0.6 and 1.0 in random directions
-        half_width = (self.ubx - self.lbx) / 2.0
-        center = (self.ubx + self.lbx) / 2.0
-        return z_candidates * half_width + center
+        half_width = 0.5 * (self.ubx - self.lbx)
+        return z_candidates * half_width + self.center
 
     def train(self) -> LyapunovTrainingResult:
         """Execute the CEGIS-style training loop."""

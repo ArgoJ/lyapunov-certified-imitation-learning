@@ -47,6 +47,9 @@ class LyapunovCertificationConfig(JsonConfigMixin):
     condition_tolerance : float
         Numerical tolerance for condition satisfaction. Positive values can be used 
         to relax the condition for improved numerical stability.
+    condition_margin : float
+        Optional additive safety margin on the decrease/invariance term during
+        certification. Defaults to ``0.0`` to keep certification unchanged.
     suppress_native_output : bool
         Whether to suppress native solver output (e.g., from AutoLiRPA or ABCrown) 
         during certification.
@@ -79,6 +82,7 @@ class LyapunovCertificationConfig(JsonConfigMixin):
     use_ibp_filter: bool = True
     cert_method: str = "alpha-crown"
     condition_tolerance: float = 1e-6
+    condition_margin: float = 0.0
     suppress_native_output: bool = True
     batch_size: int = 512
     max_recursion_depth: int = 10
@@ -114,6 +118,8 @@ class LyapunovCertificationConfig(JsonConfigMixin):
             raise ValueError(
                 f"center_refinement_factor must contain values in (0, 1]. Got: {str(refinement_factors)}"
             )
+        if self.condition_margin < 0.0:
+            raise ValueError("condition_margin must be non-negative.")
 
         # object.__setattr__, because of frozen=True
         object.__setattr__(self, "bins_per_dim", bins_per_dim)
@@ -133,6 +139,7 @@ class LyapunovCertificationConfig(JsonConfigMixin):
         max_scale_steps: int = 20,
         max_bisection_steps: int = 40,
         cert_method: str = "alpha-crown",
+        condition_margin: float = 0.0,
         suppress_native_output: bool = True,
         use_ibp_filter: bool = True,
         batch_size: int = 512,
@@ -158,6 +165,7 @@ class LyapunovCertificationConfig(JsonConfigMixin):
             "cert_method": cert_method,
             "use_ibp_filter": use_ibp_filter,
             "condition_tolerance": config.condition_tolerance,
+            "condition_margin": condition_margin,
             "suppress_native_output": suppress_native_output,
             "batch_size": batch_size,
             "max_recursion_depth": max_recursion_depth,
