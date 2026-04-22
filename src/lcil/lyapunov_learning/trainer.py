@@ -25,7 +25,8 @@ from .config import LyapunovTrainingConfig
 from .buffer import DynamicStateBuffer
 from .models import ClosedLoopLyapunovTrainingVerifier
 from .counterexample import (
-    estimate_rho_from_boundary,
+    BoundaryRhoDiagnostics,
+    estimate_rho_from_boundary_diagnostics,
     find_counter_examples,
     sample_uniform_box,
 )
@@ -50,10 +51,18 @@ class LyapunovTrainingMetrics:
 
     loss: NDArray
     rho_estimate: NDArray
+    rho_boundary_quantile: NDArray
+    rho_boundary_mean: NDArray
+    rho_feature_term_quantile: NDArray
+    rho_linear_term_quantile: NDArray
+    rho_feature_term_mean: NDArray
+    rho_linear_term_mean: NDArray
+    rho_feature_term_mean_share: NDArray
+    rho_linear_term_mean_share: NDArray
+    r_factor_fro_norm: NDArray
     buffer_size: NDArray
     num_mined_counterexamples: NDArray
     outer_iterations_completed: int = 0
-    train_steps_completed: int = 0
 
     @classmethod
     def from_num_outer_epochs(cls, num_outer_epochs: int) -> LyapunovTrainingMetrics:
@@ -65,11 +74,43 @@ class LyapunovTrainingMetrics:
         return cls(
             loss=nan_array.copy(),
             rho_estimate=nan_array.copy(),
+            rho_boundary_quantile=nan_array.copy(),
+            rho_boundary_mean=nan_array.copy(),
+            rho_feature_term_quantile=nan_array.copy(),
+            rho_linear_term_quantile=nan_array.copy(),
+            rho_feature_term_mean=nan_array.copy(),
+            rho_linear_term_mean=nan_array.copy(),
+            rho_feature_term_mean_share=nan_array.copy(),
+            rho_linear_term_mean_share=nan_array.copy(),
+            r_factor_fro_norm=nan_array.copy(),
             buffer_size=nan_array.copy(),
             num_mined_counterexamples=nan_array.copy(),
             outer_iterations_completed=0,
-            train_steps_completed=0,
         )
+
+    def fill_outer(
+        self,
+        outer_iter: int,
+        loss_value: float,
+        state_buffer: list,
+        num_mined_counterexamples: int,
+        rho_diagnostics: BoundaryRhoDiagnostics,
+    ):
+        self.loss[outer_iter] = loss_value
+        self.buffer_size[outer_iter] = float(len(state_buffer))
+        self.num_mined_counterexamples[outer_iter] = float(num_mined_counterexamples)
+        self.outer_iterations_completed = outer_iter + 1
+
+        self.rho_estimate[outer_iter] = rho_diagnostics.rho
+        self.rho_boundary_quantile[outer_iter] = rho_diagnostics.boundary_quantile
+        self.rho_boundary_mean[outer_iter] = rho_diagnostics.boundary_mean
+        self.rho_feature_term_quantile[outer_iter] = rho_diagnostics.feature_term_quantile
+        self.rho_linear_term_quantile[outer_iter] = rho_diagnostics.linear_term_quantile
+        self.rho_feature_term_mean[outer_iter] = rho_diagnostics.feature_term_mean
+        self.rho_linear_term_mean[outer_iter] = rho_diagnostics.linear_term_mean
+        self.rho_feature_term_mean_share[outer_iter] = rho_diagnostics.feature_term_mean_share
+        self.rho_linear_term_mean_share[outer_iter] = rho_diagnostics.linear_term_mean_share
+        self.r_factor_fro_norm[outer_iter] = rho_diagnostics.r_factor_fro_norm
 
     def save(self, path: os.PathLike) -> None:
         metrics_path = Path(path)
@@ -78,15 +119,41 @@ class LyapunovTrainingMetrics:
             metrics_path,
             loss=self.loss,
             rho_estimate=self.rho_estimate,
+            rho_boundary_quantile=self.rho_boundary_quantile,
+            rho_boundary_mean=self.rho_boundary_mean,
+            rho_feature_term_quantile=self.rho_feature_term_quantile,
+            rho_linear_term_quantile=self.rho_linear_term_quantile,
+            rho_feature_term_mean=self.rho_feature_term_mean,
+            rho_linear_term_mean=self.rho_linear_term_mean,
+            rho_feature_term_mean_share=self.rho_feature_term_mean_share,
+            rho_linear_term_mean_share=self.rho_linear_term_mean_share,
+            r_factor_fro_norm=self.r_factor_fro_norm,
             buffer_size=self.buffer_size,
             num_mined_counterexamples=self.num_mined_counterexamples,
             outer_iterations_completed=np.asarray(self.outer_iterations_completed, dtype=np.int64),
-            train_steps_completed=np.asarray(self.train_steps_completed, dtype=np.int64),
         )
 
 
 def _parameter_l1_norm(model_params: list[nn.Parameter]) -> th.Tensor:
     return th.stack([param.abs().sum() for param in model_params]).sum()
+
+def _tb_writer_add_metrics(tb_writer: SummaryWriter, metrics: LyapunovTrainingMetrics) -> None:
+    outer_iter = metrics.outer_iterations_completed - 1
+    tb_writer.add_scalar("Lyapunov/Loss", metrics.loss[outer_iter], outer_iter)
+    tb_writer.add_scalar("Lyapunov/Rho", metrics.rho_estimate[outer_iter], outer_iter)
+    tb_writer.add_scalar("Lyapunov/RhoBoundaryQuantile", metrics.rho_boundary_quantile[outer_iter], outer_iter)
+    tb_writer.add_scalar("Lyapunov/RhoBoundaryMean", metrics.rho_boundary_mean[outer_iter], outer_iter)
+    tb_writer.add_scalar("Lyapunov/RhoFeatureTermQuantile", metrics.rho_feature_term_quantile[outer_iter], outer_iter)
+    tb_writer.add_scalar("Lyapunov/RhoLinearTermQuantile", metrics.rho_linear_term_quantile[outer_iter], outer_iter)
+    tb_writer.add_scalar("Lyapunov/RhoFeatureTermMeanShare", metrics.rho_feature_term_mean_share[outer_iter], outer_iter)
+    tb_writer.add_scalar("Lyapunov/RhoLinearTermMeanShare", metrics.rho_linear_term_mean_share[outer_iter], outer_iter)
+    tb_writer.add_scalar("Lyapunov/RFactorFroNorm", metrics.r_factor_fro_norm[outer_iter], outer_iter)
+    tb_writer.add_scalar(
+        "Lyapunov/NumMinedCounterexamples",
+        metrics.num_mined_counterexamples[outer_iter],
+        outer_iter,
+    )
+
 
 class LyapunovTrainer:
     """Trainer class for Lyapunov-stable neural controllers utilizing a CEGIS-style loop."""
@@ -314,11 +381,12 @@ class LyapunovTrainer:
                 last_loss_value = np.nan
                 
                 # Estimate current Region of Attraction
-                rho_estimate = estimate_rho_from_boundary(
+                rho_diagnostics = estimate_rho_from_boundary_diagnostics(
                     lyap_model=self.lyap_model,
                     config=self.config,
                     device=self.device,
                 )
+                rho_estimate = rho_diagnostics.rho
 
                 # Mine counterexamples (CEGIS)
                 if (outer_iter + 1) % mining_interval == 0:
@@ -347,22 +415,16 @@ class LyapunovTrainer:
                     )
                     last_loss_value = float(loss.item())
 
-                metrics.loss[outer_iter] = last_loss_value
-                metrics.rho_estimate[outer_iter] = float(rho_estimate)
-                metrics.buffer_size[outer_iter] = float(len(state_buffer))
-                metrics.num_mined_counterexamples[outer_iter] = float(num_mined_counterexamples)
-                metrics.outer_iterations_completed = outer_iter + 1
-                metrics.train_steps_completed = (outer_iter + 1) * int(self.config.steps_per_epoch)
+                metrics.fill_outer(
+                    outer_iter=outer_iter,
+                    loss_value=last_loss_value,
+                    state_buffer=state_buffer,
+                    num_mined_counterexamples=num_mined_counterexamples,
+                    rho_diagnostics=rho_diagnostics,
+                )
 
                 if tb_writer is not None:
-                    tb_writer.add_scalar("Lyapunov/Loss", metrics.loss[outer_iter], outer_iter)
-                    tb_writer.add_scalar("Lyapunov/Rho", metrics.rho_estimate[outer_iter], outer_iter)
-                    tb_writer.add_scalar("Lyapunov/BufferSize", metrics.buffer_size[outer_iter], outer_iter)
-                    tb_writer.add_scalar(
-                        "Lyapunov/NumMinedCounterexamples",
-                        metrics.num_mined_counterexamples[outer_iter],
-                        outer_iter,
-                    )
+                    _tb_writer_add_metrics(tb_writer, metrics)
 
         train_time = time.time() - start_time
         __logger__.debug("Lyapunov training finished in %.2fs", train_time)

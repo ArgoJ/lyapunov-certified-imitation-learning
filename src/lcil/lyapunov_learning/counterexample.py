@@ -1,11 +1,28 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Sequence
 
 import torch as th
 import torch.nn as nn
 
 from .config import LyapunovTrainingConfig
+
+
+@dataclass(frozen=True)
+class BoundaryRhoDiagnostics:
+    """Diagnostics for the boundary-based rho estimate."""
+
+    rho: float
+    boundary_quantile: float
+    boundary_mean: float
+    feature_term_quantile: float
+    linear_term_quantile: float
+    feature_term_mean: float
+    linear_term_mean: float
+    feature_term_mean_share: float
+    linear_term_mean_share: float
+    r_factor_fro_norm: float
 
 
 def _bounds_tensor(state_bounds: Sequence[float], device: th.device) -> th.Tensor:
@@ -65,12 +82,64 @@ def project_to_boundary_faces(
     return points
 
 
-def estimate_rho_from_boundary(
+def _boundary_term_diagnostics(
+    lyap_model: nn.Module,
+    boundary_x: th.Tensor,
+    quantile: float,
+) -> tuple[float, float, float, float, float, float, float]:
+    """Return Lyapunov term diagnostics when the model exposes them."""
+    nan = float("nan")
+    if not all(hasattr(lyap_model, attr) for attr in ("feature_net", "x_star", "_pd_matrix")):
+        return nan, nan, nan, nan, nan, nan, nan
+
+    pd_matrix_fn = getattr(lyap_model, "_pd_matrix")
+    if not callable(pd_matrix_fn):
+        return nan, nan, nan, nan, nan, nan, nan
+
+    x_star = getattr(lyap_model, "x_star")
+    feature_net = getattr(lyap_model, "feature_net")
+
+    x_star = x_star.to(dtype=boundary_x.dtype, device=boundary_x.device)
+    x_star_batch = x_star.expand(boundary_x.shape[0], -1)
+    phi_x = feature_net(boundary_x)
+    phi_x_star = feature_net(x_star_batch)
+    feature_term = th.abs(phi_x - phi_x_star).sum(dim=1)
+
+    delta = boundary_x - x_star_batch
+    pd_matrix = pd_matrix_fn()
+    linear_term = th.abs(delta @ pd_matrix.transpose(0, 1)).sum(dim=1)
+    total_mean = float((feature_term + linear_term).mean().item())
+    feature_term_mean = float(feature_term.mean().item())
+    linear_term_mean = float(linear_term.mean().item())
+
+    if total_mean <= 0.0:
+        feature_term_mean_share = nan
+        linear_term_mean_share = nan
+    else:
+        feature_term_mean_share = feature_term_mean / total_mean
+        linear_term_mean_share = linear_term_mean / total_mean
+
+    r_factor_fro_norm = nan
+    if hasattr(lyap_model, "r_factor"):
+        r_factor_fro_norm = float(th.linalg.norm(getattr(lyap_model, "r_factor"), ord="fro").item())
+
+    return (
+        float(th.quantile(feature_term, q=quantile).item()),
+        float(th.quantile(linear_term, q=quantile).item()),
+        feature_term_mean,
+        linear_term_mean,
+        feature_term_mean_share,
+        linear_term_mean_share,
+        r_factor_fro_norm,
+    )
+
+
+def estimate_rho_from_boundary_diagnostics(
     lyap_model: nn.Module,
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),
-) -> float:
-    """Estimate rho from a low quantile of optimized boundary Lyapunov values."""
+) -> BoundaryRhoDiagnostics:
+    """Estimate rho and expose boundary-term diagnostics for logging."""
     bounds = _bounds_tensor(config.state_bounds, device)
     lbx, ubx = bounds[0], bounds[1]
     boundary_x, face_dims, is_ub = sample_boundary_points(
@@ -79,12 +148,12 @@ def estimate_rho_from_boundary(
         ub=ubx,
         device=device,
     )
-    refs = th.zeros_like(boundary_x) # TODO placeholder for reference state if needed in the future
+    refs = th.zeros_like(boundary_x)  # TODO placeholder for reference state if needed in the future
 
     step = config.rho_step_size * (ubx - lbx).unsqueeze(0)
     for _ in range(config.rho_descent_steps):
         boundary_x.requires_grad_(True)
-        
+
         e = boundary_x - refs
         boundary_values = lyap_model(e)
         grad = th.autograd.grad(
@@ -106,12 +175,48 @@ def estimate_rho_from_boundary(
 
     with th.no_grad():
         boundary_values = lyap_model(boundary_x).flatten()
-        boundary_quantile = th.quantile(
-            boundary_values,
-            q=float(config.rho_estimate_quantile),
-        ).item()
+        boundary_quantile = float(th.quantile(boundary_values, q=float(config.rho_estimate_quantile)).item())
+        boundary_mean = float(boundary_values.mean().item())
+        (
+            feature_term_quantile,
+            linear_term_quantile,
+            feature_term_mean,
+            linear_term_mean,
+            feature_term_mean_share,
+            linear_term_mean_share,
+            r_factor_fro_norm,
+        ) = _boundary_term_diagnostics(
+            lyap_model=lyap_model,
+            boundary_x=boundary_x,
+            quantile=float(config.rho_estimate_quantile),
+        )
+
     rho = max(config.rho_min, config.rho_growth_gamma * boundary_quantile)
-    return float(rho)
+    return BoundaryRhoDiagnostics(
+        rho=float(rho),
+        boundary_quantile=boundary_quantile,
+        boundary_mean=boundary_mean,
+        feature_term_quantile=feature_term_quantile,
+        linear_term_quantile=linear_term_quantile,
+        feature_term_mean=feature_term_mean,
+        linear_term_mean=linear_term_mean,
+        feature_term_mean_share=feature_term_mean_share,
+        linear_term_mean_share=linear_term_mean_share,
+        r_factor_fro_norm=r_factor_fro_norm,
+    )
+
+
+def estimate_rho_from_boundary(
+    lyap_model: nn.Module,
+    config: LyapunovTrainingConfig,
+    device: th.device = th.device("cpu"),
+) -> float:
+    """Estimate rho from a low quantile of optimized boundary Lyapunov values."""
+    return estimate_rho_from_boundary_diagnostics(
+        lyap_model=lyap_model,
+        config=config,
+        device=device,
+    ).rho
 
 
 def find_counter_examples(

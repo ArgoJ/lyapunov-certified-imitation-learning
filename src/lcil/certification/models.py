@@ -21,7 +21,6 @@ class ClosedLoopLyapunovCertificationVerifier(nn.Module):
         ubx: th.Tensor,
         invariance_weight: float,
         kappa: float,
-        condition_margin: float = 0.0,
     ):
         super().__init__()
         self.core = ClosedLoopLyapunovConditionCore(
@@ -32,7 +31,6 @@ class ClosedLoopLyapunovCertificationVerifier(nn.Module):
             ubx=ubx,
             invariance_weight=invariance_weight,
             kappa=kappa,
-            condition_margin=condition_margin,
         )
 
     @staticmethod
