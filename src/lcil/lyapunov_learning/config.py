@@ -47,6 +47,10 @@ class LyapunovTrainingConfig(JsonConfigMixin):
         Growth factor for estimating sublevel values from boundary points.
     rho_boundary_samples : int
         Number of boundary points used to estimate the sublevel value.
+    rho_boundary_buffer_size : int | None
+        Optional cache size for retaining boundary points with the smallest
+        Lyapunov values across outer iterations. If ``None``, a small multiple
+        of ``rho_boundary_samples`` is used.
     rho_descent_steps : int
         Number of projected gradient steps for boundary-value descent.
     rho_step_size : float
@@ -93,6 +97,7 @@ class LyapunovTrainingConfig(JsonConfigMixin):
     formal_positivity_weight: float = 1.0
     rho_growth_gamma: float = 1.1
     rho_boundary_samples: int = 512
+    rho_boundary_buffer_size: int | None = None
     rho_descent_steps: int = 15
     rho_step_size: float = 0.05
     rho_estimate_quantile: float = 0.1
@@ -122,6 +127,8 @@ class LyapunovTrainingConfig(JsonConfigMixin):
             raise ValueError("formal_positivity_weight must be non-negative.")
         if self.condition_margin < 0.0:
             raise ValueError("condition_margin must be non-negative.")
+        if self.rho_boundary_samples <= 0:
+            raise ValueError("rho_boundary_samples must be positive.")
         if self.roa_candidate_size <= 0:
             raise ValueError("ROA candidate size must be positive.")
         if self.outer_epochs <= 0:
@@ -134,6 +141,14 @@ class LyapunovTrainingConfig(JsonConfigMixin):
             raise ValueError("Minimum rho estimate must be positive.")
         if self.rho_estimate_quantile <= 0.0 or self.rho_estimate_quantile > 1.0:
             raise ValueError("rho_estimate_quantile must be in the interval (0, 1].")
+        if self.rho_boundary_buffer_size is None:
+            object.__setattr__(
+                self,
+                "rho_boundary_buffer_size",
+                max(self.rho_boundary_samples, 4 * self.rho_boundary_samples),
+            )
+        elif self.rho_boundary_buffer_size <= 0:
+            raise ValueError("rho_boundary_buffer_size must be positive when provided.")
         if self.state_bounds.shape[1] != self.state_dim:
             raise ValueError(
                 "state_bounds must match state_dim. "

@@ -6,6 +6,7 @@ from typing import Callable, Sequence
 import torch as th
 import torch.nn as nn
 
+from .buffer import BoundaryStateBuffer
 from .config import LyapunovTrainingConfig
 
 
@@ -138,6 +139,7 @@ def estimate_rho_from_boundary_diagnostics(
     lyap_model: nn.Module,
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),
+    boundary_buffer: BoundaryStateBuffer | None = None,
 ) -> BoundaryRhoDiagnostics:
     """Estimate rho and expose boundary-term diagnostics for logging."""
     bounds = _bounds_tensor(config.state_bounds, device)
@@ -173,8 +175,14 @@ def estimate_rho_from_boundary_diagnostics(
                 is_ub=is_ub,
             )
 
+    if boundary_buffer is not None:
+        boundary_buffer.update(boundary_x, value_fn=lyap_model)
+        boundary_eval_x = boundary_buffer.states
+    else:
+        boundary_eval_x = boundary_x
+
     with th.no_grad():
-        boundary_values = lyap_model(boundary_x).flatten()
+        boundary_values = lyap_model(boundary_eval_x).flatten()
         boundary_quantile = float(th.quantile(boundary_values, q=float(config.rho_estimate_quantile)).item())
         boundary_mean = float(boundary_values.mean().item())
         (
@@ -187,7 +195,7 @@ def estimate_rho_from_boundary_diagnostics(
             r_factor_fro_norm,
         ) = _boundary_term_diagnostics(
             lyap_model=lyap_model,
-            boundary_x=boundary_x,
+            boundary_x=boundary_eval_x,
             quantile=float(config.rho_estimate_quantile),
         )
 
@@ -210,12 +218,14 @@ def estimate_rho_from_boundary(
     lyap_model: nn.Module,
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),
+    boundary_buffer: BoundaryStateBuffer | None = None,
 ) -> float:
     """Estimate rho from a low quantile of optimized boundary Lyapunov values."""
     return estimate_rho_from_boundary_diagnostics(
         lyap_model=lyap_model,
         config=config,
         device=device,
+        boundary_buffer=boundary_buffer,
     ).rho
 
 

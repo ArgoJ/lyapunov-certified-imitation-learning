@@ -1,5 +1,6 @@
 import argparse
 import itertools
+import json
 import torch as th
 import numpy as np
 
@@ -54,6 +55,16 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument(
         "--lyap-eps", type=float, default=0.1,
         help="Epsilon used in NeuralLyapunovCandidate for positive-definite baseline term.")
+    parser.add_argument(
+        "--training-bound-scales",
+        nargs='+',
+        type=float,
+        default=[1.0],
+        help=(
+            "Curriculum scales applied to the final training bounds. "
+            "Example: --training-bound-scales 0.3 0.6 1.0 trains first on 30%%, then 60%%, then 100%% of the configured training box."
+        ),
+    )
     
     # Grid Search Parameters (accept multiple values)
     parser.add_argument("--learning-rate", nargs='+', type=float, default=[5e-3], help="Optimizer learning rate(s).")
@@ -152,9 +163,11 @@ def main() -> None:
     
     training_bounds = state_bounds * training_bounds_percentage[:, None].T
     cert_bounds = state_bounds * cert_percentage[:, None].T
+    curriculum_scales = [float(scale) for scale in args.training_bound_scales]
     print(f"State bounds:\n{state_bounds}")
     print(f"Using training bounds:\n{training_bounds}")
     print(f"Using certification bounds:\n{cert_bounds}")
+    print(f"Using training bound scales: {curriculum_scales}")
 
     # Generate all combinations for the grid search
     grid = list(itertools.product(
@@ -181,6 +194,7 @@ def main() -> None:
             f"lr_{lr}__kappa_{kappa}__invw_{inv_w}__rhog_{rho_gamma}"
             f"__roaw_{roa_w}__l1w_{l1_w}__rhoq_{rho_q}"
             f"__margin_{args.condition_margin}__eps_{args.lyap_eps}"
+            f"__curr_{'-'.join(f'{scale:.2f}' for scale in curriculum_scales)}"
         )
         base_path = sweep_base_path / run_name
         base_path.mkdir(parents=True, exist_ok=True)
@@ -247,8 +261,26 @@ def main() -> None:
             config=training_config,
             device=device,
         )
-        train_results = trainer.train()
+        curriculum_result = trainer.train_with_scaled_bounds(curriculum_scales)
+        train_results = curriculum_result.final_result
         trainer.save(base_path)
+
+        curriculum_summary = {
+            "training_bound_scales": curriculum_scales,
+            "stages": [
+                {
+                    "stage_index": stage.stage_index,
+                    "scale": stage.scale.tolist(),
+                    "state_bounds": stage.state_bounds.tolist(),
+                    "rho_estimate": float(stage.result.rho_estimate),
+                    "num_mined_counterexamples": int(stage.result.num_mined_counterexamples),
+                    "train_time": float(stage.result.train_time),
+                }
+                for stage in curriculum_result.stages
+            ],
+        }
+        with (base_path / "curriculum_summary.json").open("w", encoding="utf-8") as summary_file:
+            json.dump(curriculum_summary, summary_file, indent=2)
 
         if args.skip_certification:
             continue

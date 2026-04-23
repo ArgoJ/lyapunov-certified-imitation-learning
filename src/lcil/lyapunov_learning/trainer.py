@@ -7,9 +7,10 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 
+from collections.abc import Sequence
 from numpy.typing import NDArray
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from torch.utils.tensorboard import SummaryWriter
 from rich.progress import (
     Progress,
@@ -21,7 +22,7 @@ from rich.progress import (
 )
 
 from .config import LyapunovTrainingConfig
-from .buffer import DynamicStateBuffer
+from .buffer import BoundaryStateBuffer, DynamicStateBuffer
 from .loss import (
     LyapunovTrainingLoss,
 )
@@ -44,6 +45,31 @@ class LyapunovTrainingResult:
     train_time: float
     lyap_model_path: os.PathLike | None = None
     policy_model_path: os.PathLike | None = None
+
+
+@dataclass
+class LyapunovTrainingCurriculumStage:
+    stage_index: int
+    state_bounds: NDArray
+    scale: NDArray
+    result: LyapunovTrainingResult
+
+
+@dataclass
+class LyapunovTrainingCurriculumResult:
+    stages: list[LyapunovTrainingCurriculumStage]
+
+    @property
+    def final_result(self) -> LyapunovTrainingResult:
+        if not self.stages:
+            raise ValueError("Curriculum result has no stages.")
+        return self.stages[-1].result
+
+    @property
+    def final_state_bounds(self) -> NDArray:
+        if not self.stages:
+            raise ValueError("Curriculum result has no stages.")
+        return self.stages[-1].state_bounds
 
 
 @dataclass
@@ -191,6 +217,51 @@ class LyapunovTrainer:
         self.results: LyapunovTrainingResult | None = None
         self.metrics: LyapunovTrainingMetrics | None = None
 
+    @staticmethod
+    def _build_scaled_state_bounds(
+        base_bounds: NDArray,
+        bound_scales: Sequence[float | Sequence[float] | NDArray],
+    ) -> list[tuple[NDArray, NDArray]]:
+        """Build a sequence of scaled training boxes from a base bounds array.
+
+        Parameters
+        ----------
+        base_bounds : NDArray
+            Bounds of shape ``(2, nx)`` containing ``[lbx, ubx]``.
+        bound_scales : sequence
+            Stage-wise scaling factors. Each element can be either a scalar
+            scale applied to all dimensions or a per-dimension scale array of
+            shape ``(nx,)``.
+
+        Returns
+        -------
+        list[tuple[NDArray, NDArray]]
+            Pairs ``(stage_bounds, stage_scale)`` for each curriculum stage.
+        """
+        bounds = np.asarray(base_bounds, dtype=np.float32)
+        if bounds.ndim != 2 or bounds.shape[0] != 2:
+            raise ValueError("base_bounds must have shape (2, nx).")
+        if len(bound_scales) == 0:
+            raise ValueError("bound_scales must contain at least one stage.")
+
+        state_dim = bounds.shape[1]
+        scaled_bounds: list[tuple[NDArray, NDArray]] = []
+        for scale in bound_scales:
+            scale_arr = np.asarray(scale, dtype=np.float32)
+            if scale_arr.ndim == 0:
+                scale_arr = np.full((state_dim,), float(scale_arr), dtype=np.float32)
+            elif scale_arr.shape != (state_dim,):
+                raise ValueError(
+                    f"Each bound scale must be a scalar or shape ({state_dim},), got {scale_arr.shape}."
+                )
+
+            if np.any(scale_arr <= 0.0):
+                raise ValueError("All bound scales must be positive.")
+
+            scaled_bounds.append((bounds * scale_arr.reshape(1, -1), scale_arr.copy()))
+
+        return scaled_bounds
+
     def _set_train_modes(self) -> None:
         for param in self.lyap_model.parameters():
             param.requires_grad_(True)
@@ -245,6 +316,12 @@ class LyapunovTrainer:
         # Initial training pool sampled uniformly from the state space bounds
         initial_x = sample_uniform_box(self.config.initial_sample_size, self.lbx, self.ubx, self.device)
         state_buffer = DynamicStateBuffer(initial_states=initial_x, max_size=self.config.max_buffer, device=self.device)
+        boundary_buffer = BoundaryStateBuffer(
+            state_dim=self.config.state_dim,
+            max_size=int(self.config.rho_boundary_buffer_size),
+            device=self.device,
+            dtype=initial_x.dtype,
+        )
         roa_candidates = self._build_roa_candidates()
 
         mining_interval = max(1, int(self.config.counterexample_every))
@@ -283,6 +360,7 @@ class LyapunovTrainer:
                     lyap_model=self.lyap_model,
                     config=self.config,
                     device=self.device,
+                    boundary_buffer=boundary_buffer,
                 )
                 rho_estimate = rho_diagnostics.rho # TODO: Consider smoothing or just constant
 
@@ -290,7 +368,13 @@ class LyapunovTrainer:
                 if (outer_iter + 1) % mining_interval == 0:
                     new_cex = self._mine_new_counterexamples(rho_estimate=rho_estimate)
                     num_mined_counterexamples += new_cex.shape[0]
-                    state_buffer.register_cex(new_cex)
+                    state_buffer.register_cex(
+                        new_cex,
+                        objective=lambda x: self.loss_module.mining_objective(
+                            x_batch=x,
+                            rho_estimate=rho_estimate,
+                        ),
+                    )
                     roa_candidates = self._build_roa_candidates()
 
                 # Inner training loop
@@ -343,6 +427,69 @@ class LyapunovTrainer:
             tb_writer.close()
 
         return self.results
+
+    def train_with_scaled_bounds(
+        self,
+        bound_scales: Sequence[float | Sequence[float] | NDArray]
+    ) -> LyapunovTrainingCurriculumResult:
+        """Train on a curriculum of progressively scaled state bounds.
+
+        The same policy and Lyapunov model instances are reused across stages,
+        so each stage warm-starts from the weights learned on the previous one.
+        The trainer instance is updated in-place to the final curriculum stage.
+        """
+        base_bounds = self.config.state_bounds
+        scaled_bounds = self._build_scaled_state_bounds(
+            base_bounds=base_bounds,
+            bound_scales=bound_scales,
+        )
+
+        stage_records: list[LyapunovTrainingCurriculumStage] = []
+        final_stage_trainer: LyapunovTrainer | None = None
+
+        for stage_index, (stage_bounds, stage_scale) in enumerate(scaled_bounds):
+            stage_tb_log_dir = None
+            if self.config.tb_log_dir is not None:
+                stage_tb_log_dir = Path(self.config.tb_log_dir) / f"curriculum_stage_{stage_index:02d}"
+
+            stage_seed = None if self.config.seed is None else self.config.seed + stage_index
+            stage_config = replace(
+                self.config,
+                state_bounds=stage_bounds,
+                seed=stage_seed,
+                tb_log_dir=stage_tb_log_dir,
+            )
+            stage_trainer = type(self)(
+                policy_model=self.policy_model,
+                lyap_model=self.lyap_model,
+                dyn_model=self.dyn_model,
+                config=stage_config,
+                device=self.device,
+            )
+            stage_result = stage_trainer.train()
+            stage_records.append(
+                LyapunovTrainingCurriculumStage(
+                    stage_index=stage_index,
+                    state_bounds=stage_bounds.copy(),
+                    scale=stage_scale.copy(),
+                    result=stage_result,
+                )
+            )
+            final_stage_trainer = stage_trainer
+
+        if final_stage_trainer is None:
+            raise ValueError("No curriculum stages were executed.")
+
+        self.config = final_stage_trainer.config
+        self.optimizer = final_stage_trainer.optimizer
+        self.loss_module = final_stage_trainer.loss_module
+        self.lbx = final_stage_trainer.lbx
+        self.ubx = final_stage_trainer.ubx
+        self.center = final_stage_trainer.center
+        self.results = final_stage_trainer.results
+        self.metrics = final_stage_trainer.metrics
+
+        return LyapunovTrainingCurriculumResult(stages=stage_records)
 
     def save(
         self,
