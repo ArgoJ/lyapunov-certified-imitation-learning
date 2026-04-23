@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Callable, Sequence
 
 import torch as th
 import torch.nn as nn
@@ -220,11 +220,16 @@ def estimate_rho_from_boundary(
 
 
 def find_counter_examples(
-    verifier: nn.Module,
+    objective: Callable[[th.Tensor], th.Tensor] | nn.Module,
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),
 ) -> th.Tensor:
-    """Find global training counterexamples via PGD on the verifier objective."""
+    """Find rho-gated training counterexamples via PGD on a minimization objective.
+
+    The objective should follow the external training semantics: it must be
+    negative on violating states within the current rho-sublevel set, zero on
+    safe states inside the set, and positive outside the set.
+    """
     bounds = _bounds_tensor(config.state_bounds, device)
     lbx, ubx = bounds[0], bounds[1]
 
@@ -233,22 +238,20 @@ def find_counter_examples(
 
     for _ in range(config.counterexample_steps):
         adv_states.requires_grad_(True)
-        raw_violation = verifier(adv_states)
-
-        violation = th.relu(raw_violation)
+        raw_objective = objective(adv_states)
         grad = th.autograd.grad(
-            violation.mean(),
+            raw_objective.mean(),
             adv_states,
             retain_graph=False,
             create_graph=False,
         )[0]
 
         with th.no_grad():
-            adv_states = adv_states + step * grad.sign()
+            adv_states = adv_states - step * grad.sign()
             adv_states = project_to_box(adv_states, lbx, ubx)
 
     with th.no_grad():
-        raw_violation = verifier(adv_states)
-        counter_mask = raw_violation.flatten() > config.condition_tolerance
+        raw_objective = objective(adv_states)
+        counter_mask = raw_objective.flatten() < -config.condition_tolerance
 
     return adv_states[counter_mask].clone().detach()

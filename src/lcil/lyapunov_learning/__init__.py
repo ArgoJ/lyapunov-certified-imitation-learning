@@ -7,6 +7,7 @@ from .models import (
     QuadraticLyapunovCandidate,
     ClosedLoopLyapunovTrainingVerifier
 )
+from .loss import LyapunovTrainingLoss
 from .counterexample import (
     estimate_rho_from_boundary,
     find_counter_examples,
@@ -21,6 +22,7 @@ __all__ = [
     "NeuralLyapunovCandidate",
     "QuadraticLyapunovCandidate",
     "ClosedLoopLyapunovTrainingVerifier",
+    "LyapunovTrainingLoss",
     "estimate_rho_from_boundary",
     "find_counter_examples",
     "sample_uniform_box",

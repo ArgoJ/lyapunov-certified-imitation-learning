@@ -225,3 +225,4 @@ results/**
 tests/mpc_dataset_path.txt
 
 .vscode/
+external/

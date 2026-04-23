@@ -1,0 +1,321 @@
+from __future__ import annotations
+
+import torch as th
+import torch.nn as nn
+from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
+
+from .config import LyapunovTrainingConfig
+
+
+class StateBoundsModule(nn.Module):
+    """Base module that stores the shared training-state bounds."""
+
+    def __init__(self, state_bounds: th.Tensor, device: th.device | str = "cpu") -> None:
+        super().__init__()
+        self.device = th.device(device)
+
+        bounds = th.as_tensor(state_bounds, dtype=th.float32, device=self.device)
+        if bounds.ndim != 2 or bounds.shape[0] != 2:
+            raise ValueError("state_bounds must have shape (2, nx).")
+
+        self.register_buffer("lbx", bounds[0].reshape(-1))
+        self.register_buffer("ubx", bounds[1].reshape(-1))
+        self.register_buffer("center", 0.5 * (self.lbx + self.ubx))
+
+
+class LyapunovDecreaseViolation(nn.Module):
+    """Compute the one-step Lyapunov decrease violation."""
+
+    def __init__(self, kappa: float, condition_margin: float = 0.0) -> None:
+        super().__init__()
+        self.kappa = float(kappa)
+        self.condition_margin = float(condition_margin)
+
+    def forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
+        return th.relu(v_next - (1.0 - self.kappa) * v_curr + self.condition_margin)
+
+
+class InvarianceViolation(StateBoundsModule):
+    """Compute the forward-invariance violation."""
+
+    def __init__(self, state_bounds: th.Tensor, device: th.device | str = "cpu") -> None:
+        super().__init__(state_bounds=state_bounds, device=device)
+
+    def forward(self, x_next: th.Tensor) -> th.Tensor:
+        upper_violation = th.relu(x_next - self.ubx).sum(dim=1, keepdim=True)
+        lower_violation = th.relu(self.lbx - x_next).sum(dim=1, keepdim=True)
+        return upper_violation + lower_violation
+
+
+class RhoGatedConditionLoss(StateBoundsModule):
+    """Compute the rho-gated training loss for decrease and invariance."""
+
+    def __init__(self, config: LyapunovTrainingConfig, device: th.device | str = "cpu") -> None:
+        super().__init__(state_bounds=config.state_bounds, device=device)
+        self.invariance_weight = float(config.invariance_weight)
+        self.rho_min = float(config.rho_min)
+        self.decrease_violation = LyapunovDecreaseViolation(
+            kappa=config.kappa,
+            condition_margin=config.condition_margin,
+        )
+        self.invariance_violation = InvarianceViolation(config.state_bounds, device=device)
+
+    def condition_violation(
+        self,
+        v_curr: th.Tensor,
+        v_next: th.Tensor,
+        x_next: th.Tensor,
+    ) -> th.Tensor:
+        """Return the per-sample closed-loop violation active inside the rho sublevel set."""
+        decrease = self.decrease_violation(v_curr=v_curr, v_next=v_next)
+        invariance = self.invariance_violation(x_next=x_next)
+        return decrease + self.invariance_weight * invariance
+
+    def rho_gap(self, v_curr: th.Tensor, rho_estimate: float) -> th.Tensor:
+        """Return the rho-sublevel slack ``rho - V(x)`` for each sample."""
+        rho_value = max(float(rho_estimate), self.rho_min)
+        return th.full_like(v_curr, rho_value) - v_curr
+
+    def forward(
+        self,
+        v_curr: th.Tensor,
+        v_next: th.Tensor,
+        x_next: th.Tensor,
+        rho_estimate: float,
+    ) -> th.Tensor:
+        condition_violation = self.condition_violation(
+            v_curr=v_curr,
+            v_next=v_next,
+            x_next=x_next,
+        )
+        rho_gap = self.rho_gap(v_curr=v_curr, rho_estimate=rho_estimate)
+        return th.relu(th.minimum(rho_gap, condition_violation)).mean()
+
+
+class RoaSurrogateLoss(nn.Module):
+    """Compute the auxiliary ROA surrogate used during training."""
+
+    def __init__(self, config: LyapunovTrainingConfig) -> None:
+        super().__init__()
+        self.rho_min = float(config.rho_min)
+
+    def forward(self, v_candidates: th.Tensor, rho_estimate: float) -> th.Tensor:
+        rho_value = max(float(rho_estimate), self.rho_min)
+        return th.relu(v_candidates / rho_value - 1.0).mean()
+
+
+class EquilibriumLoss(nn.Module):
+    """Compute the origin consistency loss for the Lyapunov candidate."""
+
+    def __init__(self, model: nn.Module, state_dim: int, device: th.device | str = "cpu") -> None:
+        super().__init__()
+        self.model = model
+        self.device = th.device(device)
+        self.register_buffer("origin", th.zeros(1, state_dim, dtype=th.float32, device=self.device))
+
+    def forward(self) -> th.Tensor:
+        return self.model(self.origin).pow(2).mean()
+
+
+class FormalPositivityLoss(StateBoundsModule):
+    """Compute the positivity loss induced by a lower bound on V."""
+    def __init__(
+            self, 
+            lyap_model: nn.Module, 
+            state_bounds: th.Tensor, 
+            device: th.device | str = "cpu"
+    ) -> None:
+        super().__init__(state_bounds=state_bounds, device=device)
+
+        self.lyap_model = lyap_model
+
+        self.bounded_lyapunov = self._build_lyapunov_bounded_model()
+        self.bounded_lyapunov_input = self._build_bounded_positivity_input()
+    
+    def _build_lyapunov_bounded_model(self) -> BoundedModule:
+        if not isinstance(self.lyap_model, nn.Module):
+            raise ValueError("Lyapunov model must be provided to construct bounds.")
+
+        dummy_x = th.zeros(1, self.lbx.shape[0], device=self.device)
+        return BoundedModule(
+            self.lyap_model,
+            (dummy_x,),
+            device=self.device,
+            verbose=False,
+            bound_opts={"perturb_bound": True},
+        )
+
+    def _build_bounded_positivity_input(self) -> BoundedTensor:
+        batch_lbs = self.lbx.reshape(1, -1)
+        batch_ubs = self.ubx.reshape(1, -1)
+        batch_centers = self.center.reshape(1, -1)
+        ptb = PerturbationLpNorm(norm=float("inf"), x_L=batch_lbs, x_U=batch_ubs)
+        return BoundedTensor(batch_centers, ptb)
+
+    def compute_lyapunov_lower_bound(self, method: str = "backward") -> th.Tensor:
+        lower, _ = self.bounded_lyapunov.compute_bounds(
+            x=(self.bounded_lyapunov_input,),
+            method=method,
+        )
+        return lower
+
+    def forward(self) -> th.Tensor:
+        lower_bound = self.compute_lyapunov_lower_bound()
+        return th.relu(-lower_bound).mean()
+
+
+class ParameterL1Loss(nn.Module):
+    """Compute the l1 norm of a trainable parameter collection."""
+
+    def __init__(self, *models: nn.Module, device: th.device | str = "cpu") -> None:
+        super().__init__()
+        self.device = th.device(device)
+        self.models = models
+    
+    def get_train_params(self) -> tuple[nn.Parameter, ...]:
+        """Return the currently trainable parameters of the training objective."""
+        return tuple(
+            param
+            for model in self.models
+            for param in model.parameters()
+            if param.requires_grad
+        )
+
+    def forward(self) -> th.Tensor:
+        trainable_params = self.get_train_params()
+        if not trainable_params:
+            return th.zeros((), dtype=th.float32, device=self.device)
+        return th.stack([param.abs().sum() for param in trainable_params]).sum()
+
+
+class TotalLyapunovLoss(nn.Module):
+    """Combine the individual Lyapunov training losses into one scalar objective."""
+
+    def __init__(self, config: LyapunovTrainingConfig) -> None:
+        super().__init__()
+        self.roa_weight = float(config.roa_weight)
+        self.l1_weight = float(config.l1_weight)
+        self.equilibrium_weight = float(config.equilibrium_weight)
+        self.formal_positivity_weight = float(config.formal_positivity_weight)
+
+    def forward(
+        self,
+        condition_loss: th.Tensor,
+        roa_loss: th.Tensor,
+        l1_loss: th.Tensor,
+        equilibrium_loss_value: th.Tensor,
+        formal_positivity_loss_value: th.Tensor,
+    ) -> th.Tensor:
+        return (
+            condition_loss
+            + self.roa_weight * roa_loss
+            + self.l1_weight * l1_loss
+            + self.equilibrium_weight * equilibrium_loss_value
+            + self.formal_positivity_weight * formal_positivity_loss_value
+        )
+
+
+class LyapunovTrainingLoss(nn.Module):
+    """Full Lyapunov training objective with embedded models and sub-losses."""
+
+    def __init__(
+        self,
+        policy_model: nn.Module,
+        lyap_model: nn.Module,
+        dyn_model: nn.Module,
+        config: LyapunovTrainingConfig,
+        device: th.device | str = "cpu",
+    ) -> None:
+        super().__init__()
+        self.policy_model = policy_model
+        self.lyap_model = lyap_model
+        self.dyn_model = dyn_model
+        self.config = config
+        self.device = th.device(device)
+
+        bounds = th.as_tensor(config.state_bounds, dtype=th.float32, device=self.device)
+        self.register_buffer("lbx", bounds[0].reshape(-1))
+        self.register_buffer("ubx", bounds[1].reshape(-1))
+        self.register_buffer("center", 0.5 * (self.lbx + self.ubx))
+
+        self.condition_loss = RhoGatedConditionLoss(config, device=self.device)
+        self.roa_loss = RoaSurrogateLoss(config)
+        self.equilibrium_loss = EquilibriumLoss(lyap_model, config.state_dim, device=self.device)
+        self.positivity_loss = FormalPositivityLoss(
+            lyap_model=lyap_model,
+            state_bounds=config.state_bounds,
+            device=self.device,
+        )
+        self.l1_loss = ParameterL1Loss(lyap_model, policy_model, device=self.device)
+        self.total_loss = TotalLyapunovLoss(config)
+
+    def _closed_loop_values(
+        self,
+        x_batch: th.Tensor,
+    ) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """Return ``(V(x), x_next, V(x_next))`` for a batch of states."""
+        v_batch = self.lyap_model(x_batch)
+        u = self.policy_model(x_batch)
+        x_next = self.dyn_model(x_batch, u)
+        v_next = self.lyap_model(x_next)
+        return v_batch, x_next, v_next
+
+    def _build_lyapunov_bounded_model(self) -> BoundedModule:
+        return self.positivity_loss._build_lyapunov_bounded_model()
+
+    def compute_lyapunov_lower_bound(self, method: str = "backward") -> th.Tensor:
+        return self.positivity_loss.compute_lyapunov_lower_bound(method=method)
+
+    def formal_positivity_loss(self) -> th.Tensor:
+        return self.positivity_loss()
+
+    def mining_objective(
+        self,
+        x_batch: th.Tensor,
+        rho_estimate: float,
+    ) -> th.Tensor:
+        """Return the external-style PGD objective for rho-gated counterexample mining.
+
+        The returned objective is negative exactly on violating states inside the
+        current rho-sublevel set, zero on safe states within the set, and
+        positive outside the sublevel set.
+        """
+        v_batch, x_next, v_next = self._closed_loop_values(x_batch)
+        condition_violation = self.condition_loss.condition_violation(
+            v_curr=v_batch,
+            v_next=v_next,
+            x_next=x_next,
+        )
+        rho_gap = self.condition_loss.rho_gap(v_curr=v_batch, rho_estimate=rho_estimate)
+        return -th.minimum(rho_gap, condition_violation)
+
+    def forward(
+        self,
+        x_batch: th.Tensor,
+        roa_candidates: th.Tensor,
+        rho_estimate: float,
+    ) -> th.Tensor:
+        v_batch, x_next, v_next = self._closed_loop_values(x_batch)
+
+        loss_condition = self.condition_loss(
+            v_curr=v_batch,
+            v_next=v_next,
+            x_next=x_next,
+            rho_estimate=rho_estimate,
+        )
+
+        v_candidates = self.lyap_model(roa_candidates)
+        loss_roa = self.roa_loss(v_candidates=v_candidates, rho_estimate=rho_estimate)
+        loss_origin = self.equilibrium_loss()
+        loss_formal_positivity = self.formal_positivity_loss()
+        loss_l1 = self.l1_loss()
+
+        return self.total_loss(
+            condition_loss=loss_condition,
+            roa_loss=loss_roa,
+            l1_loss=loss_l1,
+            equilibrium_loss_value=loss_origin,
+            formal_positivity_loss_value=loss_formal_positivity,
+        )
+
+

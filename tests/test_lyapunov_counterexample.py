@@ -10,7 +10,7 @@ from lcil.lyapunov_learning.counterexample import (
     estimate_rho_from_boundary,
     find_counter_examples,
 )
-from lcil.lyapunov_learning.models import ClosedLoopLyapunovTrainingVerifier
+from lcil.lyapunov_learning.loss import FormalPositivityLoss, LyapunovTrainingLoss
 from lcil.lyapunov_learning.trainer import LyapunovTrainer
 
 
@@ -33,6 +33,15 @@ class _IdentityDynamics(nn.Module):
 class _QuadraticLyapunov(nn.Module):
     def forward(self, x: th.Tensor) -> th.Tensor:
         return x.pow(2).sum(dim=1, keepdim=True)
+
+
+class _TrainableQuadraticLyapunov(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.scale = nn.Parameter(th.ones(1, dtype=th.float32))
+
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        return self.scale * x.pow(2).sum(dim=1, keepdim=True)
 
 
 class _LinearValue(nn.Module):
@@ -77,47 +86,76 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         expected = 1.5 * th.quantile(boundary_points[:, 0], q=0.5).item()
         self.assertAlmostEqual(rho, expected, places=6)
 
-    def test_global_counterexample_mining_ignores_current_rho_gate(self) -> None:
+    def test_counterexample_mining_respects_current_rho_gate(self) -> None:
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
+            train_policy_model=False,
             adversarial_samples=256,
             counterexample_steps=0,
             adversarial_step_size=0.0,
             condition_tolerance=1e-6,
         )
-        verifier = ClosedLoopLyapunovTrainingVerifier(
+        loss_module = LyapunovTrainingLoss(
             policy_model=_ZeroPolicy(),
             lyap_model=_QuadraticLyapunov(),
             dyn_model=_IdentityDynamics(),
-            lbx=th.tensor([[-1.0]], dtype=th.float32),
-            ubx=th.tensor([[1.0]], dtype=th.float32),
-            invariance_weight=1.0,
-            kappa=0.1,
+            config=config,
+            device="cpu",
         )
 
         th.manual_seed(0)
-        global_cex = find_counter_examples(verifier, config)
-        global_values = verifier.lyap(global_cex).flatten()
+        rho_estimate = 0.1
+        gated_cex = find_counter_examples(
+            objective=lambda x: loss_module.mining_objective(x_batch=x, rho_estimate=rho_estimate),
+            config=config,
+        )
+        gated_values = loss_module.lyap_model(gated_cex).flatten()
 
-        self.assertTrue(th.any(global_values > 0.1 + 1e-6).item())
+        self.assertGreater(gated_cex.shape[0], 0)
+        self.assertTrue(th.all(gated_values <= rho_estimate + 1e-6).item())
+
+    def test_trainer_mining_uses_current_rho_estimate(self) -> None:
+        config = LyapunovTrainingConfig(
+            state_dim=1,
+            state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
+            train_policy_model=False,
+            adversarial_samples=256,
+            counterexample_steps=0,
+            adversarial_step_size=0.0,
+            condition_tolerance=1e-6,
+        )
+        trainer = LyapunovTrainer(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_TrainableQuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            config=config,
+        )
+
+        th.manual_seed(0)
+        rho_estimate = 0.1
+        mined_cex = trainer._mine_new_counterexamples(rho_estimate=rho_estimate)
+        mined_values = trainer.lyap_model(mined_cex).flatten()
+
+        self.assertGreater(mined_cex.shape[0], 0)
+        self.assertTrue(th.all(mined_values <= rho_estimate + 1e-6).item())
 
     def test_formal_positivity_backward_returns_expected_lower_bound(self) -> None:
-        lyap_model = _LinearValue()
-        bounded_model = LyapunovTrainer._build_lyapunov_bounded_model(
-            lyap_model=lyap_model,
-            input_size=1,
-            device=th.device("cpu"),
+        config = LyapunovTrainingConfig(
+            state_dim=1,
+            state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
+            train_policy_model=False,
         )
-        lower = LyapunovTrainer._compute_lyapunov_lower_bound(
-            lbx=th.tensor([0.0], dtype=th.float32),
-            ubx=th.tensor([1.0], dtype=th.float32),
-            device=th.device("cpu"),
-            bounded_model=bounded_model,
-            method="backward",
+        loss_module = LyapunovTrainingLoss(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_LinearValue(),
+            dyn_model=_IdentityDynamics(),
+            config=config,
+            device="cpu",
         )
+        lower = loss_module.compute_lyapunov_lower_bound(method="backward")
 
-        self.assertAlmostEqual(float(lower.item()), 0.0, places=6)
+        self.assertAlmostEqual(float(lower.item()), -1.0, places=6)
 
     def test_trainer_reuses_cached_bounded_model_for_formal_positivity(self) -> None:
         lyap_model = _LinearValue()
@@ -127,9 +165,10 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             train_policy_model=False,
         )
         with patch.object(
-            LyapunovTrainer,
-            "build_lyapunov_bounded_model",
-            wraps=LyapunovTrainer._build_lyapunov_bounded_model,
+            FormalPositivityLoss,
+            "_build_lyapunov_bounded_model",
+            autospec=True,
+            side_effect=FormalPositivityLoss._build_lyapunov_bounded_model,
         ) as build_bounded_model:
             trainer = LyapunovTrainer(
                 policy_model=_ZeroPolicy(),
@@ -137,10 +176,10 @@ class TestLyapunovCounterexamples(unittest.TestCase):
                 dyn_model=_IdentityDynamics(),
                 config=config,
             )
-            first_loss = trainer._formal_positivity_loss()
+            first_loss = trainer.loss_module.formal_positivity_loss()
             with th.no_grad():
                 lyap_model.linear.weight.fill_(2.0)
-            second_loss = trainer._formal_positivity_loss()
+            second_loss = trainer.loss_module.formal_positivity_loss()
 
         self.assertEqual(build_bounded_model.call_count, 1)
         self.assertAlmostEqual(float(first_loss.item()), 1.0, places=6)
