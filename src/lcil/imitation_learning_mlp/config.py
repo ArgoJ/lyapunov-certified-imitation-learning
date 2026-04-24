@@ -7,11 +7,11 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from collections.abc import Mapping
 
-from ..utils.config_io import JsonConfigMixin
+from ..utils.base_config import ArgumentParserConfig, JsonDataclass, config_field
 
 
 @dataclass(frozen=True)
-class ImitationTrainingConfig(JsonConfigMixin):
+class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
     """Configuration for imitation policy training.
 
     Parameters
@@ -42,15 +42,15 @@ class ImitationTrainingConfig(JsonConfigMixin):
         not one of ``{"none", "step", "cosine", "plateau"}``.
     """
 
-    epochs: int = 10
-    restore_best_model: bool = True
-    tb_log_dir: str | os.PathLike | None = None
-    learning_rate: float = 1e-3
-    scheduler_type: Literal["none", "step", "cosine", "plateau"] = "none"
-    scheduler_kwargs: Mapping[str, Any] | None = None
+    epochs: int = config_field(default=10, help="Number of optimization epochs.")
+    restore_best_model: bool = config_field(default=True, help="Whether to restore the best checkpoint tracked by early stopping.")
+    tb_log_dir: str | os.PathLike | None = config_field(default=None, help="TensorBoard logging directory.")
+    learning_rate: float = config_field(default=1e-3, help="Adam optimizer learning rate.")
+    scheduler_type: Literal["none", "step", "cosine", "plateau"] = config_field(default="none", help="Learning-rate scheduler variant.")
+    scheduler_kwargs: Mapping[str, Any] | None = config_field(default=None, cli=False)
 
-    train_dataset_path: str | os.PathLike | None = field(init=False, default=None)
-    val_dataset_path: str | os.PathLike | None = field(init=False, default=None)
+    train_dataset_path: str | os.PathLike | None = field(init=False, default=None, metadata={"cli": False})
+    val_dataset_path: str | os.PathLike | None = field(init=False, default=None, metadata={"cli": False})
     
     NP_ARRAY_FIELDS = ()
 

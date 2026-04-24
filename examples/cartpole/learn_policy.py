@@ -1,6 +1,7 @@
 import argparse
 import torch as th
 
+from dataclasses import replace
 from pathlib import Path
 from datetime import datetime
 
@@ -13,7 +14,7 @@ from sys_cfg import PendulumOnCartConfig
 from model import CartpoleAngleWrapper
 
 
-def parse_cli_args() -> argparse.Namespace:
+def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Namespace:
     """Parse command-line arguments for policy training."""
     parser = argparse.ArgumentParser(description="Train a inverted pendulum on cart imitation policy.")
     parser.add_argument(
@@ -22,8 +23,7 @@ def parse_cli_args() -> argparse.Namespace:
         default=Path.cwd() / "results" / "cartpole" / "data" / "cartpole_N40_data.hdf5",
         help="Path to the source MPC dataset (HDF5).",
     )
-    parser.add_argument("--epochs", type=int, default=200, help="Number of policy training epochs.")
-    parser.add_argument("--lr", type=float, default=5e-4, help="Optimizer learning rate.")
+    training_defaults.add_to_argparse(parser, include_fields={"epochs", "learning_rate"})
     parser.add_argument("--batch-size", type=int, default=256, help="Training batch size.")
     parser.add_argument(
         "--near-duplicate-radius",
@@ -36,7 +36,12 @@ def parse_cli_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    args = parse_cli_args()
+    training_defaults = ImitationTrainingConfig(
+        epochs=200,
+        learning_rate=5e-4,
+        scheduler_type="plateau",
+    )
+    args = parse_cli_args(training_defaults)
     device = args.device
     dataset_path = args.dataset_path
     base_path = Path("results/cartpole")
@@ -82,9 +87,8 @@ def main() -> None:
         lambda_dyn=2.0,
     )
 
-    training_cfg = ImitationTrainingConfig(
-        epochs=args.epochs,
-        learning_rate=args.lr,
+    training_cfg = replace(
+        training_defaults.from_namespace(args),
         scheduler_type="plateau",
         scheduler_kwargs={"mode": "min", "factor": 0.5, "patience": 4},
         tb_log_dir=(base_path / "tb" / iso),

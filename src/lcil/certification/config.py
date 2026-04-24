@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from numpy.typing import NDArray
 
 from ..lyapunov_learning.config import LyapunovTrainingConfig
-from ..utils.config_io import JsonConfigMixin
+from ..utils.base_config import ArgumentParserConfig, JsonDataclass, config_field
 
 
 @dataclass(frozen=True)
-class LyapunovCertificationConfig(JsonConfigMixin):
+class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     """Configuration for Lyapunov certification only.
 
     Parameters
@@ -69,25 +69,25 @@ class LyapunovCertificationConfig(JsonConfigMixin):
         regions if they fail certification, to prevent infinite recursion in edge cases.
     """
 
-    state_dim: int
-    cert_bounds: NDArray
-    kappa: float = 0.05
-    rho_min: float = 1e-6
-    bins_per_dim: int | Sequence[int] = 4
-    center_refinement_factor: float | Sequence[float] = 1.0
-    origin_exclusion: float | Sequence[float] | None = None
-    rho_scaling: float = 1.2
-    bisection_tol: float = 1e-3
-    max_scale_steps: int = 20
-    max_bisection_steps: int = 40
-    use_ibp_filter: bool = True
-    cert_method: str = "alpha-crown"
-    sublevel_tolerance: float = 1e-6
-    condition_tolerance: float = 1e-6
-    condition_margin: float = 0.0
-    suppress_native_output: bool = True
-    batch_size: int = 512
-    max_recursion_depth: int = 10
+    state_dim: int = config_field(cli=False)
+    cert_bounds: NDArray = config_field(cli=False)
+    kappa: float = config_field(default=0.05, help="Exponential decay factor in the Lyapunov decrease condition.")
+    rho_min: float = config_field(default=1e-6, help="Minimum admissible rho value.")
+    bins_per_dim: int | Sequence[int] = config_field(default=4, help="Initial certification bins per state dimension.")
+    center_refinement_factor: float | Sequence[float] = config_field(default=1.0, help="Optional geometric refinement factor for bins near the origin.")
+    origin_exclusion: float | Sequence[float] | None = config_field(default=None, help="Radius around the origin to skip during certification.")
+    rho_scaling: float = config_field(default=1.2, help="Multiplicative factor used in rho scaling before bisection.")
+    bisection_tol: float = config_field(default=1e-3, help="Tolerance used in rho bisection.")
+    max_scale_steps: int = config_field(default=20, help="Maximum rho scaling attempts during certification.")
+    max_bisection_steps: int = config_field(default=40, help="Maximum bisection iterations during certification.")
+    use_ibp_filter: bool = config_field(default=True, help="Whether to pre-filter candidate regions with IBP before certification.")
+    cert_method: str = config_field(default="alpha-crown", help="AutoLiRPA certification backend method.")
+    sublevel_tolerance: float = config_field(default=1e-6, help="Slack used in the rho-sublevel gate of the verification graph.")
+    condition_tolerance: float = config_field(default=1e-6, help="Numerical tolerance on the fused verifier output.")
+    condition_margin: float = config_field(default=0.0, help="Optional additive safety margin on the decrease term during certification.")
+    suppress_native_output: bool = config_field(default=True, help="Whether to suppress native solver output during certification.")
+    batch_size: int = config_field(default=512, help="Batch size used during certification.")
+    max_recursion_depth: int = config_field(default=10, help="Maximum recursion depth for certification region splitting.")
     NP_ARRAY_FIELDS = ("cert_bounds",)
 
     def __post_init__(self) -> None:

@@ -9,13 +9,13 @@ from numpy.typing import NDArray
 from .certifier_base import RegionCertificationResult
 from .config import LyapunovCertificationConfig
 from .models import LyapunovVerifier
-from ..utils.config_io import JsonConfigMixin
+from ..utils.base_config import JsonDataclass
 
 __logger__ = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class CertificationCategoryTestResult(JsonConfigMixin):
+class CertificationCategoryTestResult(JsonDataclass):
     """Empirical Lyapunov-condition test summary for a single region category."""
 
     NP_ARRAY_FIELDS = ("violations_per_step",)
@@ -27,7 +27,7 @@ class CertificationCategoryTestResult(JsonConfigMixin):
 
 
 @dataclass(frozen=True)
-class CertificationTesterResults(JsonConfigMixin):
+class CertificationTesterResults(JsonDataclass):
     """Container for empirical rollout checks across certification result categories."""
 
     DEFAULT_FILE_NAME = "CertificationTesterResults.json"

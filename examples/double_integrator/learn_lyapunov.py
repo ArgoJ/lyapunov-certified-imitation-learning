@@ -1,8 +1,8 @@
 import argparse
-import itertools
 import torch as th
 import numpy as np
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -15,7 +15,10 @@ from mpc_datagen import MPCDataset
 from double_integrator_dyn import DoubleIntegratorDynamics
 
 
-def parse_cli_args() -> argparse.Namespace:
+def parse_cli_args(
+    training_defaults: LyapunovTrainingConfig,
+    certification_defaults: LyapunovCertificationConfig,
+) -> argparse.Namespace:
     """Parse command-line arguments for Lyapunov learning with a fixed policy."""
     parser = argparse.ArgumentParser(
         description="Train and certify a Lyapunov candidate for a fixed double-integrator policy."
@@ -27,15 +30,15 @@ def parse_cli_args() -> argparse.Namespace:
         help="Path to the trained fixed policy model checkpoint.",
     )
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string.")
-    parser.add_argument("--initial-sample-size", type=int, default=1000, help="Training sample size.")
-    parser.add_argument("--batch-size", type=int, default=512, help="Training batch size.")
-    parser.add_argument("--outer-epochs", type=int, default=100, help="Number of outer epochs.")
-    parser.add_argument("--steps-per-epoch", type=int, default=5, help="Gradient steps per epoch.")
-    parser.add_argument(
-        "--counterexample-every",
-        type=int,
-        default=10,
-        help="Counterexample search interval in epochs.",
+    training_defaults.add_to_argparse(
+        parser,
+        include_fields={
+            "initial_sample_size",
+            "batch_size",
+            "outer_epochs",
+            "steps_per_epoch",
+            "counterexample_every",
+        },
     )
     
     # Grid Search Parameters (accept multiple values)
@@ -49,32 +52,43 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=5912354, help="Random seed.")
     
     # Certification Parameters
-    parser.add_argument("--cert-bins-per-dim", type=int, default=4, help="Initial certification bins per dimension.")
-    parser.add_argument("--cert-rho-scaling", type=float, default=1.5, help="Certification rho scaling.")
-    parser.add_argument("--cert-bisection-tol", type=float, default=1e-3, help="Certification bisection tolerance.")
-    parser.add_argument(
-        "--cert-max-scale-steps",
-        type=int,
-        default=15,
-        help="Maximum scale expansion steps during certification.",
-    )
-    parser.add_argument(
-        "--cert-max-bisection-steps",
-        type=int,
-        default=20,
-        help="Maximum bisection steps during certification.",
-    )
-    parser.add_argument(
-        "--cert-method",
-        type=str,
-        default="alpha-crown",
-        help="Certification backend/method name.",
+    certification_defaults.add_to_argparse(
+        parser,
+        prefix="cert-",
+        include_fields={
+            "bins_per_dim",
+            "rho_scaling",
+            "bisection_tol",
+            "max_scale_steps",
+            "max_bisection_steps",
+            "cert_method",
+        },
     )
     return parser.parse_args()
 
 
 def main() -> None:
-    args = parse_cli_args()
+    training_defaults = LyapunovTrainingConfig(
+        state_dim=2,
+        state_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]], dtype=float),
+        initial_sample_size=1000,
+        batch_size=512,
+        outer_epochs=100,
+        steps_per_epoch=5,
+        counterexample_every=10,
+        train_policy_model=False,
+    )
+    certification_defaults = LyapunovCertificationConfig(
+        state_dim=2,
+        cert_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]], dtype=float),
+        bins_per_dim=4,
+        rho_scaling=1.5,
+        bisection_tol=1e-3,
+        max_scale_steps=15,
+        max_bisection_steps=20,
+        cert_method="alpha-crown",
+    )
+    args = parse_cli_args(training_defaults, certification_defaults)
     device = th.device(args.device)
 
     # Load policy and dynamics once (they don't change across runs)
@@ -99,24 +113,23 @@ def main() -> None:
 
     state_bounds = np.vstack([policy_model.global_config.constraints.lbx, policy_model.global_config.constraints.ubx])
 
-    # Generate all combinations for the grid search
-    grid = list(itertools.product(
-        args.learning_rate,
-        args.kappa,
-        args.invariance_weight,
-        args.rho_growth_gamma,
-        args.roa_weight,
-        args.l1_weight
-    ))
+    training_sweep_configs = training_defaults.iter_from_namespace(args)
+    certification_base_config = certification_defaults.from_namespace(args, prefix="cert-")
 
-    print(f"Starting grid search over {len(grid)} configurations...")
+    print(f"Starting grid search over {len(training_sweep_configs)} configurations...")
 
-    for run_idx, (lr, kappa, inv_w, rho_gamma, roa_w, l1_w) in enumerate(grid):
-        print(f"\n[{run_idx+1}/{len(grid)}] Running config -> "
-              f"lr: {lr}, kappa: {kappa}, inv_w: {inv_w}, rho_g: {rho_gamma}, roa_w: {roa_w}, l1_w: {l1_w}")
+    for run_idx, sweep_config in enumerate(training_sweep_configs):
+        print(f"\n[{run_idx+1}/{len(training_sweep_configs)}] Running config -> "
+              f"lr: {sweep_config.learning_rate}, kappa: {sweep_config.kappa}, "
+              f"inv_w: {sweep_config.invariance_weight}, rho_g: {sweep_config.rho_growth_gamma}, "
+              f"roa_w: {sweep_config.roa_weight}, l1_w: {sweep_config.l1_weight}")
         
         # Create a specific folder for this parameter combination
-        run_name = f"lr_{lr}__kappa_{kappa}__invw_{inv_w}__rhog_{rho_gamma}__roaw_{roa_w}__l1w_{l1_w}"
+        run_name = (
+            f"lr_{sweep_config.learning_rate}__kappa_{sweep_config.kappa}"
+            f"__invw_{sweep_config.invariance_weight}__rhog_{sweep_config.rho_growth_gamma}"
+            f"__roaw_{sweep_config.roa_weight}__l1w_{sweep_config.l1_weight}"
+        )
         base_path = sweep_base_path / run_name
         base_path.mkdir(parents=True, exist_ok=True)
 
@@ -133,35 +146,24 @@ def main() -> None:
         # ---------------------------------------------------------------------
         # 2. Setup Configs with current grid parameters
         # ---------------------------------------------------------------------
-        training_config = LyapunovTrainingConfig(
+        training_config = replace(
+            sweep_config,
             state_dim=policy_model.global_config.nx,
             state_bounds=state_bounds,
-            initial_sample_size=args.initial_sample_size,
-            batch_size=args.batch_size,
-            outer_epochs=args.outer_epochs,
-            steps_per_epoch=args.steps_per_epoch,
-            counterexample_every=args.counterexample_every,
             train_policy_model=False,
-            seed=args.seed + run_idx, # Optional: vary seed slightly to avoid perfectly identical samples
-            # Variables from grid
-            learning_rate=lr,
-            kappa=kappa,
-            invariance_weight=inv_w,
-            rho_growth_gamma=rho_gamma,
-            roa_weight=roa_w,
-            l1_weight=l1_w,
+            seed=sweep_config.seed + run_idx if sweep_config.seed is not None else None,
             tb_log_dir=base_path / "tb",
         )
 
         certification_config = LyapunovCertificationConfig.from_training_config(
             training_config,
-            bins_per_dim=args.cert_bins_per_dim,
+            bins_per_dim=certification_base_config.bins_per_dim,
             origin_exclusion=None,
-            rho_scaling=args.cert_rho_scaling,
-            bisection_tol=args.cert_bisection_tol,
-            max_scale_steps=args.cert_max_scale_steps,
-            max_bisection_steps=args.cert_max_bisection_steps,
-            cert_method=args.cert_method,
+            rho_scaling=certification_base_config.rho_scaling,
+            bisection_tol=certification_base_config.bisection_tol,
+            max_scale_steps=certification_base_config.max_scale_steps,
+            max_bisection_steps=certification_base_config.max_bisection_steps,
+            cert_method=certification_base_config.cert_method,
             cert_bounds=training_config.state_bounds * 0.8,
         )
 

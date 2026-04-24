@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from argparse import ArgumentParser
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,7 +9,7 @@ import numpy as np
 from lcil.certification.config import LyapunovCertificationConfig
 from lcil.imitation_learning_mlp.config import ImitationTrainingConfig
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
-from lcil.utils.config_io import JsonConfigMixin
+from lcil.utils.base_config import ArgumentParserConfig, JsonDataclass, config_field
 
 
 class TestConfigRoundtrip(unittest.TestCase):
@@ -70,10 +71,35 @@ class TestConfigRoundtrip(unittest.TestCase):
 
 
 @dataclass(frozen=True)
-class DummyConfig(JsonConfigMixin):
+class DummyConfig(JsonDataclass):
     arr: np.ndarray | None
     optional: float | None
     NP_ARRAY_FIELDS = ("arr",)
+
+
+@dataclass(frozen=True)
+class DummyCliConfig(ArgumentParserConfig):
+    epochs: int = config_field(default=10, description="Number of optimization epochs.")
+    restore_best_model: bool = config_field(default=True, help="Restore the best checkpoint after training.")
+    tb_log_dir: str | Path | None = config_field(default=None, help="Optional TensorBoard log directory.")
+    hidden_sizes: tuple[int, ...] = config_field(default=(32, 32), help="Hidden layer sizes.")
+    internal_only: str = config_field(default="skip", cli=False)
+
+
+@dataclass(frozen=True)
+class DummySweepConfig(ArgumentParserConfig):
+    learning_rate: float = config_field(
+        default=1e-3,
+        help="Optimizer learning rate.",
+        argparse_kwargs={"nargs": "+"},
+    )
+    kappa: float = config_field(
+        default=0.1,
+        help="Lyapunov decrease margin.",
+        argparse_kwargs={"nargs": "+"},
+    )
+    hidden_sizes: tuple[int, ...] = config_field(default=(32, 32), help="Hidden layer sizes.")
+    label: str = config_field(default="baseline", help="Run label.")
 
 
 class TestJsonConfigMixin(unittest.TestCase):
@@ -110,6 +136,84 @@ class TestJsonConfigMixin(unittest.TestCase):
             loaded_cfg = DummyConfig.load(out_dir)
 
         self.assertEqual(loaded_cfg.to_dict(), cfg.to_dict())
+
+
+class TestArgumentParserConfig(unittest.TestCase):
+    def test_add_to_argparse_uses_field_metadata_for_help(self) -> None:
+        parser = ArgumentParser()
+        DummyCliConfig().add_to_argparse(parser)
+
+        help_text = parser.format_help()
+
+        self.assertIn("--epochs", help_text)
+        self.assertIn("Number of optimization epochs.", help_text)
+        self.assertIn("Restore the best checkpoint after training.", help_text)
+        self.assertIn("Optional TensorBoard log directory.", help_text)
+        self.assertIn("Hidden layer sizes.", help_text)
+        self.assertNotIn("--internal-only", help_text)
+
+    def test_add_to_argparse_parses_common_config_types(self) -> None:
+        parser = ArgumentParser()
+        DummyCliConfig().add_to_argparse(parser)
+
+        args = parser.parse_args([
+            "--epochs", "25",
+            "--no-restore-best-model",
+            "--tb-log-dir", "runs/test",
+            "--hidden-sizes", "64", "32",
+        ])
+
+        self.assertEqual(args.epochs, 25)
+        self.assertFalse(args.restore_best_model)
+        self.assertEqual(args.tb_log_dir, "runs/test")
+        self.assertEqual(args.hidden_sizes, [64, 32])
+
+    def test_add_to_argparse_supports_prefix_and_exclude(self) -> None:
+        parser = ArgumentParser()
+        DummyCliConfig().add_to_argparse(
+            parser,
+            prefix="train-",
+            exclude_fields={"internal_only", "tb_log_dir"},
+        )
+
+        help_text = parser.format_help()
+
+        self.assertIn("--train-epochs", help_text)
+        self.assertIn("--train-hidden-sizes", help_text)
+        self.assertNotIn("--train-tb-log-dir", help_text)
+        self.assertNotIn("--train-internal-only", help_text)
+
+    def test_iter_from_namespace_expands_nargs_scalar_fields(self) -> None:
+        parser = ArgumentParser()
+        defaults = DummySweepConfig()
+        defaults.add_to_argparse(parser)
+
+        args = parser.parse_args([
+            "--learning-rate", "1e-3", "5e-4",
+            "--kappa", "0.1", "0.2",
+            "--hidden-sizes", "64", "32",
+            "--label", "grid",
+        ])
+
+        configs = defaults.iter_from_namespace(args)
+
+        self.assertEqual(len(configs), 4)
+        self.assertEqual({cfg.learning_rate for cfg in configs}, {1e-3, 5e-4})
+        self.assertEqual({cfg.kappa for cfg in configs}, {0.1, 0.2})
+        self.assertTrue(all(cfg.hidden_sizes == (64, 32) for cfg in configs))
+        self.assertTrue(all(cfg.label == "grid" for cfg in configs))
+
+    def test_from_namespace_rejects_multiple_configs(self) -> None:
+        parser = ArgumentParser()
+        defaults = DummySweepConfig()
+        defaults.add_to_argparse(parser)
+
+        args = parser.parse_args([
+            "--learning-rate", "1e-3", "5e-4",
+        ])
+
+        with self.assertRaises(ValueError):
+            defaults.from_namespace(args)
 
 
 if __name__ == "__main__":

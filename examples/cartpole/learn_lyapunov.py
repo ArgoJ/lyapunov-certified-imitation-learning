@@ -1,9 +1,9 @@
 import argparse
-import itertools
 import json
 import torch as th
 import numpy as np
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from numpy.typing import NDArray
@@ -18,7 +18,10 @@ from cartpole_dyn import CartpoleDynamics
 from model import CartpoleAngleWrapper
 
 
-def parse_cli_args() -> argparse.Namespace:
+def parse_cli_args(
+    training_defaults: LyapunovTrainingConfig,
+    certification_defaults: LyapunovCertificationConfig,
+) -> argparse.Namespace:
     """Parse command-line arguments for Lyapunov learning with a fixed policy."""
     parser = argparse.ArgumentParser(
         description="Train and certify a Lyapunov candidate for a fixed inverted pendulum on cart policy."
@@ -28,30 +31,21 @@ def parse_cli_args() -> argparse.Namespace:
         help="Path to the trained fixed policy model checkpoint.")
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string.")
     parser.add_argument("--num_neurons", type=int, default=32, help="Number of neurons per hidden layer.")
-    parser.add_argument("--initial-sample-size", type=int, default=500, help="Training sample size.")
-    parser.add_argument("--batch-size", type=int, default=2048, help="Training batch size.")
-    parser.add_argument("--outer-epochs", type=int, default=500, help="Number of outer epochs.")
-    parser.add_argument("--steps-per-epoch", type=int, default=10, help="Gradient steps per epoch.")
-    parser.add_argument(
-        "--train-policy-model",
-        action="store_true",
-        help="Jointly train policy and Lyapunov model (default: only Lyapunov model).",
+    training_defaults.add_to_argparse(
+        parser,
+        include_fields={
+            "initial_sample_size",
+            "batch_size",
+            "outer_epochs",
+            "steps_per_epoch",
+            "train_policy_model",
+            "counterexample_every",
+            "adversarial_samples",
+            "counterexample_steps",
+            "adversarial_step_size",
+            "condition_margin",
+        },
     )
-    parser.add_argument(
-        "--counterexample-every", type=int, default=10,
-        help="Counterexample search interval in epochs.")
-    parser.add_argument(
-        "--adversarial-samples", type=int, default=1024,
-        help="PGD seed states used in each counterexample mining phase.")
-    parser.add_argument(
-        "--counterexample-steps", type=int, default=30,
-        help="Projected gradient steps used during counterexample mining.")
-    parser.add_argument(
-        "--adversarial-step-size", type=float, default=0.05,
-        help="Relative PGD step size for counterexample mining.")
-    parser.add_argument(
-        "--condition-margin", type=float, default=0.0,
-        help="Training margin for the relaxed Lyapunov condition (>=0 is stricter).")
     parser.add_argument(
         "--lyap-eps", type=float, default=0.1,
         help="Epsilon used in NeuralLyapunovCandidate for positive-definite baseline term.")
@@ -84,31 +78,23 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=5912354, help="Random seed.")
     
     # Certification Parameters
+    certification_defaults.add_to_argparse(
+        parser,
+        prefix="cert-",
+        include_fields={
+            "rho_scaling",
+            "bisection_tol",
+            "max_scale_steps",
+            "max_bisection_steps",
+            "cert_method",
+        },
+    )
     parser.add_argument(
         "--cert-bins-per-dim", nargs='+', type=int, default=[2, 6, 10, 10], 
         help="Initial certification bins per dimension.")
     parser.add_argument(
         "--cert-center-refinement-factor", nargs='+', type=float, default=[1.0, 0.8, 0.4, 0.4], 
         help="Factor for narrowing region around the center.")
-    parser.add_argument(
-        "--cert-rho-scaling", type=float, default=1.2, 
-        help="Certification rho scaling.")
-    parser.add_argument(
-        "--cert-bisection-tol", type=float, default=1e-2, 
-        help="Certification bisection tolerance.")
-    parser.add_argument(
-        "--cert-max-scale-steps", type=int, default=15, 
-        help="Maximum scale expansion steps during certification.",)
-    parser.add_argument(
-        "--cert-max-bisection-steps", type=int, default=20, 
-        help="Maximum bisection steps during certification.")
-    parser.add_argument(
-        "--cert-method",
-        type=str,
-        default="alpha-crown",
-        choices=["alpha-crown", "crown", "crown-ibp", "ibp"],
-        help="AutoLiRPA certification backend method.",
-    )
     parser.add_argument(
         "--disable-ibp-filter",
         action="store_true",
@@ -129,7 +115,30 @@ def parse_cli_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    args = parse_cli_args()
+    training_defaults = LyapunovTrainingConfig(
+        state_dim=4,
+        state_bounds=np.array([[-1.0, -1.0, -1.0, -1.0], [1.0, 1.0, 1.0, 1.0]], dtype=float),
+        initial_sample_size=500,
+        batch_size=2048,
+        outer_epochs=500,
+        steps_per_epoch=10,
+        train_policy_model=False,
+        counterexample_every=10,
+        adversarial_samples=1024,
+        counterexample_steps=30,
+        adversarial_step_size=0.05,
+        condition_margin=0.0,
+    )
+    certification_defaults = LyapunovCertificationConfig(
+        state_dim=4,
+        cert_bounds=np.array([[-1.0, -1.0, -1.0, -1.0], [1.0, 1.0, 1.0, 1.0]], dtype=float),
+        rho_scaling=1.2,
+        bisection_tol=1e-2,
+        max_scale_steps=15,
+        max_bisection_steps=20,
+        cert_method="alpha-crown",
+    )
+    args = parse_cli_args(training_defaults, certification_defaults)
     device = th.device(args.device)
 
     # Load policy and dynamics once (they don't change across runs)
@@ -169,31 +178,27 @@ def main() -> None:
     print(f"Using certification bounds:\n{cert_bounds}")
     print(f"Using training bound scales: {curriculum_scales}")
 
-    # Generate all combinations for the grid search
-    grid = list(itertools.product(
-        args.learning_rate,
-        args.kappa,
-        args.invariance_weight,
-        args.rho_growth_gamma,
-        args.roa_weight,
-        args.l1_weight,
-        args.rho_estimate_quantile,
-    ))
+    training_sweep_configs = training_defaults.iter_from_namespace(args)
+    certification_base_config = certification_defaults.from_namespace(args, prefix="cert-")
 
-    print(f"Starting grid search over {len(grid)} configurations...")
+    print(f"Starting grid search over {len(training_sweep_configs)} configurations...")
 
-    for run_idx, (lr, kappa, inv_w, rho_gamma, roa_w, l1_w, rho_q) in enumerate(grid):
-        print(f"\n[{run_idx+1}/{len(grid)}] Running config -> "
-              f"lr: {lr}, kappa: {kappa}, inv_w: {inv_w}, rho_g: {rho_gamma}, "
-              f"roa_w: {roa_w}, l1_w: {l1_w}, rho_q: {rho_q}, "
-              f"margin: {args.condition_margin}, lyap_eps: {args.lyap_eps}, "
-              f"train_policy: {args.train_policy_model}")
+    for run_idx, sweep_config in enumerate(training_sweep_configs):
+        print(f"\n[{run_idx+1}/{len(training_sweep_configs)}] Running config -> "
+              f"lr: {sweep_config.learning_rate}, kappa: {sweep_config.kappa}, "
+              f"inv_w: {sweep_config.invariance_weight}, rho_g: {sweep_config.rho_growth_gamma}, "
+              f"roa_w: {sweep_config.roa_weight}, l1_w: {sweep_config.l1_weight}, "
+              f"rho_q: {sweep_config.rho_estimate_quantile}, "
+              f"margin: {sweep_config.condition_margin}, lyap_eps: {args.lyap_eps}, "
+              f"train_policy: {sweep_config.train_policy_model}")
         
         # Create a specific folder for this parameter combination
         run_name = (
-            f"lr_{lr}__kappa_{kappa}__invw_{inv_w}__rhog_{rho_gamma}"
-            f"__roaw_{roa_w}__l1w_{l1_w}__rhoq_{rho_q}"
-            f"__margin_{args.condition_margin}__eps_{args.lyap_eps}"
+            f"lr_{sweep_config.learning_rate}__kappa_{sweep_config.kappa}"
+            f"__invw_{sweep_config.invariance_weight}__rhog_{sweep_config.rho_growth_gamma}"
+            f"__roaw_{sweep_config.roa_weight}__l1w_{sweep_config.l1_weight}"
+            f"__rhoq_{sweep_config.rho_estimate_quantile}"
+            f"__margin_{sweep_config.condition_margin}__eps_{args.lyap_eps}"
             f"__curr_{'-'.join(f'{scale:.2f}' for scale in curriculum_scales)}"
         )
         base_path = sweep_base_path / run_name
@@ -213,27 +218,11 @@ def main() -> None:
         # ---------------------------------------------------------------------
         # 2. Setup Configs with current grid parameters
         # ---------------------------------------------------------------------
-        training_config = LyapunovTrainingConfig(
+        training_config = replace(
+            sweep_config,
             state_dim=feature_net.global_config.nx,
             state_bounds=training_bounds,
-            initial_sample_size=args.initial_sample_size,
-            batch_size=args.batch_size,
-            outer_epochs=args.outer_epochs,
-            steps_per_epoch=args.steps_per_epoch,
-            counterexample_every=args.counterexample_every,
-            adversarial_samples=args.adversarial_samples,
-            counterexample_steps=args.counterexample_steps,
-            adversarial_step_size=args.adversarial_step_size,
-            train_policy_model=args.train_policy_model,
-            seed=args.seed + run_idx,
-            learning_rate=lr,
-            kappa=kappa,
-            invariance_weight=inv_w,
-            rho_growth_gamma=rho_gamma,
-            rho_estimate_quantile=rho_q,
-            roa_weight=roa_w,
-            l1_weight=l1_w,
-            condition_margin=args.condition_margin,
+            seed=sweep_config.seed + run_idx if sweep_config.seed is not None else None,
             tb_log_dir=lyap_path / "tb" / iso / run_name,
         )
 
@@ -242,11 +231,11 @@ def main() -> None:
             bins_per_dim=args.cert_bins_per_dim,
             center_refinement_factor=args.cert_center_refinement_factor,
             origin_exclusion=0.01,
-            rho_scaling=args.cert_rho_scaling,
-            bisection_tol=args.cert_bisection_tol,
-            max_scale_steps=args.cert_max_scale_steps,
-            max_bisection_steps=args.cert_max_bisection_steps,
-            cert_method=args.cert_method,
+            rho_scaling=certification_base_config.rho_scaling,
+            bisection_tol=certification_base_config.bisection_tol,
+            max_scale_steps=certification_base_config.max_scale_steps,
+            max_bisection_steps=certification_base_config.max_bisection_steps,
+            cert_method=certification_base_config.cert_method,
             use_ibp_filter=not args.disable_ibp_filter,
             cert_bounds=cert_bounds,
         )

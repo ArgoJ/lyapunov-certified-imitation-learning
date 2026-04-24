@@ -1,6 +1,7 @@
 import argparse
 import torch as th
 
+from dataclasses import replace
 from pathlib import Path
 from datetime import datetime
 
@@ -11,7 +12,7 @@ from lcil.imitation_learning_mlp import *
 from double_integrator_dyn import DoubleIntegratorDynamics
 
 
-def parse_cli_args() -> argparse.Namespace:
+def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Namespace:
     """Parse command-line arguments for policy training."""
     parser = argparse.ArgumentParser(description="Train a double-integrator imitation policy.")
     parser.add_argument(
@@ -20,8 +21,7 @@ def parse_cli_args() -> argparse.Namespace:
         default="/home/josua/programming_stuff/projects/mpc-datagen/data/double_integrator_regional_N20_data.hdf5",
         help="Path to the source MPC dataset (HDF5).",
     )
-    parser.add_argument("--epochs", type=int, default=100, help="Number of policy training epochs.")
-    parser.add_argument("--lr", type=float, default=5e-4, help="Optimizer learning rate.")
+    training_defaults.add_to_argparse(parser, include_fields={"epochs", "learning_rate"})
     parser.add_argument("--batch-size", type=int, default=256, help="Training batch size.")
     parser.add_argument(
         "--save-folder",
@@ -40,7 +40,12 @@ def parse_cli_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    args = parse_cli_args()
+    training_defaults = ImitationTrainingConfig(
+        epochs=100,
+        learning_rate=5e-4,
+        scheduler_type="cosine",
+    )
+    args = parse_cli_args(training_defaults)
     device = args.device
     dataset_path = args.dataset_path
 
@@ -81,9 +86,8 @@ def main() -> None:
         lambda_dyn=2.0,
     )
 
-    training_cfg = ImitationTrainingConfig(
-        epochs=args.epochs,
-        learning_rate=args.lr,
+    training_cfg = replace(
+        training_defaults.from_namespace(args),
         scheduler_type="cosine",
     )
 

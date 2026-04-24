@@ -3,6 +3,7 @@ import numpy as np
 import torch as th
 import logging
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -20,7 +21,10 @@ from double_integrator_dyn import DoubleIntegratorDynamics
 __logger__ = logging.getLogger(__name__)
 
 
-def parse_cli_args() -> argparse.Namespace:
+def parse_cli_args(
+    training_defaults: LyapunovTrainingConfig,
+    certification_defaults: LyapunovCertificationConfig,
+) -> argparse.Namespace:
     """Parse command-line arguments for Lyapunov training with a Diff-MPC policy."""
     parser = argparse.ArgumentParser(
         description="Train a Lyapunov function for a differentiable MPC policy on the double integrator."
@@ -36,24 +40,23 @@ def parse_cli_args() -> argparse.Namespace:
         help="Number of threads used by the batched Diff-MPC solver.",
     )
     parser.add_argument("--terminal-mode", type=str, default="regional", help="Terminal mode for MPC OCP.")
-
-    parser.add_argument("--initial-sample-size", type=int, default=1000, help="Initial training sample count.")
-    parser.add_argument("--batch-size", type=int, default=512, help="Batch size for Lyapunov training.")
-    parser.add_argument("--outer-epochs", type=int, default=100, help="Number of outer CEGIS epochs.")
-    parser.add_argument("--steps-per-epoch", type=int, default=5, help="Optimizer steps per outer epoch.")
-    parser.add_argument(
-        "--counterexample-every",
-        type=int,
-        default=10,
-        help="Counterexample mining interval (in outer epochs).",
+    training_defaults.add_to_argparse(
+        parser,
+        include_fields={
+            "initial_sample_size",
+            "batch_size",
+            "outer_epochs",
+            "steps_per_epoch",
+            "counterexample_every",
+            "learning_rate",
+            "kappa",
+            "invariance_weight",
+            "rho_growth_gamma",
+            "roa_weight",
+            "l1_weight",
+            "seed",
+        },
     )
-    parser.add_argument("--learning-rate", type=float, default=1e-2, help="Optimizer learning rate.")
-    parser.add_argument("--kappa", type=float, default=0.12, help="Lyapunov decrease margin.")
-    parser.add_argument("--invariance-weight", type=float, default=1.0, help="Invariance loss weight.")
-    parser.add_argument("--rho-growth-gamma", type=float, default=1.1, help="ROA rho growth factor.")
-    parser.add_argument("--roa-weight", type=float, default=0.1, help="ROA surrogate loss weight.")
-    parser.add_argument("--l1-weight", type=float, default=1e-6, help="L1 regularization weight.")
-    parser.add_argument("--seed", type=int, default=5912354, help="Random seed.")
 
     parser.add_argument(
         "--save-folder",
@@ -63,32 +66,50 @@ def parse_cli_args() -> argparse.Namespace:
     )
 
     # Certification Parameters
-    parser.add_argument("--cert-bins-per-dim", type=int, default=4, help="Initial certification bins per dimension.")
-    parser.add_argument("--cert-rho-scaling", type=float, default=1.5, help="Certification rho scaling.")
-    parser.add_argument("--cert-bisection-tol", type=float, default=1e-3, help="Certification bisection tolerance.")
-    parser.add_argument(
-        "--cert-max-scale-steps",
-        type=int,
-        default=15,
-        help="Maximum scale expansion steps during certification.",
-    )
-    parser.add_argument(
-        "--cert-max-bisection-steps",
-        type=int,
-        default=20,
-        help="Maximum bisection steps during certification.",
-    )
-    parser.add_argument(
-        "--cert-method",
-        type=str,
-        default="alpha-crown",
-        help="Certification backend/method name.",
+    certification_defaults.add_to_argparse(
+        parser,
+        prefix="cert-",
+        include_fields={
+            "bins_per_dim",
+            "rho_scaling",
+            "bisection_tol",
+            "max_scale_steps",
+            "max_bisection_steps",
+            "cert_method",
+        },
     )
     return parser.parse_args()
 
 
 def main() -> None:
-    args = parse_cli_args()
+    training_defaults = LyapunovTrainingConfig(
+        state_dim=2,
+        state_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]], dtype=float),
+        initial_sample_size=1000,
+        batch_size=512,
+        outer_epochs=100,
+        steps_per_epoch=5,
+        counterexample_every=10,
+        learning_rate=1e-2,
+        kappa=0.12,
+        invariance_weight=1.0,
+        rho_growth_gamma=1.1,
+        roa_weight=0.1,
+        l1_weight=1e-6,
+        seed=5912354,
+        train_policy_model=False,
+    )
+    certification_defaults = LyapunovCertificationConfig(
+        state_dim=2,
+        cert_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]], dtype=float),
+        bins_per_dim=4,
+        rho_scaling=1.5,
+        bisection_tol=1e-3,
+        max_scale_steps=15,
+        max_bisection_steps=20,
+        cert_method="alpha-crown",
+    )
+    args = parse_cli_args(training_defaults, certification_defaults)
     save_dir = Path(args.save_folder) / datetime.now().strftime("%Y%m%d_%H%M%S")
     device = th.device(args.device)
 
@@ -134,34 +155,24 @@ def main() -> None:
     # ---------------------------------------------------------------------
     ocp = solver.acados_ocp
     state_bounds = np.vstack([ocp.constraints.lbx, ocp.constraints.ubx])
-    training_config = LyapunovTrainingConfig(
+    training_config = replace(
+        training_defaults.from_namespace(args),
         state_dim=2,
         state_bounds=state_bounds,
-        initial_sample_size=args.initial_sample_size,
-        batch_size=args.batch_size,
-        outer_epochs=args.outer_epochs,
-        steps_per_epoch=args.steps_per_epoch,
-        counterexample_every=args.counterexample_every,
         train_policy_model=False,
-        seed=args.seed,
-        learning_rate=args.learning_rate,
-        kappa=args.kappa,
-        invariance_weight=args.invariance_weight,
-        rho_growth_gamma=args.rho_growth_gamma,
-        roa_weight=args.roa_weight,
-        l1_weight=args.l1_weight,
         tb_log_dir=save_dir / "tb",
     )
+    certification_base_config = certification_defaults.from_namespace(args, prefix="cert-")
 
     certification_config = LyapunovCertificationConfig.from_training_config(
         training_config,
-        bins_per_dim=args.cert_bins_per_dim,
+        bins_per_dim=certification_base_config.bins_per_dim,
         origin_exclusion=None,
-        rho_scaling=args.cert_rho_scaling,
-        bisection_tol=args.cert_bisection_tol,
-        max_scale_steps=args.cert_max_scale_steps,
-        max_bisection_steps=args.cert_max_bisection_steps,
-        cert_method=args.cert_method,
+        rho_scaling=certification_base_config.rho_scaling,
+        bisection_tol=certification_base_config.bisection_tol,
+        max_scale_steps=certification_base_config.max_scale_steps,
+        max_bisection_steps=certification_base_config.max_bisection_steps,
+        cert_method=certification_base_config.cert_method,
         cert_bounds=training_config.state_bounds * 0.8,
     )
 
