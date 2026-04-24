@@ -98,7 +98,6 @@ class TestABCrownCertifierIntegration(PlotAssertionsMixin, unittest.TestCase):
             state_dim=3,
             cert_bounds=np.array([[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]], dtype=np.float32),
             kappa=0.1,
-            invariance_weight=1.0,
             bins_per_dim=4,
             origin_exclusion=0.0,
             max_scale_steps=6,
@@ -195,7 +194,7 @@ class TestABCrownCertifierIntegration(PlotAssertionsMixin, unittest.TestCase):
         self.assertGreaterEqual(result.rho, certifier.config.rho_min)
         self.assertGreater(result.certified_regions.shape[0], 0)
         self.assertGreater(result.failed_regions.shape[0], 0)
-        self.assertEqual(result.counter_examples.shape[0], 0)
+        self.assertEqual(result.outside_sublevel_regions.shape[0], 0)
         self._assert_region_plot_written(
             certification_result=result,
             stem="mixed_regions_integration",

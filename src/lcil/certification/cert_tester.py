@@ -8,7 +8,7 @@ from numpy.typing import NDArray
 
 from .certifier_base import RegionCertificationResult
 from .config import LyapunovCertificationConfig
-from .models import ClosedLoopLyapunovCertificationVerifier
+from .models import LyapunovVerifier
 from ..utils.config_io import JsonConfigMixin
 
 __logger__ = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ class CertificationTesterResults(JsonConfigMixin):
 
     certified: CertificationCategoryTestResult
     failed: CertificationCategoryTestResult
-    counter_examples: CertificationCategoryTestResult
+    outside_sublevel: CertificationCategoryTestResult
     rollout_steps: int
     rho: float
     kappa: float
@@ -44,7 +44,7 @@ class CertificationTesterResults(JsonConfigMixin):
 class CertificationResultTester:
     """
     Tests region certification results by performing closed-loop rollouts
-    from the center of the certified, failed, and counter-example regions,
+    from the center of the certified, failed, and outside-sublevel regions,
     and evaluating the empirical satisfaction of the Lyapunov condition.
     """
 
@@ -82,14 +82,15 @@ class CertificationResultTester:
         lbx = th.tensor(config.cert_bounds[0], dtype=th.float32, device=self.device).unsqueeze(0)
         ubx = th.tensor(config.cert_bounds[1], dtype=th.float32, device=self.device).unsqueeze(0)
 
-        self.verifier = ClosedLoopLyapunovCertificationVerifier(
+        self.verifier = LyapunovVerifier(
             policy_model=self.policy_model,
             lyap_model=self.lyap_model,
             dyn_model=self.dyn_model,
             lbx=lbx,
             ubx=ubx,
-            invariance_weight=config.invariance_weight,
             kappa=config.kappa,
+            sublevel_tolerance=config.sublevel_tolerance,
+            condition_margin=config.condition_margin,
         ).to(self.device).eval()
 
     def _evaluate_regions(
@@ -163,7 +164,7 @@ class CertificationResultTester:
         -------
         CertificationTesterResults
             Structured, persistable results for 'certified', 'failed',
-            and 'counter_examples' categories.
+            and 'outside_sublevel' categories.
         """
         rho_tensor = th.tensor(cert_result.rho, dtype=th.float32, device=self.device)
         tolerance = self.config.condition_tolerance
@@ -182,9 +183,9 @@ class CertificationResultTester:
             tolerance=tolerance,
             rollout_steps=rollout_steps,
         )
-        counter_examples = self._evaluate_regions(
-            cert_result.counter_examples,
-            name="counter_examples",
+        outside_sublevel = self._evaluate_regions(
+            cert_result.outside_sublevel_regions,
+            name="outside_sublevel",
             rho_tensor=rho_tensor,
             tolerance=tolerance,
             rollout_steps=rollout_steps,
@@ -193,7 +194,7 @@ class CertificationResultTester:
         return CertificationTesterResults(
             certified=certified,
             failed=failed,
-            counter_examples=counter_examples,
+            outside_sublevel=outside_sublevel,
             rollout_steps=rollout_steps,
             rho=float(cert_result.rho),
             kappa=float(self.config.kappa),

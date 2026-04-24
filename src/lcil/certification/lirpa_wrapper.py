@@ -4,6 +4,7 @@ import torch as th
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
 from .certifier_base import BaseCertifier
+from .models import LyapunovVerifier
 
 __logger__ = logging.getLogger(__name__)
 
@@ -34,9 +35,28 @@ class LiRPACertifier(BaseCertifier):
 
     def setup_backend(self) -> None:
         """Initialize the bounded LiRPA model and fallback method list."""
+        self.verifier = self._setup_verifier()
         self.lirpa_model = self._get_bounded_module()
         self.fallback_methods = self._get_fallback_methods(self.config.cert_method)
         self._alpha_crown_disabled = False
+
+    def _setup_verifier(self) -> LyapunovVerifier:
+        """Construct and initialize the closed-loop Lyapunov verifier."""
+        lbx_batched = self.bounds[0].unsqueeze(0)
+        ubx_batched = self.bounds[1].unsqueeze(0)
+
+        verifier = LyapunovVerifier(
+            policy_model=self.policy_model,
+            lyap_model=self.lyap_model,
+            dyn_model=self.dyn_model,
+            lbx=lbx_batched,
+            ubx=ubx_batched,
+            kappa=self.config.kappa,
+            sublevel_tolerance=self.config.sublevel_tolerance,
+            condition_margin=self.config.condition_margin,
+        )
+
+        return verifier
 
     @staticmethod
     def _is_alpha_shape_mismatch_error(exc: Exception) -> bool:

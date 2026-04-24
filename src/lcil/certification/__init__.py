@@ -10,7 +10,7 @@ from .cert_tester import (
 from .lirpa_wrapper import LiRPACertifier
 from .abcrown_wrapper import ABCrownCertifier
 from .config import LyapunovCertificationConfig
-from .models import ClosedLoopLyapunovCertificationVerifier
+from .models import LyapunovVerifier
 
 __all__ = [
     "RegionCertificationResult",
@@ -21,5 +21,5 @@ __all__ = [
     "ABCrownCertifier",
     "LiRPACertifier",
     "LyapunovCertificationConfig",
-    "ClosedLoopLyapunovCertificationVerifier",
+    "LyapunovVerifier",
 ]

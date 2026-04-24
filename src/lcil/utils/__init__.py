@@ -8,7 +8,6 @@ from .base_models import (
 	LinearDynamics,
 	RK4Integrator,
 	Linearize,
-    ClosedLoopLyapunovConditionCore,
 	save_model_checkpoint,
 )
 from .early_stopping import EarlyStopping

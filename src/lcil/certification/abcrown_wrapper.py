@@ -13,6 +13,7 @@ from abcrown import (
 )
 
 from .certifier_base import BaseCertifier
+from .models import LyapunovMultiOutputVerifier
 
 __logger__ = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class ABCrownCertifier(BaseCertifier):
     ):
         super().__init__(policy_model, lyap_model, dyn_model, config, device)
         self.abcrown_config = None
+        self.abcrown_verifier = None
         self.wrapped_model = None
 
     def setup_backend(self) -> None:
@@ -55,6 +57,8 @@ class ABCrownCertifier(BaseCertifier):
             .set(solver__batch_size=4096)
             ()
         )
+        
+        self.verifier = self._setup_verifier()
         self.wrapped_model = _ABCrownModelWrapper(self.verifier, self.device)
         self.wrapped_model.eval()
 
@@ -62,6 +66,21 @@ class ABCrownCertifier(BaseCertifier):
     def _is_verified_status(status: str) -> bool:
         normalized = str(status).strip().lower()
         return normalized == "verified" or normalized.startswith("safe")
+
+    def _setup_verifier(self):
+        lbx_batched = self.bounds[0].unsqueeze(0)
+        ubx_batched = self.bounds[1].unsqueeze(0)
+        
+        return LyapunovMultiOutputVerifier(
+            policy_model=self.policy_model,
+            lyap_model=self.lyap_model,
+            dyn_model=self.dyn_model,
+            lbx=lbx_batched,
+            ubx=ubx_batched,
+            kappa=self.config.kappa,
+            sublevel_tolerance=self.config.sublevel_tolerance,
+            condition_margin=self.config.condition_margin,
+        )
 
     def _solve_box_with_model(
         self,
@@ -72,12 +91,19 @@ class ABCrownCertifier(BaseCertifier):
             lb = lb.squeeze(0)
             ub = ub.squeeze(0)
 
+        rho_value = float(self.wrapped_model.rho.item())
+
         with self._get_suppress_ctx():
             x = input_vars(self.config.state_dim)
-            y = output_vars(1)
+            y = output_vars(2 + self.config.state_dim)
 
             input_constraint = (x >= lb) & (x <= ub)
-            output_constraint = (y[0] < self.config.condition_tolerance)
+            output_constraint = self._build_safe_output_constraint(
+                y=y,
+                lb=lb,
+                ub=ub,
+                rho=rho_value,
+            )
 
             spec = VerificationSpec.build_spec(
                 input_vars=x,
@@ -95,6 +121,32 @@ class ABCrownCertifier(BaseCertifier):
             res = solver.solve()
 
         return self._is_verified_status(res.status)
+
+    def _build_safe_output_constraint(
+        self,
+        y,
+        lb: th.Tensor,
+        ub: th.Tensor,
+        rho: float,
+    ):
+        """Build the safe-region predicate for the multi-output verifier.
+
+        The safe condition matches the external verifier structure:
+
+        ``V(x) > rho + tol_sublevel`` OR
+        ``(decrease margin > -tol_cond) AND (x_next within box tolerance)``.
+        """
+        safe_outside_sublevel = y[1] > (rho + self.config.sublevel_tolerance)
+        safe_decrease = y[0] > (-self.config.condition_tolerance)
+
+        safe_x_next = None
+        for idx in range(self.config.state_dim):
+            coord_safe = (y[idx + 2] > (float(lb[idx]) - self.config.condition_tolerance)) & (
+                y[idx + 2] < (float(ub[idx]) + self.config.condition_tolerance)
+            )
+            safe_x_next = coord_safe if safe_x_next is None else (safe_x_next & coord_safe)
+
+        return safe_outside_sublevel | (safe_decrease & safe_x_next)
 
 
     def _certify_batched_regions(

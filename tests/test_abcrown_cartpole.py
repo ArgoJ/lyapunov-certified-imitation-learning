@@ -85,7 +85,6 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
                 dtype=np.float32,
             ),
             kappa=0.001,
-            invariance_weight=1.0,
             rho_scaling=1.3,
             bins_per_dim=(3, 4, 6, 7),
             center_refinement_factor=(0.6, 0.6, 0.5, 0.6),

@@ -34,13 +34,15 @@ ABCrownCertifier = abcrown_wrapper.ABCrownCertifier
 LyapunovCertificationConfig = importlib.import_module(
     "lcil.certification.config"
 ).LyapunovCertificationConfig
+BaseCertifier = importlib.import_module(
+    "lcil.certification.certifier_base"
+).BaseCertifier
 plot_module = importlib.import_module("lcil.utils.plot")
 certified_regions_2d = plot_module.certified_regions_2d
 lyapunov_cert_regions = plot_module.lyapunov_cert_regions
 cert_models_module = importlib.import_module("lcil.certification.models")
-train_models_module = importlib.import_module("lcil.lyapunov_learning.models")
-ClosedLoopLyapunovCertificationVerifier = cert_models_module.ClosedLoopLyapunovCertificationVerifier
-ClosedLoopLyapunovTrainingVerifier = train_models_module.ClosedLoopLyapunovTrainingVerifier
+LyapunovVerifier = cert_models_module.LyapunovVerifier
+LyapunovMultiOutputVerifier = cert_models_module.LyapunovMultiOutputVerifier
 
 
 @dataclass
@@ -67,12 +69,55 @@ class _FakeInputVars:
 
 @dataclass
 class _FakeOutputConstraint:
-    tol: float
+    predicate: object
+
+    def evaluate(self, values: th.Tensor) -> th.Tensor:
+        values_2d = values if values.ndim > 1 else values.unsqueeze(1)
+        result = self.predicate(values_2d)
+        return th.as_tensor(result, dtype=th.bool, device=values_2d.device).reshape(-1)
+
+    def __and__(self, other: "_FakeOutputConstraint") -> "_FakeOutputConstraint":
+        return _FakeOutputConstraint(
+            predicate=lambda values: self.evaluate(values) & other.evaluate(values)
+        )
+
+    def __or__(self, other: "_FakeOutputConstraint") -> "_FakeOutputConstraint":
+        return _FakeOutputConstraint(
+            predicate=lambda values: self.evaluate(values) | other.evaluate(values)
+        )
 
 
 class _FakeOutputVar:
-    def __lt__(self, tol: float) -> _FakeOutputConstraint:
-        return _FakeOutputConstraint(tol=float(tol))
+    def __init__(self, idx: int):
+        self.idx = idx
+
+    @staticmethod
+    def _to_float(value) -> float:
+        return float(th.as_tensor(value, dtype=th.float32).reshape(()).item())
+
+    def __lt__(self, rhs: float) -> _FakeOutputConstraint:
+        rhs_value = self._to_float(rhs)
+        return _FakeOutputConstraint(
+            predicate=lambda values: values[:, self.idx] < rhs_value
+        )
+
+    def __le__(self, rhs: float) -> _FakeOutputConstraint:
+        rhs_value = self._to_float(rhs)
+        return _FakeOutputConstraint(
+            predicate=lambda values: values[:, self.idx] <= rhs_value
+        )
+
+    def __gt__(self, rhs: float) -> _FakeOutputConstraint:
+        rhs_value = self._to_float(rhs)
+        return _FakeOutputConstraint(
+            predicate=lambda values: values[:, self.idx] > rhs_value
+        )
+
+    def __ge__(self, rhs: float) -> _FakeOutputConstraint:
+        rhs_value = self._to_float(rhs)
+        return _FakeOutputConstraint(
+            predicate=lambda values: values[:, self.idx] >= rhs_value
+        )
 
 
 class _FakeOutputVars:
@@ -82,14 +127,14 @@ class _FakeOutputVars:
     def __getitem__(self, idx: int) -> _FakeOutputVar:
         if idx < 0 or idx >= self.dim:
             raise IndexError(idx)
-        return _FakeOutputVar()
+        return _FakeOutputVar(idx)
 
 
 @dataclass
 class _FakeVerificationSpecData:
     lb: th.Tensor
     ub: th.Tensor
-    tol: float
+    output_constraint: _FakeOutputConstraint
 
 
 class _FakeVerificationSpec:
@@ -106,7 +151,7 @@ class _FakeVerificationSpec:
         return _FakeVerificationSpecData(
             lb=input_constraint.lb,
             ub=input_constraint.ub,
-            tol=output_constraint.tol,
+            output_constraint=output_constraint,
         )
 
 
@@ -138,8 +183,9 @@ class _FakeABCrownSolver:
     def solve(self) -> _FakeSolveResult:
         points = self._sample_points(self.spec.lb, self.spec.ub)
         with th.no_grad():
-            values = self.computing_graph(points).reshape(-1)
-        status = "verified" if float(values.max().item()) < self.spec.tol else "unsafe"
+            values = self.computing_graph(points)
+        safe_mask = self.spec.output_constraint.evaluate(values)
+        status = "verified" if bool(safe_mask.all().item()) else "unsafe"
         return _FakeSolveResult(status=status)
 
 
@@ -188,6 +234,16 @@ class _IdentityDynamics(nn.Module):
         return x
 
 
+class _ShiftDynamics(nn.Module):
+    def __init__(self, shift: float):
+        super().__init__()
+        self.shift = float(shift)
+
+    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+        del u
+        return x + self.shift
+
+
 class _QuadraticLyapunov(nn.Module):
     def forward(self, x: th.Tensor) -> th.Tensor:
         return (x * x).sum(dim=1, keepdim=True)
@@ -207,6 +263,42 @@ class _MixedLyapunov(nn.Module):
     def forward(self, x: th.Tensor) -> th.Tensor:
         r2 = (x * x).sum(dim=1, keepdim=True)
         return self.beta * r2 - self.alpha * (r2 * r2)
+
+
+class _DescendingLinearLyapunov(nn.Module):
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        return 2.0 - x[:, :1]
+
+
+class _StaticUpperBoundFilter:
+    def __init__(self, ub_out: th.Tensor):
+        self.ub_out = ub_out
+
+    def compute_bounds(self, x, method: str):
+        del x, method
+        return None, self.ub_out
+
+
+class _RecursiveMockCertifier(BaseCertifier):
+    def __init__(self, *args, width_limit: float, rho_limit: float, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.width_limit = float(width_limit)
+        self.rho_limit = float(rho_limit)
+
+    def setup_backend(self, *args, **kwargs) -> None:
+        del args, kwargs
+
+    def _certify_batched_regions(
+        self,
+        bs: th.Tensor,
+        rho: float,
+        early_exit: bool = True,
+        *args,
+        **kwargs,
+    ) -> th.Tensor:
+        del args, kwargs, early_exit
+        widths = (bs[:, 1] - bs[:, 0]).amax(dim=1)
+        return (widths <= self.width_limit) & (rho <= self.rho_limit)
 
 
 class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
@@ -244,12 +336,16 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
             sys.modules["lcil.certification"] = _ORIG_LCIL_CERTIFICATION
 
     @staticmethod
-    def _make_certifier(lyap_model: nn.Module) -> ABCrownCertifier:
+    def _make_certifier(
+        lyap_model: nn.Module,
+        *,
+        dyn_model: nn.Module | None = None,
+        kappa: float = 0.1,
+    ) -> ABCrownCertifier:
         config = LyapunovCertificationConfig(
             state_dim=3,
             cert_bounds=np.array([[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]], dtype=np.float32),
-            kappa=0.1,
-            invariance_weight=1.0,
+            kappa=kappa,
             bins_per_dim=4,
             center_refinement_factor=0.7,
             origin_exclusion=0.0,
@@ -257,11 +353,12 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
             max_bisection_steps=6,
             cert_method="alpha-crown",
             condition_tolerance=1e-6,
+            max_recursion_depth=3,
         )
         return ABCrownCertifier(
             policy_model=_ZeroPolicy(),
             lyap_model=lyap_model,
-            dyn_model=_ZeroDynamics(),
+            dyn_model=_ZeroDynamics() if dyn_model is None else dyn_model,
             config=config,
             device=th.device("cpu"),
         )
@@ -336,11 +433,19 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
             },
         )
 
-    def test_quadratic_lyapunov_certifies_all_regions(self) -> None:
-        certifier = self._make_certifier(_QuadraticLyapunov())
+    def test_quadratic_lyapunov_with_identity_dynamics_certifies_all_regions(self) -> None:
+        # Under the external-style multi-output ABCrown spec, each certified
+        # region must map back into its own local box. Identity dynamics with
+        # kappa=0 yields a simple globally safe mock case.
+        certifier = self._make_certifier(
+            _QuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            kappa=0.0,
+        )
         result = certifier.certify(rho_estimate=1.0)
 
-        self.assertTrue(result.success)
+        self.assertTrue(result.global_success)
+        self.assertTrue(result.partial_success)
         self.assertGreaterEqual(result.rho, 1.0)
         self.assertEqual(result.failed_regions.shape[0], 0)
         self.assertGreater(result.certified_regions.shape[0], 0)
@@ -358,11 +463,12 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
         certifier = self._make_certifier(_NegativeQuadraticLyapunov())
         result = certifier.certify(rho_estimate=1.0)
 
-        self.assertFalse(result.success)
-        self.assertLessEqual(result.rho, certifier.config.rho_min)
+        self.assertFalse(result.global_success)
+        self.assertFalse(result.partial_success)
+        self.assertAlmostEqual(result.rho, 1.0, places=6)
         self.assertEqual(result.certified_regions.shape[0], 0)
         self.assertGreaterEqual(result.failed_regions.shape[0], 0)
-        self.assertGreaterEqual(result.counter_examples.shape[0], 0)
+        self.assertGreaterEqual(result.outside_sublevel_regions.shape[0], 0)
         self._assert_region_plot_written(
             certification_result=result,
             stem="negative_regions",
@@ -377,8 +483,9 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
         certifier = self._make_certifier(_MixedLyapunov(alpha=0.3, beta=2.0))
         result = certifier.certify(rho_estimate=1.0)
 
-        self.assertFalse(result.success)
-        self.assertLessEqual(result.rho, certifier.config.rho_min)
+        self.assertFalse(result.global_success)
+        self.assertTrue(result.partial_success)
+        self.assertAlmostEqual(result.rho, 1.0, places=6)
         self.assertGreater(result.certified_regions.shape[0], 0)
         self.assertGreater(result.failed_regions.shape[0], 0)
 
@@ -397,30 +504,167 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
         )
 
     def test_negative_values_are_not_hidden_by_origin_guard(self) -> None:
-        training_verifier = ClosedLoopLyapunovTrainingVerifier(
+        certification_verifier = LyapunovVerifier(
             policy_model=_ZeroPolicy(),
             lyap_model=_NegativeQuadraticLyapunov(),
             dyn_model=_IdentityDynamics(),
             lbx=th.tensor([[-2.0]], dtype=th.float32),
             ubx=th.tensor([[2.0]], dtype=th.float32),
-            invariance_weight=1.0,
             kappa=0.1,
-        )
-        certification_verifier = ClosedLoopLyapunovCertificationVerifier(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_NegativeQuadraticLyapunov(),
-            dyn_model=_IdentityDynamics(),
-            lbx=th.tensor([[-2.0]], dtype=th.float32),
-            ubx=th.tensor([[2.0]], dtype=th.float32),
-            invariance_weight=1.0,
-            kappa=0.1,
+            sublevel_tolerance=1e-6,
         )
 
         x = th.tensor([[1.0]], dtype=th.float32)
         rho = th.tensor([[2.0]], dtype=th.float32)
 
-        self.assertGreater(float(training_verifier(x).item()), 0.0)
         self.assertGreater(float(certification_verifier(x, rho).item()), 0.0)
+
+    def test_certification_verifier_enforces_hard_invariance(self) -> None:
+        certification_verifier = LyapunovVerifier(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_DescendingLinearLyapunov(),
+            dyn_model=_ShiftDynamics(shift=2.0),
+            lbx=th.tensor([[0.0]], dtype=th.float32),
+            ubx=th.tensor([[2.0]], dtype=th.float32),
+            kappa=0.0,
+            sublevel_tolerance=1e-6,
+        )
+
+        x = th.tensor([[1.0]], dtype=th.float32)
+        rho = th.tensor([[2.0]], dtype=th.float32)
+
+        self.assertGreater(float(certification_verifier(x, rho).item()), 0.0)
+
+    def test_certification_verifier_checks_levelset_boundary_conservatively(self) -> None:
+        certification_verifier = LyapunovVerifier(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_DescendingLinearLyapunov(),
+            dyn_model=_ShiftDynamics(shift=3.0),
+            lbx=th.tensor([[0.0]], dtype=th.float32),
+            ubx=th.tensor([[2.0]], dtype=th.float32),
+            kappa=0.0,
+            sublevel_tolerance=1e-6,
+        )
+
+        x = th.tensor([[0.0]], dtype=th.float32)
+        rho = th.tensor([[2.0]], dtype=th.float32)
+
+        self.assertGreater(float(certification_verifier(x, rho).item()), 0.0)
+
+    def test_abcrown_multi_output_verifier_returns_condition_v_and_xnext(self) -> None:
+        verifier = LyapunovMultiOutputVerifier(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_DescendingLinearLyapunov(),
+            dyn_model=_ShiftDynamics(shift=2.0),
+            lbx=th.tensor([[0.0]], dtype=th.float32),
+            ubx=th.tensor([[2.0]], dtype=th.float32),
+            kappa=0.0,
+            sublevel_tolerance=1e-6,
+        )
+
+        outputs = verifier(
+            th.tensor([[1.0]], dtype=th.float32),
+            th.tensor([[2.0]], dtype=th.float32),
+        )
+
+        self.assertEqual(outputs.shape, (1, 3))
+        self.assertAlmostEqual(float(outputs[0, 0]), 2.0, places=6)
+        self.assertAlmostEqual(float(outputs[0, 1]), 1.0, places=6)
+        self.assertAlmostEqual(float(outputs[0, 2]), 3.0, places=6)
+
+    def test_abcrown_multi_output_spec_rejects_out_of_bounds_successor(self) -> None:
+        config = LyapunovCertificationConfig(
+            state_dim=1,
+            cert_bounds=np.array([[0.0], [2.0]], dtype=np.float32),
+            kappa=0.0,
+            bins_per_dim=1,
+            origin_exclusion=0.0,
+            cert_method="alpha-crown",
+            sublevel_tolerance=0.0,
+            condition_tolerance=1e-6,
+            use_ibp_filter=False,
+            max_recursion_depth=0,
+        )
+        certifier = ABCrownCertifier(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_DescendingLinearLyapunov(),
+            dyn_model=_ShiftDynamics(shift=2.0),
+            config=config,
+            device=th.device("cpu"),
+        )
+
+        certifier.verifier = certifier._setup_verifier()
+        certifier.regions = certifier._build_regions()
+        certifier.setup_backend()
+
+        is_safe = certifier._certify_batched_regions(certifier.regions, rho=2.0, early_exit=False)
+        self.assertFalse(bool(is_safe.all().item()))
+
+    def test_ibp_filter_keeps_boundary_touching_boxes(self) -> None:
+        config = LyapunovCertificationConfig(
+            state_dim=1,
+            cert_bounds=np.array([[0.0], [2.0]], dtype=np.float32),
+            kappa=0.0,
+            bins_per_dim=1,
+            origin_exclusion=0.0,
+            cert_method="alpha-crown",
+            condition_tolerance=1e-3,
+            use_ibp_filter=True,
+        )
+        certifier = ABCrownCertifier(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_QuadraticLyapunov(),
+            dyn_model=_ZeroDynamics(),
+            config=config,
+            device=th.device("cpu"),
+        )
+        bs = th.tensor([[[0.0], [2.0]]], dtype=th.float32)
+
+        certifier.negative_filter = _StaticUpperBoundFilter(
+            th.tensor([[-1.0]], dtype=th.float32)
+        )
+        kept_bs, filtered_bs = certifier._filter_sublevel_regions(bs, rho=1.0)
+        self.assertEqual(len(kept_bs), 1)
+        self.assertEqual(len(filtered_bs), 0)
+
+        certifier.negative_filter = _StaticUpperBoundFilter(
+            th.tensor([[-1.0005]], dtype=th.float32)
+        )
+        kept_bs, filtered_bs = certifier._filter_sublevel_regions(bs, rho=1.0)
+        self.assertEqual(len(kept_bs), 0)
+        self.assertEqual(len(filtered_bs), 1)
+
+    def test_find_max_rho_uses_recursive_region_splitting(self) -> None:
+        config = LyapunovCertificationConfig(
+            state_dim=1,
+            cert_bounds=np.array([[0.0], [2.0]], dtype=np.float32),
+            kappa=0.0,
+            rho_min=1e-6,
+            bins_per_dim=1,
+            origin_exclusion=0.0,
+            rho_scaling=2.0,
+            bisection_tol=1e-4,
+            max_scale_steps=4,
+            max_bisection_steps=8,
+            cert_method="alpha-crown",
+            condition_tolerance=1e-6,
+            use_ibp_filter=False,
+            max_recursion_depth=1,
+        )
+        certifier = _RecursiveMockCertifier(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_QuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            config=config,
+            device=th.device("cpu"),
+            width_limit=1.0,
+            rho_limit=2.0,
+        )
+
+        best_rho = certifier.find_max_rho(rho_estimate=1.0)
+
+        self.assertGreater(best_rho, 1.5)
+        self.assertLessEqual(best_rho, 2.0)
 
 
 if __name__ == "__main__":

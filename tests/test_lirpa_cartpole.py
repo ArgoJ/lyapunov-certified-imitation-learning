@@ -73,7 +73,6 @@ class TestLiRPAInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest.T
                 dtype=np.float32,
             ),
             kappa=0.001,
-            invariance_weight=1.0,
             rho_scaling=1.1,
             bins_per_dim=(12, 12, 12, 12),
             center_refinement_factor=(0.3, 0.3, 0.2, 0.3),

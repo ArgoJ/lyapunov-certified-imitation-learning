@@ -20,8 +20,6 @@ class LyapunovCertificationConfig(JsonConfigMixin):
         Per-dimension bounds defining the certification region with shape (2, state_dim): [lb, ub].
     kappa : float
         Exponential decay factor in the Lyapunov decrease condition.
-    invariance_weight : float
-        Weight of the set-invariance penalty term.
     rho_min : float
         Minimum admissible sublevel value.
     cert_bins_per_dim : int | Sequence[int]
@@ -44,11 +42,15 @@ class LyapunovCertificationConfig(JsonConfigMixin):
         Maximum bisection iterations for certification.
     cert_method : str
         AutoLiRPA bound method (e.g., "crown", "alpha-crown").
+    sublevel_tolerance : float
+        Conservative slack used in the rho-sublevel gate of the single-output
+        certification graph. Positive values keep boundary-touching states
+        inside the checked set.
     condition_tolerance : float
-        Numerical tolerance for condition satisfaction. Positive values can be used 
-        to relax the condition for improved numerical stability.
+        Numerical tolerance on the fused verifier output. Positive values allow
+        a small residual certification slack for numerical stability.
     condition_margin : float
-        Optional additive safety margin on the decrease/invariance term during
+        Optional additive safety margin on the decrease term during
         certification. Defaults to ``0.0`` to keep certification unchanged.
     suppress_native_output : bool
         Whether to suppress native solver output (e.g., from AutoLiRPA or ABCrown) 
@@ -70,7 +72,6 @@ class LyapunovCertificationConfig(JsonConfigMixin):
     state_dim: int
     cert_bounds: NDArray
     kappa: float = 0.05
-    invariance_weight: float = 1.0
     rho_min: float = 1e-6
     bins_per_dim: int | Sequence[int] = 4
     center_refinement_factor: float | Sequence[float] = 1.0
@@ -81,6 +82,7 @@ class LyapunovCertificationConfig(JsonConfigMixin):
     max_bisection_steps: int = 40
     use_ibp_filter: bool = True
     cert_method: str = "alpha-crown"
+    sublevel_tolerance: float = 1e-6
     condition_tolerance: float = 1e-6
     condition_margin: float = 0.0
     suppress_native_output: bool = True
@@ -118,6 +120,10 @@ class LyapunovCertificationConfig(JsonConfigMixin):
             raise ValueError(
                 f"center_refinement_factor must contain values in (0, 1]. Got: {str(refinement_factors)}"
             )
+        if self.sublevel_tolerance < 0.0:
+            raise ValueError("sublevel_tolerance must be non-negative.")
+        if self.condition_tolerance < 0.0:
+            raise ValueError("condition_tolerance must be non-negative.")
         if self.condition_margin < 0.0:
             raise ValueError("condition_margin must be non-negative.")
 
@@ -139,6 +145,7 @@ class LyapunovCertificationConfig(JsonConfigMixin):
         max_scale_steps: int = 20,
         max_bisection_steps: int = 40,
         cert_method: str = "alpha-crown",
+        sublevel_tolerance: float | None = None,
         condition_margin: float = 0.0,
         suppress_native_output: bool = True,
         use_ibp_filter: bool = True,
@@ -153,7 +160,6 @@ class LyapunovCertificationConfig(JsonConfigMixin):
             "state_dim": config.state_dim,
             "cert_bounds": config.state_bounds if cert_bounds is None else cert_bounds,
             "kappa": config.kappa,
-            "invariance_weight": config.invariance_weight,
             "rho_min": config.rho_min,
             "bins_per_dim": bins_per_dim,
             "center_refinement_factor": center_refinement_factor,
@@ -164,6 +170,11 @@ class LyapunovCertificationConfig(JsonConfigMixin):
             "max_bisection_steps": max_bisection_steps,
             "cert_method": cert_method,
             "use_ibp_filter": use_ibp_filter,
+            "sublevel_tolerance": (
+                config.condition_tolerance
+                if sublevel_tolerance is None
+                else sublevel_tolerance
+            ),
             "condition_tolerance": config.condition_tolerance,
             "condition_margin": condition_margin,
             "suppress_native_output": suppress_native_output,

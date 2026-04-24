@@ -436,7 +436,7 @@ def lyapunov_cert_regions(
     """
     cert_regs_np = _regions_to_np(certification_result.certified_regions)
     uncert_regs_np = _regions_to_np(certification_result.failed_regions)
-    counterexample_regs_np = _regions_to_np(certification_result.counter_examples)
+    outside_sublevel_regs_np = _regions_to_np(certification_result.outside_sublevel_regions)
 
     has_dataset = dataset is not None and len(dataset) > 0
     if has_dataset:
@@ -447,8 +447,8 @@ def lyapunov_cert_regions(
             region_dims.append(int(cert_regs_np.shape[2]))
         if uncert_regs_np.shape[0] > 0:
             region_dims.append(int(uncert_regs_np.shape[2]))
-        if counterexample_regs_np.shape[0] > 0:
-            region_dims.append(int(counterexample_regs_np.shape[2]))
+        if outside_sublevel_regs_np.shape[0] > 0:
+            region_dims.append(int(outside_sublevel_regs_np.shape[2]))
 
         if len(region_dims) == 0 and state_indices is None:
             raise ValueError(
@@ -474,7 +474,7 @@ def lyapunov_cert_regions(
         cert_pair, uncert_pair, ctex_pair = _collapse_projected_regions(
             cert_regs_np,
             uncert_regs_np,
-            counterexample_regs_np,
+            outside_sublevel_regs_np,
             indices=list(pair),
         )
         regions_by_pair[pair] = (cert_pair, uncert_pair, ctex_pair)
@@ -598,7 +598,7 @@ def certified_regions_2d(
     """
     cert_regs_np = _regions_to_np(certification_result.certified_regions)
     uncert_regs_np = _regions_to_np(certification_result.failed_regions)
-    ctex_regs_np = _regions_to_np(certification_result.counter_examples)
+    ctex_regs_np = _regions_to_np(certification_result.outside_sublevel_regions)
 
     if cert_regs_np.shape[0] == 0 and uncert_regs_np.shape[0] == 0 and ctex_regs_np.shape[0] == 0:
         __logger__.warning("No regions provided for plotting.")
