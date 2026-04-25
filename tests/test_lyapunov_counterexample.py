@@ -14,7 +14,7 @@ from lcil.lyapunov_learning.counterexample import (
 )
 from lcil.lyapunov_learning.loss import FormalPositivityLoss, LyapunovTrainingLoss
 from lcil.lyapunov_learning.trainer import LyapunovTrainer, LyapunovTrainingResult
-from lcil.lyapunov_learning.utils import ThresholdMonitor, TrainingAbortedError
+from lcil.lyapunov_learning.utils import ThresholdMonitor
 
 
 class _FirstCoordinateValue(nn.Module):
@@ -229,7 +229,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         self.assertGreater(mined_cex.shape[0], 0)
         self.assertTrue(th.all(mined_values <= rho_estimate + 1e-6).item())
 
-    def test_trainer_raises_training_aborted_error_after_sustained_low_rho(self) -> None:
+    def test_trainer_returns_aborted_result_after_sustained_low_rho(self) -> None:
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
@@ -264,15 +264,19 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             "lcil.lyapunov_learning.trainer.estimate_rho_from_boundary_diagnostics",
             return_value=rho_diagnostics,
         ):
-            with self.assertRaises(TrainingAbortedError):
-                trainer.train()
+            train_result = trainer.train()
 
-        self.assertIsNone(trainer.results)
+        self.assertTrue(train_result.aborted)
+        self.assertIs(trainer.results, train_result)
+        self.assertEqual(
+            train_result.abort_reason,
+            "Lyapunov training aborted after 2 consecutive rho estimates below 1.000.",
+        )
         self.assertIsNotNone(trainer.metrics)
         assert trainer.metrics is not None
-        self.assertEqual(trainer.metrics.outer_iterations_completed, 0)
+        self.assertEqual(trainer.metrics.outer_iterations_completed, 1)
 
-    def test_train_with_scaled_bounds_propagates_training_aborted_error(self) -> None:
+    def test_train_with_scaled_bounds_returns_completed_stages_before_abort(self) -> None:
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-2.0], [2.0]], dtype=np.float32),
@@ -289,7 +293,14 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         def _fake_train(stage_self: LyapunovTrainer) -> LyapunovTrainingResult:
             stage_upper = float(stage_self.config.state_bounds[1, 0])
             if stage_upper > 1.0:
-                raise TrainingAbortedError("rho monitor triggered")
+                stage_self.results = LyapunovTrainingResult(
+                    rho_estimate=stage_upper,
+                    num_mined_counterexamples=0,
+                    train_time=0.0,
+                    aborted=True,
+                    abort_reason="rho monitor triggered",
+                )
+                return stage_self.results
             stage_self.results = LyapunovTrainingResult(
                 rho_estimate=stage_upper,
                 num_mined_counterexamples=0,
@@ -298,8 +309,58 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             return stage_self.results
 
         with patch.object(LyapunovTrainer, "train", autospec=True, side_effect=_fake_train):
-            with self.assertRaises(TrainingAbortedError):
-                trainer.train_with_scaled_bounds([0.5, 1.0])
+            curriculum_result = trainer.train_with_scaled_bounds([0.5, 1.0])
+
+        self.assertTrue(curriculum_result.aborted)
+        self.assertEqual(curriculum_result.abort_reason, "rho monitor triggered")
+        self.assertEqual(curriculum_result.aborted_stage_index, 1)
+        self.assertEqual(len(curriculum_result.stages), 1)
+        self.assertIsNotNone(curriculum_result.final_result)
+        assert curriculum_result.final_result is not None
+        self.assertTrue(curriculum_result.final_result.aborted)
+        self.assertIsNotNone(curriculum_result.last_completed_result)
+        assert curriculum_result.last_completed_result is not None
+        np.testing.assert_allclose(
+            curriculum_result.stages[0].state_bounds,
+            np.array([[-1.0], [1.0]], dtype=np.float32),
+        )
+        self.assertAlmostEqual(curriculum_result.last_completed_result.rho_estimate, 1.0, places=6)
+
+    def test_train_with_scaled_bounds_returns_aborted_result_when_first_stage_aborts(self) -> None:
+        config = LyapunovTrainingConfig(
+            state_dim=1,
+            state_bounds=np.array([[-2.0], [2.0]], dtype=np.float32),
+            train_policy_model=False,
+        )
+        trainer = LyapunovTrainer(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_TrainableQuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            config=config,
+            rho_monitor=ThresholdMonitor(threshold=1.0, patience=2),
+        )
+
+        def _always_abort(stage_self: LyapunovTrainer) -> LyapunovTrainingResult:
+            stage_self.results = LyapunovTrainingResult(
+                rho_estimate=0.5,
+                num_mined_counterexamples=0,
+                train_time=0.0,
+                aborted=True,
+                abort_reason="rho monitor triggered",
+            )
+            return stage_self.results
+
+        with patch.object(LyapunovTrainer, "train", autospec=True, side_effect=_always_abort):
+            curriculum_result = trainer.train_with_scaled_bounds([0.5, 1.0])
+
+        self.assertTrue(curriculum_result.aborted)
+        self.assertEqual(curriculum_result.abort_reason, "rho monitor triggered")
+        self.assertEqual(curriculum_result.aborted_stage_index, 0)
+        self.assertEqual(len(curriculum_result.stages), 0)
+        self.assertIsNone(curriculum_result.last_completed_result)
+        self.assertIsNotNone(curriculum_result.final_result)
+        assert curriculum_result.final_result is not None
+        self.assertTrue(curriculum_result.final_result.aborted)
 
     def test_formal_positivity_backward_returns_expected_lower_bound(self) -> None:
         config = LyapunovTrainingConfig(

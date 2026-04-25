@@ -7,7 +7,13 @@ from dataclasses import replace
 from pathlib import Path
 from numpy.typing import NDArray
 
-from lcil.lyapunov_learning import GridSearchHelper, LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer, TrainingAbortedError
+from lcil.lyapunov_learning import (
+    GridSearchHelper,
+    LyapunovTrainingConfig,
+    NeuralLyapunovCandidate,
+    LyapunovTrainer,
+    ThresholdMonitor,
+)
 from lcil.certification import LyapunovCertificationConfig, ABCrownCertifier, CertificationResultTester
 from lcil.utils import lcil_plt, ICNN, MLP
 from lcil.imitation_learning_mlp import MLPPolicy
@@ -246,11 +252,21 @@ def main() -> None:
             lyap_model=lyap_model,
             dyn_model=dyn_model,
             config=training_config,
+            rho_monitor=ThresholdMonitor(
+                threshold=1.0,
+                patience=5,
+            ),
             device=device,
         )
         
         curriculum_result = trainer.train_with_scaled_bounds(curriculum_scales)
         train_results = curriculum_result.final_result
+        if train_results is None:
+            print(f"Skipping run {run.run_name}: curriculum produced no training result")
+            continue
+        if train_results.aborted:
+            print(f"Skipping run {run.run_name}: {train_results.abort_reason}")
+            continue
         trainer.save(base_path)
 
         curriculum_summary = {

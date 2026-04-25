@@ -41,16 +41,22 @@ class LiRPACertifier(BaseCertifier):
         self._alpha_crown_disabled = False
 
     def _setup_verifier(self) -> LyapunovVerifier:
-        """Construct and initialize the closed-loop Lyapunov verifier."""
-        lbx_batched = self.bounds[0].unsqueeze(0)
-        ubx_batched = self.bounds[1].unsqueeze(0)
+        """Construct the verifier with the global certification box.
+
+        The LiRPA backend still perturbs inputs over each current subregion via
+        ``x_L``/``x_U`` in ``_certify_batched_regions``. The closed-loop
+        invariance check itself must however stay anchored to the global
+        certification box ``B`` from ``self.bounds``.
+        """
+        global_lbx_batched = self.bounds[0].unsqueeze(0)
+        global_ubx_batched = self.bounds[1].unsqueeze(0)
 
         verifier = LyapunovVerifier(
             policy_model=self.policy_model,
             lyap_model=self.lyap_model,
             dyn_model=self.dyn_model,
-            lbx=lbx_batched,
-            ubx=ubx_batched,
+            lbx=global_lbx_batched,
+            ubx=global_ubx_batched,
             kappa=self.config.kappa,
             sublevel_tolerance=self.config.sublevel_tolerance,
             condition_margin=self.config.condition_margin,

@@ -19,7 +19,7 @@ __logger__ = logging.getLogger(__name__)
 
 class _ABCrownModelWrapper(nn.Module):
     """
-    A wrapper that freezes the dynamic parameters (rho, kappa)
+    A wrapper that freezes the dynamic rho parameter
     so that ABCrownSolver can evaluate a clean model x -> y.
     """
     def __init__(self, verifier: nn.Module, device: th.device):
@@ -100,8 +100,6 @@ class ABCrownCertifier(BaseCertifier):
             input_constraint = (x >= lb) & (x <= ub)
             output_constraint = self._build_safe_output_constraint(
                 y=y,
-                lb=lb,
-                ub=ub,
                 rho=rho_value,
             )
 
@@ -125,28 +123,30 @@ class ABCrownCertifier(BaseCertifier):
     def _build_safe_output_constraint(
         self,
         y,
-        lb: th.Tensor,
-        ub: th.Tensor,
         rho: float,
     ):
         """Build the safe-region predicate for the multi-output verifier.
 
-        The safe condition matches the external verifier structure:
+        The safe condition enforces the paper-style implication over the
+        global certification box ``B``:
 
         ``V(x) > rho + tol_sublevel`` OR
-        ``(decrease margin > -tol_cond) AND (x_next within box tolerance)``.
+        ``(V(x) >= -tol_cond) AND (decrease margin >= -tol_cond) AND (x_next in B)``.
         """
         safe_outside_sublevel = y[1] > (rho + self.config.sublevel_tolerance)
+        safe_positive = y[1] > (-self.config.condition_tolerance)
         safe_decrease = y[0] > (-self.config.condition_tolerance)
 
+        global_lb = self.bounds[0]
+        global_ub = self.bounds[1]
         safe_x_next = None
         for idx in range(self.config.state_dim):
-            coord_safe = (y[idx + 2] > (float(lb[idx]) - self.config.condition_tolerance)) & (
-                y[idx + 2] < (float(ub[idx]) + self.config.condition_tolerance)
+            coord_safe = (y[idx + 2] > (float(global_lb[idx]) - self.config.condition_tolerance)) & (
+                y[idx + 2] < (float(global_ub[idx]) + self.config.condition_tolerance)
             )
             safe_x_next = coord_safe if safe_x_next is None else (safe_x_next & coord_safe)
 
-        return safe_outside_sublevel | (safe_decrease & safe_x_next)
+        return safe_outside_sublevel | (safe_positive & safe_decrease & safe_x_next)
 
 
     def _certify_batched_regions(
@@ -154,7 +154,7 @@ class ABCrownCertifier(BaseCertifier):
             bs: th.Tensor,
             rho: float,
             early_exit: bool = True,
-    ) -> tuple[th.Tensor, th.Tensor]:
+        ) -> th.Tensor:
         """
         Certifies a batch of regions using the ABCrown solver.
 
@@ -169,10 +169,8 @@ class ABCrownCertifier(BaseCertifier):
 
         Returns
         -------
-        tuple[th.Tensor, th.Tensor]
-            A tuple containing:
-            - is_certified: A boolean tensor indicating whether each region is certified.
-            - centers_out: A tensor containing the centers of the regions.
+        th.Tensor
+            Boolean tensor indicating whether each region is certified.
         """
         if self.wrapped_model is None or self.abcrown_config is None:
             raise RuntimeError("ABCrownCertifier backend is not properly initialized.")

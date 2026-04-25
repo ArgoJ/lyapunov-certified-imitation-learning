@@ -35,8 +35,8 @@ class ThresholdMonitor:
 
 	threshold: float = 1.0
 	patience: int = 10
-	value_history: list[float] = field(default_factory=list)
-	consecutive_low: int = 0
+	value_history: list[float] = field(default_factory=list, init=False)
+	consecutive_low: int = field(default_factory=int, init=False)
 
 	def __post_init__(self) -> None:
 		if self.patience <= 0:

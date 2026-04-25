@@ -32,7 +32,7 @@ from .counterexample import (
     find_counter_examples,
     sample_uniform_box,
 )
-from .utils import ThresholdMonitor, TrainingAbortedError
+from .utils import ThresholdMonitor
 from ..utils.base_models import save_model_checkpoint
 from ..utils.helpers import none_to_float
 
@@ -44,8 +44,14 @@ class LyapunovTrainingResult:
     rho_estimate: float
     num_mined_counterexamples: int
     train_time: float
+    aborted: bool = False
+    abort_reason: str | None = None
     lyap_model_path: os.PathLike | None = None
     policy_model_path: os.PathLike | None = None
+
+    @property
+    def completed(self) -> bool:
+        return not self.aborted
 
 
 @dataclass
@@ -59,17 +65,37 @@ class LyapunovTrainingCurriculumStage:
 @dataclass
 class LyapunovTrainingCurriculumResult:
     stages: list[LyapunovTrainingCurriculumStage]
+    aborted_result: LyapunovTrainingResult | None = None
+    aborted_stage_index: int | None = None
 
     @property
-    def final_result(self) -> LyapunovTrainingResult:
+    def aborted(self) -> bool:
+        return self.aborted_result is not None
+
+    @property
+    def abort_reason(self) -> str | None:
+        if self.aborted_result is None:
+            return None
+        return self.aborted_result.abort_reason
+
+    @property
+    def final_result(self) -> LyapunovTrainingResult | None:
+        if self.aborted_result is not None:
+            return self.aborted_result
         if not self.stages:
-            raise ValueError("Curriculum result has no stages.")
+            return None
         return self.stages[-1].result
 
     @property
-    def final_state_bounds(self) -> NDArray:
+    def last_completed_result(self) -> LyapunovTrainingResult | None:
         if not self.stages:
-            raise ValueError("Curriculum result has no stages.")
+            return None
+        return self.stages[-1].result
+
+    @property
+    def final_state_bounds(self) -> NDArray | None:
+        if not self.stages:
+            return None
         return self.stages[-1].state_bounds
 
 
@@ -376,7 +402,19 @@ class LyapunovTrainer:
                 )
                 rho_estimate = rho_diagnostics.rho # TODO: Consider smoothing or just constant
                 if self.rho_monitor is not None and self.rho_monitor.update(rho_estimate):
-                    self.results = None
+                    train_time = time.time() - start_time
+                    abort_reason = (
+                        "Lyapunov training aborted after "
+                        f"{self.rho_monitor.consecutive_low} consecutive rho estimates "
+                        f"below {self.rho_monitor.threshold:.3f}."
+                    )
+                    self.results = LyapunovTrainingResult(
+                        rho_estimate=rho_estimate,
+                        num_mined_counterexamples=num_mined_counterexamples,
+                        train_time=train_time,
+                        aborted=True,
+                        abort_reason=abort_reason,
+                    )
                     self.metrics = metrics
                     _tb_writer_close(tb_writer)
                     __logger__.info(
@@ -384,11 +422,7 @@ class LyapunovTrainer:
                         self.rho_monitor.consecutive_low,
                         self.rho_monitor.threshold,
                     )
-                    raise TrainingAbortedError(
-                        "Lyapunov training aborted after "
-                        f"{self.rho_monitor.consecutive_low} consecutive rho estimates "
-                        f"below {self.rho_monitor.threshold:.3f}."
-                    )
+                    return self.results
 
                 # Mine counterexamples (CEGIS)
                 if (outer_iter + 1) % mining_interval == 0:
@@ -466,6 +500,8 @@ class LyapunovTrainer:
 
         stage_records: list[LyapunovTrainingCurriculumStage] = []
         final_stage_trainer: LyapunovTrainer | None = None
+        aborted_result: LyapunovTrainingResult | None = None
+        aborted_stage_index: int | None = None
 
         for stage_index, (stage_bounds, stage_scale) in enumerate(scaled_bounds):
             stage_tb_log_dir = None
@@ -487,9 +523,17 @@ class LyapunovTrainer:
                 rho_monitor=self.rho_monitor,
                 device=self.device,
             )
-            try:
-                stage_result = stage_trainer.train()
-            except TrainingAbortedError:
+            stage_result = stage_trainer.train()
+            final_stage_trainer = stage_trainer
+
+            if stage_result.aborted:
+                aborted_result = stage_result
+                aborted_stage_index = stage_index
+                __logger__.info(
+                    "Stopping curriculum after stage %d aborted: %s",
+                    stage_index,
+                    stage_result.abort_reason,
+                )
                 break
 
             stage_records.append(
@@ -500,10 +544,9 @@ class LyapunovTrainer:
                     result=stage_result,
                 )
             )
-            final_stage_trainer = stage_trainer
 
         if final_stage_trainer is None:
-            raise ValueError("No curriculum stages were executed.")
+            return LyapunovTrainingCurriculumResult(stages=[])
 
         self.config = final_stage_trainer.config
         self.optimizer = final_stage_trainer.optimizer
@@ -514,7 +557,11 @@ class LyapunovTrainer:
         self.results = final_stage_trainer.results
         self.metrics = final_stage_trainer.metrics
 
-        return LyapunovTrainingCurriculumResult(stages=stage_records)
+        return LyapunovTrainingCurriculumResult(
+            stages=stage_records,
+            aborted_result=aborted_result,
+            aborted_stage_index=aborted_stage_index,
+        )
 
     def save(
         self,

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from mpc_datagen import MPCDataGenerator
 
-from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer, TrainingAbortedError
+from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer
 from lcil.certification import LyapunovCertificationConfig, ABCrownCertifier
 from lcil.utils import lcil_plt, ICNN, MLP
 
@@ -186,10 +186,9 @@ def main() -> None:
         config=training_config,
         device=device,
     )
-    try:
-        train_results = trainer.train()
-    except TrainingAbortedError as exc:
-        __logger__.info("Skipping certification because training aborted: %s", exc)
+    train_results = trainer.train()
+    if train_results.aborted:
+        __logger__.info("Skipping certification because training aborted: %s", train_results.abort_reason)
         return
     trainer.save(save_dir)
 
