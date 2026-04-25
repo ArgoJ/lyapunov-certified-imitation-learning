@@ -32,6 +32,7 @@ from .counterexample import (
     find_counter_examples,
     sample_uniform_box,
 )
+from .utils import ThresholdMonitor, TrainingAbortedError
 from ..utils.base_models import save_model_checkpoint
 from ..utils.helpers import none_to_float
 
@@ -160,21 +161,32 @@ class LyapunovTrainingMetrics:
             outer_iterations_completed=np.asarray(self.outer_iterations_completed, dtype=np.int64),
         )
 def _tb_writer_add_metrics(tb_writer: SummaryWriter, metrics: LyapunovTrainingMetrics) -> None:
-    outer_iter = metrics.outer_iterations_completed - 1
-    tb_writer.add_scalar("Lyapunov/Loss", metrics.loss[outer_iter], outer_iter)
-    tb_writer.add_scalar("Lyapunov/Rho", metrics.rho_estimate[outer_iter], outer_iter)
-    tb_writer.add_scalar("Lyapunov/RhoBoundaryQuantile", metrics.rho_boundary_quantile[outer_iter], outer_iter)
-    tb_writer.add_scalar("Lyapunov/RhoBoundaryMean", metrics.rho_boundary_mean[outer_iter], outer_iter)
-    tb_writer.add_scalar("Lyapunov/RhoFeatureTermQuantile", metrics.rho_feature_term_quantile[outer_iter], outer_iter)
-    tb_writer.add_scalar("Lyapunov/RhoLinearTermQuantile", metrics.rho_linear_term_quantile[outer_iter], outer_iter)
-    tb_writer.add_scalar("Lyapunov/RhoFeatureTermMeanShare", metrics.rho_feature_term_mean_share[outer_iter], outer_iter)
-    tb_writer.add_scalar("Lyapunov/RhoLinearTermMeanShare", metrics.rho_linear_term_mean_share[outer_iter], outer_iter)
-    tb_writer.add_scalar("Lyapunov/RFactorFroNorm", metrics.r_factor_fro_norm[outer_iter], outer_iter)
-    tb_writer.add_scalar(
-        "Lyapunov/NumMinedCounterexamples",
-        metrics.num_mined_counterexamples[outer_iter],
-        outer_iter,
-    )
+    if tb_writer is not None:
+        outer_iter = metrics.outer_iterations_completed - 1
+        tb_writer.add_scalar("Lyapunov/Loss", metrics.loss[outer_iter], outer_iter)
+        tb_writer.add_scalar("Lyapunov/Rho", metrics.rho_estimate[outer_iter], outer_iter)
+        tb_writer.add_scalar("Lyapunov/RhoBoundaryQuantile", metrics.rho_boundary_quantile[outer_iter], outer_iter)
+        tb_writer.add_scalar("Lyapunov/RhoBoundaryMean", metrics.rho_boundary_mean[outer_iter], outer_iter)
+        tb_writer.add_scalar("Lyapunov/RhoFeatureTermQuantile", metrics.rho_feature_term_quantile[outer_iter], outer_iter)
+        tb_writer.add_scalar("Lyapunov/RhoLinearTermQuantile", metrics.rho_linear_term_quantile[outer_iter], outer_iter)
+        tb_writer.add_scalar("Lyapunov/RhoFeatureTermMeanShare", metrics.rho_feature_term_mean_share[outer_iter], outer_iter)
+        tb_writer.add_scalar("Lyapunov/RhoLinearTermMeanShare", metrics.rho_linear_term_mean_share[outer_iter], outer_iter)
+        tb_writer.add_scalar("Lyapunov/RFactorFroNorm", metrics.r_factor_fro_norm[outer_iter], outer_iter)
+        tb_writer.add_scalar(
+            "Lyapunov/NumMinedCounterexamples",
+            metrics.num_mined_counterexamples[outer_iter],
+            outer_iter,
+        )
+
+def _tb_writer_close(tb_writer: SummaryWriter | None) -> None:
+    if tb_writer is not None:
+        tb_writer.flush()
+        tb_writer.close()
+
+def _tb_writer_build(log_dir: os.PathLike | None) -> SummaryWriter | None:
+    if log_dir is not None:
+        return SummaryWriter(log_dir=log_dir)
+    return None
 
 
 class LyapunovTrainer:
@@ -186,6 +198,7 @@ class LyapunovTrainer:
         lyap_model: nn.Module,
         dyn_model: nn.Module,
         config: LyapunovTrainingConfig,
+        rho_monitor: ThresholdMonitor | None = None,
         device: th.device | str = "cpu"
     ) -> None:
         self.config = config
@@ -213,7 +226,8 @@ class LyapunovTrainer:
         self.lbx = self.loss_module.lbx
         self.ubx = self.loss_module.ubx
         self.center = self.loss_module.center
-
+    
+        self.rho_monitor = rho_monitor
         self.results: LyapunovTrainingResult | None = None
         self.metrics: LyapunovTrainingMetrics | None = None
 
@@ -329,9 +343,7 @@ class LyapunovTrainer:
         num_mined_counterexamples = 0
         total_steps = self.config.outer_epochs * self.config.steps_per_epoch
 
-        tb_writer = SummaryWriter(log_dir=self.config.tb_log_dir) \
-            if SummaryWriter is not None and self.config.tb_log_dir is not None else None
-
+        tb_writer = _tb_writer_build(self.config.tb_log_dir)
         start_time = time.time()
         with Progress(
             TextColumn("[bold]{task.description}"),
@@ -363,6 +375,20 @@ class LyapunovTrainer:
                     boundary_buffer=boundary_buffer,
                 )
                 rho_estimate = rho_diagnostics.rho # TODO: Consider smoothing or just constant
+                if self.rho_monitor is not None and self.rho_monitor.update(rho_estimate):
+                    self.results = None
+                    self.metrics = metrics
+                    _tb_writer_close(tb_writer)
+                    __logger__.info(
+                        "Aborting Lyapunov training after %d consecutive rho estimates below %.3f.",
+                        self.rho_monitor.consecutive_low,
+                        self.rho_monitor.threshold,
+                    )
+                    raise TrainingAbortedError(
+                        "Lyapunov training aborted after "
+                        f"{self.rho_monitor.consecutive_low} consecutive rho estimates "
+                        f"below {self.rho_monitor.threshold:.3f}."
+                    )
 
                 # Mine counterexamples (CEGIS)
                 if (outer_iter + 1) % mining_interval == 0:
@@ -408,9 +434,7 @@ class LyapunovTrainer:
                     num_mined_counterexamples=num_mined_counterexamples,
                     rho_diagnostics=rho_diagnostics,
                 )
-
-                if tb_writer is not None:
-                    _tb_writer_add_metrics(tb_writer, metrics)
+                _tb_writer_add_metrics(tb_writer, metrics)
 
         train_time = time.time() - start_time
         __logger__.debug("Lyapunov training finished in %.2fs", train_time)
@@ -421,11 +445,7 @@ class LyapunovTrainer:
             train_time=train_time,
         )
         self.metrics = metrics
-
-        if tb_writer is not None:
-            tb_writer.flush()
-            tb_writer.close()
-
+        _tb_writer_close(tb_writer)
         return self.results
 
     def train_with_scaled_bounds(
@@ -464,9 +484,14 @@ class LyapunovTrainer:
                 lyap_model=self.lyap_model,
                 dyn_model=self.dyn_model,
                 config=stage_config,
+                rho_monitor=self.rho_monitor,
                 device=self.device,
             )
-            stage_result = stage_trainer.train()
+            try:
+                stage_result = stage_trainer.train()
+            except TrainingAbortedError:
+                break
+
             stage_records.append(
                 LyapunovTrainingCurriculumStage(
                     stage_index=stage_index,

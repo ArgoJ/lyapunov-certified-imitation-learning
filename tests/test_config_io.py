@@ -216,6 +216,32 @@ class TestArgumentParserConfig(unittest.TestCase):
         with self.assertRaises(ValueError):
             defaults.from_namespace(args)
 
+    def test_from_namespace_keeps_union_sequence_values_scalar(self) -> None:
+        parser = ArgumentParser()
+        defaults = LyapunovCertificationConfig(
+            state_dim=4,
+            cert_bounds=np.array([[-1.0, -1.0, -1.0, -1.0], [1.0, 1.0, 1.0, 1.0]], dtype=float),
+            bins_per_dim=4,
+            center_refinement_factor=1.0,
+        )
+        defaults.add_to_argparse(
+            parser,
+            prefix="cert-",
+            include_fields={"bins_per_dim", "center_refinement_factor", "rho_scaling"},
+        )
+
+        args = parser.parse_args([
+            "--cert-bins-per-dim", "2", "6", "10", "10",
+            "--cert-center-refinement-factor", "1.0", "0.8", "0.4", "0.4",
+            "--cert-rho-scaling", "1.3",
+        ])
+
+        config = defaults.from_namespace(args, prefix="cert-")
+
+        self.assertEqual(config.bins_per_dim, (2, 6, 10, 10))
+        self.assertEqual(config.center_refinement_factor, (1.0, 0.8, 0.4, 0.4))
+        self.assertEqual(config.rho_scaling, 1.3)
+
 
 class TestGridSearchHelper(unittest.TestCase):
     def test_helper_infers_varying_fields_and_creates_run_dirs(self) -> None:

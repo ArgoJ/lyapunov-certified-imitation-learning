@@ -8,11 +8,13 @@ import torch.nn as nn
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
 from lcil.lyapunov_learning.buffer import BoundaryStateBuffer, DynamicStateBuffer
 from lcil.lyapunov_learning.counterexample import (
+    BoundaryRhoDiagnostics,
     estimate_rho_from_boundary,
     find_counter_examples,
 )
 from lcil.lyapunov_learning.loss import FormalPositivityLoss, LyapunovTrainingLoss
 from lcil.lyapunov_learning.trainer import LyapunovTrainer, LyapunovTrainingResult
+from lcil.lyapunov_learning.utils import ThresholdMonitor, TrainingAbortedError
 
 
 class _FirstCoordinateValue(nn.Module):
@@ -57,6 +59,15 @@ class _LinearValue(nn.Module):
 
 
 class TestLyapunovCounterexamples(unittest.TestCase):
+    def test_rho_threshold_monitor_triggers_after_consecutive_low_values(self) -> None:
+        monitor = ThresholdMonitor(threshold=1.0, patience=3)
+
+        outputs = [monitor.update(value) for value in (0.8, 0.9, 1.2, 0.7, 0.6, 0.5)]
+
+        self.assertEqual(outputs, [False, False, False, False, False, True])
+        self.assertEqual(monitor.value_history, [0.8, 0.9, 1.2, 0.7, 0.6, 0.5])
+        self.assertEqual(monitor.consecutive_low, 3)
+
     def test_build_scaled_state_bounds_supports_scalar_and_vector_stages(self) -> None:
         base_bounds = np.array([[-2.0, -4.0], [2.0, 4.0]], dtype=np.float32)
 
@@ -217,6 +228,78 @@ class TestLyapunovCounterexamples(unittest.TestCase):
 
         self.assertGreater(mined_cex.shape[0], 0)
         self.assertTrue(th.all(mined_values <= rho_estimate + 1e-6).item())
+
+    def test_trainer_raises_training_aborted_error_after_sustained_low_rho(self) -> None:
+        config = LyapunovTrainingConfig(
+            state_dim=1,
+            state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
+            initial_sample_size=4,
+            batch_size=2,
+            outer_epochs=3,
+            steps_per_epoch=1,
+            counterexample_every=100,
+            train_policy_model=False,
+        )
+        trainer = LyapunovTrainer(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_TrainableQuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            config=config,
+            rho_monitor=ThresholdMonitor(threshold=1.0, patience=2),
+        )
+        rho_diagnostics = BoundaryRhoDiagnostics(
+            rho=0.5,
+            boundary_quantile=0.5,
+            boundary_mean=0.5,
+            feature_term_quantile=0.0,
+            linear_term_quantile=0.5,
+            feature_term_mean=0.0,
+            linear_term_mean=0.5,
+            feature_term_mean_share=0.0,
+            linear_term_mean_share=1.0,
+            r_factor_fro_norm=0.0,
+        )
+
+        with patch(
+            "lcil.lyapunov_learning.trainer.estimate_rho_from_boundary_diagnostics",
+            return_value=rho_diagnostics,
+        ):
+            with self.assertRaises(TrainingAbortedError):
+                trainer.train()
+
+        self.assertIsNone(trainer.results)
+        self.assertIsNotNone(trainer.metrics)
+        assert trainer.metrics is not None
+        self.assertEqual(trainer.metrics.outer_iterations_completed, 0)
+
+    def test_train_with_scaled_bounds_propagates_training_aborted_error(self) -> None:
+        config = LyapunovTrainingConfig(
+            state_dim=1,
+            state_bounds=np.array([[-2.0], [2.0]], dtype=np.float32),
+            train_policy_model=False,
+        )
+        trainer = LyapunovTrainer(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_TrainableQuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            config=config,
+            rho_monitor=ThresholdMonitor(threshold=1.0, patience=2),
+        )
+
+        def _fake_train(stage_self: LyapunovTrainer) -> LyapunovTrainingResult:
+            stage_upper = float(stage_self.config.state_bounds[1, 0])
+            if stage_upper > 1.0:
+                raise TrainingAbortedError("rho monitor triggered")
+            stage_self.results = LyapunovTrainingResult(
+                rho_estimate=stage_upper,
+                num_mined_counterexamples=0,
+                train_time=0.0,
+            )
+            return stage_self.results
+
+        with patch.object(LyapunovTrainer, "train", autospec=True, side_effect=_fake_train):
+            with self.assertRaises(TrainingAbortedError):
+                trainer.train_with_scaled_bounds([0.5, 1.0])
 
     def test_formal_positivity_backward_returns_expected_lower_bound(self) -> None:
         config = LyapunovTrainingConfig(

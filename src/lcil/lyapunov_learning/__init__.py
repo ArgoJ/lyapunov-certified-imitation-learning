@@ -1,7 +1,7 @@
 from .trainer import LyapunovTrainer
 from .config import LyapunovTrainingConfig
 from .rollout import LyapunovRollout
-from .utils import GridSearchHelper
+from .utils import GridSearchHelper, ThresholdMonitor, TrainingAbortedError
 from .models import (
     LyapunovNet,
     NeuralLyapunovCandidate,
@@ -26,4 +26,6 @@ __all__ = [
     "find_counter_examples",
     "sample_uniform_box",
     "GridSearchHelper",
+    "ThresholdMonitor",
+    "TrainingAbortedError",
 ]

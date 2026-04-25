@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer
+from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer, TrainingAbortedError
 from lcil.certification import LyapunovCertificationConfig, ABCrownCertifier
 from lcil.utils import lcil_plt, ICNN, MLP
 from lcil.imitation_learning_mlp import MLPPolicy
@@ -177,7 +177,11 @@ def main() -> None:
             config=training_config,
             device=device,
         )
-        train_results = trainer.train()
+        try:
+            train_results = trainer.train()
+        except TrainingAbortedError as exc:
+            print(f"Skipping run {run_name}: {exc}")
+            continue
         trainer.save(base_path)
 
         # ---------------------------------------------------------------------

@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from numpy.typing import NDArray
 
-from lcil.lyapunov_learning import GridSearchHelper, LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer
+from lcil.lyapunov_learning import GridSearchHelper, LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer, TrainingAbortedError
 from lcil.certification import LyapunovCertificationConfig, ABCrownCertifier, CertificationResultTester
 from lcil.utils import lcil_plt, ICNN, MLP
 from lcil.imitation_learning_mlp import MLPPolicy
@@ -248,6 +248,7 @@ def main() -> None:
             config=training_config,
             device=device,
         )
+        
         curriculum_result = trainer.train_with_scaled_bounds(curriculum_scales)
         train_results = curriculum_result.final_result
         trainer.save(base_path)

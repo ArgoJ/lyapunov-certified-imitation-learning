@@ -102,6 +102,9 @@ def _infer_argparse_kwargs(annotation: Any) -> dict[str, Any]:
     origin = get_origin(annotation)
     if origin in (Union, UnionType):
         options = tuple(option for option in get_args(annotation) if option is not type(None))
+        sequence_options = tuple(option for option in options if _annotation_is_sequence(option))
+        if sequence_options:
+            return _infer_argparse_kwargs(sequence_options[0])
         if len(options) == 1:
             return _infer_argparse_kwargs(options[0])
         if str in options or any(option in (Path, PathLike) for option in options):
@@ -149,7 +152,7 @@ def _annotation_is_sequence(annotation: Any) -> bool:
     origin = get_origin(annotation)
     if origin in (Union, UnionType):
         options = tuple(option for option in get_args(annotation) if option is not type(None))
-        return len(options) == 1 and _annotation_is_sequence(options[0])
+        return any(_annotation_is_sequence(option) for option in options)
     return origin in (list, tuple, Sequence)
 
 
