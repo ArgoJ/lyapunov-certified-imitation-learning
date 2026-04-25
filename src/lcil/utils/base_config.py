@@ -10,7 +10,7 @@ from dataclasses import MISSING, asdict, field as dataclass_field, fields, is_da
 from os import PathLike
 from pathlib import Path
 from types import UnionType
-from typing import Any, ClassVar, Literal, Union, get_args, get_origin, get_type_hints
+from typing import Any, ClassVar, Literal, Union, Self, get_args, get_origin, get_type_hints
 
 
 def _to_json_compatible(value: Any) -> Any:
@@ -279,7 +279,7 @@ class ArgumentParserConfig:
         args: Any,
         *,
         prefix: str = "",
-    ) -> Sequence[ArgumentParserConfig]:
+    ) -> Sequence[Self]:
         """Build one or more concrete config instances from parsed argparse values.
 
         Scalar config fields that were parsed via ``nargs`` are expanded using
@@ -319,7 +319,7 @@ class ArgumentParserConfig:
         if not sweep_field_names:
             return [replace(self, **fixed_values)]
 
-        configs: list[ArgumentParserConfig] = []
+        configs: list[Self] = []
         for combination in itertools.product(*sweep_field_values):
             values = dict(fixed_values)
             values.update(dict(zip(sweep_field_names, combination)))
@@ -331,7 +331,7 @@ class ArgumentParserConfig:
         args: Any,
         *,
         prefix: str = "",
-    ) -> ArgumentParserConfig:
+    ) -> Self:
         """Build a single concrete config instance from parsed argparse values."""
         configs = self.iter_from_namespace(
             args,

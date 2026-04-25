@@ -8,6 +8,7 @@ import numpy as np
 
 from lcil.certification.config import LyapunovCertificationConfig
 from lcil.imitation_learning_mlp.config import ImitationTrainingConfig
+from lcil.lyapunov_learning import GridSearchHelper
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
 from lcil.utils.base_config import ArgumentParserConfig, JsonDataclass, config_field
 
@@ -214,6 +215,46 @@ class TestArgumentParserConfig(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             defaults.from_namespace(args)
+
+
+class TestGridSearchHelper(unittest.TestCase):
+    def test_helper_infers_varying_fields_and_creates_run_dirs(self) -> None:
+        parser = ArgumentParser()
+        defaults = DummySweepConfig()
+        defaults.add_to_argparse(parser)
+
+        args = parser.parse_args([
+            "--learning-rate", "1e-3", "5e-4",
+            "--kappa", "0.1", "0.2",
+            "--hidden-sizes", "64", "32",
+            "--label", "grid",
+        ])
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            helper = GridSearchHelper.from_namespace(
+                defaults,
+                args,
+                output_root=tmp_dir,
+                sweep_id="20260425_120000",
+                field_aliases={
+                    "learning_rate": "lr",
+                    "training_bound_scales": "curr",
+                },
+                extra_name_parts={
+                    "lyap_eps": 0.1,
+                    "training_bound_scales": [0.3, 0.6, 1.0],
+                },
+            )
+
+            runs = list(helper)
+
+        self.assertEqual(len(helper), 4)
+        self.assertEqual(helper.run_name_fields, ("learning_rate", "kappa"))
+        self.assertEqual(helper.sweep_base_path.name, "20260425_120000")
+        self.assertTrue(all(run.output_dir.is_dir() for run in runs))
+        self.assertEqual(runs[0].run_name, "lr_0.001__kappa_0.1__lyap_eps_0.1__curr_0.3-0.6-1")
+        self.assertEqual(runs[0].description, "lr: 0.001, kappa: 0.1, lyap_eps: 0.1, curr: [0.3, 0.6, 1]")
+        self.assertEqual(runs[-1].progress_message(), "[4/4] lr: 0.0005, kappa: 0.2, lyap_eps: 0.1, curr: [0.3, 0.6, 1]")
 
 
 if __name__ == "__main__":

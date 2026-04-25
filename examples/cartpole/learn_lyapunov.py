@@ -4,11 +4,10 @@ import torch as th
 import numpy as np
 
 from dataclasses import replace
-from datetime import datetime
 from pathlib import Path
 from numpy.typing import NDArray
 
-from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer
+from lcil.lyapunov_learning import GridSearchHelper, LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer
 from lcil.certification import LyapunovCertificationConfig, ABCrownCertifier, CertificationResultTester
 from lcil.utils import lcil_plt, ICNN, MLP
 from lcil.imitation_learning_mlp import MLPPolicy
@@ -150,11 +149,7 @@ def main() -> None:
     policy_model = CartpoleAngleWrapper(feature_net=feature_net).to(device)
     policy_model.eval()
 
-    # Parent directory for this entire grid search sweep
-    iso = datetime.now().strftime("%Y%m%d_%H%M%S")
     lyap_path = policy_path.parent / "lyapunov"
-    sweep_base_path = lyap_path / iso
-    sweep_base_path.mkdir(parents=True, exist_ok=True)
     
     dyn_model = CartpoleDynamics(dt=feature_net.global_config.dt).to(device)
     dyn_model.eval()
@@ -178,31 +173,34 @@ def main() -> None:
     print(f"Using certification bounds:\n{cert_bounds}")
     print(f"Using training bound scales: {curriculum_scales}")
 
-    training_sweep_configs = training_defaults.iter_from_namespace(args)
+    sweep: GridSearchHelper[LyapunovTrainingConfig] = GridSearchHelper.from_namespace(
+        training_defaults,
+        args,
+        output_root=lyap_path,
+        field_aliases={
+            "learning_rate": "lr",
+            "invariance_weight": "invw",
+            "rho_growth_gamma": "rhog",
+            "roa_weight": "roaw",
+            "l1_weight": "l1w",
+            "rho_estimate_quantile": "rhoq",
+            "condition_margin": "margin",
+            "lyap_eps": "eps",
+            "training_bound_scales": "curr",
+        },
+        extra_name_parts={
+            "lyap_eps": args.lyap_eps,
+            "training_bound_scales": curriculum_scales,
+        },
+    )
     certification_base_config = certification_defaults.from_namespace(args, prefix="cert-")
 
-    print(f"Starting grid search over {len(training_sweep_configs)} configurations...")
+    print(f"Starting grid search over {len(sweep)} configurations...")
 
-    for run_idx, sweep_config in enumerate(training_sweep_configs):
-        print(f"\n[{run_idx+1}/{len(training_sweep_configs)}] Running config -> "
-              f"lr: {sweep_config.learning_rate}, kappa: {sweep_config.kappa}, "
-              f"inv_w: {sweep_config.invariance_weight}, rho_g: {sweep_config.rho_growth_gamma}, "
-              f"roa_w: {sweep_config.roa_weight}, l1_w: {sweep_config.l1_weight}, "
-              f"rho_q: {sweep_config.rho_estimate_quantile}, "
-              f"margin: {sweep_config.condition_margin}, lyap_eps: {args.lyap_eps}, "
-              f"train_policy: {sweep_config.train_policy_model}")
-        
-        # Create a specific folder for this parameter combination
-        run_name = (
-            f"lr_{sweep_config.learning_rate}__kappa_{sweep_config.kappa}"
-            f"__invw_{sweep_config.invariance_weight}__rhog_{sweep_config.rho_growth_gamma}"
-            f"__roaw_{sweep_config.roa_weight}__l1w_{sweep_config.l1_weight}"
-            f"__rhoq_{sweep_config.rho_estimate_quantile}"
-            f"__margin_{sweep_config.condition_margin}__eps_{args.lyap_eps}"
-            f"__curr_{'-'.join(f'{scale:.2f}' for scale in curriculum_scales)}"
-        )
-        base_path = sweep_base_path / run_name
-        base_path.mkdir(parents=True, exist_ok=True)
+    for run_idx, run in enumerate(sweep):
+        sweep_config = run.config
+        print(f"\n{run.progress_message()}, train_policy: {sweep_config.train_policy_model}")
+        base_path = run.output_dir
 
         # ---------------------------------------------------------------------
         # 1. Initialize fresh Lyapunov Model (so it trains from scratch)
@@ -223,7 +221,7 @@ def main() -> None:
             state_dim=feature_net.global_config.nx,
             state_bounds=training_bounds,
             seed=sweep_config.seed + run_idx if sweep_config.seed is not None else None,
-            tb_log_dir=lyap_path / "tb" / iso / run_name,
+            tb_log_dir=lyap_path / "tb" / sweep.sweep_id / run.run_name,
         )
 
         certification_config = LyapunovCertificationConfig.from_training_config(
@@ -325,7 +323,7 @@ def main() -> None:
             html_path=base_path / "certified_regions.html",
         )
 
-    print(f"\nGrid search complete. All results saved to: {sweep_base_path}")
+    print(f"\nGrid search complete. All results saved to: {sweep.sweep_base_path}")
 
 
 if __name__ == "__main__":
