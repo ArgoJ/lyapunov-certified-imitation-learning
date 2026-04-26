@@ -600,6 +600,37 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
         is_safe = certifier._certify_batched_regions(certifier.regions, rho=2.0, early_exit=False)
         self.assertFalse(bool(is_safe.all().item()))
 
+    def test_conservative_pre_verifier_only_sends_uncertain_regions_to_abcrown(self) -> None:
+        certifier = self._make_certifier(_QuadraticLyapunov())
+        certifier.setup_backend()
+
+        bs = th.tensor(
+            [
+                [[-2.0], [-1.0]],
+                [[-1.0], [0.0]],
+                [[0.0], [1.0]],
+            ],
+            dtype=th.float32,
+        )
+        conservative_safe = th.tensor([True, False, True], dtype=th.bool)
+
+        with mock.patch.object(
+            certifier,
+            "_certify_with_conservative_verifier",
+            return_value=conservative_safe,
+        ) as precheck_mock, mock.patch.object(
+            certifier,
+            "_solve_box_with_model",
+            return_value=False,
+        ) as solve_mock:
+            is_safe = certifier._certify_batched_regions(bs, rho=1.0, early_exit=False)
+
+        self.assertTrue(th.equal(is_safe, conservative_safe))
+        precheck_mock.assert_called_once_with(bs, 1.0)
+        solve_mock.assert_called_once()
+        self.assertTrue(th.equal(solve_mock.call_args.kwargs["lb"], bs[1, 0]))
+        self.assertTrue(th.equal(solve_mock.call_args.kwargs["ub"], bs[1, 1]))
+
     def test_ibp_filter_keeps_boundary_touching_boxes(self) -> None:
         config = LyapunovCertificationConfig(
             state_dim=1,

@@ -184,6 +184,20 @@ class TestArgumentParserConfig(unittest.TestCase):
         self.assertNotIn("--train-tb-log-dir", help_text)
         self.assertNotIn("--train-internal-only", help_text)
 
+    def test_add_to_argparse_supports_nargs_fields_for_scalars(self) -> None:
+        parser = ArgumentParser()
+        defaults = DummyCliConfig()
+        defaults.add_to_argparse(parser, nargs_fields={"epochs"})
+
+        args = parser.parse_args([
+            "--epochs", "25", "30",
+        ])
+        configs = defaults.iter_from_namespace(args)
+
+        self.assertEqual(args.epochs, [25, 30])
+        self.assertEqual(len(configs), 2)
+        self.assertEqual([cfg.epochs for cfg in configs], [25, 30])
+
     def test_iter_from_namespace_expands_nargs_scalar_fields(self) -> None:
         parser = ArgumentParser()
         defaults = DummySweepConfig()

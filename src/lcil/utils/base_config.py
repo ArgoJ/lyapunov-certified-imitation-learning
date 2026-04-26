@@ -245,8 +245,24 @@ class ArgumentParserConfig:
         prefix: str = "",
         include_fields: set[str] | None = None,
         exclude_fields: set[str] | None = None,
+        nargs_fields: set[str] | None = None,
     ) -> None:
-        """Add configuration fields to an argparse.ArgumentParser."""
+        """Add configuration fields to an argparse.ArgumentParser.
+
+        Parameters
+        ----------
+        parser : ArgumentParser
+            Parser receiving the generated CLI arguments.
+        prefix : str, optional
+            Prefix prepended to argument names.
+        include_fields : set[str] | None, optional
+            Restrict registration to this field subset.
+        exclude_fields : set[str] | None, optional
+            Skip registration for this field subset.
+        nargs_fields : set[str] | None, optional
+            Scalar fields that should be registered with ``nargs='+'`` so they
+            can drive grid/sweep expansion through ``iter_from_namespace``.
+        """
         try:
             type_hints = get_type_hints(type(self))
         except (NameError, TypeError):
@@ -266,6 +282,17 @@ class ArgumentParserConfig:
             annotation = type_hints.get(field_info.name, field_info.type)
             arg_kwargs = _infer_argparse_kwargs(annotation)
             arg_kwargs.update(metadata.get("argparse", {}))
+
+            if nargs_fields is not None and field_info.name in nargs_fields:
+                if _annotation_is_sequence(annotation):
+                    raise ValueError(
+                        f"nargs_fields only supports scalar fields, got sequence field '{field_info.name}'."
+                    )
+                if "action" in arg_kwargs:
+                    raise ValueError(
+                        f"nargs_fields is incompatible with action-based field '{field_info.name}'."
+                    )
+                arg_kwargs["nargs"] = "+"
 
             help_text = metadata.get("help") or metadata.get("description")
             if help_text is not None and "help" not in arg_kwargs:

@@ -92,7 +92,9 @@ def parse_cli_args(
             "max_scale_steps",
             "max_bisection_steps",
             "cert_method",
+            "max_recursion_depth"
         },
+        nargs_fields={"max_recursion_depth"},
     )
     parser.add_argument(
         "--cert-bins-per-dim", nargs='+', type=int, default=[2, 6, 10, 10], 
@@ -193,6 +195,7 @@ def main() -> None:
             "condition_margin": "margin",
             "lyap_eps": "eps",
             "training_bound_scales": "curr",
+            "max_recursion_depth": "recursion",
         },
         extra_name_parts={
             "lyap_eps": args.lyap_eps,

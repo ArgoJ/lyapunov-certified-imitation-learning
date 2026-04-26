@@ -12,6 +12,7 @@ from abcrown import (
     output_vars
 )
 
+from .conservative_preverifier import ConservativeLiRPAVerifier
 from .certifier_base import BaseCertifier
 from .models import LyapunovMultiOutputVerifier
 
@@ -35,6 +36,10 @@ class ABCrownCertifier(BaseCertifier):
     Lyapunov certifier using the full Alpha-Beta-CROWN framework.
     Combines spatial branch-and-bound with neural activation branch-and-bound.
     """
+
+    _CONSERVATIVE_PRECHECK_METHOD = "crown-ibp"
+    _LARGE_BATCH_PRECHECK_SKIP_THRESHOLD = 128
+
     def __init__(
         self,
         policy_model,
@@ -46,6 +51,8 @@ class ABCrownCertifier(BaseCertifier):
         super().__init__(policy_model, lyap_model, dyn_model, config, device)
         self.abcrown_config = None
         self.abcrown_verifier = None
+        self.conservative_verifier = None
+        self.skip_large_batch_precheck = False
         self.wrapped_model = None
 
     def setup_backend(self) -> None:
@@ -61,6 +68,7 @@ class ABCrownCertifier(BaseCertifier):
         self.verifier = self._setup_verifier()
         self.wrapped_model = _ABCrownModelWrapper(self.verifier, self.device)
         self.wrapped_model.eval()
+        self.conservative_verifier = self._setup_conservative_verifier()
 
     @staticmethod
     def _is_verified_status(status: str) -> bool:
@@ -81,6 +89,53 @@ class ABCrownCertifier(BaseCertifier):
             sublevel_tolerance=self.config.sublevel_tolerance,
             condition_margin=self.config.condition_margin,
         )
+
+    def _setup_conservative_verifier(self) -> ConservativeLiRPAVerifier:
+        """Build a cheap conservative pre-verifier for safe-region pruning."""
+        return ConservativeLiRPAVerifier(
+            policy_model=self.policy_model,
+            lyap_model=self.lyap_model,
+            dyn_model=self.dyn_model,
+            bounds=self.bounds,
+            config=self.config,
+            device=self.device,
+            method=self._CONSERVATIVE_PRECHECK_METHOD,
+        )
+
+    def _certify_with_conservative_verifier(
+        self,
+        bs: th.Tensor,
+        rho: float,
+    ) -> th.Tensor:
+        """Conservatively pre-certify easy regions before invoking ABCrown."""
+        if self.conservative_verifier is None:
+            return th.zeros(len(bs), dtype=th.bool, device=self.device)
+        if self.skip_large_batch_precheck and len(bs) >= self._LARGE_BATCH_PRECHECK_SKIP_THRESHOLD:
+            return th.zeros(len(bs), dtype=th.bool, device=self.device)
+
+        try:
+            is_safe = self.conservative_verifier.certify_boxes(
+                bs,
+                rho,
+                early_exit=False,
+            )
+            if (
+                len(bs) >= self._LARGE_BATCH_PRECHECK_SKIP_THRESHOLD
+                and not bool(is_safe.any().item())
+            ):
+                self.skip_large_batch_precheck = True
+                __logger__.info(
+                    "Conservative pre-verifier certified 0/%d on a large batch; skipping it for future large batches in this run.",
+                    len(bs),
+                )
+            return is_safe
+        except Exception as exc:
+            __logger__.warning(
+                "Conservative pre-verifier failed; falling back to ABCrown only: %s",
+                exc,
+            )
+            self.conservative_verifier = None
+            return th.zeros(len(bs), dtype=th.bool, device=self.device)
 
     def _solve_box_with_model(
         self,
@@ -176,12 +231,21 @@ class ABCrownCertifier(BaseCertifier):
             raise RuntimeError("ABCrownCertifier backend is not properly initialized.")
         
         num_regions = len(bs)
+        if num_regions == 0:
+            return th.empty((0,), dtype=th.bool, device=self.device)
+
         is_certified = th.zeros(num_regions, dtype=th.bool, device=self.device)
+        conservative_safe = self._certify_with_conservative_verifier(bs, rho)
+        is_certified |= conservative_safe
+
+        remaining_idx = (~conservative_safe).nonzero(as_tuple=False).flatten()
+        if remaining_idx.numel() == 0:
+            return is_certified
 
         lbs, ubs = self._unpack_regions(bs)
         self.wrapped_model.rho.fill_(rho)
 
-        for idx in range(num_regions):
+        for idx in remaining_idx.tolist():
             lb = lbs[idx]
             ub = ubs[idx]
             is_certified[idx] = self._solve_box_with_model(lb=lb, ub=ub)
