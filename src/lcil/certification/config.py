@@ -75,7 +75,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     rho_min: float = config_field(default=1e-6, help="Minimum admissible rho value.")
     bins_per_dim: int | Sequence[int] = config_field(default=4, help="Initial certification bins per state dimension.")
     center_refinement_factor: float | Sequence[float] = config_field(default=1.0, help="Optional geometric refinement factor for bins near the origin.")
-    origin_exclusion: float | Sequence[float] | None = config_field(default=None, help="Radius around the origin to skip during certification.")
+    origin_exclusion: float | Sequence[float] = config_field(default=0.0, help="Radius around the origin to skip during certification.")
     rho_scaling: float = config_field(default=1.2, help="Multiplicative factor used in rho scaling before bisection.")
     bisection_tol: float = config_field(default=1e-3, help="Tolerance used in rho bisection.")
     max_scale_steps: int = config_field(default=20, help="Maximum rho scaling attempts during certification.")
@@ -127,9 +127,25 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         if self.condition_margin < 0.0:
             raise ValueError("condition_margin must be non-negative.")
 
+        raw_origin_exclusion = self.origin_exclusion
+        normalized_origin_exclusion = raw_origin_exclusion
+        if isinstance(raw_origin_exclusion, Sequence) and not isinstance(raw_origin_exclusion, (str, bytes)):
+            origin_values = tuple(float(value) for value in raw_origin_exclusion)
+            if any(value < 0.0 for value in origin_values):
+                raise ValueError("origin_exclusion must be non-negative.")
+            if len(origin_values) == 1:
+                normalized_origin_exclusion = origin_values[0]
+            elif len(origin_values) == self.state_dim:
+                normalized_origin_exclusion = origin_values
+            else:
+                raise ValueError("origin_exclusion must be scalar or match state_dim.")
+        elif not isinstance(raw_origin_exclusion, (int, float)):
+            raise ValueError("origin_exclusion must be scalar or match state_dim.")
+
         # object.__setattr__, because of frozen=True
         object.__setattr__(self, "bins_per_dim", bins_per_dim)
         object.__setattr__(self, "center_refinement_factor", refinement_factors)
+        object.__setattr__(self, "origin_exclusion", normalized_origin_exclusion)
         object.__setattr__(self, "cert_method", self.cert_method.strip().lower())
         object.__setattr__(self, "rho_scaling", max(self.rho_scaling, 1.01))
 

@@ -34,23 +34,10 @@ def parse_cli_args(
     parser.add_argument(
         "--policy-path", type=str, default="results/inverted_pendulum_on_cart/20260318_114317/model.pt",
         help="Path to the trained fixed policy model checkpoint.")
+    
+    # Model Parameters
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string.")
     parser.add_argument("--num_neurons", type=int, default=32, help="Number of neurons per hidden layer.")
-    training_defaults.add_to_argparse(
-        parser,
-        include_fields={
-            "initial_sample_size",
-            "batch_size",
-            "outer_epochs",
-            "steps_per_epoch",
-            "train_policy_model",
-            "counterexample_every",
-            "adversarial_samples",
-            "counterexample_steps",
-            "adversarial_step_size",
-            "condition_margin",
-        },
-    )
     parser.add_argument(
         "--lyap-eps", type=float, default=0.1,
         help="Epsilon used in NeuralLyapunovCandidate for positive-definite baseline term.")
@@ -64,48 +51,29 @@ def parse_cli_args(
             "Example: --training-bound-scales 0.3 0.6 1.0 trains first on 30%%, then 60%%, then 100%% of the configured training box."
         ),
     )
-    
-    # Grid Search Parameters (accept multiple values)
-    parser.add_argument("--learning-rate", nargs='+', type=float, default=[5e-3], help="Optimizer learning rate(s).")
-    parser.add_argument("--kappa", nargs='+', type=float, default=[0.012], help="Lyapunov decrease margin kappa(s).")
-    parser.add_argument("--invariance-weight", nargs='+', type=float, default=[1.0], help="Invariance loss weight(s).")
-    parser.add_argument("--rho-growth-gamma", nargs='+', type=float, default=[1.5], help="ROA rho growth factor(s).")
-    parser.add_argument("--roa-weight", nargs='+', type=float, default=[2.0], help="ROA objective weight(s).")
-    parser.add_argument("--l1-weight", nargs='+', type=float, default=[1e-5], help="L1 regularization weight(s).")
-    parser.add_argument(
-        "--rho-estimate-quantile",
-        nargs='+',
-        type=float,
-        default=[0.3],
-        help="Quantile(s) used for robust boundary aggregation in rho estimation.",
-    )
 
-    parser.add_argument("--seed", type=int, default=5912354, help="Random seed.")
+    # Training Parameters
+    training_defaults.add_to_argparse(
+        parser,
+        nargs_fields={
+            "learning_rate",
+            "kappa",
+            "invariance_weight",
+            "rho_growth_gamma",
+            "roa_weight",
+            "l1_weight",
+            "rho_estimate_quantile",
+            "condition_margin",
+        }
+    )
     
     # Certification Parameters
     certification_defaults.add_to_argparse(
         parser,
         prefix="cert-",
-        include_fields={
-            "rho_scaling",
-            "bisection_tol",
-            "max_scale_steps",
-            "max_bisection_steps",
-            "cert_method",
-            "max_recursion_depth"
+        nargs_fields={
+            "max_recursion_depth",
         },
-        nargs_fields={"max_recursion_depth"},
-    )
-    parser.add_argument(
-        "--cert-bins-per-dim", nargs='+', type=int, default=[2, 6, 10, 10], 
-        help="Initial certification bins per dimension.")
-    parser.add_argument(
-        "--cert-center-refinement-factor", nargs='+', type=float, default=[1.0, 0.8, 0.4, 0.4], 
-        help="Factor for narrowing region around the center.")
-    parser.add_argument(
-        "--disable-ibp-filter",
-        action="store_true",
-        help="Disable IBP pre-filtering and certify all regions directly.",
     )
     parser.add_argument(
         "--test-rollout-steps",
@@ -193,12 +161,10 @@ def main() -> None:
             "l1_weight": "l1w",
             "rho_estimate_quantile": "rhoq",
             "condition_margin": "margin",
-            "lyap_eps": "eps",
             "training_bound_scales": "curr",
             "max_recursion_depth": "recursion",
         },
         extra_name_parts={
-            "lyap_eps": args.lyap_eps,
             "training_bound_scales": curriculum_scales,
         },
     )
@@ -237,13 +203,18 @@ def main() -> None:
             training_config,
             bins_per_dim=args.cert_bins_per_dim,
             center_refinement_factor=args.cert_center_refinement_factor,
-            origin_exclusion=0.01,
+            origin_exclusion=certification_base_config.origin_exclusion,
             rho_scaling=certification_base_config.rho_scaling,
             bisection_tol=certification_base_config.bisection_tol,
             max_scale_steps=certification_base_config.max_scale_steps,
             max_bisection_steps=certification_base_config.max_bisection_steps,
             cert_method=certification_base_config.cert_method,
-            use_ibp_filter=not args.disable_ibp_filter,
+            sublevel_tolerance=certification_base_config.sublevel_tolerance,
+            condition_margin=certification_base_config.condition_margin,
+            suppress_native_output=certification_base_config.suppress_native_output,
+            use_ibp_filter=certification_base_config.use_ibp_filter,
+            batch_size=certification_base_config.batch_size,
+            max_recursion_depth=certification_base_config.max_recursion_depth,
             cert_bounds=cert_bounds,
         )
 

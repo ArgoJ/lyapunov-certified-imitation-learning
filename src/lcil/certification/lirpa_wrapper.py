@@ -12,6 +12,46 @@ __logger__ = logging.getLogger(__name__)
 class LiRPACertifier(BaseCertifier):
     """Lyapunov certifier using auto_LiRPA bound propagation."""
 
+    @staticmethod
+    def _build_center_refined_axis_edges(
+        lb: th.Tensor,
+        ub: th.Tensor,
+        num_bins: int,
+        refinement_factor: float,
+    ) -> th.Tensor:
+        """Build 1D grid edges with optional geometric refinement toward zero."""
+        if refinement_factor == 1.0 or lb >= 0.0 or ub <= 0.0:
+            return th.linspace(lb, ub, steps=num_bins + 1, device=lb.device)
+
+        neg_span = float((-lb).item())
+        pos_span = float(ub.item())
+        neg_bins = int(round(num_bins * neg_span / (neg_span + pos_span))) if neg_span + pos_span > 0 else 0
+        neg_bins = max(1, min(num_bins - 1, neg_bins))
+        pos_bins = num_bins - neg_bins
+
+        def _side_edges(span: float, bins: int, sign: float, device: th.device) -> th.Tensor:
+            if bins <= 0 or span <= 0.0:
+                return th.zeros(1, device=device)
+            if bins == 1:
+                distances = th.tensor([span], dtype=th.float32, device=device)
+            else:
+                powers = th.arange(bins - 1, -1, -1, dtype=th.float32, device=device)
+                weights = refinement_factor ** powers
+                widths = span * weights / weights.sum()
+                distances = th.cumsum(widths, dim=0)
+            return sign * distances
+
+        neg_edges = _side_edges(neg_span, neg_bins, -1.0, lb.device)
+        pos_edges = _side_edges(pos_span, pos_bins, 1.0, ub.device)
+
+        return th.cat([
+            th.tensor([lb.item()], dtype=th.float32, device=lb.device),
+            neg_edges.flip(0)[1:],
+            th.zeros(1, dtype=th.float32, device=lb.device),
+            pos_edges[:-1],
+            th.tensor([ub.item()], dtype=th.float32, device=lb.device),
+        ])
+
     def __init__(
         self,
         policy_model,
@@ -39,6 +79,43 @@ class LiRPACertifier(BaseCertifier):
         self.lirpa_model = self._get_bounded_module()
         self.fallback_methods = self._get_fallback_methods(self.config.cert_method)
         self._alpha_crown_disabled = False
+
+    def _build_regions(self) -> th.Tensor:
+        """Use the explicit external grid split required by LiRPA."""
+        origin_exclusion = self._resolve_origin_exclusion()
+        lbx, ubx = self.bounds[0], self.bounds[1]
+        bin_counts = self.config.bins_per_dim
+        refinement_factors = self.config.center_refinement_factor
+
+        lb_axes = []
+        ub_axes = []
+        for idx in range(self.config.state_dim):
+            edges = self._build_center_refined_axis_edges(
+                lb=lbx[idx],
+                ub=ubx[idx],
+                num_bins=int(bin_counts[idx]),
+                refinement_factor=float(refinement_factors[idx]),
+            )
+            lb_axes.append(edges[:-1])
+            ub_axes.append(edges[1:])
+
+        lb_mesh = th.meshgrid(*lb_axes, indexing="ij")
+        ub_mesh = th.meshgrid(*ub_axes, indexing="ij")
+        lbs = th.stack([axis.flatten() for axis in lb_mesh], dim=1)
+        ubs = th.stack([axis.flatten() for axis in ub_mesh], dim=1)
+
+        overlaps_origin_per_dim = (lbs < origin_exclusion.unsqueeze(0)) & (ubs > -origin_exclusion.unsqueeze(0))
+        overlaps_origin = overlaps_origin_per_dim.all(dim=1)
+        valid_mask = ~overlaps_origin
+
+        __logger__.info(
+            "Origin exclusion resolved to %s; filtered %d/%d root regions overlapping the centered exclusion box.",
+            [float(value) for value in origin_exclusion.detach().cpu().tolist()],
+            int(overlaps_origin.sum().item()),
+            int(overlaps_origin.numel()),
+        )
+
+        return self._pack_regions(lbs[valid_mask], ubs[valid_mask])
 
     def _setup_verifier(self) -> LyapunovVerifier:
         """Construct the verifier with the global certification box.

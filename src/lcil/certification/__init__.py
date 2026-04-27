@@ -7,7 +7,6 @@ from .cert_tester import (
     CertificationTesterResults,
     CertificationResultTester
 )
-from .conservative_preverifier import ConservativeLiRPAVerifier
 from .lirpa_wrapper import LiRPACertifier
 from .abcrown_wrapper import ABCrownCertifier
 from .config import LyapunovCertificationConfig
@@ -20,7 +19,6 @@ __all__ = [
     "CertificationTesterResults",
     "CertificationResultTester",
     "ABCrownCertifier",
-    "ConservativeLiRPAVerifier",
     "LiRPACertifier",
     "LyapunovCertificationConfig",
     "LyapunovVerifier",

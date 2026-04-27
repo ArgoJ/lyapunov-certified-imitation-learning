@@ -135,9 +135,6 @@ class RecursiveCertificationResult:
             outside_sublevel=empty,
         )
 
-    def with_certified(self, regions: th.Tensor) -> RecursiveCertificationResult:
-        return replace(self, certified=regions)
-
     def with_failed(self, regions: th.Tensor) -> RecursiveCertificationResult:
         return replace(self, failed=regions)
 
@@ -222,51 +219,19 @@ class BaseCertifier(ABC):
         **kwargs,
     ) -> th.Tensor:
         """Certify a batch of axis-aligned regions."""
+    
+    def _build_regions(self) -> th.Tensor:
+        """Build root regions for certification.
+
+        The shared default is the unsplit certification box. Backends that need
+        explicit root decompositions override this method.
+        """
+        return self._pack_regions(self.bounds[0].unsqueeze(0), self.bounds[1].unsqueeze(0))
 
 
     # ==========================================
     # COMMON UTILITIES
     # =========================================
-    @staticmethod
-    def _build_center_refined_axis_edges(
-        lb: th.Tensor,
-        ub: th.Tensor,
-        num_bins: int,
-        refinement_factor: float,
-    ) -> th.Tensor:
-        """Build 1D grid edges with optional geometric refinement toward zero."""
-        if refinement_factor == 1.0 or lb >= 0.0 or ub <= 0.0:
-            return th.linspace(lb, ub, steps=num_bins + 1, device=lb.device)
-
-        neg_span = float((-lb).item())
-        pos_span = float(ub.item())
-
-        neg_bins = int(round(num_bins * neg_span / (neg_span + pos_span))) if neg_span + pos_span > 0 else 0
-        neg_bins = max(1, min(num_bins - 1, neg_bins))
-        pos_bins = num_bins - neg_bins
-
-        def _side_edges(span: float, bins: int, sign: float, device: th.device) -> th.Tensor:
-            if bins <= 0 or span <= 0.0:
-                return th.zeros(1, device=device)
-            if bins == 1:
-                distances = th.tensor([span], dtype=th.float32, device=device)
-            else:
-                powers = th.arange(bins - 1, -1, -1, dtype=th.float32, device=device)
-                weights = refinement_factor ** powers
-                widths = span * weights / weights.sum()
-                distances = th.cumsum(widths, dim=0)
-            return sign * distances
-
-        neg_edges = _side_edges(neg_span, neg_bins, -1.0, lb.device)
-        pos_edges = _side_edges(pos_span, pos_bins, 1.0, ub.device)
-
-        return th.cat([
-            th.tensor([lb.item()], dtype=th.float32, device=lb.device),
-            neg_edges.flip(0)[1:],
-            th.zeros(1, dtype=th.float32, device=lb.device),
-            pos_edges[:-1],
-            th.tensor([ub.item()], dtype=th.float32, device=lb.device),
-        ])
 
     @staticmethod
     def _resolve_bounds(bounds: Sequence[float], device: th.device) -> th.Tensor:
@@ -558,7 +523,6 @@ class BaseCertifier(ABC):
                 if len(pending_bs) == 0:
                     if progress is not None and task is not None:
                         progress.update(task, completed=max_depth + 1)
-                    __logger__.info("All regions failed or filtered out.")
                     break
 
                 step_result = self._process_regions(
@@ -566,6 +530,7 @@ class BaseCertifier(ABC):
                     rho,
                     early_exit=False,
                 )
+
                 if depth >= max_depth:
                     recursive_result = recursive_result + step_result
                     if progress is not None and task is not None:
@@ -577,7 +542,6 @@ class BaseCertifier(ABC):
                 if len(step_result.failed) == 0:
                     if progress is not None and task is not None:
                         progress.update(task, completed=max_depth + 1)
-                    __logger__.info("All regions certified.")
                     break
 
                 pending_bs = self._split_failed_regions(step_result.failed)
@@ -589,6 +553,45 @@ class BaseCertifier(ABC):
                 progress.__exit__(None, None, None)
 
         return recursive_result
+
+    def _is_rho_certified_exact(self, rho: float) -> bool:
+        """Check rho feasibility with exact recursion-aware early exit.
+
+        This probe matches the configured recursive splitting semantics but does
+        not collect full region details. It only short-circuits once an
+        uncertified leaf region is encountered at ``max_recursion_depth``.
+        Earlier failing regions are still split recursively, so the result is
+        not more conservative than the full-detail certification pass under the
+        same recursion limit.
+        """
+        if self.regions is None:
+            raise RuntimeError("Certification regions are not initialized.")
+
+        pending_bs = self.regions
+        has_certified_region = False
+        max_depth = self.config.max_recursion_depth
+
+        for depth in range(max_depth + 1):
+            if len(pending_bs) == 0:
+                return has_certified_region
+
+            is_leaf_depth = depth >= max_depth
+            step_result = self._process_regions(
+                pending_bs,
+                rho,
+                early_exit=is_leaf_depth,
+            )
+            has_certified_region = has_certified_region or (len(step_result.certified) > 0)
+
+            if is_leaf_depth:
+                return len(step_result.failed) == 0 and has_certified_region
+
+            if len(step_result.failed) == 0:
+                return has_certified_region
+
+            pending_bs = self._split_failed_regions(step_result.failed)
+
+        return has_certified_region
 
     def _scale_rho_up(self, rho_lo: float, rho_up: float) -> tuple[bool, float, float]:
         """Scales up ``rho_lo`` until the new trial is not certified.
@@ -663,52 +666,21 @@ class BaseCertifier(ABC):
             return True, rho_lo, rho_up
         return False, rho_lo, rho_up
 
-    def _build_regions(self) -> th.Tensor:
-        """Build packed axis-aligned grid cells excluding the origin window."""
-        origin_exclusion = self._resolve_origin_exclusion()
-        lbx, ubx = self.bounds[0], self.bounds[1]
-        bin_counts = self.config.bins_per_dim
-        refinement_factors = self.config.center_refinement_factor
-
-        lb_axes = []
-        ub_axes = []
-        for idx in range(self.config.state_dim):
-            edges = self._build_center_refined_axis_edges(
-                lb=lbx[idx],
-                ub=ubx[idx],
-                num_bins=int(bin_counts[idx]),
-                refinement_factor=float(refinement_factors[idx]),
-            )
-            lb_axes.append(edges[:-1])
-            ub_axes.append(edges[1:])
-
-        lb_mesh = th.meshgrid(*lb_axes, indexing="ij")
-        ub_mesh = th.meshgrid(*ub_axes, indexing="ij")
-        lbs = th.stack([axis.flatten() for axis in lb_mesh], dim=1)
-        ubs = th.stack([axis.flatten() for axis in ub_mesh], dim=1)
-
-        overlaps_origin_per_dim = (lbs < origin_exclusion.unsqueeze(0)) & (ubs > -origin_exclusion.unsqueeze(0))
-        overlaps_origin = overlaps_origin_per_dim.all(dim=1)
-        valid_mask = ~overlaps_origin
-
-        lbs = lbs[valid_mask]
-        ubs = ubs[valid_mask]
-        return self._pack_regions(lbs, ubs)
-
     def is_rho_certified(self, rho: float) -> bool:
-        """Check whether all regions satisfy Lyapunov conditions at ``rho``."""
-        result = self._certify_recursive_regions(rho, show_progress=False)
-        return result.global_success
+        """Check whether all regions satisfy Lyapunov conditions at ``rho``.
+
+        This uses an exact recursion-aware probe for rho search that preserves
+        the current certification semantics under the configured recursion
+        limit, while avoiding the cost of collecting full region details.
+        """
+        return self._is_rho_certified_exact(rho)
 
     def find_max_rho(self, rho_estimate: float) -> float:
         """Search for the largest certifiable rho and return it."""
         if rho_estimate <= 0:
             raise ValueError("rho_estimate must be positive.")
 
-        __logger__.info(
-            "Starting Lyapunov certification with %s method.",
-            self.config.cert_method.upper(),
-        )
+        __logger__.info("Starting Lyapunov certification.")
 
         self.regions = self._build_regions()
         __logger__.info(
@@ -781,8 +753,8 @@ class BaseCertifier(ABC):
         return rho_lo
 
 
-    def collect_certification_details(self, rho: float) -> RegionCertificationResult:
-        """Certify all pre-built regions for a fixed ``rho`` and collect result details.
+    def _collect_certification_details(self, rho: float) -> RegionCertificationResult:
+        """Collect region-wise certification details for a fixed ``rho``.
 
         Parameters
         ----------
@@ -792,8 +764,7 @@ class BaseCertifier(ABC):
         Returns
         -------
         RegionCertificationResult
-            Aggregated success flag plus certified regions, failed regions, and
-            outside-sublevel regions as NumPy arrays.
+            Aggregated certification result with region partitions.
         """
         recursive_result = self._certify_recursive_regions(rho, show_progress=True)
 
@@ -815,7 +786,14 @@ class BaseCertifier(ABC):
             failed_regions=failed_regions_np,
             certified_regions=certified_regions_np,
         )
-        self.log_details()
+        __logger__.info(
+            "Certification detail pass at rho=%.6f: success=%s, certified=%d, failed=%d, outside_sublevel=%d.",
+            float(self.details.rho),
+            self.details.global_success,
+            len(self.details.certified_regions),
+            len(self.details.failed_regions),
+            len(self.details.outside_sublevel_regions),
+        )
         return self.details
 
     def certify(self, rho_estimate: float) -> RegionCertificationResult:
@@ -824,7 +802,6 @@ class BaseCertifier(ABC):
 
         if best_rho >= self.config.rho_min:
             inspection_rho = best_rho
-            __logger__.info("Found best certified rho: %.6f", best_rho)
         else:
             inspection_rho = max(float(rho_estimate), self.config.rho_min)
             __logger__.warning(
@@ -833,18 +810,8 @@ class BaseCertifier(ABC):
                 inspection_rho,
             )
 
-        self.details = self.collect_certification_details(rho=inspection_rho)
+        self.details = self._collect_certification_details(rho=inspection_rho)
         return self.details
-    
-    def log_details(self) -> None:
-        __logger__.info("Global certification success: %s", self.details.global_success)
-        if self.details.global_success:
-            __logger__.info("Certified rho: %.6f", self.details.rho)
-        else:
-            __logger__.info("Inspection rho: %.6f", self.details.rho)
-        __logger__.info("Certified regions: %d", len(self.details.certified_regions))
-        __logger__.info("Failed regions: %d", len(self.details.failed_regions))
-        __logger__.info("Outside-sublevel regions: %d", len(self.details.outside_sublevel_regions))
 
     def save(
         self,
