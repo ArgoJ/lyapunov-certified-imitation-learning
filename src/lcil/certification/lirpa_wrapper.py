@@ -141,6 +141,37 @@ class LiRPACertifier(BaseCertifier):
 
         return verifier
 
+    def is_rho_certified(self, rho: float) -> bool:
+        """Check whether all regions satisfy Lyapunov conditions at ``rho``."""
+        if self.regions is None:
+            raise RuntimeError("Certification regions are not initialized.")
+
+        pending_bs = self.regions
+        has_certified_region = False
+        max_depth = self.config.max_recursion_depth
+
+        for depth in range(max_depth + 1):
+            if len(pending_bs) == 0:
+                return has_certified_region
+
+            is_leaf_depth = depth >= max_depth
+            step_result = self._process_regions(
+                pending_bs,
+                rho,
+                early_exit=is_leaf_depth,
+            )
+            has_certified_region = has_certified_region or (len(step_result.certified) > 0)
+
+            if is_leaf_depth:
+                return len(step_result.failed) == 0 and has_certified_region
+
+            if len(step_result.failed) == 0:
+                return has_certified_region
+
+            pending_bs = self._split_failed_regions(step_result.failed)
+
+        return has_certified_region
+
     @staticmethod
     def _is_alpha_shape_mismatch_error(exc: Exception) -> bool:
         """Return True for known alpha-crown internal shape mismatch failures."""

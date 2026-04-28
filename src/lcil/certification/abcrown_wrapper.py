@@ -68,7 +68,7 @@ class ABCrownCertifier(BaseCertifier):
             .set(bab__branching__input_split__compare_with_old_bounds=True)
             .set(bab__branching__input_split__adv_check=-1)
             .set(bab__branching__input_split__split_partitions=2)
-            .set(attack__pgd_order="before")
+            .set(attack__pgd_order="before") # TODO: maybe switch to "skip" or "after" if PGD is found to be too aggressive in finding counterexamples
             .set(bab__decision_thresh=-float(self.config.condition_tolerance))
             ()
         )
@@ -142,7 +142,18 @@ class ABCrownCertifier(BaseCertifier):
         if self.regions is None:
             raise RuntimeError("Certification regions are not initialized.")
 
-        return self._solve_root_regions_batched(self.regions, rho)
+        candidate_regions = self.regions
+        if self.config.use_ibp_filter and self.negative_filter is not None:
+            candidate_regions, _ = self._filter_sublevel_regions(candidate_regions, rho)
+
+        if len(candidate_regions) == 0:
+            __logger__.info(
+                "ABCrown root certification at rho=%.6f is vacuous: all root regions were proven outside V(x) <= rho.",
+                float(rho),
+            )
+            return False
+
+        return self._solve_root_regions_batched(candidate_regions, rho)
 
     @staticmethod
     def _is_verified_status(status: str) -> bool:

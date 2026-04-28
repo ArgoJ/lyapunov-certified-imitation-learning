@@ -24,7 +24,6 @@ from rich.progress import (
 )
 
 from .config import LyapunovCertificationConfig
-from .models import LyapunovVerifier
 from ..utils.helpers import none_to_float
 
 __logger__ = logging.getLogger(__name__)
@@ -220,13 +219,13 @@ class BaseCertifier(ABC):
     ) -> th.Tensor:
         """Certify a batch of axis-aligned regions."""
     
+    @abstractmethod
     def _build_regions(self) -> th.Tensor:
-        """Build root regions for certification.
-
-        The shared default is the unsplit certification box. Backends that need
-        explicit root decompositions override this method.
-        """
-        return self._pack_regions(self.bounds[0].unsqueeze(0), self.bounds[1].unsqueeze(0))
+        """Build root regions for certification."""
+    
+    @abstractmethod
+    def is_rho_certified(self, rho: float) -> bool:
+        """Check whether all regions satisfy Lyapunov conditions at ``rho``."""
 
 
     # ==========================================
@@ -554,45 +553,6 @@ class BaseCertifier(ABC):
 
         return recursive_result
 
-    def _is_rho_certified_exact(self, rho: float) -> bool:
-        """Check rho feasibility with exact recursion-aware early exit.
-
-        This probe matches the configured recursive splitting semantics but does
-        not collect full region details. It only short-circuits once an
-        uncertified leaf region is encountered at ``max_recursion_depth``.
-        Earlier failing regions are still split recursively, so the result is
-        not more conservative than the full-detail certification pass under the
-        same recursion limit.
-        """
-        if self.regions is None:
-            raise RuntimeError("Certification regions are not initialized.")
-
-        pending_bs = self.regions
-        has_certified_region = False
-        max_depth = self.config.max_recursion_depth
-
-        for depth in range(max_depth + 1):
-            if len(pending_bs) == 0:
-                return has_certified_region
-
-            is_leaf_depth = depth >= max_depth
-            step_result = self._process_regions(
-                pending_bs,
-                rho,
-                early_exit=is_leaf_depth,
-            )
-            has_certified_region = has_certified_region or (len(step_result.certified) > 0)
-
-            if is_leaf_depth:
-                return len(step_result.failed) == 0 and has_certified_region
-
-            if len(step_result.failed) == 0:
-                return has_certified_region
-
-            pending_bs = self._split_failed_regions(step_result.failed)
-
-        return has_certified_region
-
     def _scale_rho_up(self, rho_lo: float, rho_up: float) -> tuple[bool, float, float]:
         """Scales up ``rho_lo`` until the new trial is not certified.
 
@@ -665,15 +625,6 @@ class BaseCertifier(ABC):
         if rho_up - rho_lo <= self.config.bisection_tol:
             return True, rho_lo, rho_up
         return False, rho_lo, rho_up
-
-    def is_rho_certified(self, rho: float) -> bool:
-        """Check whether all regions satisfy Lyapunov conditions at ``rho``.
-
-        This uses an exact recursion-aware probe for rho search that preserves
-        the current certification semantics under the configured recursion
-        limit, while avoiding the cost of collecting full region details.
-        """
-        return self._is_rho_certified_exact(rho)
 
     def find_max_rho(self, rho_estimate: float) -> float:
         """Search for the largest certifiable rho and return it."""
