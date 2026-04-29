@@ -105,6 +105,23 @@ class TestAdaptiveCertificationConfig(unittest.TestCase):
 
 
 class TestRegionBuilder(unittest.TestCase):
+    def test_build_regions_keeps_root_box_when_origin_exclusion_is_zero(self) -> None:
+        splitter = RegionBuilder(
+            bounds=th.tensor([[-1.0], [1.0]], dtype=th.float32),
+            bins_per_dim=1,
+            origin_exclusion=0.0,
+        )
+
+        regions = splitter.build_regions()
+
+        self.assertEqual(tuple(regions.shape), (1, 2, 1))
+        self.assertTrue(
+            th.allclose(
+                regions[:, :, 0].cpu(),
+                th.tensor([[-1.0, 1.0]], dtype=th.float32),
+            )
+        )
+
     def test_build_regions_filters_center_hole_from_uniform_grid(self) -> None:
         splitter = RegionBuilder(
             bounds=th.tensor([[-2.0, -2.0], [2.0, 2.0]], dtype=th.float32),

@@ -230,10 +230,11 @@ class RegionBuilder:
         lbs = th.stack([axis.flatten() for axis in lb_mesh], dim=1)
         ubs = th.stack([axis.flatten() for axis in ub_mesh], dim=1)
 
-        overlaps_origin_per_dim = (lbs < self.origin_exclusion.unsqueeze(0)) & (
+        positive_exclusion = self.origin_exclusion.unsqueeze(0) > 0.0
+        overlaps_origin_per_dim = positive_exclusion & (lbs < self.origin_exclusion.unsqueeze(0)) & (
             ubs > -self.origin_exclusion.unsqueeze(0)
         )
-        overlaps_origin = overlaps_origin_per_dim.all(dim=1)
+        overlaps_origin = positive_exclusion.all(dim=1) & overlaps_origin_per_dim.all(dim=1)
         valid_mask = ~overlaps_origin
 
         __logger__.info(
