@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
+import plotly.graph_objects as go
 import torch as th
 
 from lcil.certification.adaptive import AdaptiveCertifier, AdaptiveCertificationConfig
@@ -21,7 +22,7 @@ from model import CartpoleAngleWrapper
 __logger__ = logging.getLogger(__name__)
 
 _DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[2] / "results" / "cartpole"
-_DEFAULT_CERT_BOUND_SCALES = (0.05, 0.05, 0.02, 0.05)
+_DEFAULT_CERT_BOUND_SCALES = (0.15, 0.15, 0.05, 0.15)
 
 
 def _discover_latest_policy_dir(results_root: Path) -> Path:
@@ -125,6 +126,126 @@ def _build_cert_bounds(
     return state_bounds * cert_scales
 
 
+def _sample_cert_box_values(
+    lyap_model: NeuralLyapunovCandidate,
+    cert_bounds: np.ndarray,
+    device: th.device,
+) -> dict[str, float]:
+    bounds = th.as_tensor(cert_bounds, dtype=th.float32, device=device)
+    per_dim_endpoints = [bounds[:, idx] for idx in range(bounds.shape[1])]
+    corners = th.cartesian_prod(*per_dim_endpoints)
+    center = bounds.mean(dim=0, keepdim=True)
+    clipped_origin = th.clamp(th.zeros_like(center), min=bounds[0], max=bounds[1])
+    samples = th.cat([corners, center, clipped_origin], dim=0)
+
+    with th.no_grad():
+        values = lyap_model(samples).reshape(-1)
+
+    positive_values = values[values > 0.0]
+    max_value = float(values.max().item()) if values.numel() > 0 else 0.0
+    min_positive = float(positive_values.min().item()) if positive_values.numel() > 0 else 0.0
+    median_positive = float(positive_values.median().item()) if positive_values.numel() > 0 else 0.0
+
+    rho_max = max(1e-2, max_value)
+    rho_min = max(1e-3, 0.05 * rho_max)
+
+    return {
+        "num_samples": float(samples.shape[0]),
+        "center_value": float(values[-2].item()),
+        "origin_value": float(values[-1].item()),
+        "min_positive": min_positive,
+        "median_positive": median_positive,
+        "max_value": max_value,
+        "rho_min": rho_min,
+        "rho_max": rho_max,
+    }
+
+
+def _format_bounds(bounds: np.ndarray) -> str:
+    lb = ", ".join(f"{float(value):.4g}" for value in bounds[0].tolist())
+    ub = ", ".join(f"{float(value):.4g}" for value in bounds[1].tolist())
+    return f"lb=[{lb}], ub=[{ub}]"
+
+
+def _write_pareto_html(certify_result, output_path: Path) -> None:
+    pareto_points = certify_result.pareto_points
+    rho_values = [float(point.rho) for point in pareto_points]
+    certified_volume = [float(point.volumes.certified_volume) for point in pareto_points]
+    unresolved_volume = [float(point.volumes.unresolved_volume) for point in pareto_points]
+    unresolved_ratio = [float(point.volumes.unresolved_ratio) for point in pareto_points]
+    feasible = [bool(point.feasible) for point in pareto_points]
+
+    marker_colors = ["#2e8b57" if is_feasible else "#c0392b" for is_feasible in feasible]
+    hover_text = [
+        (
+            f"rho={point.rho:.6f}<br>"
+            f"feasible={point.feasible}<br>"
+            f"rounds={point.refinement_rounds}<br>"
+            f"certified_volume={point.volumes.certified_volume:.6f}<br>"
+            f"unresolved_volume={point.volumes.unresolved_volume:.6f}<br>"
+            f"unresolved_ratio={point.volumes.unresolved_ratio:.6f}"
+        )
+        for point in pareto_points
+    ]
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=rho_values,
+            y=certified_volume,
+            mode="lines+markers",
+            name="certified volume",
+            marker={"color": marker_colors, "size": 9},
+            line={"color": "#1f77b4", "width": 3},
+            hovertext=hover_text,
+            hoverinfo="text",
+            yaxis="y1",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=rho_values,
+            y=unresolved_ratio,
+            mode="lines+markers",
+            name="unresolved ratio",
+            marker={"color": marker_colors, "symbol": "diamond", "size": 9},
+            line={"color": "#ff7f0e", "width": 3, "dash": "dot"},
+            hovertext=hover_text,
+            hoverinfo="text",
+            yaxis="y2",
+        )
+    )
+    fig.add_trace(
+        go.Bar(
+            x=rho_values,
+            y=unresolved_volume,
+            name="unresolved volume",
+            marker={"color": "rgba(214, 39, 40, 0.25)"},
+            yaxis="y1",
+            hovertext=hover_text,
+            hoverinfo="text",
+        )
+    )
+
+    fig.update_layout(
+        title="Adaptive Cartpole Pareto Curve",
+        template="plotly_white",
+        barmode="overlay",
+        xaxis={"title": "rho"},
+        yaxis={"title": "volume"},
+        yaxis2={
+            "title": "unresolved ratio",
+            "overlaying": "y",
+            "side": "right",
+            "range": [0.0, max(1.0, max(unresolved_ratio, default=0.0) * 1.05)],
+        },
+        legend={"orientation": "h", "y": 1.12},
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.write_html(output_path)
+
+
 def _point_to_dict(point) -> dict[str, object]:
     return {
         "rho": float(point.rho),
@@ -150,19 +271,19 @@ def parse_args() -> argparse.Namespace:
     default_lyapunov_dir = _discover_latest_lyapunov_dir(default_policy_dir)
 
     parser = argparse.ArgumentParser(
-        description="Minimal adaptive cartpole certification example using the adaptive ABCrown/LiRPA pipeline."
+        description="Adaptive cartpole certification analysis using the adaptive ABCrown/LiRPA pipeline."
     )
     parser.add_argument("--policy-dir", type=Path, default=default_policy_dir)
     parser.add_argument("--lyapunov-dir", type=Path, default=default_lyapunov_dir)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--rho-values", nargs="+", type=float, default=None)
-    parser.add_argument("--rho-min", type=float, default=0.5)
-    parser.add_argument("--rho-max", type=float, default=2.0)
-    parser.add_argument("--num-points", type=int, default=4)
+    parser.add_argument("--rho-min", type=float, default=None)
+    parser.add_argument("--rho-max", type=float, default=None)
+    parser.add_argument("--num-points", type=int, default=8)
     parser.add_argument("--spacing", choices=["linear", "geometric"], default="geometric")
     parser.add_argument("--unresolved-tolerance", type=float, default=0.2)
-    parser.add_argument("--max-refinement-rounds", type=int, default=1)
-    parser.add_argument("--bins-per-dim", nargs="+", type=int, default=[1])
+    parser.add_argument("--max-refinement-rounds", type=int, default=2)
+    parser.add_argument("--bins-per-dim", nargs="+", type=int, default=[2])
     parser.add_argument("--center-refinement-factor", nargs="+", type=float, default=[1.0])
     parser.add_argument("--origin-exclusion", type=float, default=0.0)
     parser.add_argument("--cert-bound-scales", nargs="+", type=float, default=list(_DEFAULT_CERT_BOUND_SCALES))
@@ -173,6 +294,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--condition-margin", type=float, default=None)
     parser.add_argument("--show-solver-output", action="store_true")
     parser.add_argument("--output-json", type=Path, default=None)
+    parser.add_argument("--output-html", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -220,6 +342,12 @@ def main() -> None:
 
     __logger__.info("Step 4/6: assemble adaptive certification config")
     cert_bounds = _build_cert_bounds(policy_model, cert_bound_scales)
+    lyap_box_summary = _sample_cert_box_values(lyap_model, cert_bounds, device)
+
+    if args.rho_values is None and args.rho_min is None and args.rho_max is None:
+        args.rho_min = float(lyap_box_summary["rho_min"])
+        args.rho_max = float(lyap_box_summary["rho_max"])
+
     certification_config = AdaptiveCertificationConfig(
         state_dim=state_dim,
         cert_bounds=cert_bounds,
@@ -247,12 +375,47 @@ def main() -> None:
         device=device,
     )
 
+    resolved_rho_values = certifier._resolve_rho_values(
+        args.rho_values,
+        rho_min=None if args.rho_min is None else float(args.rho_min),
+        rho_max=None if args.rho_max is None else float(args.rho_max),
+        num_points=int(args.num_points),
+        spacing=args.spacing,
+    )
+
+    __logger__.info("Cartpole adaptive certification setup")
+    __logger__.info("  policy dir: %s", policy_dir)
+    __logger__.info("  lyapunov dir: %s", lyapunov_dir)
+    __logger__.info("  cert bounds: %s", _format_bounds(cert_bounds))
+    __logger__.info(
+        "  sampled V on cert box: center=%.6f, origin=%.6f, min_positive=%.6f, median_positive=%.6f, max=%.6f",
+        float(lyap_box_summary["center_value"]),
+        float(lyap_box_summary["origin_value"]),
+        float(lyap_box_summary["min_positive"]),
+        float(lyap_box_summary["median_positive"]),
+        float(lyap_box_summary["max_value"]),
+    )
+    __logger__.info(
+        "  adaptive config: bins=%s, center_refinement=%s, kappa=%.6f, tolerance=%.6f, max_refinement_rounds=%d",
+        certification_config.bins_per_dim,
+        certification_config.center_refinement_factor,
+        float(certification_config.kappa),
+        float(args.unresolved_tolerance),
+        int(args.max_refinement_rounds),
+    )
+    __logger__.info(
+        "  rho sweep (%d points, %s): %s",
+        len(resolved_rho_values),
+        args.spacing,
+        ", ".join(f"{rho:.6g}" for rho in resolved_rho_values),
+    )
+
     __logger__.info("Step 5/6: run adaptive certify() with unresolved tolerance %.4f", args.unresolved_tolerance)
     certify_result = certifier.certify(
-        rho_values=args.rho_values,
+        rho_values=resolved_rho_values,
         unresolved_tolerance=float(args.unresolved_tolerance),
-        rho_min=float(args.rho_min),
-        rho_max=float(args.rho_max),
+        rho_min=None,
+        rho_max=None,
         num_points=int(args.num_points),
         spacing=args.spacing,
         max_refinement_rounds=int(args.max_refinement_rounds),
@@ -283,11 +446,18 @@ def main() -> None:
             float(certify_result.best_point.volumes.unresolved_ratio),
         )
 
+    if args.output_html is not None:
+        output_html = args.output_html.resolve()
+        _write_pareto_html(certify_result, output_html)
+        __logger__.info("Wrote adaptive Pareto plot to %s", output_html)
+
     if args.output_json is not None:
         payload = {
             "policy_dir": str(policy_dir),
             "lyapunov_dir": str(lyapunov_dir),
             "cert_bounds": cert_bounds.tolist(),
+            "sampled_lyapunov_box_values": lyap_box_summary,
+            "resolved_rho_values": [float(rho) for rho in resolved_rho_values],
             "unresolved_tolerance": float(args.unresolved_tolerance),
             "best_rho": float(certify_result.best_rho),
             "best_point": None if certify_result.best_point is None else _point_to_dict(certify_result.best_point),
