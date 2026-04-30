@@ -31,14 +31,20 @@ class AdaptiveCertificationResult:
     outside_regions: th.Tensor
     certified_inside_regions: th.Tensor
     failed_inside_regions: th.Tensor
+    certified_boundary_regions: th.Tensor
+    failed_boundary_regions: th.Tensor
 
     @property
     def global_success(self) -> bool:
-        return len(self.boundary_regions) == 0 and len(self.failed_inside_regions) == 0 and len(self.certified_inside_regions) > 0
+        return (
+            len(self.failed_inside_regions) == 0
+            and len(self.failed_boundary_regions) == 0
+            and (len(self.certified_inside_regions) + len(self.certified_boundary_regions) > 0)
+        )
 
     @property
     def partial_success(self) -> bool:
-        return len(self.certified_inside_regions) > 0
+        return len(self.certified_inside_regions) + len(self.certified_boundary_regions) > 0
 
 
 @dataclass(frozen=True)
@@ -46,7 +52,9 @@ class AdaptiveVolumeStats:
     """Volume summary for one adaptive certification evaluation."""
 
     certified_volume: float
+    certified_boundary_volume: float
     failed_inside_volume: float
+    failed_boundary_volume: float
     boundary_volume: float
     outside_volume: float
     relevant_volume: float
@@ -169,15 +177,19 @@ class AdaptiveCertifier:
         result: AdaptiveCertificationResult,
     ) -> AdaptiveVolumeStats:
         certified_volume = self._region_volume(result.certified_inside_regions)
+        certified_boundary_volume = self._region_volume(result.certified_boundary_regions)
         failed_inside_volume = self._region_volume(result.failed_inside_regions)
+        failed_boundary_volume = self._region_volume(result.failed_boundary_regions)
         boundary_volume = self._region_volume(result.boundary_regions)
         outside_volume = self._region_volume(result.outside_regions)
-        relevant_volume = certified_volume + failed_inside_volume + boundary_volume
-        unresolved_volume = failed_inside_volume + boundary_volume
+        relevant_volume = certified_volume + certified_boundary_volume + failed_inside_volume + failed_boundary_volume
+        unresolved_volume = failed_inside_volume + failed_boundary_volume
         unresolved_ratio = 0.0 if relevant_volume <= 0.0 else unresolved_volume / relevant_volume
         return AdaptiveVolumeStats(
             certified_volume=certified_volume,
+            certified_boundary_volume=certified_boundary_volume,
             failed_inside_volume=failed_inside_volume,
+            failed_boundary_volume=failed_boundary_volume,
             boundary_volume=boundary_volume,
             outside_volume=outside_volume,
             relevant_volume=relevant_volume,
@@ -293,6 +305,12 @@ class AdaptiveCertifier:
             self.regions,
             method=self.config.lirpa_bound_method,
         )
+        __logger__.info(
+            "Cached LiRPA bounds for %d regions with V \u2208 [%s, %s].",
+            len(self.regions),
+            str(self.region_bounds.lower.tolist()),
+            str(self.region_bounds.upper.tolist()),
+        )
         return self.region_bounds
 
     def _ensure_region_cache(self) -> None:
@@ -325,8 +343,9 @@ class AdaptiveCertifier:
         *,
         early_exit: bool = False,
         carried_certified_regions: th.Tensor | None = None,
+        carried_certified_boundary_regions: th.Tensor | None = None,
     ) -> AdaptiveCertificationResult:
-        """Certify only boxes proven to lie entirely in the guarded rho-sublevel set."""
+        """Certify all candidate boxes not proven outside the guarded rho-sublevel set."""
         if rho < 0.0:
             raise ValueError(f"rho must be non-negative, got {rho}.")
 
@@ -342,7 +361,9 @@ class AdaptiveCertifier:
         outside_regions = self.regions[outside_mask]
 
         carried_certified_inside_regions = self._empty_regions()
+        carried_certified_boundary_regions = self._empty_regions()
         pending_inside_regions = inside_regions
+        pending_boundary_regions = boundary_regions
 
         if carried_certified_regions is not None:
             carried_certified_inside_regions, pending_inside_regions = self._partition_known_regions(
@@ -356,33 +377,65 @@ class AdaptiveCertifier:
                 carried_certified_inside_regions,
             )
 
+        if carried_certified_boundary_regions is not None:
+            carried_certified_boundary_regions, pending_boundary_regions = self._partition_known_regions(
+                boundary_regions,
+                carried_certified_boundary_regions.to(device=self.device, dtype=th.float32),
+            )
+
         certified_inside_regions = carried_certified_inside_regions
         failed_inside_regions = inside_regions[:0]
+        certified_boundary_regions = carried_certified_boundary_regions
+        failed_boundary_regions = boundary_regions[:0]
 
-        if len(pending_inside_regions) > 0:
+        candidate_regions = self._concat_regions(
+            pending_inside_regions,
+            pending_boundary_regions,
+        )
+        pending_inside_count = len(pending_inside_regions)
+
+        if len(candidate_regions) > 0:
             abcrown_certifier = self._ensure_abcrown_backend()
-            is_certified = abcrown_certifier.certify_regions(
-                pending_inside_regions,
-                rho,
-                early_exit=early_exit,
+            is_certified = th.as_tensor(
+                abcrown_certifier.certify_regions(
+                    candidate_regions,
+                    rho,
+                    early_exit=early_exit,
+                ),
+                device=self.device,
+                dtype=th.bool,
             )
+            if is_certified.ndim != 1 or len(is_certified) != len(candidate_regions):
+                raise ValueError(
+                    "AdaptiveABCrownRegionCertifier.certify_regions() must return one boolean per candidate region. "
+                    f"Expected {len(candidate_regions)} values, got shape {tuple(is_certified.shape)}."
+                )
+            inside_is_certified = is_certified[:pending_inside_count]
+            boundary_is_certified = is_certified[pending_inside_count:]
+
             certified_inside_regions = self._concat_regions(
                 certified_inside_regions,
-                pending_inside_regions[is_certified],
+                pending_inside_regions[inside_is_certified],
             )
-            failed_inside_regions = pending_inside_regions[~is_certified]
-
-        reused_certified_inside = len(carried_certified_inside_regions)
+            failed_inside_regions = pending_inside_regions[~inside_is_certified]
+            certified_boundary_regions = self._concat_regions(
+                certified_boundary_regions,
+                pending_boundary_regions[boundary_is_certified],
+            )
+            failed_boundary_regions = pending_boundary_regions[~boundary_is_certified]
 
         __logger__.info(
-            "Adaptive certification at rho=%.6f: inside=%d, boundary=%d, outside=%d, certified_inside=%d (reused=%d), failed_inside=%d.",
+            "Adaptive certification at rho=%.6f: inside=%d, boundary=%d, outside=%d, certified_inside=%d (reused=%d), certified_boundary=%d (reused=%d), failed_inside=%d, failed_boundary=%d.",
             float(rho),
             len(inside_regions),
             len(boundary_regions),
             len(outside_regions),
             len(certified_inside_regions),
-            reused_certified_inside,
+            len(carried_certified_inside_regions),
+            len(certified_boundary_regions),
+            len(carried_certified_boundary_regions),
             len(failed_inside_regions),
+            len(failed_boundary_regions),
         )
 
         self.last_result = AdaptiveCertificationResult(
@@ -397,6 +450,8 @@ class AdaptiveCertifier:
             outside_regions=outside_regions,
             certified_inside_regions=certified_inside_regions,
             failed_inside_regions=failed_inside_regions,
+            certified_boundary_regions=certified_boundary_regions,
+            failed_boundary_regions=failed_boundary_regions,
         )
         return self.last_result
 
@@ -405,18 +460,20 @@ class AdaptiveCertifier:
         result: AdaptiveCertificationResult,
     ) -> th.Tensor:
         unresolved_regions = self._concat_regions(
-            result.boundary_regions,
             result.failed_inside_regions,
+            result.failed_boundary_regions,
         )
         if len(unresolved_regions) == 0:
             return self._concat_regions(
                 result.certified_inside_regions,
+                result.certified_boundary_regions,
                 result.outside_regions,
             )
 
         refined_unresolved = self._build_region_builder().split_regions(unresolved_regions)
         return self._concat_regions(
             result.certified_inside_regions,
+            result.certified_boundary_regions,
             result.outside_regions,
             refined_unresolved,
         )
@@ -433,6 +490,7 @@ class AdaptiveCertifier:
 
         threshold = float(rho + self.config.sublevel_tolerance)
         carried_certified_regions = self._empty_regions()
+        carried_certified_boundary_regions = self._empty_regions()
         if self._can_reuse_certified_regions(self.last_result, threshold):
             carried_certified_regions = self.last_result.certified_inside_regions
 
@@ -441,11 +499,12 @@ class AdaptiveCertifier:
                 rho,
                 early_exit=False,
                 carried_certified_regions=carried_certified_regions,
+                carried_certified_boundary_regions=carried_certified_boundary_regions,
             )
             volumes = self._compute_volume_stats(result)
             unresolved_regions = self._concat_regions(
-                result.boundary_regions,
                 result.failed_inside_regions,
+                result.failed_boundary_regions,
             )
             meets_tolerance = (
                 unresolved_tolerance is not None
@@ -471,6 +530,7 @@ class AdaptiveCertifier:
                 return point
 
             carried_certified_regions = result.certified_inside_regions
+            carried_certified_boundary_regions = result.certified_boundary_regions
             self._set_regions(
                 self._refine_pending_regions(result),
                 reset_last_result=False,

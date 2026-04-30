@@ -19,7 +19,7 @@ from lcil.utils import MLP
 from cartpole_dyn import CartpoleDynamics
 from model import CartpoleAngleWrapper
 
-__logger__ = logging.getLogger(__name__)
+__logger__ = logging.getLogger("lcil.examples.cartpole.certify")
 
 _DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[2] / "results" / "cartpole"
 _DEFAULT_CERT_BOUND_SCALES = (0.15, 0.15, 0.05, 0.15)
@@ -299,7 +299,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
     args = parse_args()
     device = th.device(args.device)
 
@@ -324,10 +323,7 @@ def main() -> None:
         name="cert_bound_scales",
     )
 
-    __logger__.info("Step 1/6: load policy checkpoint from %s", policy_dir)
     policy_model = _load_policy_model(policy_dir, device)
-
-    __logger__.info("Step 2/6: load Lyapunov checkpoint from %s", lyapunov_dir)
     lyap_model = _load_lyapunov_model(
         lyapunov_dir,
         state_dim=state_dim,
@@ -336,11 +332,9 @@ def main() -> None:
         eps=float(args.lyap_eps),
     )
 
-    __logger__.info("Step 3/6: build closed-loop cartpole dynamics")
     dyn_model = CartpoleDynamics(dt=policy_model.net.global_config.dt).to(device)
     dyn_model.eval()
 
-    __logger__.info("Step 4/6: assemble adaptive certification config")
     cert_bounds = _build_cert_bounds(policy_model, cert_bound_scales)
     lyap_box_summary = _sample_cert_box_values(lyap_model, cert_bounds, device)
 
@@ -410,7 +404,7 @@ def main() -> None:
         ", ".join(f"{rho:.6g}" for rho in resolved_rho_values),
     )
 
-    __logger__.info("Step 5/6: run adaptive certify() with unresolved tolerance %.4f", args.unresolved_tolerance)
+    __logger__.info("Run adaptive certification with unresolved tolerance %.4f", args.unresolved_tolerance)
     certify_result = certifier.certify(
         rho_values=resolved_rho_values,
         unresolved_tolerance=float(args.unresolved_tolerance),
@@ -422,7 +416,6 @@ def main() -> None:
         reset_regions=True,
     )
 
-    __logger__.info("Step 6/6: report Pareto points and selected rho")
     for point in certify_result.pareto_points:
         __logger__.info(
             "rho=%.6f | feasible=%s | rounds=%d | certified=%.6f | unresolved=%.6f | unresolved_ratio=%.6f",

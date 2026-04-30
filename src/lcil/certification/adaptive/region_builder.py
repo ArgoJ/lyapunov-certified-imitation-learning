@@ -150,6 +150,57 @@ class RegionBuilder:
     def _pack_regions(lbs: th.Tensor, ubs: th.Tensor) -> th.Tensor:
         return th.stack([lbs, ubs], dim=1)
 
+    def _subtract_origin_exclusion_from_region(
+        self,
+        lb: th.Tensor,
+        ub: th.Tensor,
+    ) -> list[tuple[th.Tensor, th.Tensor]]:
+        """Subtract the centered origin-exclusion box from one region.
+
+        Returns packed subregions that tile ``[lb, ub]`` outside the configured
+        origin-exclusion box exactly. If the region does not intersect the hole,
+        the original region is returned unchanged.
+        """
+        inner_lb = lb.clone()
+        inner_ub = ub.clone()
+
+        active_dims = self.origin_exclusion > 0.0
+        if not bool(active_dims.any().item()):
+            return [(lb, ub)]
+
+        inner_lb[active_dims] = th.maximum(lb[active_dims], -self.origin_exclusion[active_dims])
+        inner_ub[active_dims] = th.minimum(ub[active_dims], self.origin_exclusion[active_dims])
+
+        if not bool((inner_ub[active_dims] > inner_lb[active_dims]).all().item()):
+            return [(lb, ub)]
+
+        # Dimensions without active exclusion should remain unchanged and not
+        # trigger any extra splits.
+        inner_lb[~active_dims] = lb[~active_dims]
+        inner_ub[~active_dims] = ub[~active_dims]
+
+        subregions: list[tuple[th.Tensor, th.Tensor]] = []
+        for dim in range(self.state_dim):
+            prefix_lb = lb.clone()
+            prefix_ub = ub.clone()
+            if dim > 0:
+                prefix_lb[:dim] = inner_lb[:dim]
+                prefix_ub[:dim] = inner_ub[:dim]
+
+            lower_lb = prefix_lb.clone()
+            lower_ub = prefix_ub.clone()
+            lower_ub[dim] = inner_lb[dim]
+            if bool((lower_ub > lower_lb).all().item()):
+                subregions.append((lower_lb, lower_ub))
+
+            upper_lb = prefix_lb.clone()
+            upper_ub = prefix_ub.clone()
+            upper_lb[dim] = inner_ub[dim]
+            if bool((upper_ub > upper_lb).all().item()):
+                subregions.append((upper_lb, upper_ub))
+
+        return subregions
+
     def _validate_regions(self, regions: th.Tensor) -> th.Tensor:
         validated = regions.to(device=self.device, dtype=th.float32)
         if validated.ndim != 3 or validated.shape[1] != 2 or validated.shape[2] != self.state_dim:
@@ -212,7 +263,7 @@ class RegionBuilder:
         return self.split_regions(region.unsqueeze(0), split_dims=split_dims)
 
     def build_regions(self) -> th.Tensor:
-        """Construct packed root regions after optional origin-hole filtering."""
+        """Construct packed root regions after exact origin-hole carving."""
         lb_axes = []
         ub_axes = []
         for idx in range(self.state_dim):
@@ -230,18 +281,23 @@ class RegionBuilder:
         lbs = th.stack([axis.flatten() for axis in lb_mesh], dim=1)
         ubs = th.stack([axis.flatten() for axis in ub_mesh], dim=1)
 
-        positive_exclusion = self.origin_exclusion.unsqueeze(0) > 0.0
-        overlaps_origin_per_dim = positive_exclusion & (lbs < self.origin_exclusion.unsqueeze(0)) & (
-            ubs > -self.origin_exclusion.unsqueeze(0)
-        )
-        overlaps_origin = positive_exclusion.all(dim=1) & overlaps_origin_per_dim.all(dim=1)
-        valid_mask = ~overlaps_origin
+        region_lbs: list[th.Tensor] = []
+        region_ubs: list[th.Tensor] = []
+        for region_lb, region_ub in zip(lbs, ubs, strict=True):
+            for sub_lb, sub_ub in self._subtract_origin_exclusion_from_region(region_lb, region_ub):
+                region_lbs.append(sub_lb)
+                region_ubs.append(sub_ub)
+
+        if region_lbs:
+            packed_regions = self._pack_regions(th.stack(region_lbs, dim=0), th.stack(region_ubs, dim=0))
+        else:
+            packed_regions = th.empty((0, 2, self.state_dim), dtype=th.float32, device=self.device)
 
         __logger__.info(
-            "Adaptive region split built %d/%d root regions after origin exclusion %s.",
-            int(valid_mask.sum().item()),
-            int(valid_mask.numel()),
+            "Adaptive region split built %d root regions from %d base grid cells after origin exclusion %s.",
+            len(packed_regions),
+            len(lbs),
             [float(value) for value in self.origin_exclusion.detach().cpu().tolist()],
         )
 
-        return self._pack_regions(lbs[valid_mask], ubs[valid_mask])
+        return packed_regions

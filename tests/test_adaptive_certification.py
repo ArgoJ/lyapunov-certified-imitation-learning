@@ -40,14 +40,20 @@ class _IdentityDynamics(nn.Module):
 def _make_result(
     rho: float,
     certified_inside_regions: th.Tensor,
-    boundary_regions: th.Tensor,
     outside_regions: th.Tensor,
     failed_inside_regions: th.Tensor | None = None,
+    certified_boundary_regions: th.Tensor | None = None,
+    failed_boundary_regions: th.Tensor | None = None,
 ) -> AdaptiveCertificationResult:
     if failed_inside_regions is None:
         failed_inside_regions = certified_inside_regions[:0]
+    if certified_boundary_regions is None:
+        certified_boundary_regions = certified_inside_regions[:0]
+    if failed_boundary_regions is None:
+        failed_boundary_regions = certified_inside_regions[:0]
 
     inside_regions = th.cat([certified_inside_regions, failed_inside_regions], dim=0)
+    boundary_regions = th.cat([certified_boundary_regions, failed_boundary_regions], dim=0)
     all_regions = th.cat([inside_regions, boundary_regions, outside_regions], dim=0)
     inside_count = len(inside_regions)
     boundary_count = len(boundary_regions)
@@ -76,6 +82,8 @@ def _make_result(
         outside_regions=outside_regions,
         certified_inside_regions=certified_inside_regions,
         failed_inside_regions=failed_inside_regions,
+        certified_boundary_regions=certified_boundary_regions,
+        failed_boundary_regions=failed_boundary_regions,
     )
 
 
@@ -132,11 +140,31 @@ class TestRegionBuilder(unittest.TestCase):
 
         regions = splitter.build_regions()
 
-        self.assertEqual(tuple(regions.shape), (12, 2, 2))
+        self.assertEqual(tuple(regions.shape), (20, 2, 2))
         lbs = regions[:, 0]
         ubs = regions[:, 1]
         overlaps_origin = ((lbs < 0.5) & (ubs > -0.5)).all(dim=1)
         self.assertFalse(bool(overlaps_origin.any().item()))
+        total_area = ((ubs - lbs).prod(dim=1)).sum().item()
+        self.assertAlmostEqual(total_area, 15.0, places=5)
+
+    def test_build_regions_carves_origin_hole_from_coarse_grid(self) -> None:
+        splitter = RegionBuilder(
+            bounds=th.tensor([[-1.0, -1.0], [1.0, 1.0]], dtype=th.float32),
+            bins_per_dim=(2, 2),
+            center_refinement_factor=1.0,
+            origin_exclusion=0.15,
+        )
+
+        regions = splitter.build_regions()
+
+        self.assertEqual(tuple(regions.shape), (8, 2, 2))
+        lbs = regions[:, 0]
+        ubs = regions[:, 1]
+        overlaps_origin = ((lbs < 0.15) & (ubs > -0.15)).all(dim=1)
+        self.assertFalse(bool(overlaps_origin.any().item()))
+        total_area = ((ubs - lbs).prod(dim=1)).sum().item()
+        self.assertAlmostEqual(total_area, 4.0 - 0.3 * 0.3, places=5)
 
     def test_split_regions_splits_each_box_along_its_widest_dimension(self) -> None:
         splitter = RegionBuilder(
@@ -208,7 +236,44 @@ class TestLiRPALyapunovRegionBounds(unittest.TestCase):
 
 
 class TestAdaptiveCertifier(unittest.TestCase):
-    def test_certify_inside_regions_caches_bounds_and_calls_abcrown_only_for_inside_boxes(self) -> None:
+    def test_certify_inside_regions_resolves_boundary_only_case(self) -> None:
+        config = AdaptiveCertificationConfig(
+            state_dim=1,
+            cert_bounds=np.array([[0.0], [1.0]], dtype=np.float32),
+            kappa=0.1,
+            bins_per_dim=1,
+            origin_exclusion=0.0,
+            lirpa_bound_method="ibp",
+            batch_size=8,
+        )
+
+        fake_abcrown = mock.Mock()
+        fake_abcrown.setup_backend = mock.Mock()
+        fake_abcrown.certify_regions = mock.Mock(
+            return_value=th.tensor([True], dtype=th.bool)
+        )
+
+        with mock.patch(
+            "lcil.certification.adaptive.certifier.AdaptiveABCrownRegionCertifier",
+            return_value=fake_abcrown,
+        ):
+            certifier = AdaptiveCertifier(
+                policy_model=_ZeroPolicy(),
+                lyap_model=_IdentityLyapunov(),
+                dyn_model=_IdentityDynamics(),
+                config=config,
+                device=th.device("cpu"),
+            )
+            result = certifier.certify_inside_regions(rho=0.5)
+
+        self.assertEqual(tuple(result.inside_regions.shape), (0, 2, 1))
+        self.assertEqual(tuple(result.boundary_regions.shape), (1, 2, 1))
+        self.assertEqual(tuple(result.certified_boundary_regions.shape), (1, 2, 1))
+        self.assertEqual(tuple(result.failed_boundary_regions.shape), (0, 2, 1))
+        self.assertTrue(result.global_success)
+        self.assertTrue(result.partial_success)
+
+    def test_certify_inside_regions_caches_bounds_and_calls_abcrown_for_inside_and_boundary_boxes(self) -> None:
         config = AdaptiveCertificationConfig(
             state_dim=1,
             cert_bounds=np.array([[-2.0], [2.0]], dtype=np.float32),
@@ -222,7 +287,7 @@ class TestAdaptiveCertifier(unittest.TestCase):
         fake_abcrown = mock.Mock()
         fake_abcrown.setup_backend = mock.Mock()
         fake_abcrown.certify_regions = mock.Mock(
-            return_value=th.tensor([True, False], dtype=th.bool)
+            return_value=th.tensor([True, False, True], dtype=th.bool)
         )
 
         with mock.patch(
@@ -260,11 +325,11 @@ class TestAdaptiveCertifier(unittest.TestCase):
 
         self.assertEqual(float(forwarded_rho), 0.5)
         self.assertFalse(forwarded_early_exit)
-        self.assertEqual(tuple(forwarded_regions.shape), (2, 2, 1))
+        self.assertEqual(tuple(forwarded_regions.shape), (3, 2, 1))
         self.assertTrue(
             th.allclose(
                 forwarded_regions[:, :, 0].cpu(),
-                th.tensor([[-2.0, -1.0], [-1.0, 0.0]], dtype=th.float32),
+                th.tensor([[-2.0, -1.0], [-1.0, 0.0], [0.0, 1.0]], dtype=th.float32),
             )
         )
 
@@ -273,6 +338,8 @@ class TestAdaptiveCertifier(unittest.TestCase):
         self.assertEqual(tuple(result.outside_regions.shape), (1, 2, 1))
         self.assertEqual(tuple(result.certified_inside_regions.shape), (1, 2, 1))
         self.assertEqual(tuple(result.failed_inside_regions.shape), (1, 2, 1))
+        self.assertEqual(tuple(result.certified_boundary_regions.shape), (1, 2, 1))
+        self.assertEqual(tuple(result.failed_boundary_regions.shape), (0, 2, 1))
         self.assertFalse(result.global_success)
         self.assertTrue(result.partial_success)
 
@@ -291,8 +358,8 @@ class TestAdaptiveCertifier(unittest.TestCase):
         fake_abcrown.setup_backend = mock.Mock()
         fake_abcrown.certify_regions = mock.Mock(
             side_effect=[
-                th.tensor([True, False], dtype=th.bool),
-                th.tensor([True, True], dtype=th.bool),
+                th.tensor([True, False, True], dtype=th.bool),
+                th.tensor([True, True, False], dtype=th.bool),
             ]
         )
 
@@ -315,18 +382,18 @@ class TestAdaptiveCertifier(unittest.TestCase):
         first_forwarded_regions = fake_abcrown.certify_regions.call_args_list[0].args[0]
         second_forwarded_regions = fake_abcrown.certify_regions.call_args_list[1].args[0]
 
-        self.assertEqual(tuple(first_forwarded_regions.shape), (2, 2, 1))
+        self.assertEqual(tuple(first_forwarded_regions.shape), (3, 2, 1))
         self.assertTrue(
             th.allclose(
                 first_forwarded_regions[:, :, 0].cpu(),
-                th.tensor([[-2.0, -1.0], [-1.0, 0.0]], dtype=th.float32),
+                th.tensor([[-2.0, -1.0], [-1.0, 0.0], [0.0, 1.0]], dtype=th.float32),
             )
         )
-        self.assertEqual(tuple(second_forwarded_regions.shape), (2, 2, 1))
+        self.assertEqual(tuple(second_forwarded_regions.shape), (3, 2, 1))
         self.assertTrue(
             th.allclose(
                 second_forwarded_regions[:, :, 0].cpu(),
-                th.tensor([[-1.0, 0.0], [0.0, 1.0]], dtype=th.float32),
+                th.tensor([[-1.0, 0.0], [0.0, 1.0], [1.0, 2.0]], dtype=th.float32),
             )
         )
 
@@ -339,6 +406,7 @@ class TestAdaptiveCertifier(unittest.TestCase):
             )
         )
         self.assertEqual(tuple(second_result.failed_inside_regions.shape), (0, 2, 1))
+        self.assertEqual(tuple(second_result.failed_boundary_regions.shape), (1, 2, 1))
 
     def test_certify_inside_regions_does_not_reuse_for_equal_rho(self) -> None:
         config = AdaptiveCertificationConfig(
@@ -355,8 +423,8 @@ class TestAdaptiveCertifier(unittest.TestCase):
         fake_abcrown.setup_backend = mock.Mock()
         fake_abcrown.certify_regions = mock.Mock(
             side_effect=[
-                th.tensor([True, False], dtype=th.bool),
-                th.tensor([True, True], dtype=th.bool),
+                th.tensor([True, False, True], dtype=th.bool),
+                th.tensor([True, True, False], dtype=th.bool),
             ]
         )
 
@@ -376,14 +444,15 @@ class TestAdaptiveCertifier(unittest.TestCase):
 
         self.assertEqual(fake_abcrown.certify_regions.call_count, 2)
         second_forwarded_regions = fake_abcrown.certify_regions.call_args_list[1].args[0]
-        self.assertEqual(tuple(second_forwarded_regions.shape), (2, 2, 1))
+        self.assertEqual(tuple(second_forwarded_regions.shape), (3, 2, 1))
         self.assertTrue(
             th.allclose(
                 second_forwarded_regions[:, :, 0].cpu(),
-                th.tensor([[-2.0, -1.0], [-1.0, 0.0]], dtype=th.float32),
+                th.tensor([[-2.0, -1.0], [-1.0, 0.0], [0.0, 1.0]], dtype=th.float32),
             )
         )
         self.assertEqual(tuple(second_result.certified_inside_regions.shape), (2, 2, 1))
+        self.assertEqual(tuple(second_result.failed_boundary_regions.shape), (1, 2, 1))
 
     def test_pareto_curve_refines_until_unresolved_ratio_meets_tolerance(self) -> None:
         config = AdaptiveCertificationConfig(
@@ -406,8 +475,8 @@ class TestAdaptiveCertifier(unittest.TestCase):
         first_result = _make_result(
             rho=0.5,
             certified_inside_regions=th.tensor([[[-2.0], [-1.0]]], dtype=th.float32),
-            boundary_regions=th.tensor([[[-1.0], [0.0]]], dtype=th.float32),
             outside_regions=th.tensor([[[0.0], [2.0]]], dtype=th.float32),
+            failed_boundary_regions=th.tensor([[[-1.0], [0.0]]], dtype=th.float32),
         )
         second_result = _make_result(
             rho=0.5,
@@ -415,7 +484,6 @@ class TestAdaptiveCertifier(unittest.TestCase):
                 [[[-2.0], [-1.0]], [[-1.0], [-0.5]]],
                 dtype=th.float32,
             ),
-            boundary_regions=th.empty((0, 2, 1), dtype=th.float32),
             outside_regions=th.tensor([[[ -0.5], [2.0]]], dtype=th.float32),
         )
 
@@ -460,14 +528,13 @@ class TestAdaptiveCertifier(unittest.TestCase):
             _make_result(
                 rho=0.5,
                 certified_inside_regions=th.tensor([[[-2.0], [-1.0]]], dtype=th.float32),
-                boundary_regions=th.empty((0, 2, 1), dtype=th.float32),
                 outside_regions=th.tensor([[[-1.0], [2.0]]], dtype=th.float32),
             ),
             _make_result(
                 rho=1.0,
                 certified_inside_regions=th.tensor([[[-2.0], [-1.0]]], dtype=th.float32),
-                boundary_regions=th.tensor([[[-1.0], [1.0]]], dtype=th.float32),
                 outside_regions=th.tensor([[[1.0], [2.0]]], dtype=th.float32),
+                failed_boundary_regions=th.tensor([[[-1.0], [1.0]]], dtype=th.float32),
             ),
             _make_result(
                 rho=1.5,
@@ -475,8 +542,8 @@ class TestAdaptiveCertifier(unittest.TestCase):
                     [[[-2.0], [-1.0]], [[-1.0], [1.0]]],
                     dtype=th.float32,
                 ),
-                boundary_regions=th.tensor([[[1.0], [2.0]]], dtype=th.float32),
                 outside_regions=th.empty((0, 2, 1), dtype=th.float32),
+                failed_boundary_regions=th.tensor([[[1.0], [2.0]]], dtype=th.float32),
             ),
         ]
 

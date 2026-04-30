@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
-from dataclasses import dataclass
 import logging
-from typing import Any
 
 import torch as th
 import torch.nn as nn
+
+from rich.progress import (
+    Progress,
+    TextColumn,
+    BarColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+from typing import Any
+from contextlib import nullcontext
+from dataclasses import dataclass
 from pkg_logger import suppress_native_output
 
 from ..models import LyapunovMultiOutputVerifier
@@ -57,7 +65,6 @@ class AdaptiveABCrownRegionCertifier:
 
         self._abcrown_api: _ABCrownAPI | None = None
         self.abcrown_config: Any = None
-        self.verifier: LyapunovMultiOutputVerifier | None = None
         self.wrapped_model: _AdaptiveABCrownModelWrapper | None = None
 
     def _get_abcrown_api(self) -> _ABCrownAPI:
@@ -113,14 +120,15 @@ class AdaptiveABCrownRegionCertifier:
             .set(general__enable_incomplete_verification=False)
             .set(solver__batch_size=int(self.config.batch_size))
             .set(solver__bound_prop_method="crown")
+            .set(bab__branching__method="sb")
             .set(bab__branching__input_split__enable=True)
-            .set(attack__pgd_order="skip")
+            .set(attack__pgd_order="before")
             .set(bab__decision_thresh=-float(self.config.condition_tolerance))
             ()
         )
 
-        self.verifier = self._setup_verifier()
-        self.wrapped_model = _AdaptiveABCrownModelWrapper(self.verifier, self.device)
+        verifier = self._setup_verifier()
+        self.wrapped_model = _AdaptiveABCrownModelWrapper(verifier, self.device)
         self.wrapped_model.eval()
 
         __logger__.info(
@@ -181,6 +189,7 @@ class AdaptiveABCrownRegionCertifier:
             )
             result = solver.solve()
 
+        __logger__.info(result)
         return self._is_verified_status(result.status)
 
     def certify_regions(
@@ -199,9 +208,21 @@ class AdaptiveABCrownRegionCertifier:
             return th.empty((0,), dtype=th.bool, device=self.device)
 
         is_certified = th.zeros((len(regions),), dtype=th.bool, device=self.device)
-        for idx, region in enumerate(regions):
-            is_certified[idx] = self.certify_region(region, rho)
-            if early_exit and not bool(is_certified[idx].item()):
-                break
+
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            task = progress.add_task(
+                f"Certifying {len(regions)} regions with ABCrown (rho={rho:.6g})...",
+                total=len(regions),
+            )
+            for idx, region in enumerate(regions):
+                is_certified[idx] = self.certify_region(region, rho)
+                progress.update(task, advance=1)
+                if early_exit and not bool(is_certified[idx].item()):
+                    break
 
         return is_certified
