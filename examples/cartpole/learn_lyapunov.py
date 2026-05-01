@@ -14,7 +14,7 @@ from lcil.lyapunov_learning import (
     LyapunovTrainer,
     ThresholdMonitor,
 )
-from lcil.certification import LyapunovCertificationConfig, ABCrownCertifier, CertificationResultTester
+from lcil.certification import LyapunovCertificationConfig, BisectCertifier, CertificationResultTester
 from lcil.utils import lcil_plt, ICNN, MLP
 from lcil.imitation_learning_mlp import MLPPolicy
 from mpc_datagen import MPCDataset
@@ -266,7 +266,7 @@ def main() -> None:
         # ---------------------------------------------------------------------
         # 4. Certify
         # ---------------------------------------------------------------------
-        certifier = ABCrownCertifier(
+        certifier = BisectCertifier(
             policy_model,
             lyap_model,
             dyn_model,

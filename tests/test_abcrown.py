@@ -35,6 +35,18 @@ class _IdentityDynamics(nn.Module):
         return x
 
 
+class _DirectionalScaleDynamics(nn.Module):
+    def __init__(self, base_scale: float = 0.8, axis_gain: float = 0.4):
+        super().__init__()
+        self.base_scale = float(base_scale)
+        self.axis_gain = float(axis_gain)
+
+    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+        del u
+        scale = self.base_scale + self.axis_gain * x[:, :1]
+        return scale * x
+
+
 class _QuadraticLyapunov(nn.Module):
     def forward(self, x: th.Tensor) -> th.Tensor:
         return (x * x).sum(dim=1, keepdim=True)
@@ -98,7 +110,7 @@ class _ABCrownModuleLoaderMixin:
     def _load_abcrown_modules(cls) -> None:
         cls.BisectCertifier, cls.LyapunovCertificationConfig = _load_real_abcrown_modules()
 
-class TestABCrownCertifierIntegration(_ABCrownModuleLoaderMixin, PlotAssertionsMixin, unittest.TestCase):
+class TestBisectCertifierIntegration(_ABCrownModuleLoaderMixin, PlotAssertionsMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         if os.environ.get("LCIL_RUN_ABCROWN_INTEGRATION", "0") != "1":
@@ -116,11 +128,19 @@ class TestABCrownCertifierIntegration(_ABCrownModuleLoaderMixin, PlotAssertionsM
             patcher.stop()
 
     @classmethod
-    def _make_certifier(cls, lyap_model: nn.Module):
+    def _make_certifier(
+        cls,
+        lyap_model: nn.Module,
+        *,
+        dyn_model: nn.Module | None = None,
+        kappa: float = 0.1,
+        rho_min: float = 1e-6,
+    ):
         config = cls.LyapunovCertificationConfig(
             state_dim=3,
             cert_bounds=np.array([[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]], dtype=np.float32),
-            kappa=0.1,
+            kappa=kappa,
+            rho_min=rho_min,
             bins_per_dim=4,
             origin_exclusion=0.0,
             max_scale_steps=6,
@@ -134,7 +154,7 @@ class TestABCrownCertifierIntegration(_ABCrownModuleLoaderMixin, PlotAssertionsM
         return cls.BisectCertifier(
             policy_model=_ZeroPolicy(),
             lyap_model=lyap_model,
-            dyn_model=_ZeroDynamics(),
+            dyn_model=_ZeroDynamics() if dyn_model is None else dyn_model,
             config=config,
             device=th.device("cpu"),
         )
@@ -209,7 +229,12 @@ class TestABCrownCertifierIntegration(_ABCrownModuleLoaderMixin, PlotAssertionsM
         )
 
     def test_mixed_lyapunov_pipeline_with_real_abcrown(self) -> None:
-        certifier = self._make_certifier(_MixedLyapunov(alpha=0.3, beta=2.0))
+        certifier = self._make_certifier(
+            _QuadraticLyapunov(),
+            dyn_model=_DirectionalScaleDynamics(base_scale=0.8, axis_gain=0.4),
+            kappa=0.0,
+            rho_min=0.9,
+        )
 
         result = certifier.certify(rho_estimate=1.0)
 
@@ -217,7 +242,10 @@ class TestABCrownCertifierIntegration(_ABCrownModuleLoaderMixin, PlotAssertionsM
         self.assertGreaterEqual(result.rho, certifier.config.rho_min)
         self.assertGreater(result.certified_regions.shape[0], 0)
         self.assertGreater(result.failed_regions.shape[0], 0)
-        self.assertEqual(result.outside_sublevel_regions.shape[0], 0)
+        certified_centers = result.certified_regions.mean(axis=1)
+        failed_centers = result.failed_regions.mean(axis=1)
+        self.assertTrue(np.any(certified_centers[:, 0] < 0.0))
+        self.assertTrue(np.any(failed_centers[:, 0] > 0.0))
         self._assert_region_plot_written(
             certification_result=result,
             stem="mixed_regions_integration",

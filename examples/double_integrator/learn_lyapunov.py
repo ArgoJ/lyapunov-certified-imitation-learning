@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer
-from lcil.certification import LyapunovCertificationConfig, ABCrownCertifier
+from lcil.certification import LyapunovCertificationConfig, BisectCertifier
 from lcil.utils import lcil_plt, ICNN, MLP
 from lcil.imitation_learning_mlp import MLPPolicy
 from mpc_datagen import MPCDataset
@@ -186,7 +186,7 @@ def main() -> None:
         # ---------------------------------------------------------------------
         # 4. Certify
         # ---------------------------------------------------------------------
-        certifier = ABCrownCertifier(
+        certifier = BisectCertifier(
             policy_model,
             lyap_model,
             dyn_model,

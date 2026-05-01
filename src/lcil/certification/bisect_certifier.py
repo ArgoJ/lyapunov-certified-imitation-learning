@@ -96,17 +96,12 @@ class RecursiveCertificationResult:
 
     @property
     def vacuous(self) -> bool:
-        """Whether no regions remain after filtering."""
+        """Whether no regions remain relevant."""
         return self.resolved.numel() == 0 and self.unresolved.numel() == 0
 
     @property
     def global_success(self) -> bool:
-        """Whether all regions inside ``V(x) <= rho`` were certified.
-
-        Regions tracked in ``counterexamples`` were filtered because they were
-        proven to lie strictly outside the rho-sublevel set. They are therefore
-        not certification failures and must not invalidate global success.
-        """
+        """Whether all regions inside ``V(x) <= rho`` were certified."""
         return self.unresolved.numel() == 0 and self.resolved.numel() > 0
 
     @property

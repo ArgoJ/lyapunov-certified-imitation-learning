@@ -65,7 +65,6 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
             cls.LyapunovCertificationConfig = importlib.import_module(
                 "lcil.certification.config"
             ).LyapunovCertificationConfig
-            cls.certifier_base = importlib.import_module("lcil.certification.certifier_base")
         except Exception as exc:  # pragma: no cover - depends on local environment
             raise unittest.SkipTest(f"Could not import certifier modules: {exc}") from exc
 

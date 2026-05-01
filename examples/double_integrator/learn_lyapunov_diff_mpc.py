@@ -10,7 +10,7 @@ from pathlib import Path
 from mpc_datagen import MPCDataGenerator
 
 from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer
-from lcil.certification import LyapunovCertificationConfig, ABCrownCertifier
+from lcil.certification import LyapunovCertificationConfig, BisectCertifier
 from lcil.utils import lcil_plt, ICNN, MLP
 
 from acados_ocp import get_ocp_solver
@@ -195,7 +195,7 @@ def main() -> None:
     # ---------------------------------------------------------------------
     # 4. Certify
     # ---------------------------------------------------------------------
-    certifier = ABCrownCertifier(
+    certifier = BisectCertifier(
         policy_model,
         lyap_model,
         dyn_model,

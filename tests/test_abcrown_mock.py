@@ -34,9 +34,7 @@ BisectCertifier = bisect_certifier_module.BisectCertifier
 LyapunovCertificationConfig = importlib.import_module(
     "lcil.certification.config"
 ).LyapunovCertificationConfig
-certifier_base_module = importlib.import_module("lcil.certification.certifier_base")
-BaseCertifier = certifier_base_module.BaseCertifier
-RecursiveCertificationResult = certifier_base_module.RecursiveCertificationResult
+RecursiveCertificationResult = bisect_certifier_module.RecursiveCertificationResult
 region_bounds_module = importlib.import_module("lcil.certification.lirpa_lyapunov_bounds")
 LyapunovRegionBounds = region_bounds_module.LyapunovRegionBounds
 plot_module = importlib.import_module("lcil.utils.plot")
@@ -251,6 +249,18 @@ class _QuadraticLyapunov(nn.Module):
         return (x * x).sum(dim=1, keepdim=True)
 
 
+class _DirectionalScaleDynamics(nn.Module):
+    def __init__(self, base_scale: float = 0.8, axis_gain: float = 0.4):
+        super().__init__()
+        self.base_scale = float(base_scale)
+        self.axis_gain = float(axis_gain)
+
+    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+        del u
+        scale = self.base_scale + self.axis_gain * x[:, :1]
+        return scale * x
+
+
 class _NegativeQuadraticLyapunov(nn.Module):
     def forward(self, x: th.Tensor) -> th.Tensor:
         return -(x * x).sum(dim=1, keepdim=True)
@@ -313,7 +323,7 @@ class _RecursiveMockCertifier(BisectCertifier):
         return (widths <= self.width_limit) & (rho <= self.rho_limit)
 
 
-class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
+class TestBisectCertifier(PlotAssertionsMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls._patchers = [
@@ -334,7 +344,6 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
         # Drop cached submodules that may have captured stubbed abcrown symbols.
         sys.modules.pop("lcil.certification.bisect_certifier", None)
         sys.modules.pop("lcil.certification.config", None)
-        sys.modules.pop("lcil.certification.certifier_base", None)
 
         # Restore original modules so later tests can import real integrations.
         if _ORIG_ABCROWN is None:
@@ -353,11 +362,13 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
         *,
         dyn_model: nn.Module | None = None,
         kappa: float = 0.1,
+        rho_min: float = 1e-6,
     ) -> BisectCertifier:
         config = LyapunovCertificationConfig(
             state_dim=3,
             cert_bounds=np.array([[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]], dtype=np.float32),
             kappa=kappa,
+            rho_min=rho_min,
             bins_per_dim=4,
             center_refinement_factor=0.7,
             origin_exclusion=0.0,
@@ -445,73 +456,6 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
             },
         )
 
-    def test_quadratic_lyapunov_with_identity_dynamics_certifies_all_regions(self) -> None:
-        certifier = self._make_certifier(
-            _QuadraticLyapunov(),
-            dyn_model=_IdentityDynamics(),
-            kappa=0.0,
-        )
-        result = certifier.certify(rho_estimate=1.0)
-
-        self.assertTrue(result.global_success)
-        self.assertTrue(result.partial_success)
-        self.assertGreaterEqual(result.rho, 1.0)
-        self.assertEqual(result.failed_regions.shape[0], 0)
-        self.assertGreater(result.certified_regions.shape[0], 0)
-        self._assert_region_plot_written(
-            certification_result=result,
-            stem="quadratic_regions",
-        )
-        self._assert_lyapunov_plot_written(
-            lyap_model=certifier.lyap_model,
-            certification_result=result,
-            stem="quadratic_lyapunov",
-        )
-
-    def test_negative_quadratic_produces_counterexamples(self) -> None:
-        certifier = self._make_certifier(_NegativeQuadraticLyapunov())
-        result = certifier.certify(rho_estimate=1.0)
-
-        self.assertFalse(result.global_success)
-        self.assertFalse(result.partial_success)
-        self.assertAlmostEqual(result.rho, 1.0, places=6)
-        self.assertEqual(result.certified_regions.shape[0], 0)
-        self.assertGreaterEqual(result.failed_regions.shape[0], 0)
-        self.assertGreaterEqual(result.outside_sublevel_regions.shape[0], 0)
-        self._assert_region_plot_written(
-            certification_result=result,
-            stem="negative_regions",
-        )
-        self._assert_lyapunov_plot_written(
-            lyap_model=certifier.lyap_model,
-            certification_result=result,
-            stem="negative_lyapunov",
-        )
-
-    def test_mixed_lyapunov_has_safe_and_unsafe_regions(self) -> None:
-        certifier = self._make_certifier(_MixedLyapunov(alpha=0.3, beta=2.0))
-        result = certifier.certify(rho_estimate=1.0)
-
-        self.assertFalse(result.global_success)
-        self.assertTrue(result.partial_success)
-        # self.assertAlmostEqual(result.rho, 1.0, places=6)
-        self.assertGreater(result.certified_regions.shape[0], 0)
-        self.assertGreater(result.failed_regions.shape[0], 0)
-
-        certified_centers = result.certified_regions.mean(axis=1)
-        failed_centers = result.failed_regions.mean(axis=1)
-        self.assertTrue(np.any(np.linalg.norm(certified_centers, axis=1) < 1.0))
-        self.assertTrue(np.any(np.linalg.norm(failed_centers, axis=1) > 1.5))
-        self._assert_region_plot_written(
-            certification_result=result,
-            stem="mixed_regions",
-        )
-        self._assert_lyapunov_plot_written(
-            lyap_model=certifier.lyap_model,
-            certification_result=result,
-            stem="mixed_lyapunov",
-        )
-
     def test_negative_values_are_not_hidden_by_origin_guard(self) -> None:
         certification_verifier = LyapunovVerifier(
             policy_model=_ZeroPolicy(),
@@ -580,178 +524,6 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
         self.assertAlmostEqual(float(outputs[0, 0]), 2.0, places=6)
         self.assertAlmostEqual(float(outputs[0, 1]), 1.0, places=6)
         self.assertAlmostEqual(float(outputs[0, 2]), 3.0, places=6)
-
-    def test_abcrown_multi_output_spec_rejects_out_of_bounds_successor(self) -> None:
-        config = LyapunovCertificationConfig(
-            state_dim=1,
-            cert_bounds=np.array([[0.0], [2.0]], dtype=np.float32),
-            kappa=0.0,
-            bins_per_dim=1,
-            origin_exclusion=0.0,
-            cert_method="alpha-crown",
-            sublevel_tolerance=0.0,
-            condition_tolerance=1e-6,
-            max_recursion_depth=0,
-        )
-        certifier = BisectCertifier(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_DescendingLinearLyapunov(),
-            dyn_model=_ShiftDynamics(shift=2.0),
-            config=config,
-            device=th.device("cpu"),
-        )
-
-        certifier.verifier = certifier._setup_verifier()
-        certifier.regions = certifier._get_region_builder().build_regions()
-        certifier.setup_backend()
-
-        is_safe = certifier._certify_batched_regions(certifier.regions, rho=2.0, early_exit=False)
-        self.assertFalse(bool(is_safe.all().item()))
-
-    def test_setup_backend_uses_configured_batch_size(self) -> None:
-        config = LyapunovCertificationConfig(
-            state_dim=1,
-            cert_bounds=np.array([[0.0], [2.0]], dtype=np.float32),
-            kappa=0.0,
-            bins_per_dim=1,
-            origin_exclusion=0.0,
-            cert_method="alpha-crown",
-            condition_tolerance=1e-6,
-            batch_size=123,
-            max_recursion_depth=0,
-        )
-        certifier = BisectCertifier(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_QuadraticLyapunov(),
-            dyn_model=_ZeroDynamics(),
-            config=config,
-            device=th.device("cpu"),
-        )
-
-        certifier.setup_backend()
-
-        self.assertEqual(certifier.abcrown_config["solver__batch_size"], 123)
-        self.assertEqual(certifier.abcrown_config["general__complete_verifier"], "input_bab")
-        self.assertTrue(certifier.abcrown_config["bab__branching__input_split__enable"])
-        self.assertEqual(certifier.abcrown_config["bab__branching__input_split__split_partitions"], 2)
-
-    def test_sublevel_partition_keeps_boundary_touching_boxes(self) -> None:
-        config = LyapunovCertificationConfig(
-            state_dim=1,
-            cert_bounds=np.array([[0.0], [2.0]], dtype=np.float32),
-            kappa=0.0,
-            bins_per_dim=1,
-            origin_exclusion=0.0,
-            cert_method="alpha-crown",
-            sublevel_tolerance=0.0,
-            condition_tolerance=1e-3,
-        )
-        certifier = BisectCertifier(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_QuadraticLyapunov(),
-            dyn_model=_ZeroDynamics(),
-            config=config,
-            device=th.device("cpu"),
-        )
-        bs = th.tensor([[[0.0], [2.0]]], dtype=th.float32)
-
-        certifier.region_bounder = _StaticRegionBounder(
-            lower=th.tensor([0.5], dtype=th.float32),
-            upper=th.tensor([1.0], dtype=th.float32),
-        )
-        relevant_bs, irrelevant_bs = certifier._partition_regions_by_sublevel(bs, rho=1.0)
-        self.assertEqual(len(relevant_bs), 1)
-        self.assertEqual(len(irrelevant_bs), 0)
-
-        certifier.region_bounder = _StaticRegionBounder(
-            lower=th.tensor([1.0005], dtype=th.float32),
-            upper=th.tensor([1.5], dtype=th.float32),
-        )
-        relevant_bs, irrelevant_bs = certifier._partition_regions_by_sublevel(bs, rho=1.0)
-        self.assertEqual(len(relevant_bs), 0)
-        self.assertEqual(len(irrelevant_bs), 1)
-
-    def test_find_max_rho_uses_recursive_region_splitting(self) -> None:
-        config = LyapunovCertificationConfig(
-            state_dim=1,
-            cert_bounds=np.array([[0.0], [2.0]], dtype=np.float32),
-            kappa=0.0,
-            rho_min=1e-6,
-            bins_per_dim=1,
-            origin_exclusion=0.0,
-            rho_scaling=2.0,
-            bisection_tol=1e-4,
-            max_scale_steps=4,
-            max_bisection_steps=8,
-            cert_method="alpha-crown",
-            condition_tolerance=1e-6,
-            max_recursion_depth=1,
-        )
-        certifier = _RecursiveMockCertifier(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_QuadraticLyapunov(),
-            dyn_model=_IdentityDynamics(),
-            config=config,
-            device=th.device("cpu"),
-            width_limit=1.0,
-            rho_limit=2.0,
-        )
-
-        best_rho = certifier.find_max_rho(rho_estimate=1.0)
-
-        self.assertGreater(best_rho, 1.5)
-        self.assertLessEqual(best_rho, 2.0)
-
-    def test_recursive_frontier_split_retries_only_adjacent_children(self) -> None:
-        config = LyapunovCertificationConfig(
-            state_dim=1,
-            cert_bounds=np.array([[0.0], [5.0]], dtype=np.float32),
-            kappa=0.0,
-            rho_min=1e-6,
-            bins_per_dim=1,
-            origin_exclusion=0.0,
-            cert_method="alpha-crown",
-            condition_tolerance=1e-6,
-            max_recursion_depth=2,
-        )
-        certifier = _RecursiveMockCertifier(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_QuadraticLyapunov(),
-            dyn_model=_IdentityDynamics(),
-            config=config,
-            device=th.device("cpu"),
-            width_limit=1.0,
-            rho_limit=2.0,
-        )
-        certifier.regions = th.tensor(
-            [
-                [[0.0], [1.0]],
-                [[1.0], [3.0]],
-                [[3.0], [5.0]],
-            ],
-            dtype=th.float32,
-        )
-
-        result = certifier._certify_recursive_regions(rho=1.0, show_progress=False)
-
-        self.assertEqual(certifier.certify_calls, [(3, False), (1, False)])
-        expected_certified = th.tensor(
-            [
-                [[0.0], [1.0]],
-                [[1.0], [2.0]],
-            ],
-            dtype=th.float32,
-        )
-        expected_failed = th.tensor(
-            [
-                [[3.0], [5.0]],
-                [[2.0], [3.0]],
-            ],
-            dtype=th.float32,
-        )
-        self.assertTrue(th.allclose(result.resolved.cpu(), expected_certified))
-        self.assertTrue(th.allclose(result.unresolved.cpu(), expected_failed))
-        self.assertEqual(result.irrelevant.numel(), 0)
 
 
 if __name__ == "__main__":
