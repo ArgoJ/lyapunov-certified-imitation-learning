@@ -2,18 +2,14 @@ from __future__ import annotations
 
 import logging
 import os
-from abc import ABC, abstractmethod
-from contextlib import nullcontext
-from dataclasses import dataclass, replace
-from pathlib import Path
-from typing import Sequence
-
 import numpy as np
 import torch as th
 import torch.nn as nn
-from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
+
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Sequence
 from numpy.typing import NDArray
-from pkg_logger import suppress_native_output
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -23,21 +19,14 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+from .abcrown_region_certifier import ABCrownRegionCertifier
 from .config import LyapunovCertificationConfig
+from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds
+from .models import LyapunovMultiOutputVerifier
+from .region_builder import RegionBuilder
 from ..utils.helpers import none_to_float
 
 __logger__ = logging.getLogger(__name__)
-
-
-class _NegatedLyapunovModelWrapper(nn.Module):
-    """Wrap ``V(x)`` as ``-V(x)`` for IBP-based sublevel filtering."""
-
-    def __init__(self, lyap_model: nn.Module):
-        super().__init__()
-        self.lyap_model = lyap_model
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return -self.lyap_model(x)
 
 
 @dataclass(frozen=True)
@@ -101,14 +90,14 @@ class RegionCertificationResult:
 class RecursiveCertificationResult:
     """Internal tensor result for recursive region certification."""
 
-    certified: th.Tensor
-    failed: th.Tensor
-    outside_sublevel: th.Tensor
+    resolved: th.Tensor
+    unresolved: th.Tensor
+    irrelevant: th.Tensor
 
     @property
     def vacuous(self) -> bool:
         """Whether no regions remain after filtering."""
-        return self.certified.numel() == 0 and self.failed.numel() == 0
+        return self.resolved.numel() == 0 and self.unresolved.numel() == 0
 
     @property
     def global_success(self) -> bool:
@@ -118,24 +107,24 @@ class RecursiveCertificationResult:
         proven to lie strictly outside the rho-sublevel set. They are therefore
         not certification failures and must not invalidate global success.
         """
-        return self.failed.numel() == 0 and self.certified.numel() > 0
+        return self.unresolved.numel() == 0 and self.resolved.numel() > 0
 
     @property
     def partial_success(self) -> bool:
         """Whether at least one region is inside the tested sublevel set and certified."""
-        return self.certified.numel() > 0
+        return self.resolved.numel() > 0
 
     @classmethod
     def empty(cls, state_dim: int, device: th.device) -> RecursiveCertificationResult:
         empty = th.empty((0, 2, state_dim), device=device)
         return cls(
-            certified=empty,
-            failed=empty,
-            outside_sublevel=empty,
+            resolved=empty,
+            unresolved=empty,
+            irrelevant=empty,
         )
 
     def with_failed(self, regions: th.Tensor) -> RecursiveCertificationResult:
-        return replace(self, failed=regions)
+        return replace(self, unresolved=regions)
 
     def with_cert_and_failed(
         self,
@@ -145,21 +134,21 @@ class RecursiveCertificationResult:
         failed_mask = ~is_safe
         certified_bs = bs[is_safe]
         failed_bs = bs[failed_mask]
-        return replace(self, certified=certified_bs, failed=failed_bs)
+        return replace(self, resolved=certified_bs, unresolved=failed_bs)
 
-    def with_outside_sublevel(self, regions: th.Tensor) -> RecursiveCertificationResult:
-        return replace(self, outside_sublevel=regions)
+    def with_irrelevant(self, regions: th.Tensor) -> RecursiveCertificationResult:
+        return replace(self, irrelevant=regions)
 
     def __add__(self, other: RecursiveCertificationResult) -> RecursiveCertificationResult:
         return RecursiveCertificationResult(
-            certified=th.cat([self.certified, other.certified], dim=0),
-            failed=th.cat([self.failed, other.failed], dim=0),
-            outside_sublevel=th.cat([self.outside_sublevel, other.outside_sublevel], dim=0),
+            resolved=th.cat([self.resolved, other.resolved], dim=0),
+            unresolved=th.cat([self.unresolved, other.unresolved], dim=0),
+            irrelevant=th.cat([self.irrelevant, other.irrelevant], dim=0),
         )
 
 
-class BaseCertifier(ABC):
-    """Abstract base class for Lyapunov certifiers."""
+class BisectCertifier:
+    """Lyapunov certifier using a bisection-based region refinement strategy."""
 
     def __init__(
         self,
@@ -169,7 +158,7 @@ class BaseCertifier(ABC):
         config: LyapunovCertificationConfig,
         device: th.device = th.device("cpu"),
     ):
-        """Initialize a backend-agnostic Lyapunov certifier.
+        """Initialize a Lyapunov certifier.
 
         Parameters
         ----------
@@ -194,44 +183,107 @@ class BaseCertifier(ABC):
         self.dyn_model = dyn_model.to(self.device).eval()
 
         self.bounds = self._resolve_bounds(config.cert_bounds, device)
-        self.negative_filter = self._build_negated_lyapunov_filter() if config.use_ibp_filter else None
-        
-        self.verifier = None
-        self.details = None
+
         self.regions = None
-
-    # ==========================================
-    # ABSTRACT METHODS
-    # ==========================================
-
-    @abstractmethod
-    def setup_backend(self, *args, **kwargs) -> None:
-        """Initialize backend-specific verifier state."""
-
-    @abstractmethod
-    def _certify_batched_regions(
-        self,
-        bs: th.Tensor,
-        rho: float,
-        early_exit: bool = True,
-        *args,
-        **kwargs,
-    ) -> th.Tensor:
-        """Certify a batch of axis-aligned regions."""
-    
-    @abstractmethod
-    def _build_regions(self) -> th.Tensor:
-        """Build root regions for certification."""
-    
-    @abstractmethod
-    def is_rho_certified(self, rho: float) -> bool:
-        """Check whether all regions satisfy Lyapunov conditions at ``rho``."""
+        self.region_builder: RegionBuilder | None = None
+        self.bounder: LiRPALyapunovRegionBounds | None = None
+        self.certifier: ABCrownRegionCertifier | None = None
+        self.details = None
 
 
     # ==========================================
     # COMMON UTILITIES
-    # =========================================
+    # ==========================================
+    def _build_region_builder(self) -> RegionBuilder:
+        """Construct a region builder for the current certification bounds."""
+        return RegionBuilder(
+            bounds=self.bounds,
+            bins_per_dim=self.config.bins_per_dim,
+            center_refinement_factor=self.config.center_refinement_factor,
+            origin_exclusion=self.config.origin_exclusion,
+            device=self.device,
+        )
 
+    def _get_region_builder(self) -> RegionBuilder:
+        """Return the cached region builder used for region refinement."""
+        if self.region_builder is None:
+            self.region_builder = self._build_region_builder()
+        return self.region_builder
+
+    def _build_region_certifier(self) -> ABCrownRegionCertifier:
+        """Construct the shared per-region ABCrown certifier."""
+        return ABCrownRegionCertifier(
+            policy_model=self.policy_model,
+            lyap_model=self.lyap_model,
+            dyn_model=self.dyn_model,
+            config=self.config,
+            device=self.device,
+        )
+
+    def _get_region_certifier(self) -> ABCrownRegionCertifier:
+        """Return the cached ABCrown region certifier."""
+        if self.certifier is None:
+            self.certifier = self._build_region_certifier()
+        return self.certifier
+
+    def _build_safe_output_constraint(self, y, rho: float):
+        """Build the shared safe predicate for the multi-output verifier."""
+        return self._get_region_certifier()._build_safe_output_constraint(y=y, rho=rho)
+
+    def _build_region_bounder(self) -> LiRPALyapunovRegionBounds:
+        """Construct a LiRPA helper for classifying regions against ``V(x) <= rho``."""
+        return LiRPALyapunovRegionBounds(
+            lyap_model=self.lyap_model,
+            state_dim=self.config.state_dim,
+            batch_size=self.config.batch_size,
+            default_bound_method=self.config.cert_method,
+            device=self.device,
+        )
+
+    def _get_region_bounder(self) -> LiRPALyapunovRegionBounds:
+        """Return the cached LiRPA region bounder."""
+        if self.bounder is None:
+            self.bounder = self._build_region_bounder()
+        return self.bounder
+
+    def _partition_regions_by_sublevel(
+        self,
+        bs: th.Tensor,
+        rho: float,
+    ) -> tuple[th.Tensor, th.Tensor]:
+        """Split regions into ``(relevant, irrelevant)`` using LiRPA bounds on ``V``.
+
+        A region is irrelevant only when LiRPA proves ``V(x) > rho + tol`` over
+        the entire box. Boundary-touching boxes remain relevant candidates and
+        must still be discharged by the verifier.
+        """
+        if len(bs) == 0:
+            return bs, bs[:0]
+
+        threshold = float(rho + self.config.sublevel_tolerance)
+        region_bounds = self._get_region_bounder().compute_bounds_for_regions(
+            bs,
+            method=self.config.cert_method,
+        )
+        outside_mask = region_bounds.outside_mask(threshold)
+        relevant_bs = bs[~outside_mask]
+        irrelevant_bs = bs[outside_mask]
+
+        if len(irrelevant_bs) == 0:
+            return bs, bs[:0]
+
+        __logger__.info(
+            "Classified %d / %d regions as irrelevant with V(x) > %.6f everywhere.",
+            len(irrelevant_bs),
+            len(bs),
+            threshold,
+        )
+        return relevant_bs, irrelevant_bs
+
+
+    # =========================================
+    # HELPERS
+    # =========================================
     @staticmethod
     def _resolve_bounds(bounds: Sequence[float], device: th.device) -> th.Tensor:
         """Convert state bounds to a tensor on the target device."""
@@ -240,6 +292,183 @@ class BaseCertifier(ABC):
             raise ValueError("bounds must be a sequence of shape (2, nx) [lb, ub].")
         return bounds
 
+    def _regions_tensor_to_np(self, regions: th.Tensor) -> NDArray:
+        """Convert a region tensor ``(N, 2, state_dim)`` to NumPy."""
+        if regions.numel() == 0:
+            return np.empty((0, 2, self.config.state_dim), dtype=np.float32)
+        return regions.cpu().numpy()
+
+    @staticmethod
+    def _pack_regions(lbs: th.Tensor, ubs: th.Tensor) -> th.Tensor:
+        """Pack lower/upper bounds into ``(N, 2, state_dim)`` format."""
+        return th.stack([lbs, ubs], dim=1)
+
+    @staticmethod
+    def _unpack_regions(bs: th.Tensor) -> tuple[th.Tensor, th.Tensor]:
+        """Unpack ``(N, 2, state_dim)`` regions into lower/upper bounds."""
+        return bs[:, 0], bs[:, 1]
+
+    def _split_failed_regions_on_certification_frontier(
+        self,
+        failed_bs: th.Tensor,
+        resolved_bs: th.Tensor,
+    ) -> tuple[th.Tensor, th.Tensor]:
+        """Split only unresolved boxes adjacent to already resolved boxes.
+
+        Returns ``(retry_regions, terminal_regions)`` where only
+        ``retry_regions`` remain on the certification frontier and should be
+        certified again.
+        """
+        return self._get_region_builder().split_regions_adjacent_to_reference(
+            failed_bs,
+            resolved_bs,
+        )
+
+
+    # ========================================
+    # CERTIFICATION
+    # ========================================
+    def _process_regions(
+            self, 
+            bs: th.Tensor,
+            rho: float,
+            early_exit: bool,
+        ) -> RecursiveCertificationResult:
+        """Process one region batch and return step-level certification data.
+
+        Parameters
+        ----------
+        bs : th.Tensor
+            Packed lower and upper bounds of regions with shape ``(n, 2, state_dim)``.
+        rho : float
+            Lyapunov level-set value to certify.
+        early_exit : bool
+            If ``True``, returns immediately once any failing region is found.
+
+        Returns
+        -------
+        RecursiveCertificationResult
+            Step-level resolved, unresolved and irrelevant regions.
+        """
+        if rho < 0.0:
+            raise ValueError(f"rho must be non-negative, got {rho}.")
+
+        empty_result = RecursiveCertificationResult.empty(
+            state_dim=self.config.state_dim,
+            device=self.device,
+        )
+        if len(bs) == 0:
+            return empty_result
+
+        bs, irrelevant_bs = self._partition_regions_by_sublevel(bs, rho)
+
+        result = empty_result.with_irrelevant(irrelevant_bs)
+        if len(bs) == 0:
+            return result
+
+        is_safe = self._get_region_certifier().certify_regions(
+            regions=bs,
+            rho=rho,
+            early_exit=early_exit,
+            show_progress=False,
+        )
+        return result.with_cert_and_failed(bs, is_safe)
+
+    def _certify_recursive_regions(
+        self,
+        rho: float,
+        *,
+        show_progress: bool,
+    ) -> RecursiveCertificationResult:
+        """Run recursive certification for a fixed ``rho`` over all regions."""
+        if self.regions is None:
+            raise RuntimeError("Certification regions are not initialized.")
+
+        recursive_result = RecursiveCertificationResult.empty(
+            state_dim=self.config.state_dim,
+            device=self.device,
+        )
+        empty_result = RecursiveCertificationResult.empty(
+            state_dim=self.config.state_dim,
+            device=self.device,
+        )
+
+        pending_bs = self.regions
+        max_depth = self.config.max_recursion_depth
+
+        if show_progress:
+            progress = Progress(
+                TextColumn("[bold]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TextColumn("failed: {task.fields[failed]:.0f}"),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+            )
+            progress.__enter__()
+            task = progress.add_task(
+                "Certify and split",
+                total=float(max_depth + 1),
+                failed=float(len(pending_bs)),
+            )
+        else:
+            progress = None
+            task = None
+
+        try:
+            for depth in range(max_depth + 1):
+                if progress is not None and task is not None:
+                    progress.update(task, failed=float(len(pending_bs)))
+
+                if len(pending_bs) == 0:
+                    if progress is not None and task is not None:
+                        progress.update(task, completed=max_depth + 1)
+                    break
+
+                step_result = self._process_regions(
+                    pending_bs,
+                    rho,
+                    early_exit=False,
+                )
+
+                if depth >= max_depth:
+                    recursive_result = recursive_result + step_result
+                    if progress is not None and task is not None:
+                        progress.update(task, completed=max_depth + 1)
+                    break
+
+                recursive_result = recursive_result + step_result.with_failed(step_result.unresolved[:0])
+
+                if len(step_result.unresolved) == 0:
+                    if progress is not None and task is not None:
+                        progress.update(task, completed=max_depth + 1)
+                    break
+
+                pending_bs, terminal_failed_bs = self._split_failed_regions_on_certification_frontier(
+                    step_result.unresolved,
+                    recursive_result.resolved,
+                )
+                if len(terminal_failed_bs) > 0:
+                    recursive_result = recursive_result + empty_result.with_failed(terminal_failed_bs)
+
+                if len(pending_bs) == 0:
+                    if progress is not None and task is not None:
+                        progress.update(task, completed=max_depth + 1)
+                    break
+
+                if progress is not None and task is not None:
+                    progress.update(task, advance=1)
+                    progress.refresh()
+        finally:
+            if progress is not None:
+                progress.__exit__(None, None, None)
+
+        return recursive_result
+
+
+    # =========================================
+    # RHO SEARCH AND BISECTION
+    # ========================================
     @staticmethod
     def _iterative_rho_search(
         total: int,
@@ -295,263 +524,6 @@ class BaseCertifier(ABC):
                     )
                     progress.refresh()
         return rho_lo, rho_up
-    
-    def _build_negated_lyapunov_filter(self) -> BoundedModule:
-        """Construct a bounded model for upper bounds on ``-V(x)``."""
-        if not isinstance(self.lyap_model, nn.Module):
-            raise ValueError("Lyapunov model must be provided to construct IBP filter.")
-
-        negated_lyap_model = _NegatedLyapunovModelWrapper(self.lyap_model).to(self.device)
-        negated_lyap_model.eval()
-
-        dummy_x = th.zeros(1, self.config.state_dim, device=self.device)
-        return BoundedModule(
-            negated_lyap_model,
-            (dummy_x,),
-            device=self.device,
-            verbose=False,
-            bound_opts={"perturb_bound": True},
-        )
-
-    def _get_suppress_ctx(self):
-        """Return context manager controlling native backend output."""
-        if self.config.suppress_native_output:
-            lirpa_ctx = suppress_native_output(suppress_stderr=True)
-        else:
-            lirpa_ctx = nullcontext()
-        return lirpa_ctx
-
-    def _filter_sublevel_regions(
-        self,
-        bs: th.Tensor,
-        rho: float,
-    ) -> tuple[th.Tensor, th.Tensor]:
-        """Keep only boxes not proven to satisfy ``V(x) > rho`` everywhere.
-
-        The filter is intentionally stricter than the certification gate: a box
-        is pruned only when IBP proves ``V(x) > rho`` for the entire box.
-        Boundary-touching boxes stay in the verification set.
-        """
-        if len(bs) == 0 or self.negative_filter is None:
-            return bs, bs[:0]
-
-        lbs = bs[:, 0]
-        ubs = bs[:, 1]
-        keep_mask = th.ones(len(lbs), dtype=th.bool, device=self.device)
-        negated_threshold = -float(rho)
-
-        for start_idx in range(0, len(lbs), self.config.batch_size):
-            end_idx = min(start_idx + self.config.batch_size, len(lbs))
-            batch_lbs = lbs[start_idx:end_idx]
-            batch_ubs = ubs[start_idx:end_idx]
-            batch_centers = 0.5 * (batch_lbs + batch_ubs)
-
-            ptb = PerturbationLpNorm(norm=float("inf"), x_L=batch_lbs, x_U=batch_ubs)
-            bounded_input = BoundedTensor(batch_centers, ptb)
-
-            with th.no_grad():
-                _, ub_out = self.negative_filter.compute_bounds(
-                    x=(bounded_input,),
-                    method="ibp",
-                )
-
-            batch_is_outside = ub_out.flatten() < negated_threshold
-            keep_mask[start_idx:end_idx] = ~batch_is_outside
-
-        kept_bs = bs[keep_mask]
-        filtered_bs = bs[~keep_mask]
-
-        if len(filtered_bs) == 0:
-            return bs, bs[:0]
-
-        __logger__.info(
-            "Pruned %d / %d regions proven to satisfy V(x) > %.6f everywhere.",
-            len(filtered_bs),
-            len(bs),
-            float(rho),
-        )
-        return kept_bs, filtered_bs
-
-    def _regions_tensor_to_np(self, regions: th.Tensor) -> NDArray:
-        """Convert a region tensor ``(N, 2, state_dim)`` to NumPy."""
-        if regions.numel() == 0:
-            return np.empty((0, 2, self.config.state_dim), dtype=np.float32)
-        return regions.cpu().numpy()
-
-    def _split_failed_regions(self, failed_bs: th.Tensor) -> th.Tensor:
-        """Split each failed box along its widest dimension into two packed sub-boxes."""
-        mids = 0.5 * (failed_bs[:, 0] + failed_bs[:, 1])
-        widths = failed_bs[:, 1] - failed_bs[:, 0]
-        split_dims = th.argmax(widths, dim=1)
-        row_idx = th.arange(failed_bs.shape[0], device=self.device)
-
-        low_bs = failed_bs.clone()
-        high_bs = failed_bs.clone()
-
-        low_bs[row_idx, 1, split_dims] = mids[row_idx, split_dims]
-        high_bs[row_idx, 0, split_dims] = mids[row_idx, split_dims]
-
-        return th.cat([low_bs, high_bs], dim=0)
-
-    @staticmethod
-    def _pack_regions(lbs: th.Tensor, ubs: th.Tensor) -> th.Tensor:
-        """Pack lower/upper bounds into ``(N, 2, state_dim)`` format."""
-        return th.stack([lbs, ubs], dim=1)
-
-    @staticmethod
-    def _unpack_regions(bs: th.Tensor) -> tuple[th.Tensor, th.Tensor]:
-        """Unpack ``(N, 2, state_dim)`` regions into lower/upper bounds."""
-        return bs[:, 0], bs[:, 1]
-
-    def _resolve_origin_exclusion(self) -> th.Tensor:
-        """Resolve origin exclusion widths per state dimension."""
-        default_exclusion = th.minimum(
-            self.bounds.abs().max(dim=0).values * 0.01,
-            th.full((self.config.state_dim,), 0.1, dtype=th.float32, device=self.device),
-        )
-
-        raw_exclusion = self.config.origin_exclusion
-        if raw_exclusion is None:
-            exclusion = default_exclusion
-        elif isinstance(raw_exclusion, (int, float)):
-            scalar = float(raw_exclusion)
-            if scalar < 0:
-                raise ValueError("cert_origin_exclusion must be non-negative.")
-            exclusion = th.full(
-                (self.config.state_dim,),
-                scalar,
-                dtype=th.float32,
-                device=self.device,
-            )
-        else:
-            exclusion = th.as_tensor(raw_exclusion, dtype=th.float32, device=self.device).reshape(-1)
-            if exclusion.numel() != self.config.state_dim:
-                raise ValueError("cert_origin_exclusion must be scalar or match state_dim.")
-            if (exclusion < 0).any():
-                raise ValueError("cert_origin_exclusion must be non-negative.")
-
-        max_centered = th.clamp(th.minimum(-self.bounds[0], self.bounds[1]), min=0.0)
-        return th.minimum(exclusion, max_centered)
-
-    def _process_regions(
-            self, 
-            bs: th.Tensor,
-            rho: float,
-            early_exit: bool,
-        ) -> RecursiveCertificationResult:
-        """Process one region batch and return step-level certification data.
-
-        Parameters
-        ----------
-        bs : th.Tensor
-            Packed lower and upper bounds of regions with shape ``(n, 2, state_dim)``.
-        rho : float
-            Lyapunov level-set value to certify.
-        early_exit : bool
-            If ``True``, returns immediately once any failing region is found.
-
-        Returns
-        -------
-        RecursiveCertificationResult
-            Step-level certified, failed and filtered outside-sublevel regions.
-        """
-        if rho < 0.0:
-            raise ValueError(f"rho must be non-negative, got {rho}.")
-
-        empty_result = RecursiveCertificationResult.empty(
-            state_dim=self.config.state_dim,
-            device=self.device,
-        )
-        if len(bs) == 0:
-            return empty_result
-
-        filtered_bs = bs[:0]
-
-        if self.config.use_ibp_filter and self.negative_filter is not None:
-            bs, filtered_bs = self._filter_sublevel_regions(bs, rho)
-
-        result = empty_result.with_outside_sublevel(filtered_bs)
-        if len(bs) == 0:
-            return result
-
-        is_safe = self._certify_batched_regions(bs, rho, early_exit)
-        return result.with_cert_and_failed(bs, is_safe)
-
-    def _certify_recursive_regions(
-        self,
-        rho: float,
-        *,
-        show_progress: bool,
-    ) -> RecursiveCertificationResult:
-        """Run recursive certification for a fixed ``rho`` over all regions."""
-        if self.regions is None:
-            raise RuntimeError("Certification regions are not initialized.")
-
-        recursive_result = RecursiveCertificationResult.empty(
-            state_dim=self.config.state_dim,
-            device=self.device,
-        )
-
-        pending_bs = self.regions
-        max_depth = self.config.max_recursion_depth
-
-        if show_progress:
-            progress = Progress(
-                TextColumn("[bold]{task.description}"),
-                BarColumn(),
-                MofNCompleteColumn(),
-                TextColumn("failed: {task.fields[failed]:.0f}"),
-                TimeElapsedColumn(),
-                TimeRemainingColumn(),
-            )
-            progress.__enter__()
-            task = progress.add_task(
-                "Certify and split",
-                total=float(max_depth + 1),
-                failed=float(len(pending_bs)),
-            )
-        else:
-            progress = None
-            task = None
-
-        try:
-            for depth in range(max_depth + 1):
-                if progress is not None and task is not None:
-                    progress.update(task, failed=float(len(pending_bs)))
-
-                if len(pending_bs) == 0:
-                    if progress is not None and task is not None:
-                        progress.update(task, completed=max_depth + 1)
-                    break
-
-                step_result = self._process_regions(
-                    pending_bs,
-                    rho,
-                    early_exit=False,
-                )
-
-                if depth >= max_depth:
-                    recursive_result = recursive_result + step_result
-                    if progress is not None and task is not None:
-                        progress.update(task, completed=max_depth + 1)
-                    break
-
-                recursive_result = recursive_result + step_result.with_failed(step_result.failed[:0])
-
-                if len(step_result.failed) == 0:
-                    if progress is not None and task is not None:
-                        progress.update(task, completed=max_depth + 1)
-                    break
-
-                pending_bs = self._split_failed_regions(step_result.failed)
-                if progress is not None and task is not None:
-                    progress.update(task, advance=1)
-                    progress.refresh()
-        finally:
-            if progress is not None:
-                progress.__exit__(None, None, None)
-
-        return recursive_result
 
     def _scale_rho_up(self, rho_lo: float, rho_up: float) -> tuple[bool, float, float]:
         """Scales up ``rho_lo`` until the new trial is not certified.
@@ -580,14 +552,14 @@ class BaseCertifier(ABC):
 
         Parameters
         ----------
-        rho_lo : float
+        rho_lo : float | None
             Lower bound of rho, updated if trial is certified or the trial is lower than ``rho_lo``.
         rho_up : float
             Upper bound of rho, updated if trial is not certified.
 
         Returns
         -------
-        tuple[bool, float, float]
+        tuple[bool, float | None, float]
             A tuple of (stop, rho_lo, rho_up) where stop is a boolean indicating if the search should stop,
             and rho_lo and rho_up are the updated bounds.
         """
@@ -626,6 +598,14 @@ class BaseCertifier(ABC):
             return True, rho_lo, rho_up
         return False, rho_lo, rho_up
 
+    def is_rho_certified(self, rho: float) -> bool:
+        """Check whether all regions satisfy Lyapunov conditions at ``rho``."""
+        result = self._certify_recursive_regions(
+            rho=rho,
+            show_progress=False,
+        )
+        return result.global_success
+
     def find_max_rho(self, rho_estimate: float) -> float:
         """Search for the largest certifiable rho and return it."""
         if rho_estimate <= 0:
@@ -633,13 +613,7 @@ class BaseCertifier(ABC):
 
         __logger__.info("Starting Lyapunov certification.")
 
-        self.regions = self._build_regions()
-        __logger__.info(
-            "Built %d certification regions (state_dim=%d).",
-            len(self.regions),
-            self.config.state_dim,
-        )
-        self.setup_backend()
+        self.regions = self._get_region_builder().build_regions()
 
         if self.config.rho_min > rho_estimate:
             __logger__.warning(
@@ -704,6 +678,9 @@ class BaseCertifier(ABC):
         return rho_lo
 
 
+    # =========================================
+    # COLLECT CERTIFICATION DETAILS
+    # =========================================
     def _collect_certification_details(self, rho: float) -> RegionCertificationResult:
         """Collect region-wise certification details for a fixed ``rho``.
 
@@ -719,9 +696,9 @@ class BaseCertifier(ABC):
         """
         recursive_result = self._certify_recursive_regions(rho, show_progress=True)
 
-        certified_regions_np = self._regions_tensor_to_np(recursive_result.certified)
-        failed_regions_np = self._regions_tensor_to_np(recursive_result.failed)
-        outside_sublevel_regions_np = self._regions_tensor_to_np(recursive_result.outside_sublevel)
+        certified_regions_np = self._regions_tensor_to_np(recursive_result.resolved)
+        failed_regions_np = self._regions_tensor_to_np(recursive_result.unresolved)
+        outside_sublevel_regions_np = self._regions_tensor_to_np(recursive_result.irrelevant)
 
         if recursive_result.vacuous:
             __logger__.warning(

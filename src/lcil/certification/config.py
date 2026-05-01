@@ -55,11 +55,6 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     suppress_native_output : bool
         Whether to suppress native solver output (e.g., from AutoLiRPA or ABCrown) 
         during certification.
-    use_ibp_filter : bool
-        Whether to use an IBP filter to pre-filter candidate regions before 
-        running the main certification method. This can speed up certification by 
-        quickly discarding regions that are clearly not certified, at the cost of 
-        additional false negatives. Using conservative IBP filtering.
     batch_size : int
         Batch size to use during certification. Larger batch sizes can improve 
         GPU utilization and speed up certification, but require more memory.
@@ -80,7 +75,6 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     bisection_tol: float = config_field(default=1e-3, help="Tolerance used in rho bisection.")
     max_scale_steps: int = config_field(default=20, help="Maximum rho scaling attempts during certification.")
     max_bisection_steps: int = config_field(default=40, help="Maximum bisection iterations during certification.")
-    use_ibp_filter: bool = config_field(default=True, help="Whether to pre-filter candidate regions with IBP before certification.")
     cert_method: str = config_field(default="alpha-crown", help="AutoLiRPA certification backend method.")
     sublevel_tolerance: float = config_field(default=1e-6, help="Slack used in the rho-sublevel gate of the verification graph.")
     condition_tolerance: float = config_field(default=1e-6, help="Numerical tolerance on the fused verifier output.")
@@ -164,7 +158,6 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         sublevel_tolerance: float | None = None,
         condition_margin: float = 0.0,
         suppress_native_output: bool = True,
-        use_ibp_filter: bool = True,
         batch_size: int = 512,
         max_recursion_depth: int = 10,
     ) -> "LyapunovCertificationConfig":
@@ -185,7 +178,6 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
             "max_scale_steps": max_scale_steps,
             "max_bisection_steps": max_bisection_steps,
             "cert_method": cert_method,
-            "use_ibp_filter": use_ibp_filter,
             "sublevel_tolerance": (
                 config.condition_tolerance
                 if sublevel_tolerance is None

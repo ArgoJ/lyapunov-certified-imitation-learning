@@ -18,7 +18,7 @@ from mpc_datagen.plots import (
 )
 
 if TYPE_CHECKING:
-    from ..certification.certifier_base import RegionCertificationResult
+    from ..certification.bisect_certifier import RegionCertificationResult
 
 __logger__ = logging.getLogger(__name__)
 

@@ -6,8 +6,8 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from ...lyapunov_learning.config import LyapunovTrainingConfig
-from ...utils.base_config import ArgumentParserConfig, JsonDataclass, config_field
+from ..lyapunov_learning.config import LyapunovTrainingConfig
+from ..utils.base_config import ArgumentParserConfig, JsonDataclass, config_field
 
 
 @dataclass(frozen=True)

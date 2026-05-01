@@ -59,9 +59,9 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
         try:
             # Unit tests may import this module with stubbed abcrown symbols first.
             # Ensure we bind to the real abcrown package for integration testing.
-            sys.modules.pop("lcil.certification.abcrown_wrapper", None)
-            abcrown_wrapper = importlib.import_module("lcil.certification.abcrown_wrapper")
-            cls.ABCrownCertifier = abcrown_wrapper.ABCrownCertifier
+            sys.modules.pop("lcil.certification.bisect_certifier", None)
+            bisect_certifier = importlib.import_module("lcil.certification.bisect_certifier")
+            cls.BisectCertifier = bisect_certifier.BisectCertifier
             cls.LyapunovCertificationConfig = importlib.import_module(
                 "lcil.certification.config"
             ).LyapunovCertificationConfig
@@ -97,7 +97,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
             max_recursion_depth=3,
             batch_size=4096,
         )
-        return cls.ABCrownCertifier(
+        return cls.BisectCertifier(
             policy_model=RiccatiPolicy(k_gain),
             lyap_model=lyap_model,
             dyn_model=NonlinearInvertedPendulumOnCartDynamics(sys_cfg),

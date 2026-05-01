@@ -6,14 +6,14 @@ import torch as th
 import torch.nn as nn
 
 from lcil.certification.adaptive import (
-    AdaptiveABCrownRegionCertifier,
+    ABCrownRegionCertifier,
     AdaptiveCertificationConfig,
     AdaptiveCertifier,
     AdaptiveCertificationResult,
     LiRPALyapunovRegionBounds,
     LyapunovRegionBounds,
-    RegionBuilder,
 )
+from lcil.certification import RegionBuilder
 
 
 class _LinearLyapunov(nn.Module):
@@ -209,6 +209,46 @@ class TestRegionBuilder(unittest.TestCase):
             dtype=th.float32,
         )
         self.assertTrue(th.allclose(refined.cpu(), expected))
+
+    def test_split_regions_adjacent_to_reference_retries_only_frontier_children(self) -> None:
+        splitter = RegionBuilder(
+            bounds=th.tensor([[-5.0], [5.0]], dtype=th.float32),
+            bins_per_dim=1,
+        )
+        failed_regions = th.tensor(
+            [
+                [[1.0], [3.0]],
+                [[3.0], [5.0]],
+            ],
+            dtype=th.float32,
+        )
+        certified_regions = th.tensor(
+            [
+                [[0.0], [1.0]],
+            ],
+            dtype=th.float32,
+        )
+
+        frontier_regions, terminal_regions = splitter.split_regions_adjacent_to_reference(
+            failed_regions,
+            certified_regions,
+        )
+
+        expected_frontier = th.tensor(
+            [
+                [[1.0], [2.0]],
+            ],
+            dtype=th.float32,
+        )
+        expected_terminal = th.tensor(
+            [
+                [[3.0], [5.0]],
+                [[2.0], [3.0]],
+            ],
+            dtype=th.float32,
+        )
+        self.assertTrue(th.allclose(frontier_regions.cpu(), expected_frontier))
+        self.assertTrue(th.allclose(terminal_regions.cpu(), expected_terminal))
 
 
 class TestLiRPALyapunovRegionBounds(unittest.TestCase):
@@ -584,7 +624,7 @@ class TestAdaptiveABCrownRegionCertifier(unittest.TestCase):
             ],
             dtype=th.float32,
         )
-        certifier = AdaptiveABCrownRegionCertifier(
+        certifier = ABCrownRegionCertifier(
             policy_model=_ZeroPolicy(),
             lyap_model=_IdentityLyapunov(),
             dyn_model=_IdentityDynamics(),

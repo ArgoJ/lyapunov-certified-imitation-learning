@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from pkg_logger import suppress_native_output
 from dataclasses import dataclass
 
 import torch as th
@@ -15,10 +16,18 @@ class LyapunovRegionBounds:
     lower: th.Tensor
     upper: th.Tensor
 
+    def inside_mask(self, threshold: float) -> th.Tensor:
+        """Return boolean mask of regions with certifiably ``V(x) <= threshold``."""
+        return self.upper <= threshold
+
+    def outside_mask(self, threshold: float) -> th.Tensor:
+        """Return boolean mask of regions with certifiably ``V(x) > threshold``."""
+        return self.lower > threshold
+
     def sublevel_masks(self, threshold: float) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
         """Return ``(inside, boundary, outside)`` masks for ``V(x) <= threshold``."""
-        inside = self.upper <= threshold
-        outside = self.lower > threshold
+        inside = self.inside_mask(threshold)
+        outside = self.outside_mask(threshold)
         boundary = ~(inside | outside)
         return inside, boundary, outside
 
@@ -33,6 +42,7 @@ class LiRPALyapunovRegionBounds:
         *,
         batch_size: int = 512,
         default_bound_method: str = "crown",
+        suppress_native_output: bool = True,
         device: th.device = th.device("cpu"),
     ) -> None:
         if batch_size <= 0:
@@ -42,8 +52,15 @@ class LiRPALyapunovRegionBounds:
         self.state_dim = int(state_dim)
         self.batch_size = int(batch_size)
         self.default_bound_method = default_bound_method.strip().lower()
+        self.suppress_native_output = bool(suppress_native_output)
         self.lyap_model = lyap_model.to(self.device).eval()
         self.bounded_model = self._build_bounded_model()
+
+    def _get_suppress_ctx(self):
+        """Return context manager controlling native backend output."""
+        if self.suppress_native_output:
+            return suppress_native_output(suppress_stderr=True)
+        return nullcontext()
 
     def _build_bounded_model(self) -> BoundedModule:
         dummy_x = th.zeros(1, self.state_dim, device=self.device)
@@ -92,13 +109,14 @@ class LiRPALyapunovRegionBounds:
 
             ptb = PerturbationLpNorm(norm=float("inf"), x_L=batch_lbs, x_U=batch_ubs)
             bounded_input = BoundedTensor(batch_centers, ptb)
-
-            bounds_ctx = nullcontext() if bound_method == "alpha-crown" else th.no_grad()
-            with bounds_ctx:
-                lb_out, ub_out = self.bounded_model.compute_bounds(
-                    x=(bounded_input,),
-                    method=bound_method,
-                )
+            
+            with self._get_suppress_ctx():
+                bounds_ctx = nullcontext() if bound_method == "alpha-crown" else th.no_grad()
+                with bounds_ctx:
+                    lb_out, ub_out = self.bounded_model.compute_bounds(
+                        x=(bounded_input,),
+                        method=bound_method,
+                    )
 
             lower_bounds.append(lb_out.reshape(-1)[: end_idx - start_idx])
             upper_bounds.append(ub_out.reshape(-1)[: end_idx - start_idx])

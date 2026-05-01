@@ -8,8 +8,8 @@ from dataclasses import dataclass
 import torch as th
 import torch.nn as nn
 
-from .abcrown_region_certifier import AdaptiveABCrownRegionCertifier
-from .config import AdaptiveCertificationConfig
+from .abcrown_region_certifier import ABCrownRegionCertifier
+from .adaptive_config import AdaptiveCertificationConfig
 from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds, LyapunovRegionBounds
 from .region_builder import RegionBuilder
 
@@ -111,7 +111,7 @@ class AdaptiveCertifier:
         self.last_result: AdaptiveCertificationResult | None = None
 
         self._region_bounder: LiRPALyapunovRegionBounds | None = None
-        self._abcrown_certifier: AdaptiveABCrownRegionCertifier | None = None
+        self._abcrown_certifier: ABCrownRegionCertifier | None = None
 
     def _empty_regions(self) -> th.Tensor:
         return th.empty((0, 2, self.config.state_dim), dtype=th.float32, device=self.device)
@@ -271,8 +271,8 @@ class AdaptiveCertifier:
             )
         return self._region_bounder
 
-    def _build_abcrown_certifier(self) -> AdaptiveABCrownRegionCertifier:
-        return AdaptiveABCrownRegionCertifier(
+    def _build_abcrown_certifier(self) -> ABCrownRegionCertifier:
+        return ABCrownRegionCertifier(
             policy_model=self.policy_model,
             lyap_model=self.lyap_model,
             dyn_model=self.dyn_model,
@@ -319,7 +319,7 @@ class AdaptiveCertifier:
         if self.region_bounds is None:
             self.cache_region_bounds()
 
-    def _ensure_abcrown_backend(self) -> AdaptiveABCrownRegionCertifier:
+    def _ensure_abcrown_backend(self) -> ABCrownRegionCertifier:
         if self._abcrown_certifier is None:
             self._abcrown_certifier = self._build_abcrown_certifier()
             self._abcrown_certifier.setup_backend()

@@ -80,10 +80,10 @@ def _load_real_abcrown_modules() -> tuple[type, type]:
 
     try:
         # Unit tests may import this module with stubbed abcrown symbols first.
-        # Ensure we bind to the real abcrown package before loading the wrapper.
-        sys.modules.pop("lcil.certification.abcrown_wrapper", None)
-        abcrown_wrapper = importlib.import_module("lcil.certification.abcrown_wrapper")
-        abcrown_certifier = abcrown_wrapper.ABCrownCertifier
+        # Ensure we bind to the real abcrown package before loading the certifier.
+        sys.modules.pop("lcil.certification.bisect_certifier", None)
+        bisect_certifier = importlib.import_module("lcil.certification.bisect_certifier")
+        abcrown_certifier = bisect_certifier.BisectCertifier
         certification_config = importlib.import_module(
             "lcil.certification.config"
         ).LyapunovCertificationConfig
@@ -96,79 +96,7 @@ def _load_real_abcrown_modules() -> tuple[type, type]:
 class _ABCrownModuleLoaderMixin:
     @classmethod
     def _load_abcrown_modules(cls) -> None:
-        cls.ABCrownCertifier, cls.LyapunovCertificationConfig = _load_real_abcrown_modules()
-
-
-class TestABCrownVacuousRho(_ABCrownModuleLoaderMixin, unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls._load_abcrown_modules()
-
-    @classmethod
-    def _make_certifier(cls):
-        config = cls.LyapunovCertificationConfig(
-            state_dim=1,
-            cert_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
-            kappa=0.0,
-            rho_min=1e-6,
-            bins_per_dim=1,
-            origin_exclusion=0.5,
-            cert_method="alpha-crown",
-            use_ibp_filter=True,
-            condition_tolerance=1e-6,
-            sublevel_tolerance=1e-6,
-            batch_size=8,
-            max_recursion_depth=0,
-        )
-        return cls.ABCrownCertifier(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_QuadraticLyapunov(),
-            dyn_model=_IdentityDynamics(),
-            config=config,
-            device=th.device("cpu"),
-        )
-
-    def test_is_rho_certified_rejects_fully_filtered_root_regions(self) -> None:
-        certifier = self._make_certifier()
-        certifier.regions = certifier._build_regions()
-        fully_filtered = certifier.regions.clone()
-
-        with mock.patch.object(
-            certifier,
-            "_filter_sublevel_regions",
-            return_value=(certifier.regions[:0], fully_filtered),
-        ) as filter_mock, mock.patch.object(
-            certifier,
-            "_solve_root_regions_batched",
-            return_value=True,
-        ) as solve_mock:
-            is_certified = certifier.is_rho_certified(rho=0.01)
-
-        self.assertFalse(is_certified)
-        filter_mock.assert_called_once_with(certifier.regions, 0.01)
-        solve_mock.assert_not_called()
-
-    def test_is_rho_certified_solves_remaining_filtered_root_regions(self) -> None:
-        certifier = self._make_certifier()
-        certifier.regions = certifier._build_regions()
-        kept = certifier.regions[:1]
-        filtered = certifier.regions[1:]
-
-        with mock.patch.object(
-            certifier,
-            "_filter_sublevel_regions",
-            return_value=(kept, filtered),
-        ) as filter_mock, mock.patch.object(
-            certifier,
-            "_solve_root_regions_batched",
-            return_value=True,
-        ) as solve_mock:
-            is_certified = certifier.is_rho_certified(rho=0.25)
-
-        self.assertTrue(is_certified)
-        filter_mock.assert_called_once_with(certifier.regions, 0.25)
-        solve_mock.assert_called_once_with(kept, 0.25)
-
+        cls.BisectCertifier, cls.LyapunovCertificationConfig = _load_real_abcrown_modules()
 
 class TestABCrownCertifierIntegration(_ABCrownModuleLoaderMixin, PlotAssertionsMixin, unittest.TestCase):
     @classmethod
@@ -203,7 +131,7 @@ class TestABCrownCertifierIntegration(_ABCrownModuleLoaderMixin, PlotAssertionsM
             batch_size=512,
             max_recursion_depth=5,
         )
-        return cls.ABCrownCertifier(
+        return cls.BisectCertifier(
             policy_model=_ZeroPolicy(),
             lyap_model=lyap_model,
             dyn_model=_ZeroDynamics(),

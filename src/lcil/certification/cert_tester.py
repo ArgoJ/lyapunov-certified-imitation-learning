@@ -6,7 +6,7 @@ import torch as th
 import torch.nn as nn
 from numpy.typing import NDArray
 
-from .certifier_base import RegionCertificationResult
+from .bisect_certifier import RegionCertificationResult
 from .config import LyapunovCertificationConfig
 from .models import LyapunovVerifier
 from ..utils.base_config import JsonDataclass

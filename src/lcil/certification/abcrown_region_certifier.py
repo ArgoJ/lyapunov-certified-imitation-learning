@@ -17,8 +17,9 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from pkg_logger import suppress_native_output
 
-from ..models import LyapunovMultiOutputVerifier
-from .config import AdaptiveCertificationConfig
+from .models import LyapunovMultiOutputVerifier
+from .config import LyapunovCertificationConfig
+from .adaptive_config import AdaptiveCertificationConfig
 
 __logger__ = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class _ABCrownAPI:
     output_vars_fn: Any
 
 
-class _AdaptiveABCrownModelWrapper(nn.Module):
+class _ABCrownModelWrapper(nn.Module):
     """Freeze rho so ABCrown sees a clean map ``x -> y``."""
 
     def __init__(self, verifier: nn.Module, device: th.device):
@@ -44,15 +45,18 @@ class _AdaptiveABCrownModelWrapper(nn.Module):
         return self.verifier(x, self.rho)
 
 
-class AdaptiveABCrownRegionCertifier:
-    """Minimal ABCrown wrapper that certifies adaptive regions one by one."""
+ABCrownRegionConfig = AdaptiveCertificationConfig | LyapunovCertificationConfig
+
+
+class ABCrownRegionCertifier:
+    """Shared ABCrown backend for certifying packed regions one by one."""
 
     def __init__(
         self,
         policy_model: nn.Module,
         lyap_model: nn.Module,
         dyn_model: nn.Module,
-        config: AdaptiveCertificationConfig,
+        config: ABCrownRegionConfig,
         device: th.device = th.device("cpu"),
     ) -> None:
         self.config = config
@@ -65,7 +69,8 @@ class AdaptiveABCrownRegionCertifier:
 
         self._abcrown_api: _ABCrownAPI | None = None
         self.abcrown_config: Any = None
-        self.wrapped_model: _AdaptiveABCrownModelWrapper | None = None
+        self.wrapped_model: _ABCrownModelWrapper | None = None
+        self.setup_backend()
 
     def _get_abcrown_api(self) -> _ABCrownAPI:
         if self._abcrown_api is None:
@@ -122,17 +127,21 @@ class AdaptiveABCrownRegionCertifier:
             .set(solver__bound_prop_method="crown")
             .set(bab__branching__method="sb")
             .set(bab__branching__input_split__enable=True)
+            .set(bab__branching__input_split__ibp_enhancement=True)
+            .set(bab__branching__input_split__compare_with_old_bounds=True)
+            .set(bab__branching__input_split__adv_check=-1)
+            .set(bab__branching__input_split__split_partitions=2)
             .set(attack__pgd_order="before")
             .set(bab__decision_thresh=-float(self.config.condition_tolerance))
             ()
         )
 
         verifier = self._setup_verifier()
-        self.wrapped_model = _AdaptiveABCrownModelWrapper(verifier, self.device)
+        self.wrapped_model = _ABCrownModelWrapper(verifier, self.device)
         self.wrapped_model.eval()
 
         __logger__.info(
-            "Configured adaptive ABCrown backend with solver_batch_size=%d on device=%s.",
+            "Configured ABCrown region backend with solver_batch_size=%d on device=%s.",
             int(self.config.batch_size),
             self.device.type,
         )
@@ -159,7 +168,6 @@ class AdaptiveABCrownRegionCertifier:
                 f"region must have shape (2, {self.config.state_dim}); got {tuple(region.shape)}."
             )
 
-        self.setup_backend()
         if self.wrapped_model is None or self.abcrown_config is None:
             raise RuntimeError("Adaptive ABCrown backend is not initialized.")
 
@@ -189,7 +197,7 @@ class AdaptiveABCrownRegionCertifier:
             )
             result = solver.solve()
 
-        __logger__.info(result)
+        __logger__.debug("ABCrown solver status: %s", result.status)
         return self._is_verified_status(result.status)
 
     def certify_regions(
@@ -198,6 +206,7 @@ class AdaptiveABCrownRegionCertifier:
         rho: float,
         *,
         early_exit: bool = False,
+        show_progress: bool = False,
     ) -> th.Tensor:
         if regions.ndim != 3 or regions.shape[1] != 2 or regions.shape[2] != self.config.state_dim:
             raise ValueError(
@@ -209,20 +218,30 @@ class AdaptiveABCrownRegionCertifier:
 
         is_certified = th.zeros((len(regions),), dtype=th.bool, device=self.device)
 
-        with Progress(
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-        ) as progress:
+        progress = None
+        task = None
+        if show_progress:
+            progress = Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+            )
+            progress.__enter__()
             task = progress.add_task(
                 f"Certifying {len(regions)} regions with ABCrown (rho={rho:.6g})...",
                 total=len(regions),
             )
+
+        try:
             for idx, region in enumerate(regions):
                 is_certified[idx] = self.certify_region(region, rho)
-                progress.update(task, advance=1)
+                if progress is not None and task is not None:
+                    progress.update(task, advance=1)
                 if early_exit and not bool(is_certified[idx].item()):
                     break
+        finally:
+            if progress is not None:
+                progress.__exit__(None, None, None)
 
         return is_certified

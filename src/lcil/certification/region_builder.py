@@ -242,12 +242,129 @@ class RegionBuilder:
         high_regions[row_idx, 0, split_dims] = mids[row_idx, split_dims]
 
         refined = th.cat([low_regions, high_regions], dim=0)
-        __logger__.info(
-            "Adaptively split %d regions into %d subregions.",
+        __logger__.debug(
+            "Split %d regions into %d subregions.",
             len(regions),
             len(refined),
         )
         return refined
+
+    def _face_adjacency_mask(
+        self,
+        regions: th.Tensor,
+        reference_regions: th.Tensor,
+        *,
+        tolerance: float = 1e-6,
+    ) -> th.Tensor:
+        """Return a mask for regions sharing a boundary face with any reference region."""
+        regions = self._validate_regions(regions)
+        reference_regions = self._validate_regions(reference_regions)
+
+        if len(regions) == 0:
+            return th.zeros((0,), dtype=th.bool, device=self.device)
+        if len(reference_regions) == 0:
+            return th.zeros((len(regions),), dtype=th.bool, device=self.device)
+
+        tol = float(tolerance)
+        region_lb = regions[:, None, 0, :]
+        region_ub = regions[:, None, 1, :]
+        reference_lb = reference_regions[None, :, 0, :]
+        reference_ub = reference_regions[None, :, 1, :]
+
+        touches = th.isclose(region_ub, reference_lb, atol=tol, rtol=0.0) | th.isclose(
+            reference_ub,
+            region_lb,
+            atol=tol,
+            rtol=0.0,
+        )
+        overlaps = (region_lb < (reference_ub - tol)) & (reference_lb < (region_ub - tol))
+
+        adjacent_pairs = (touches.sum(dim=2) == 1) & (touches | overlaps).all(dim=2)
+        return adjacent_pairs.any(dim=1)
+
+    def split_regions_adjacent_to_reference(
+        self,
+        regions: th.Tensor,
+        reference_regions: th.Tensor,
+        *,
+        split_dims: th.Tensor | None = None,
+        adjacency_tolerance: float = 1e-6,
+    ) -> tuple[th.Tensor, th.Tensor]:
+        """Split only frontier regions adjacent to references.
+
+        Parameters
+        ----------
+        regions : th.Tensor
+            Candidate packed regions with shape ``(N, 2, state_dim)``.
+        reference_regions : th.Tensor
+            Packed reference regions whose boundary defines the frontier.
+        split_dims : th.Tensor | None, optional
+            Optional explicit split dimension per input region.
+        adjacency_tolerance : float, optional
+            Absolute tolerance used when deciding whether two regions share a
+            boundary face.
+
+        Returns
+        -------
+        tuple[th.Tensor, th.Tensor]
+            ``(frontier_children, terminal_regions)`` where ``frontier_children``
+            are the split children that still border ``reference_regions`` and
+            ``terminal_regions`` contains all remaining regions that should not
+            be retried in the frontier expansion.
+        """
+        regions = self._validate_regions(regions)
+        reference_regions = self._validate_regions(reference_regions)
+
+        if len(regions) == 0:
+            empty = regions.clone()
+            return empty, empty
+
+        if split_dims is not None:
+            split_dims = split_dims.to(device=self.device, dtype=th.long).reshape(-1)
+            if split_dims.numel() != len(regions):
+                raise ValueError("split_dims must contain exactly one split dimension per region.")
+            if ((split_dims < 0) | (split_dims >= self.state_dim)).any():
+                raise ValueError("split_dims contains an out-of-range dimension index.")
+
+        if len(reference_regions) == 0:
+            split_children = self.split_regions(regions, split_dims=split_dims)
+            return split_children, regions[:0]
+
+        adjacent_mask = self._face_adjacency_mask(
+            regions,
+            reference_regions,
+            tolerance=adjacency_tolerance,
+        )
+        frontier_parents = regions[adjacent_mask]
+        terminal_regions = regions[~adjacent_mask]
+
+        if len(frontier_parents) == 0:
+            return regions[:0], terminal_regions
+
+        frontier_split_dims = None if split_dims is None else split_dims[adjacent_mask]
+        split_children = self.split_regions(frontier_parents, split_dims=frontier_split_dims)
+        child_frontier_mask = self._face_adjacency_mask(
+            split_children,
+            reference_regions,
+            tolerance=adjacency_tolerance,
+        )
+
+        frontier_children = split_children[child_frontier_mask]
+        terminal_children = split_children[~child_frontier_mask]
+        if len(terminal_children) > 0:
+            terminal_regions = (
+                terminal_children
+                if len(terminal_regions) == 0
+                else th.cat([terminal_regions, terminal_children], dim=0)
+            )
+
+        __logger__.debug(
+            "Frontier split kept %d/%d child regions adjacent to %d reference regions.",
+            len(frontier_children),
+            len(split_children),
+            len(reference_regions),
+        )
+        return frontier_children, terminal_regions
 
     def split_region(self, region: th.Tensor, *, split_dim: int | None = None) -> th.Tensor:
         """Split a single packed region and return the two resulting subregions."""
@@ -294,7 +411,7 @@ class RegionBuilder:
             packed_regions = th.empty((0, 2, self.state_dim), dtype=th.float32, device=self.device)
 
         __logger__.info(
-            "Adaptive region split built %d root regions from %d base grid cells after origin exclusion %s.",
+            "Built %d root regions from %d base grid cells after origin exclusion %s.",
             len(packed_regions),
             len(lbs),
             [float(value) for value in self.origin_exclusion.detach().cpu().tolist()],

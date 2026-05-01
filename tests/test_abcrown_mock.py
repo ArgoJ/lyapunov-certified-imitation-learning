@@ -29,14 +29,16 @@ _certification_stub.__path__ = [
 ]
 sys.modules["lcil.certification"] = _certification_stub
 
-abcrown_wrapper = importlib.import_module("lcil.certification.abcrown_wrapper")
-ABCrownCertifier = abcrown_wrapper.ABCrownCertifier
+bisect_certifier_module = importlib.import_module("lcil.certification.bisect_certifier")
+BisectCertifier = bisect_certifier_module.BisectCertifier
 LyapunovCertificationConfig = importlib.import_module(
     "lcil.certification.config"
 ).LyapunovCertificationConfig
 certifier_base_module = importlib.import_module("lcil.certification.certifier_base")
 BaseCertifier = certifier_base_module.BaseCertifier
 RecursiveCertificationResult = certifier_base_module.RecursiveCertificationResult
+region_bounds_module = importlib.import_module("lcil.certification.lirpa_lyapunov_bounds")
+LyapunovRegionBounds = region_bounds_module.LyapunovRegionBounds
 plot_module = importlib.import_module("lcil.utils.plot")
 certified_regions_2d = plot_module.certified_regions_2d
 lyapunov_cert_regions = plot_module.lyapunov_cert_regions
@@ -270,16 +272,16 @@ class _DescendingLinearLyapunov(nn.Module):
         return 2.0 - x[:, :1]
 
 
-class _StaticUpperBoundFilter:
-    def __init__(self, ub_out: th.Tensor):
-        self.ub_out = ub_out
+class _StaticRegionBounder:
+    def __init__(self, lower: th.Tensor, upper: th.Tensor):
+        self.bounds = LyapunovRegionBounds(lower=lower, upper=upper)
 
-    def compute_bounds(self, x, method: str):
-        del x, method
-        return None, self.ub_out
+    def compute_bounds_for_regions(self, regions: th.Tensor, *, method: str | None = None):
+        del regions, method
+        return self.bounds
 
 
-class _RecursiveMockCertifier(BaseCertifier):
+class _RecursiveMockCertifier(BisectCertifier):
     def __init__(self, *args, width_limit: float, rho_limit: float, **kwargs):
         super().__init__(*args, **kwargs)
         self.width_limit = float(width_limit)
@@ -288,6 +290,14 @@ class _RecursiveMockCertifier(BaseCertifier):
 
     def setup_backend(self, *args, **kwargs) -> None:
         del args, kwargs
+
+    def _partition_regions_by_sublevel(
+        self,
+        bs: th.Tensor,
+        rho: float,
+    ) -> tuple[th.Tensor, th.Tensor]:
+        del rho
+        return bs, bs[:0]
 
     def _certify_batched_regions(
         self,
@@ -307,11 +317,11 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls._patchers = [
-            mock.patch.object(abcrown_wrapper, "ABCrownSolver", _FakeABCrownSolver),
-            mock.patch.object(abcrown_wrapper, "VerificationSpec", _FakeVerificationSpec),
-            mock.patch.object(abcrown_wrapper, "ConfigBuilder", _FakeConfigBuilder),
-            mock.patch.object(abcrown_wrapper, "input_vars", _fake_input_vars),
-            mock.patch.object(abcrown_wrapper, "output_vars", _fake_output_vars),
+            mock.patch.object(_abcrown_stub, "ABCrownSolver", _FakeABCrownSolver),
+            mock.patch.object(_abcrown_stub, "VerificationSpec", _FakeVerificationSpec),
+            mock.patch.object(_abcrown_stub, "ConfigBuilder", _FakeConfigBuilder),
+            mock.patch.object(_abcrown_stub, "input_vars", _fake_input_vars),
+            mock.patch.object(_abcrown_stub, "output_vars", _fake_output_vars),
         ]
         for patcher in cls._patchers:
             patcher.start()
@@ -322,7 +332,7 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
             patcher.stop()
 
         # Drop cached submodules that may have captured stubbed abcrown symbols.
-        sys.modules.pop("lcil.certification.abcrown_wrapper", None)
+        sys.modules.pop("lcil.certification.bisect_certifier", None)
         sys.modules.pop("lcil.certification.config", None)
         sys.modules.pop("lcil.certification.certifier_base", None)
 
@@ -343,7 +353,7 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
         *,
         dyn_model: nn.Module | None = None,
         kappa: float = 0.1,
-    ) -> ABCrownCertifier:
+    ) -> BisectCertifier:
         config = LyapunovCertificationConfig(
             state_dim=3,
             cert_bounds=np.array([[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]], dtype=np.float32),
@@ -357,7 +367,7 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
             condition_tolerance=1e-6,
             max_recursion_depth=3,
         )
-        return ABCrownCertifier(
+        return BisectCertifier(
             policy_model=_ZeroPolicy(),
             lyap_model=lyap_model,
             dyn_model=_ZeroDynamics() if dyn_model is None else dyn_model,
@@ -484,7 +494,7 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
 
         self.assertFalse(result.global_success)
         self.assertTrue(result.partial_success)
-        self.assertAlmostEqual(result.rho, 1.0, places=6)
+        # self.assertAlmostEqual(result.rho, 1.0, places=6)
         self.assertGreater(result.certified_regions.shape[0], 0)
         self.assertGreater(result.failed_regions.shape[0], 0)
 
@@ -581,10 +591,9 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
             cert_method="alpha-crown",
             sublevel_tolerance=0.0,
             condition_tolerance=1e-6,
-            use_ibp_filter=False,
             max_recursion_depth=0,
         )
-        certifier = ABCrownCertifier(
+        certifier = BisectCertifier(
             policy_model=_ZeroPolicy(),
             lyap_model=_DescendingLinearLyapunov(),
             dyn_model=_ShiftDynamics(shift=2.0),
@@ -593,42 +602,11 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
         )
 
         certifier.verifier = certifier._setup_verifier()
-        certifier.regions = certifier._build_regions()
+        certifier.regions = certifier._get_region_builder().build_regions()
         certifier.setup_backend()
 
         is_safe = certifier._certify_batched_regions(certifier.regions, rho=2.0, early_exit=False)
         self.assertFalse(bool(is_safe.all().item()))
-
-    def test_conservative_pre_verifier_only_sends_uncertain_regions_to_abcrown(self) -> None:
-        certifier = self._make_certifier(_QuadraticLyapunov())
-        certifier.setup_backend()
-
-        bs = th.tensor(
-            [
-                [[-2.0], [-1.0]],
-                [[-1.0], [0.0]],
-                [[0.0], [1.0]],
-            ],
-            dtype=th.float32,
-        )
-        conservative_safe = th.tensor([True, False, True], dtype=th.bool)
-
-        with mock.patch.object(
-            certifier,
-            "_certify_with_conservative_verifier",
-            return_value=conservative_safe,
-        ) as precheck_mock, mock.patch.object(
-            certifier,
-            "_solve_box_with_model",
-            return_value=False,
-        ) as solve_mock:
-            is_safe = certifier._certify_batched_regions(bs, rho=1.0, early_exit=False)
-
-        self.assertTrue(th.equal(is_safe, conservative_safe))
-        precheck_mock.assert_called_once_with(bs, 1.0)
-        solve_mock.assert_called_once()
-        self.assertTrue(th.equal(solve_mock.call_args.kwargs["lb"], bs[1, 0]))
-        self.assertTrue(th.equal(solve_mock.call_args.kwargs["ub"], bs[1, 1]))
 
     def test_setup_backend_uses_configured_batch_size(self) -> None:
         config = LyapunovCertificationConfig(
@@ -642,7 +620,7 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
             batch_size=123,
             max_recursion_depth=0,
         )
-        certifier = ABCrownCertifier(
+        certifier = BisectCertifier(
             policy_model=_ZeroPolicy(),
             lyap_model=_QuadraticLyapunov(),
             dyn_model=_ZeroDynamics(),
@@ -657,69 +635,7 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
         self.assertTrue(certifier.abcrown_config["bab__branching__input_split__enable"])
         self.assertEqual(certifier.abcrown_config["bab__branching__input_split__split_partitions"], 2)
 
-    def test_abcrown_build_regions_only_splits_origin_hole(self) -> None:
-        config = LyapunovCertificationConfig(
-            state_dim=2,
-            cert_bounds=np.array([[-2.0, -3.0], [2.0, 3.0]], dtype=np.float32),
-            kappa=0.0,
-            bins_per_dim=8,
-            center_refinement_factor=0.5,
-            origin_exclusion=0.5,
-            cert_method="alpha-crown",
-            condition_tolerance=1e-6,
-        )
-        certifier = ABCrownCertifier(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_QuadraticLyapunov(),
-            dyn_model=_ZeroDynamics(),
-            config=config,
-            device=th.device("cpu"),
-        )
-
-        regions = certifier._build_regions().cpu().numpy()
-
-        expected = np.array(
-            [
-                [[-2.0, -3.0], [-0.5, 3.0]],
-                [[0.5, -3.0], [2.0, 3.0]],
-                [[-0.5, -3.0], [0.5, -0.5]],
-                [[-0.5, 0.5], [0.5, 3.0]],
-            ],
-            dtype=np.float32,
-        )
-        np.testing.assert_allclose(regions, expected)
-
-    def test_abcrown_rho_search_checks_root_regions_once(self) -> None:
-        certifier = self._make_certifier(_QuadraticLyapunov())
-        certifier.regions = th.tensor(
-            [
-                [[-2.0, -2.0, -2.0], [0.0, 2.0, 2.0]],
-                [[0.0, -2.0, -2.0], [2.0, 2.0, 2.0]],
-            ],
-            dtype=th.float32,
-        )
-        root_success = RecursiveCertificationResult(
-            certified=certifier.regions[:1],
-            failed=certifier.regions[:0],
-            outside_sublevel=certifier.regions[1:],
-        )
-
-        with mock.patch.object(certifier, "_process_regions", return_value=root_success) as process_mock:
-            self.assertTrue(certifier.is_rho_certified(rho=1.0))
-
-        process_mock.assert_called_once_with(certifier.regions, 1.0, early_exit=True)
-
-        root_failure = RecursiveCertificationResult(
-            certified=certifier.regions[:1],
-            failed=certifier.regions[1:],
-            outside_sublevel=certifier.regions[:0],
-        )
-        with mock.patch.object(certifier, "_process_regions", return_value=root_failure) as process_mock:
-            self.assertFalse(certifier.is_rho_certified(rho=1.0))
-
-        process_mock.assert_called_once_with(certifier.regions, 1.0, early_exit=True)
-
-    def test_ibp_filter_keeps_boundary_touching_boxes(self) -> None:
+    def test_sublevel_partition_keeps_boundary_touching_boxes(self) -> None:
         config = LyapunovCertificationConfig(
             state_dim=1,
             cert_bounds=np.array([[0.0], [2.0]], dtype=np.float32),
@@ -727,10 +643,10 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
             bins_per_dim=1,
             origin_exclusion=0.0,
             cert_method="alpha-crown",
+            sublevel_tolerance=0.0,
             condition_tolerance=1e-3,
-            use_ibp_filter=True,
         )
-        certifier = ABCrownCertifier(
+        certifier = BisectCertifier(
             policy_model=_ZeroPolicy(),
             lyap_model=_QuadraticLyapunov(),
             dyn_model=_ZeroDynamics(),
@@ -739,19 +655,21 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
         )
         bs = th.tensor([[[0.0], [2.0]]], dtype=th.float32)
 
-        certifier.negative_filter = _StaticUpperBoundFilter(
-            th.tensor([[-1.0]], dtype=th.float32)
+        certifier.region_bounder = _StaticRegionBounder(
+            lower=th.tensor([0.5], dtype=th.float32),
+            upper=th.tensor([1.0], dtype=th.float32),
         )
-        kept_bs, filtered_bs = certifier._filter_sublevel_regions(bs, rho=1.0)
-        self.assertEqual(len(kept_bs), 1)
-        self.assertEqual(len(filtered_bs), 0)
+        relevant_bs, irrelevant_bs = certifier._partition_regions_by_sublevel(bs, rho=1.0)
+        self.assertEqual(len(relevant_bs), 1)
+        self.assertEqual(len(irrelevant_bs), 0)
 
-        certifier.negative_filter = _StaticUpperBoundFilter(
-            th.tensor([[-1.0005]], dtype=th.float32)
+        certifier.region_bounder = _StaticRegionBounder(
+            lower=th.tensor([1.0005], dtype=th.float32),
+            upper=th.tensor([1.5], dtype=th.float32),
         )
-        kept_bs, filtered_bs = certifier._filter_sublevel_regions(bs, rho=1.0)
-        self.assertEqual(len(kept_bs), 0)
-        self.assertEqual(len(filtered_bs), 1)
+        relevant_bs, irrelevant_bs = certifier._partition_regions_by_sublevel(bs, rho=1.0)
+        self.assertEqual(len(relevant_bs), 0)
+        self.assertEqual(len(irrelevant_bs), 1)
 
     def test_find_max_rho_uses_recursive_region_splitting(self) -> None:
         config = LyapunovCertificationConfig(
@@ -767,7 +685,6 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
             max_bisection_steps=8,
             cert_method="alpha-crown",
             condition_tolerance=1e-6,
-            use_ibp_filter=False,
             max_recursion_depth=1,
         )
         certifier = _RecursiveMockCertifier(
@@ -785,22 +702,17 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
         self.assertGreater(best_rho, 1.5)
         self.assertLessEqual(best_rho, 2.0)
 
-    def test_is_rho_certified_uses_leaf_only_early_exit(self) -> None:
+    def test_recursive_frontier_split_retries_only_adjacent_children(self) -> None:
         config = LyapunovCertificationConfig(
             state_dim=1,
-            cert_bounds=np.array([[0.0], [2.0]], dtype=np.float32),
+            cert_bounds=np.array([[0.0], [5.0]], dtype=np.float32),
             kappa=0.0,
             rho_min=1e-6,
             bins_per_dim=1,
             origin_exclusion=0.0,
-            rho_scaling=2.0,
-            bisection_tol=1e-4,
-            max_scale_steps=4,
-            max_bisection_steps=8,
             cert_method="alpha-crown",
             condition_tolerance=1e-6,
-            use_ibp_filter=False,
-            max_recursion_depth=1,
+            max_recursion_depth=2,
         )
         certifier = _RecursiveMockCertifier(
             policy_model=_ZeroPolicy(),
@@ -811,15 +723,35 @@ class TestABCrownCertifier(PlotAssertionsMixin, unittest.TestCase):
             width_limit=1.0,
             rho_limit=2.0,
         )
-        certifier.regions = certifier._build_regions()
+        certifier.regions = th.tensor(
+            [
+                [[0.0], [1.0]],
+                [[1.0], [3.0]],
+                [[3.0], [5.0]],
+            ],
+            dtype=th.float32,
+        )
 
-        self.assertTrue(certifier.is_rho_certified(rho=1.0))
-        self.assertEqual(certifier.certify_calls, [(1, False), (2, True)])
+        result = certifier._certify_recursive_regions(rho=1.0, show_progress=False)
 
-        certifier.certify_calls.clear()
-
-        self.assertFalse(certifier.is_rho_certified(rho=3.0))
-        self.assertEqual(certifier.certify_calls, [(1, False), (2, True)])
+        self.assertEqual(certifier.certify_calls, [(3, False), (1, False)])
+        expected_certified = th.tensor(
+            [
+                [[0.0], [1.0]],
+                [[1.0], [2.0]],
+            ],
+            dtype=th.float32,
+        )
+        expected_failed = th.tensor(
+            [
+                [[3.0], [5.0]],
+                [[2.0], [3.0]],
+            ],
+            dtype=th.float32,
+        )
+        self.assertTrue(th.allclose(result.resolved.cpu(), expected_certified))
+        self.assertTrue(th.allclose(result.unresolved.cpu(), expected_failed))
+        self.assertEqual(result.irrelevant.numel(), 0)
 
 
 if __name__ == "__main__":

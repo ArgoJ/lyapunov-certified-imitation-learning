@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import torch as th
 
-from src.lcil.certification.adaptive.region_builder import RegionBuilder
+from lcil.certification.region_builder import RegionBuilder
 
 
 def _normalize_scalar_or_vector(values: list[float], state_dim: int, name: str) -> float | tuple[float, ...]:
