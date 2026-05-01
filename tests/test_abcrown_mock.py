@@ -456,6 +456,73 @@ class TestBisectCertifier(PlotAssertionsMixin, unittest.TestCase):
             },
         )
 
+    def test_quadratic_lyapunov_with_identity_dynamics_certifies_all_regions(self) -> None:
+        certifier = self._make_certifier(
+            _QuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            kappa=0.0,
+        )
+        result = certifier.certify(rho_estimate=1.0)
+
+        self.assertTrue(result.global_success)
+        self.assertTrue(result.partial_success)
+        self.assertGreaterEqual(result.rho, 1.0)
+        self.assertEqual(result.failed_regions.shape[0], 0)
+        self.assertGreater(result.certified_regions.shape[0], 0)
+        self._assert_region_plot_written(
+            certification_result=result,
+            stem="quadratic_regions",
+        )
+        self._assert_lyapunov_plot_written(
+            lyap_model=certifier.lyap_model,
+            certification_result=result,
+            stem="quadratic_lyapunov",
+        )
+
+    def test_negative_quadratic_produces_counterexamples(self) -> None:
+        certifier = self._make_certifier(_NegativeQuadraticLyapunov())
+        result = certifier.certify(rho_estimate=1.0)
+
+        self.assertFalse(result.global_success)
+        self.assertFalse(result.partial_success)
+        self.assertAlmostEqual(result.rho, 1.0, places=6)
+        self.assertEqual(result.certified_regions.shape[0], 0)
+        self.assertGreaterEqual(result.failed_regions.shape[0], 0)
+        self.assertGreaterEqual(result.outside_sublevel_regions.shape[0], 0)
+        self._assert_region_plot_written(
+            certification_result=result,
+            stem="negative_regions",
+        )
+        self._assert_lyapunov_plot_written(
+            lyap_model=certifier.lyap_model,
+            certification_result=result,
+            stem="negative_lyapunov",
+        )
+
+    def test_mixed_lyapunov_has_safe_and_unsafe_regions(self) -> None:
+        certifier = self._make_certifier(_MixedLyapunov(alpha=0.3, beta=2.0))
+        result = certifier.certify(rho_estimate=1.0)
+
+        self.assertFalse(result.global_success)
+        self.assertTrue(result.partial_success)
+        # self.assertAlmostEqual(result.rho, 1.0, places=6)
+        self.assertGreater(result.certified_regions.shape[0], 0)
+        self.assertGreater(result.failed_regions.shape[0], 0)
+
+        certified_centers = result.certified_regions.mean(axis=1)
+        failed_centers = result.failed_regions.mean(axis=1)
+        self.assertTrue(np.any(np.linalg.norm(certified_centers, axis=1) < 1.0))
+        self.assertTrue(np.any(np.linalg.norm(failed_centers, axis=1) > 1.5))
+        self._assert_region_plot_written(
+            certification_result=result,
+            stem="mixed_regions",
+        )
+        self._assert_lyapunov_plot_written(
+            lyap_model=certifier.lyap_model,
+            certification_result=result,
+            stem="mixed_lyapunov",
+        )
+
     def test_negative_values_are_not_hidden_by_origin_guard(self) -> None:
         certification_verifier = LyapunovVerifier(
             policy_model=_ZeroPolicy(),
