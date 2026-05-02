@@ -63,7 +63,7 @@ class _MixedLyapunov(nn.Module):
         return self.beta * r2 - self.alpha * (r2 * r2)
 
 
-def _load_real_abcrown_modules() -> tuple[type, type]:
+def _load_real_bisect_modules() -> tuple[type, type]:
     try:
         abcrown = importlib.import_module("abcrown")
 
@@ -95,30 +95,34 @@ def _load_real_abcrown_modules() -> tuple[type, type]:
         # Ensure we bind to the real abcrown package before loading the certifier.
         sys.modules.pop("lcil.certification.bisect_certifier", None)
         bisect_certifier = importlib.import_module("lcil.certification.bisect_certifier")
-        abcrown_certifier = bisect_certifier.BisectCertifier
+        bisect_backend = bisect_certifier.BisectCertifier
         certification_config = importlib.import_module(
             "lcil.certification.config"
         ).LyapunovCertificationConfig
     except Exception as exc:  # pragma: no cover - depends on local environment
         raise unittest.SkipTest(f"Could not import certifier modules: {exc}") from exc
 
-    return abcrown_certifier, certification_config
+    return bisect_backend, certification_config
 
 
-class _ABCrownModuleLoaderMixin:
+class _BisectModuleLoaderMixin:
     @classmethod
-    def _load_abcrown_modules(cls) -> None:
-        cls.BisectCertifier, cls.LyapunovCertificationConfig = _load_real_abcrown_modules()
+    def _load_bisect_modules(cls) -> None:
+        cls.BisectCertifier, cls.LyapunovCertificationConfig = _load_real_bisect_modules()
 
-class TestBisectCertifierIntegration(_ABCrownModuleLoaderMixin, PlotAssertionsMixin, unittest.TestCase):
+
+class TestBisectCertifierIntegration(_BisectModuleLoaderMixin, PlotAssertionsMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        if os.environ.get("LCIL_RUN_ABCROWN_INTEGRATION", "0") != "1":
+        run_bisect_integration = os.environ.get("LCIL_RUN_BISECT_INTEGRATION", "0") == "1"
+        run_legacy_abcrown_integration = os.environ.get("LCIL_RUN_ABCROWN_INTEGRATION", "0") == "1"
+        if not run_bisect_integration and not run_legacy_abcrown_integration:
             raise unittest.SkipTest(
-                "Set LCIL_RUN_ABCROWN_INTEGRATION=1 to run real ABCrown integration tests."
+                "Set LCIL_RUN_BISECT_INTEGRATION=1 to run real bisect integration tests. "
+                "LCIL_RUN_ABCROWN_INTEGRATION=1 remains supported for compatibility."
             )
 
-        cls._load_abcrown_modules()
+        cls._load_bisect_modules()
 
         cls._patchers = []
 
@@ -228,7 +232,7 @@ class TestBisectCertifierIntegration(_ABCrownModuleLoaderMixin, PlotAssertionsMi
             },
         )
 
-    def test_mixed_lyapunov_pipeline_with_real_abcrown(self) -> None:
+    def test_mixed_lyapunov_pipeline_with_real_bisect_backend(self) -> None:
         certifier = self._make_certifier(
             _QuadraticLyapunov(),
             dyn_model=_DirectionalScaleDynamics(base_scale=0.8, axis_gain=0.4),

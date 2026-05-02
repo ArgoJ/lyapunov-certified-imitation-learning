@@ -1,285 +1,33 @@
-import itertools
 import importlib
-import sys
-import types
 import unittest
-from dataclasses import dataclass
-from pathlib import Path
-from unittest import mock
 
 import numpy as np
 import torch as th
 import torch.nn as nn
 from plot_assertions_mixin import PlotAssertionsMixin
 
-_ORIG_ABCROWN = sys.modules.get("abcrown")
-_ORIG_LCIL_CERTIFICATION = sys.modules.get("lcil.certification")
+from certification_mock_common import (
+    BisectCertifier,
+    CertificationMockedABCrownTestCase,
+    LyapunovCertificationConfig,
+    LyapunovMultiOutputVerifier,
+    LyapunovRegionBounds,
+    LyapunovVerifier,
+    RecursiveCertificationResult,
+    _DescendingLinearLyapunov,
+    _DirectionalScaleDynamics,
+    _IdentityDynamics,
+    _MixedLyapunov,
+    _NegativeQuadraticLyapunov,
+    _QuadraticLyapunov,
+    _ShiftDynamics,
+    _ZeroDynamics,
+    _ZeroPolicy,
+)
 
-_abcrown_stub = types.ModuleType("abcrown")
-_abcrown_stub.ABCrownSolver = object
-_abcrown_stub.VerificationSpec = object
-_abcrown_stub.ConfigBuilder = object
-_abcrown_stub.input_vars = lambda *_args, **_kwargs: None
-_abcrown_stub.output_vars = lambda *_args, **_kwargs: None
-sys.modules["abcrown"] = _abcrown_stub
-
-_certification_stub = types.ModuleType("lcil.certification")
-_certification_stub.__path__ = [
-    str(Path(__file__).resolve().parents[1] / "src" / "lcil" / "certification")
-]
-sys.modules["lcil.certification"] = _certification_stub
-
-bisect_certifier_module = importlib.import_module("lcil.certification.bisect_certifier")
-BisectCertifier = bisect_certifier_module.BisectCertifier
-LyapunovCertificationConfig = importlib.import_module(
-    "lcil.certification.config"
-).LyapunovCertificationConfig
-RecursiveCertificationResult = bisect_certifier_module.RecursiveCertificationResult
-region_bounds_module = importlib.import_module("lcil.certification.lirpa_lyapunov_bounds")
-LyapunovRegionBounds = region_bounds_module.LyapunovRegionBounds
 plot_module = importlib.import_module("lcil.utils.plot")
 certified_regions_2d = plot_module.certified_regions_2d
 lyapunov_cert_regions = plot_module.lyapunov_cert_regions
-cert_models_module = importlib.import_module("lcil.certification.models")
-LyapunovVerifier = cert_models_module.LyapunovVerifier
-LyapunovMultiOutputVerifier = cert_models_module.LyapunovMultiOutputVerifier
-
-
-@dataclass
-class _FakeInputConstraint:
-    lb: th.Tensor | None = None
-    ub: th.Tensor | None = None
-
-    def __and__(self, other: "_FakeInputConstraint") -> "_FakeInputConstraint":
-        lb = self.lb if self.lb is not None else other.lb
-        ub = self.ub if self.ub is not None else other.ub
-        return _FakeInputConstraint(lb=lb, ub=ub)
-
-
-class _FakeInputVars:
-    def __init__(self, dim: int):
-        self.dim = dim
-
-    def __ge__(self, lb: th.Tensor) -> _FakeInputConstraint:
-        return _FakeInputConstraint(lb=th.as_tensor(lb, dtype=th.float32).reshape(self.dim))
-
-    def __le__(self, ub: th.Tensor) -> _FakeInputConstraint:
-        return _FakeInputConstraint(ub=th.as_tensor(ub, dtype=th.float32).reshape(self.dim))
-
-
-@dataclass
-class _FakeOutputConstraint:
-    predicate: object
-
-    def evaluate(self, values: th.Tensor) -> th.Tensor:
-        values_2d = values if values.ndim > 1 else values.unsqueeze(1)
-        result = self.predicate(values_2d)
-        return th.as_tensor(result, dtype=th.bool, device=values_2d.device).reshape(-1)
-
-    def __and__(self, other: "_FakeOutputConstraint") -> "_FakeOutputConstraint":
-        return _FakeOutputConstraint(
-            predicate=lambda values: self.evaluate(values) & other.evaluate(values)
-        )
-
-    def __or__(self, other: "_FakeOutputConstraint") -> "_FakeOutputConstraint":
-        return _FakeOutputConstraint(
-            predicate=lambda values: self.evaluate(values) | other.evaluate(values)
-        )
-
-
-class _FakeOutputVar:
-    def __init__(self, idx: int):
-        self.idx = idx
-
-    @staticmethod
-    def _to_float(value) -> float:
-        return float(th.as_tensor(value, dtype=th.float32).reshape(()).item())
-
-    def __lt__(self, rhs: float) -> _FakeOutputConstraint:
-        rhs_value = self._to_float(rhs)
-        return _FakeOutputConstraint(
-            predicate=lambda values: values[:, self.idx] < rhs_value
-        )
-
-    def __le__(self, rhs: float) -> _FakeOutputConstraint:
-        rhs_value = self._to_float(rhs)
-        return _FakeOutputConstraint(
-            predicate=lambda values: values[:, self.idx] <= rhs_value
-        )
-
-    def __gt__(self, rhs: float) -> _FakeOutputConstraint:
-        rhs_value = self._to_float(rhs)
-        return _FakeOutputConstraint(
-            predicate=lambda values: values[:, self.idx] > rhs_value
-        )
-
-    def __ge__(self, rhs: float) -> _FakeOutputConstraint:
-        rhs_value = self._to_float(rhs)
-        return _FakeOutputConstraint(
-            predicate=lambda values: values[:, self.idx] >= rhs_value
-        )
-
-
-class _FakeOutputVars:
-    def __init__(self, dim: int):
-        self.dim = dim
-
-    def __getitem__(self, idx: int) -> _FakeOutputVar:
-        if idx < 0 or idx >= self.dim:
-            raise IndexError(idx)
-        return _FakeOutputVar(idx)
-
-
-@dataclass
-class _FakeVerificationSpecData:
-    lb: th.Tensor
-    ub: th.Tensor
-    output_constraint: _FakeOutputConstraint
-
-
-class _FakeVerificationSpec:
-    @staticmethod
-    def build_spec(
-        input_vars: _FakeInputVars,
-        output_vars: _FakeOutputVars,
-        input_constraint: _FakeInputConstraint,
-        output_constraint: _FakeOutputConstraint,
-    ) -> _FakeVerificationSpecData:
-        del input_vars, output_vars
-        if input_constraint.lb is None or input_constraint.ub is None:
-            raise ValueError("Both lower and upper input bounds are required.")
-        return _FakeVerificationSpecData(
-            lb=input_constraint.lb,
-            ub=input_constraint.ub,
-            output_constraint=output_constraint,
-        )
-
-
-@dataclass
-class _FakeSolveResult:
-    status: str
-
-
-class _FakeABCrownSolver:
-    def __init__(
-        self,
-        spec: _FakeVerificationSpecData,
-        computing_graph: nn.Module,
-        config: dict,
-    ):
-        del config
-        self.spec = spec
-        self.computing_graph = computing_graph
-
-    @staticmethod
-    def _sample_points(lb: th.Tensor, ub: th.Tensor) -> th.Tensor:
-        coords_per_dim = []
-        for idx in range(lb.numel()):
-            mid = 0.5 * (lb[idx] + ub[idx])
-            coords_per_dim.append((lb[idx].item(), mid.item(), ub[idx].item()))
-        grid = list(itertools.product(*coords_per_dim))
-        return th.as_tensor(grid, dtype=lb.dtype, device=lb.device)
-
-    def solve(self) -> _FakeSolveResult:
-        points = self._sample_points(self.spec.lb, self.spec.ub)
-        with th.no_grad():
-            values = self.computing_graph(points)
-        safe_mask = self.spec.output_constraint.evaluate(values)
-        status = "verified" if bool(safe_mask.all().item()) else "unsafe"
-        return _FakeSolveResult(status=status)
-
-
-class _FakeConfigBuilder:
-    def __init__(self):
-        self.config: dict[str, str] = {}
-
-    @staticmethod
-    def from_defaults() -> "_FakeConfigBuilder":
-        return _FakeConfigBuilder()
-
-    def set(self, **kwargs) -> "_FakeConfigBuilder":
-        self.config.update(kwargs)
-        return self
-
-    def __call__(self) -> dict:
-        return dict(self.config)
-
-
-def _fake_input_vars(dim: int) -> _FakeInputVars:
-    return _FakeInputVars(dim)
-
-
-def _fake_output_vars(dim: int) -> _FakeOutputVars:
-    return _FakeOutputVars(dim)
-
-
-class _ZeroPolicy(nn.Module):
-    def __init__(self, nu: int = 1):
-        super().__init__()
-        self.nu = nu
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return th.zeros((x.shape[0], self.nu), dtype=x.dtype, device=x.device)
-
-
-class _ZeroDynamics(nn.Module):
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        return th.zeros_like(x)
-
-
-class _IdentityDynamics(nn.Module):
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        return x
-
-
-class _ShiftDynamics(nn.Module):
-    def __init__(self, shift: float):
-        super().__init__()
-        self.shift = float(shift)
-
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        return x + self.shift
-
-
-class _QuadraticLyapunov(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return (x * x).sum(dim=1, keepdim=True)
-
-
-class _DirectionalScaleDynamics(nn.Module):
-    def __init__(self, base_scale: float = 0.8, axis_gain: float = 0.4):
-        super().__init__()
-        self.base_scale = float(base_scale)
-        self.axis_gain = float(axis_gain)
-
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        scale = self.base_scale + self.axis_gain * x[:, :1]
-        return scale * x
-
-
-class _NegativeQuadraticLyapunov(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return -(x * x).sum(dim=1, keepdim=True)
-
-
-class _MixedLyapunov(nn.Module):
-    def __init__(self, alpha: float = 0.3, beta: float = 1.5):
-        super().__init__()
-        self.alpha = float(alpha)
-        self.beta = float(beta)
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        r2 = (x * x).sum(dim=1, keepdim=True)
-        return self.beta * r2 - self.alpha * (r2 * r2)
-
-
-class _DescendingLinearLyapunov(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return 2.0 - x[:, :1]
 
 
 class _StaticRegionBounder:
@@ -323,48 +71,17 @@ class _RecursiveMockCertifier(BisectCertifier):
         return (widths <= self.width_limit) & (rho <= self.rho_limit)
 
 
-class TestBisectCertifier(PlotAssertionsMixin, unittest.TestCase):
+class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCase):
     @classmethod
-    def setUpClass(cls) -> None:
-        cls._patchers = [
-            mock.patch.object(_abcrown_stub, "ABCrownSolver", _FakeABCrownSolver),
-            mock.patch.object(_abcrown_stub, "VerificationSpec", _FakeVerificationSpec),
-            mock.patch.object(_abcrown_stub, "ConfigBuilder", _FakeConfigBuilder),
-            mock.patch.object(_abcrown_stub, "input_vars", _fake_input_vars),
-            mock.patch.object(_abcrown_stub, "output_vars", _fake_output_vars),
-        ]
-        for patcher in cls._patchers:
-            patcher.start()
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        for patcher in cls._patchers:
-            patcher.stop()
-
-        # Drop cached submodules that may have captured stubbed abcrown symbols.
-        sys.modules.pop("lcil.certification.bisect_certifier", None)
-        sys.modules.pop("lcil.certification.config", None)
-
-        # Restore original modules so later tests can import real integrations.
-        if _ORIG_ABCROWN is None:
-            sys.modules.pop("abcrown", None)
-        else:
-            sys.modules["abcrown"] = _ORIG_ABCROWN
-
-        if _ORIG_LCIL_CERTIFICATION is None:
-            sys.modules.pop("lcil.certification", None)
-        else:
-            sys.modules["lcil.certification"] = _ORIG_LCIL_CERTIFICATION
-
-    @staticmethod
     def _make_certifier(
+        cls,
         lyap_model: nn.Module,
         *,
         dyn_model: nn.Module | None = None,
         kappa: float = 0.1,
         rho_min: float = 1e-6,
     ) -> BisectCertifier:
-        config = LyapunovCertificationConfig(
+        config = cls.make_config(
             state_dim=3,
             cert_bounds=np.array([[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]], dtype=np.float32),
             kappa=kappa,
@@ -378,12 +95,11 @@ class TestBisectCertifier(PlotAssertionsMixin, unittest.TestCase):
             condition_tolerance=1e-6,
             max_recursion_depth=3,
         )
-        return BisectCertifier(
+        return cls.make_bisect_certifier(
             policy_model=_ZeroPolicy(),
             lyap_model=lyap_model,
             dyn_model=_ZeroDynamics() if dyn_model is None else dyn_model,
             config=config,
-            device=th.device("cpu"),
         )
 
     def _assert_region_plot_written(
@@ -575,7 +291,7 @@ class TestBisectCertifier(PlotAssertionsMixin, unittest.TestCase):
 
         self.assertGreater(float(certification_verifier(x, rho).item()), 0.0)
 
-    def test_abcrown_multi_output_verifier_returns_condition_v_and_xnext(self) -> None:
+    def test_bisect_multi_output_verifier_returns_condition_v_and_xnext(self) -> None:
         verifier = LyapunovMultiOutputVerifier(
             policy_model=_ZeroPolicy(),
             lyap_model=_DescendingLinearLyapunov(),

@@ -22,12 +22,15 @@ certified_regions_2d = plot_module.certified_regions_2d
 lyapunov_cert_regions = plot_module.lyapunov_cert_regions
 
 
-class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest.TestCase):
+class TestBisectInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        if os.environ.get("LCIL_RUN_ABCROWN_INTEGRATION", "0") != "1":
+        run_bisect_integration = os.environ.get("LCIL_RUN_BISECT_INTEGRATION", "0") == "1"
+        run_legacy_abcrown_integration = os.environ.get("LCIL_RUN_ABCROWN_INTEGRATION", "0") == "1"
+        if not run_bisect_integration and not run_legacy_abcrown_integration:
             raise unittest.SkipTest(
-                "Set LCIL_RUN_ABCROWN_INTEGRATION=1 to run real ABCrown integration tests."
+                "Set LCIL_RUN_BISECT_INTEGRATION=1 to run real bisect integration tests. "
+                "LCIL_RUN_ABCROWN_INTEGRATION=1 remains supported for compatibility."
             )
 
         try:
@@ -180,7 +183,7 @@ class TestABCrownInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest
     def test_inverted_pendulum_on_cart_lqr(self) -> None:
         certifier = self._make_certifier()
         result = certifier.certify(rho_estimate=32.835)
-        base = "cartpole_abcrown_integration_dare"
+        base = "cartpole_bisect_integration_dare"
         state_labels = ["$x$", "$v$", r"$\theta$", r"$\dot{\theta}$"]
 
         self.assertIsInstance(float(result.rho), float)
