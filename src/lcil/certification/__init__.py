@@ -4,7 +4,7 @@ from .bisect_certifier import (
 )
 from .cert_tester import (
     CertificationCategoryTestResult,
-    CertificationTesterResults,
+    CertificationTesterResult,
     CertificationResultTester
 )
 from .abcrown_region_certifier import ABCrownRegionCertifier
@@ -17,7 +17,7 @@ __all__ = [
     "RegionCertificationResult",
     "BisectCertifier",
     "CertificationCategoryTestResult",
-    "CertificationTesterResults",
+    "CertificationTesterResult",
     "CertificationResultTester",
     "ABCrownRegionCertifier",
     "LyapunovCertificationConfig",

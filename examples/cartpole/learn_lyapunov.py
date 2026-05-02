@@ -212,7 +212,6 @@ def main() -> None:
             sublevel_tolerance=certification_base_config.sublevel_tolerance,
             condition_margin=certification_base_config.condition_margin,
             suppress_native_output=certification_base_config.suppress_native_output,
-            use_ibp_filter=certification_base_config.use_ibp_filter,
             batch_size=certification_base_config.batch_size,
             max_recursion_depth=certification_base_config.max_recursion_depth,
             cert_bounds=cert_bounds,

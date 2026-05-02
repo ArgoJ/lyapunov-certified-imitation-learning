@@ -197,7 +197,7 @@ class ABCrownRegionCertifier:
             )
             result = solver.solve()
 
-        # __logger__.info(result)
+        __logger__.info(result)
         __logger__.debug("ABCrown solver status: %s", result.status)
         return self._is_verified_status(result.status)
 
