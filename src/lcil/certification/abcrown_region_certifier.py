@@ -144,6 +144,15 @@ class ABCrownRegionCertifier:
         normalized = str(status).strip().lower()
         return normalized.startswith("unsafe")
 
+    @staticmethod
+    def _extract_bab_violation(bab_vals: Any) -> str:
+        if isinstance(bab_vals, (list, tuple)):
+            if len(bab_vals) > 1 and not isinstance(bab_vals[1], (list, tuple)):
+                return str(bab_vals[1])
+            if len(bab_vals) > 0 and isinstance(bab_vals[0], (list, tuple)) and len(bab_vals[0]) > 1:
+                return str(bab_vals[0][1])
+        return "N/A"
+
     def _setup_verifier(self) -> LyapunovMultiOutputVerifier:
         return LyapunovMultiOutputVerifier(
             policy_model=self.policy_model,
@@ -242,14 +251,8 @@ class ABCrownRegionCertifier:
 
         status = str(result.status).strip()
         elapsed = str(result.stats.get("elapsed", "N/A"))
-
-        if self._is_verified_status(status):
-            __logger__.info("Region verified by ABCrown in %ss.", elapsed)
-            bab_vals = result.stats.get("bab", list())
-            bab_violation = bab_vals[1] if len(bab_vals) > 1 else "N/A"
-        else:
-            bab_violation = "N/A"
-        __logger__.info(bab_vals)
+        bab_vals = result.stats.get("bab", list())
+        bab_violation = self._extract_bab_violation(bab_vals)
         __logger__.info("ABCrown solver status: %s after %ss with violation %s", status, elapsed, bab_violation)
         return ABCrownRegionVerification(
             status=status,

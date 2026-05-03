@@ -162,7 +162,7 @@ def main() -> None:
     )
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    __logger__.info("  using rho estimate %.6f", rho_estimate)
+    __logger__.info("Using rho estimate %.6f", rho_estimate)
 
     certifier = BisectCertifier(
         policy_model=policy_model,
