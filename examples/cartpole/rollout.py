@@ -12,10 +12,13 @@ from lcil.imitation_learning_mlp.policy_rollout import (
     PolicyRolloutGenerator,
     FeasibleSetSampler,
 )
-from cartpole_dyn import CartpoleDynamics
-from model import CartpoleAngleWrapper
-from sys_cfg import PendulumOnCartConfig
-from acados_ocp import _linearized_inverted_pendulum_on_cart_matrices
+
+from . import (
+    CartpoleDynamics,
+    CartpoleAngleWrapper,
+    PendulumOnCartConfig,
+)
+from .acados_ocp import _linearized_inverted_pendulum_on_cart_matrices
 
 
 

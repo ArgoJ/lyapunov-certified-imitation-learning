@@ -19,8 +19,10 @@ from lcil.utils import lcil_plt, ICNN, MLP
 from lcil.imitation_learning_mlp import MLPPolicy
 from mpc_datagen import MPCDataset
 
-from cartpole_dyn import CartpoleDynamics
-from model import CartpoleAngleWrapper
+from . import (
+    CartpoleDynamics,
+    CartpoleAngleWrapper,
+)
 
 
 def parse_cli_args(

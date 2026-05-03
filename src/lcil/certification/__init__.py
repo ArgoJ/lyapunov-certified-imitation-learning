@@ -2,6 +2,7 @@ from .bisect_certifier import (
     RegionCertificationResult,
     BisectCertifier
 )
+from .adaptive_certifier import AdaptiveCertifier
 from .cert_tester import (
     CertificationCategoryTestResult,
     CertificationTesterResult,
@@ -16,6 +17,7 @@ from .models import LyapunovVerifier
 __all__ = [
     "RegionCertificationResult",
     "BisectCertifier",
+    "AdaptiveCertifier",
     "CertificationCategoryTestResult",
     "CertificationTesterResult",
     "CertificationResultTester",

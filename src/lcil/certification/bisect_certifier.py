@@ -19,11 +19,10 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from .abcrown_region_certifier import ABCrownRegionCertifier
 from .config import LyapunovCertificationConfig
-from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds
-from .models import LyapunovMultiOutputVerifier
 from .region_builder import RegionBuilder
+from .abcrown_region_certifier import ABCrownRegionCertifier
+from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds
 from ..utils.helpers import none_to_float
 
 __logger__ = logging.getLogger(__name__)
@@ -33,17 +32,18 @@ __logger__ = logging.getLogger(__name__)
 class RegionCertificationResult:
     """Result container for a full-region certification pass.
 
-    ``success`` denotes global certification over the inspected region set at
-    ``rho``. It is therefore ``False`` whenever any failed regions remain,
-    even if some subregions were certified successfully.
+    ``global_success`` denotes global certification over the inspected region
+    set at ``rho``. It is therefore ``False`` whenever any uncertified
+    sublevel-candidate regions remain, even if some subregions were certified
+    successfully.
     """
 
     global_success: bool
     partial_success: bool
     rho: float
     outside_sublevel_regions: NDArray
-    failed_regions: NDArray
-    certified_regions: NDArray
+    uncertified_regions: NDArray
+    certified_sublevel_regions: NDArray
 
     def save(self, path: str | Path) -> None:
         """Persist certification details to a NumPy ``.npz`` archive."""
@@ -55,8 +55,10 @@ class RegionCertificationResult:
             partial_success=np.asarray(self.partial_success, dtype=np.bool_),
             rho=np.asarray(self.rho, dtype=np.float64),
             outside_sublevel_regions=self.outside_sublevel_regions,
-            failed_regions=self.failed_regions,
-            certified_regions=self.certified_regions,
+            uncertified_regions=self.uncertified_regions,
+            certified_sublevel_regions=self.certified_sublevel_regions,
+            failed_regions=self.uncertified_regions,
+            certified_regions=self.certified_sublevel_regions,
         )
 
     @classmethod
@@ -68,10 +70,14 @@ class RegionCertificationResult:
             "partial_success",
             "rho",
             "outside_sublevel_regions",
-            "failed_regions",
-            "certified_regions",
         }
+        has_uncertified_key = "uncertified_regions" in data.files or "failed_regions" in data.files
+        has_certified_key = "certified_sublevel_regions" in data.files or "certified_regions" in data.files
         missing_keys = required_keys.difference(data.files)
+        if not has_uncertified_key:
+            missing_keys.add("uncertified_regions")
+        if not has_certified_key:
+            missing_keys.add("certified_sublevel_regions")
         if missing_keys:
             missing = ", ".join(sorted(missing_keys))
             raise ValueError(f"Missing keys in certification result file: {missing}")
@@ -81,8 +87,14 @@ class RegionCertificationResult:
             partial_success=bool(np.asarray(data["partial_success"]).item()),
             rho=float(np.asarray(data["rho"]).item()),
             outside_sublevel_regions=np.asarray(data["outside_sublevel_regions"]),
-            failed_regions=np.asarray(data["failed_regions"]),
-            certified_regions=np.asarray(data["certified_regions"]),
+            uncertified_regions=np.asarray(
+                data["uncertified_regions"] if "uncertified_regions" in data.files else data["failed_regions"]
+            ),
+            certified_sublevel_regions=np.asarray(
+                data["certified_sublevel_regions"]
+                if "certified_sublevel_regions" in data.files
+                else data["certified_regions"]
+            ),
         )
 
 
@@ -93,6 +105,7 @@ class RecursiveCertificationResult:
     resolved: th.Tensor
     unresolved: th.Tensor
     irrelevant: th.Tensor
+    counterexample_found: bool = False
 
     @property
     def vacuous(self) -> bool:
@@ -116,6 +129,7 @@ class RecursiveCertificationResult:
             resolved=empty,
             unresolved=empty,
             irrelevant=empty,
+            counterexample_found=False,
         )
 
     def with_failed(self, regions: th.Tensor) -> RecursiveCertificationResult:
@@ -139,6 +153,7 @@ class RecursiveCertificationResult:
             resolved=th.cat([self.resolved, other.resolved], dim=0),
             unresolved=th.cat([self.unresolved, other.unresolved], dim=0),
             irrelevant=th.cat([self.irrelevant, other.irrelevant], dim=0),
+            counterexample_found=self.counterexample_found or other.counterexample_found,
         )
 
 
@@ -327,6 +342,7 @@ class BisectCertifier:
             self, 
             bs: th.Tensor,
             rho: float,
+            *,
             early_exit: bool,
         ) -> RecursiveCertificationResult:
         """Process one region batch and return step-level certification data.
@@ -361,19 +377,25 @@ class BisectCertifier:
         if len(bs) == 0:
             return result
 
-        is_safe = self._get_region_certifier().certify_regions(
+        verification_result = self._get_region_certifier().certify_regions(
             regions=bs,
             rho=rho,
             early_exit=early_exit,
             show_progress=False,
         )
-        return result.with_cert_and_failed(bs, is_safe)
+        return replace(
+            result,
+            resolved=bs[verification_result.verified_mask],
+            unresolved=bs[verification_result.failed_mask],
+            counterexample_found=verification_result.any_counterexample,
+        )
 
     def _certify_recursive_regions(
         self,
         rho: float,
         *,
         show_progress: bool,
+        early_exit: bool = False,
     ) -> RecursiveCertificationResult:
         """Run recursive certification for a fixed ``rho`` over all regions."""
         if self.regions is None:
@@ -423,8 +445,11 @@ class BisectCertifier:
                 step_result = self._process_regions(
                     pending_bs,
                     rho,
-                    early_exit=False,
+                    early_exit=early_exit,
                 )
+
+                if early_exit and step_result.counterexample_found:
+                    return recursive_result + step_result
 
                 if depth >= max_depth:
                     recursive_result = recursive_result + step_result
@@ -598,6 +623,7 @@ class BisectCertifier:
         result = self._certify_recursive_regions(
             rho=rho,
             show_progress=False,
+            early_exit=True,
         )
         return result.global_success
 
@@ -691,8 +717,8 @@ class BisectCertifier:
         """
         recursive_result = self._certify_recursive_regions(rho, show_progress=True)
 
-        certified_regions_np = self._regions_tensor_to_np(recursive_result.resolved)
-        failed_regions_np = self._regions_tensor_to_np(recursive_result.unresolved)
+        certified_sublevel_regions_np = self._regions_tensor_to_np(recursive_result.resolved)
+        uncertified_regions_np = self._regions_tensor_to_np(recursive_result.unresolved)
         outside_sublevel_regions_np = self._regions_tensor_to_np(recursive_result.irrelevant)
 
         if recursive_result.vacuous:
@@ -706,15 +732,15 @@ class BisectCertifier:
             partial_success=recursive_result.partial_success,
             rho=rho,
             outside_sublevel_regions=outside_sublevel_regions_np,
-            failed_regions=failed_regions_np,
-            certified_regions=certified_regions_np,
+            uncertified_regions=uncertified_regions_np,
+            certified_sublevel_regions=certified_sublevel_regions_np,
         )
         __logger__.info(
-            "Certification detail pass at rho=%.6f: success=%s, certified=%d, failed=%d, outside_sublevel=%d.",
+            "Certification detail pass at rho=%.6f: success=%s, certified_sublevel=%d, uncertified=%d, outside_sublevel=%d.",
             float(self.details.rho),
             self.details.global_success,
-            len(self.details.certified_regions),
-            len(self.details.failed_regions),
+            len(self.details.certified_sublevel_regions),
+            len(self.details.uncertified_regions),
             len(self.details.outside_sublevel_regions),
         )
         return self.details

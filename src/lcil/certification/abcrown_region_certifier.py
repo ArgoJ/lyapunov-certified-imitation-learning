@@ -19,9 +19,46 @@ from pkg_logger import suppress_native_output
 
 from .models import LyapunovMultiOutputVerifier
 from .config import LyapunovCertificationConfig
-from .adaptive_config import AdaptiveCertificationConfig
 
 __logger__ = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ABCrownRegionVerification:
+    """Status-aware verification result for a single packed region."""
+
+    status: str
+    verified: bool
+    counterexample_found: bool
+
+
+@dataclass(frozen=True)
+class ABCrownRegionBatchVerification:
+    """Status masks for a batched region certification pass."""
+
+    verified_mask: th.Tensor
+    counterexample_mask: th.Tensor
+    unknown_mask: th.Tensor
+
+    @property
+    def failed_mask(self) -> th.Tensor:
+        return self.counterexample_mask | self.unknown_mask
+
+    @property
+    def processed_mask(self) -> th.Tensor:
+        return self.verified_mask | self.counterexample_mask | self.unknown_mask
+
+    @property
+    def any_counterexample(self) -> bool:
+        return bool(self.counterexample_mask.any().item())
+
+    @classmethod
+    def empty(cls, length: int) -> ABCrownRegionBatchVerification:
+        return cls(
+            verified_mask=th.zeros(length, dtype=th.bool),
+            counterexample_mask=th.zeros(length, dtype=th.bool),
+            unknown_mask=th.zeros(length, dtype=th.bool),
+        )
 
 
 @dataclass(frozen=True)
@@ -45,9 +82,6 @@ class _ABCrownModelWrapper(nn.Module):
         return self.verifier(x, self.rho)
 
 
-ABCrownRegionConfig = AdaptiveCertificationConfig | LyapunovCertificationConfig
-
-
 class ABCrownRegionCertifier:
     """Shared ABCrown backend for certifying packed regions one by one."""
 
@@ -56,7 +90,7 @@ class ABCrownRegionCertifier:
         policy_model: nn.Module,
         lyap_model: nn.Module,
         dyn_model: nn.Module,
-        config: ABCrownRegionConfig,
+        config: LyapunovCertificationConfig,
         device: th.device = th.device("cpu"),
     ) -> None:
         self.config = config
@@ -97,9 +131,18 @@ class ABCrownRegionCertifier:
         return nullcontext()
 
     @staticmethod
-    def _is_verified_status(status: str) -> bool:
-        normalized = str(status).strip().lower()
+    def _normalize_status(status: str) -> str:
+        return str(status).strip().lower()
+
+    @classmethod
+    def _is_verified_status(cls, status: str) -> bool:
+        normalized = cls._normalize_status(status)
         return normalized == "verified" or normalized.startswith("safe")
+
+    @classmethod
+    def _is_counterexample_status(cls, status: str) -> bool:
+        normalized = str(status).strip().lower()
+        return normalized.startswith("unsafe")
 
     def _setup_verifier(self) -> LyapunovMultiOutputVerifier:
         return LyapunovMultiOutputVerifier(
@@ -162,7 +205,7 @@ class ABCrownRegionCertifier:
 
         return safe_outside_sublevel | (safe_positive & safe_decrease & safe_x_next)
 
-    def certify_region(self, region: th.Tensor, rho: float) -> bool:
+    def verify_region(self, region: th.Tensor, rho: float) -> ABCrownRegionVerification:
         if region.shape != (2, self.config.state_dim):
             raise ValueError(
                 f"region must have shape (2, {self.config.state_dim}); got {tuple(region.shape)}."
@@ -197,9 +240,16 @@ class ABCrownRegionCertifier:
             )
             result = solver.solve()
 
-        __logger__.info(result)
-        __logger__.debug("ABCrown solver status: %s", result.status)
-        return self._is_verified_status(result.status)
+        status = str(result.status).strip()
+        elapsed = str(result.stats.get("elapsed", "N/A"))
+        bab_vals = result.stats.get("bab", list())
+        bab_violation = bab_vals[1] if len(bab_vals) > 0 else "N/A"
+        __logger__.info("ABCrown solver status: %s after %ss with violation %s", status, elapsed, bab_violation)
+        return ABCrownRegionVerification(
+            status=status,
+            verified=self._is_verified_status(status),
+            counterexample_found=self._is_counterexample_status(status),
+        )
 
     def certify_regions(
         self,
@@ -208,16 +258,18 @@ class ABCrownRegionCertifier:
         *,
         early_exit: bool = False,
         show_progress: bool = False,
-    ) -> th.Tensor:
+    ) -> ABCrownRegionBatchVerification:
         if regions.ndim != 3 or regions.shape[1] != 2 or regions.shape[2] != self.config.state_dim:
             raise ValueError(
                 f"regions must have shape (N, 2, {self.config.state_dim}); got {tuple(regions.shape)}."
             )
 
         if len(regions) == 0:
-            return th.empty((0,), dtype=th.bool, device=self.device)
+            return ABCrownRegionBatchVerification.empty(0)
 
-        is_certified = th.zeros((len(regions),), dtype=th.bool, device=self.device)
+        verified_mask = th.zeros((len(regions),), dtype=th.bool, device=self.device)
+        counterexample_mask = th.zeros((len(regions),), dtype=th.bool, device=self.device)
+        unknown_mask = th.zeros((len(regions),), dtype=th.bool, device=self.device)
 
         progress = None
         task = None
@@ -236,13 +288,23 @@ class ABCrownRegionCertifier:
 
         try:
             for idx, region in enumerate(regions):
-                is_certified[idx] = self.certify_region(region, rho)
-                if progress is not None and task is not None:
-                    progress.update(task, advance=1)
-                if early_exit and not bool(is_certified[idx].item()):
+                verification_result = self.verify_region(region, rho)
+                verified_mask[idx] = verification_result.verified
+                counterexample_mask[idx] = verification_result.counterexample_found
+                unknown_mask[idx] = (
+                    not verification_result.verified
+                    and not verification_result.counterexample_found
+                )
+                if show_progress: progress.update(task, advance=1)
+                if early_exit and verification_result.counterexample_found:
+                    if show_progress: progress.update(task, completed=len(regions))
                     break
         finally:
-            if progress is not None:
+            if show_progress:
                 progress.__exit__(None, None, None)
 
-        return is_certified
+        return ABCrownRegionBatchVerification(
+            verified_mask=verified_mask,
+            counterexample_mask=counterexample_mask,
+            unknown_mask=unknown_mask,
+        )

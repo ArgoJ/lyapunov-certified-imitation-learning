@@ -190,13 +190,13 @@ class CertificationResultTester:
         tolerance = self.config.condition_tolerance
 
         certified = self._evaluate_regions(
-            cert_result.certified_regions,
+            cert_result.certified_sublevel_regions,
             name="certified",
             tolerance=tolerance,
             rollout_steps=rollout_steps,
         )
         failed = self._evaluate_regions(
-            cert_result.failed_regions,
+            cert_result.uncertified_regions,
             name="failed",
             tolerance=tolerance,
             rollout_steps=rollout_steps,

@@ -9,7 +9,7 @@ import torch as th
 import torch.nn as nn
 
 from .abcrown_region_certifier import ABCrownRegionCertifier
-from .adaptive_config import AdaptiveCertificationConfig
+from .config import LyapunovCertificationConfig
 from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds, LyapunovRegionBounds
 from .region_builder import RegionBuilder
 
@@ -96,7 +96,7 @@ class AdaptiveCertifier:
         policy_model: nn.Module,
         lyap_model: nn.Module,
         dyn_model: nn.Module,
-        config: AdaptiveCertificationConfig,
+        config: LyapunovCertificationConfig,
         device: th.device = th.device("cpu"),
     ) -> None:
         self.config = config
@@ -266,7 +266,6 @@ class AdaptiveCertifier:
                 lyap_model=self.lyap_model,
                 state_dim=self.config.state_dim,
                 batch_size=self.config.batch_size,
-                default_bound_method=self.config.lirpa_bound_method,
                 device=self.device,
             )
         return self._region_bounder
@@ -303,7 +302,6 @@ class AdaptiveCertifier:
 
         self.region_bounds = self._get_region_bounder().compute_bounds_for_regions(
             self.regions,
-            method=self.config.lirpa_bound_method,
         )
         __logger__.info(
             "Cached LiRPA bounds for %d regions with V \u2208 [%s, %s].",
@@ -396,18 +394,18 @@ class AdaptiveCertifier:
 
         if len(candidate_regions) > 0:
             abcrown_certifier = self._ensure_abcrown_backend()
-            is_certified = th.as_tensor(
-                abcrown_certifier.certify_regions(
-                    candidate_regions,
-                    rho,
-                    early_exit=early_exit,
-                ),
+            batch_verification = abcrown_certifier.certify_regions(
+                candidate_regions,
+                rho,
+                early_exit=early_exit,
+            )
+            is_certified = batch_verification.verified_mask.to(
                 device=self.device,
                 dtype=th.bool,
             )
             if is_certified.ndim != 1 or len(is_certified) != len(candidate_regions):
                 raise ValueError(
-                    "AdaptiveABCrownRegionCertifier.certify_regions() must return one boolean per candidate region. "
+                    "AdaptiveABCrownRegionCertifier.certify_regions().verified_mask must return one boolean per candidate region. "
                     f"Expected {len(candidate_regions)} values, got shape {tuple(is_certified.shape)}."
                 )
             inside_is_certified = is_certified[:pending_inside_count]

@@ -5,9 +5,9 @@ import os
 from numpy.typing import NDArray
 from scipy.linalg import solve_discrete_are, block_diag
 from mpc_datagen import mdg_linalg, add_temp_folder
-from sys_cfg import PendulumOnCartConfig
-
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver, AcadosOcpBatchSolver
+
+from .sys_cfg import PendulumOnCartConfig
 
 
 def _linearized_inverted_pendulum_on_cart_matrices(

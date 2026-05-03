@@ -1,5 +1,7 @@
 import importlib
 import unittest
+from dataclasses import dataclass
+from unittest import mock
 
 import numpy as np
 import torch as th
@@ -69,6 +71,69 @@ class _RecursiveMockCertifier(BisectCertifier):
         self.certify_calls.append((len(bs), early_exit))
         widths = (bs[:, 1] - bs[:, 0]).amax(dim=1)
         return (widths <= self.width_limit) & (rho <= self.rho_limit)
+
+
+@dataclass(frozen=True)
+class _MockVerificationResult:
+    verified: bool
+    counterexample_found: bool
+    status: str
+
+
+@dataclass(frozen=True)
+class _MockBatchVerification:
+    verified_mask: th.Tensor
+    counterexample_mask: th.Tensor
+    unknown_mask: th.Tensor
+
+    @property
+    def failed_mask(self) -> th.Tensor:
+        return self.counterexample_mask | self.unknown_mask
+
+    @property
+    def any_counterexample(self) -> bool:
+        return bool(self.counterexample_mask.any().item())
+
+
+class _StatusAwareMockRegionCertifier:
+    def __init__(self, results: list[_MockVerificationResult]):
+        self.results = list(results)
+        self.calls = 0
+
+    def verify_region(self, region: th.Tensor, rho: float) -> _MockVerificationResult:
+        del region, rho
+        if self.calls >= len(self.results):
+            raise AssertionError("verify_region called more often than expected.")
+        result = self.results[self.calls]
+        self.calls += 1
+        return result
+
+    def certify_regions(
+        self,
+        regions: th.Tensor,
+        rho: float,
+        *,
+        early_exit: bool = False,
+        show_progress: bool = False,
+    ) -> _MockBatchVerification:
+        del show_progress
+        verified_mask = th.zeros((len(regions),), dtype=th.bool)
+        counterexample_mask = th.zeros((len(regions),), dtype=th.bool)
+        unknown_mask = th.zeros((len(regions),), dtype=th.bool)
+
+        for idx, region in enumerate(regions):
+            result = self.verify_region(region, rho)
+            verified_mask[idx] = result.verified
+            counterexample_mask[idx] = result.counterexample_found
+            unknown_mask[idx] = (not result.verified and not result.counterexample_found)
+            if early_exit and result.counterexample_found:
+                break
+
+        return _MockBatchVerification(
+            verified_mask=verified_mask,
+            counterexample_mask=counterexample_mask,
+            unknown_mask=unknown_mask,
+        )
 
 
 class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCase):
@@ -183,8 +248,8 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
         self.assertTrue(result.global_success)
         self.assertTrue(result.partial_success)
         self.assertGreaterEqual(result.rho, 1.0)
-        self.assertEqual(result.failed_regions.shape[0], 0)
-        self.assertGreater(result.certified_regions.shape[0], 0)
+        self.assertEqual(result.uncertified_regions.shape[0], 0)
+        self.assertGreater(result.certified_sublevel_regions.shape[0], 0)
         self._assert_region_plot_written(
             certification_result=result,
             stem="quadratic_regions",
@@ -202,8 +267,8 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
         self.assertFalse(result.global_success)
         self.assertFalse(result.partial_success)
         self.assertAlmostEqual(result.rho, 1.0, places=6)
-        self.assertEqual(result.certified_regions.shape[0], 0)
-        self.assertGreaterEqual(result.failed_regions.shape[0], 0)
+        self.assertEqual(result.certified_sublevel_regions.shape[0], 0)
+        self.assertGreaterEqual(result.uncertified_regions.shape[0], 0)
         self.assertGreaterEqual(result.outside_sublevel_regions.shape[0], 0)
         self._assert_region_plot_written(
             certification_result=result,
@@ -226,11 +291,11 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
 
         self.assertFalse(result.global_success)
         self.assertTrue(result.partial_success)
-        self.assertGreater(result.certified_regions.shape[0], 0)
-        self.assertGreater(result.failed_regions.shape[0], 0)
+        self.assertGreater(result.certified_sublevel_regions.shape[0], 0)
+        self.assertGreater(result.uncertified_regions.shape[0], 0)
 
-        certified_centers = result.certified_regions.mean(axis=1)
-        failed_centers = result.failed_regions.mean(axis=1)
+        certified_centers = result.certified_sublevel_regions.mean(axis=1)
+        failed_centers = result.uncertified_regions.mean(axis=1)
         self.assertTrue(np.any(certified_centers[:, 0] < 0.0))
         self.assertTrue(np.any(failed_centers[:, 0] > 0.0))
         self._assert_region_plot_written(
@@ -242,6 +307,157 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
             certification_result=result,
             stem="mixed_lyapunov",
         )
+
+    def test_is_rho_certified_stops_immediately_on_direct_counterexample(self) -> None:
+        certifier = self._make_certifier(
+            _QuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            kappa=0.0,
+        )
+        certifier.regions = th.tensor(
+            [
+                [[-1.0, -1.0, -1.0], [0.0, 0.0, 0.0]],
+                [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+                [[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]],
+            ],
+            dtype=th.float32,
+        )
+        region_certifier = _StatusAwareMockRegionCertifier(
+            [
+                _MockVerificationResult(
+                    verified=True,
+                    counterexample_found=False,
+                    status="safe",
+                ),
+                _MockVerificationResult(
+                    verified=False,
+                    counterexample_found=True,
+                    status="unsafe-pgd",
+                ),
+            ]
+        )
+
+        with mock.patch.object(
+            certifier,
+            "_partition_regions_by_sublevel",
+            return_value=(certifier.regions, certifier.regions[:0]),
+        ), mock.patch.object(
+            certifier,
+            "_get_region_certifier",
+            return_value=region_certifier,
+        ), mock.patch.object(
+            certifier,
+            "_split_failed_regions_on_certification_frontier",
+            side_effect=AssertionError("splitting should not happen after a direct counterexample"),
+        ):
+            self.assertFalse(certifier.is_rho_certified(rho=1.0))
+
+        self.assertEqual(region_certifier.calls, 2)
+
+    def test_is_rho_certified_keeps_splitting_unknown_regions(self) -> None:
+        certifier = self._make_certifier(
+            _QuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            kappa=0.0,
+        )
+        certifier.regions = th.tensor(
+            [
+                [[-1.0, -1.0, -1.0], [0.0, 0.0, 0.0]],
+                [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+            ],
+            dtype=th.float32,
+        )
+        region_certifier = _StatusAwareMockRegionCertifier(
+            [
+                _MockVerificationResult(
+                    verified=True,
+                    counterexample_found=False,
+                    status="safe",
+                ),
+                _MockVerificationResult(
+                    verified=False,
+                    counterexample_found=False,
+                    status="unknown",
+                ),
+            ]
+        )
+
+        def _split_failed_regions(failed_bs: th.Tensor, resolved_bs: th.Tensor) -> tuple[th.Tensor, th.Tensor]:
+            del resolved_bs
+            return failed_bs[:0], failed_bs
+
+        with mock.patch.object(
+            certifier,
+            "_partition_regions_by_sublevel",
+            return_value=(certifier.regions, certifier.regions[:0]),
+        ), mock.patch.object(
+            certifier,
+            "_get_region_certifier",
+            return_value=region_certifier,
+        ), mock.patch.object(
+            certifier,
+            "_split_failed_regions_on_certification_frontier",
+            side_effect=_split_failed_regions,
+        ) as split_mock:
+            self.assertFalse(certifier.is_rho_certified(rho=1.0))
+
+        self.assertEqual(region_certifier.calls, 2)
+        split_mock.assert_called_once()
+        split_failed_bs, split_resolved_bs = split_mock.call_args.args
+        self.assertTrue(th.allclose(split_failed_bs, certifier.regions[1:2]))
+        self.assertTrue(th.allclose(split_resolved_bs, certifier.regions[:1]))
+
+    def test_is_rho_certified_marks_all_regions_certified_when_all_are_safe(self) -> None:
+        certifier = self._make_certifier(
+            _QuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            kappa=0.0,
+        )
+        certifier.regions = th.tensor(
+            [
+                [[-1.0, -1.0, -1.0], [0.0, 0.0, 0.0]],
+                [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+            ],
+            dtype=th.float32,
+        )
+        region_certifier = _StatusAwareMockRegionCertifier(
+            [
+                _MockVerificationResult(
+                    verified=True,
+                    counterexample_found=False,
+                    status="safe",
+                ),
+                _MockVerificationResult(
+                    verified=True,
+                    counterexample_found=False,
+                    status="verified",
+                ),
+            ]
+        )
+
+        with mock.patch.object(
+            certifier,
+            "_partition_regions_by_sublevel",
+            return_value=(certifier.regions, certifier.regions[:0]),
+        ), mock.patch.object(
+            certifier,
+            "_get_region_certifier",
+            return_value=region_certifier,
+        ), mock.patch.object(
+            certifier,
+            "_split_failed_regions_on_certification_frontier",
+            side_effect=AssertionError("splitting should not happen when all regions are safe"),
+        ):
+            result = certifier._certify_recursive_regions(
+                rho=1.0,
+                show_progress=False,
+                early_exit=True,
+            )
+
+        self.assertTrue(result.global_success)
+        self.assertEqual(result.resolved.shape[0], 2)
+        self.assertEqual(result.unresolved.shape[0], 0)
+        self.assertEqual(region_certifier.calls, 2)
 
     def test_negative_values_are_not_hidden_by_origin_guard(self) -> None:
         certification_verifier = LyapunovVerifier(

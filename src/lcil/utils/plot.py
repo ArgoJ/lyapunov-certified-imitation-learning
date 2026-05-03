@@ -434,8 +434,8 @@ def lyapunov_cert_regions(
     html_path : str, optional
         If provided, saves the plot to the specified HTML file.
     """
-    cert_regs_np = _regions_to_np(certification_result.certified_regions)
-    uncert_regs_np = _regions_to_np(certification_result.failed_regions)
+    cert_regs_np = _regions_to_np(certification_result.certified_sublevel_regions)
+    uncert_regs_np = _regions_to_np(certification_result.uncertified_regions)
     outside_sublevel_regs_np = _regions_to_np(certification_result.outside_sublevel_regions)
 
     has_dataset = dataset is not None and len(dataset) > 0
@@ -596,8 +596,8 @@ def certified_regions_2d(
     html_path : str, optional
         If provided, saves the plot to the specified HTML file.
     """
-    cert_regs_np = _regions_to_np(certification_result.certified_regions)
-    uncert_regs_np = _regions_to_np(certification_result.failed_regions)
+    cert_regs_np = _regions_to_np(certification_result.certified_sublevel_regions)
+    uncert_regs_np = _regions_to_np(certification_result.uncertified_regions)
     ctex_regs_np = _regions_to_np(certification_result.outside_sublevel_regions)
 
     if cert_regs_np.shape[0] == 0 and uncert_regs_np.shape[0] == 0 and ctex_regs_np.shape[0] == 0:

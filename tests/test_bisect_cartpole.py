@@ -199,8 +199,8 @@ class TestBisectInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest.
             stem=f"{base}_lyapunov",
             state_labels=state_labels,
         )
-        self.assertGreaterEqual(result.failed_regions.shape[0], 0)
-        self.assertGreater(result.certified_regions.shape[0], 0)
+        self.assertGreaterEqual(result.uncertified_regions.shape[0], 0)
+        self.assertGreater(result.certified_sublevel_regions.shape[0], 0)
 
 
 if __name__ == "__main__":

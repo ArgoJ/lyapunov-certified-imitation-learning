@@ -1,3 +1,6 @@
+import importlib
+import importlib.util
+import inspect
 import os
 import torch as th
 import torch.nn as nn
@@ -5,6 +8,7 @@ import torch.nn.functional as F
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 
 def _get_activation(name: str) -> nn.Module:
@@ -47,6 +51,157 @@ def save_model_checkpoint(model: nn.Module, save_path: str | os.PathLike) -> Non
     else:
         save_path.parent.mkdir(parents=True, exist_ok=True)
         th.save(model.state_dict(), save_path)
+
+
+def _build_feature_net_payload(
+    feature_net: nn.Module,
+    save_path: Path,
+    suffix: str = "",
+    save_kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "module": type(feature_net).__module__,
+        "class_name": type(feature_net).__name__,
+        "module_file": inspect.getsourcefile(type(feature_net)),
+    }
+    save_kwargs = {} if save_kwargs is None else dict(save_kwargs)
+
+    can_roundtrip_feature_net = (
+        hasattr(feature_net, "save")
+        and callable(getattr(feature_net, "save"))
+        and hasattr(type(feature_net), "load")
+        and callable(getattr(type(feature_net), "load"))
+    )
+    if can_roundtrip_feature_net:
+        feature_net_path = save_path.with_name(save_path.stem + f"{suffix}_feature.pt")
+        feature_net.save(feature_net_path, **save_kwargs)
+        payload["path"] = str(feature_net_path)
+        return payload
+
+    if hasattr(feature_net, "layer_dims") and hasattr(feature_net, "activations"):
+        payload["init_kwargs"] = {
+            "layer_dims": list(feature_net.layer_dims),
+            "activations": list(feature_net.activations),
+        }
+        payload["state_dict"] = feature_net.state_dict()
+        return payload
+
+    child_modules = list(feature_net.named_children())
+    init_parameters = [
+        parameter.name
+        for parameter in inspect.signature(type(feature_net).__init__).parameters.values()
+        if parameter.name != "self"
+    ]
+    if len(child_modules) == 1 and len(init_parameters) == 1:
+        _, child_module = child_modules[0]
+        payload["inner_arg_name"] = init_parameters[0]
+        payload["inner"] = _build_feature_net_payload(
+            child_module,
+            save_path,
+            suffix=f"{suffix}_inner",
+        )
+        payload["state_dict"] = feature_net.state_dict()
+        return payload
+
+    raise ValueError(
+        f"Cannot serialize feature net of type '{type(feature_net).__name__}'."
+    )
+
+
+def save_feature_net(
+    feature_net: nn.Module,
+    save_path: str | os.PathLike,
+    **save_kwargs: Any,
+) -> None:
+    """Save a feature net with enough metadata to reconstruct common wrappers and MLP/ICNN-style nets."""
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _build_feature_net_payload(
+        feature_net,
+        save_path,
+        save_kwargs=save_kwargs,
+    )
+    th.save(payload, save_path)
+
+
+def _load_feature_net_from_payload(
+    payload: dict[str, Any],
+    map_location: th.device | str,
+    strict: bool,
+    feature_net_cls: type[nn.Module] | None = None,
+    feature_net_args: tuple[Any, ...] | None = None,
+    feature_net_kwargs: dict[str, Any] | None = None,
+) -> nn.Module:
+    if feature_net_cls is None:
+        module_name = payload.get("module")
+        class_name = payload.get("class_name")
+        module_file = payload.get("module_file")
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            if module_file is None:
+                raise
+            module_path = Path(module_file)
+            module_spec = importlib.util.spec_from_file_location(
+                f"_lcil_feature_net_{module_path.stem}",
+                module_path,
+            )
+            if module_spec is None or module_spec.loader is None:
+                raise ImportError(f"Could not load module from '{module_path}'.")
+            module = importlib.util.module_from_spec(module_spec)
+            module_spec.loader.exec_module(module)
+        feature_net_cls = getattr(module, class_name)
+
+    feature_net_args = () if feature_net_args is None else feature_net_args
+    feature_net_kwargs = {} if feature_net_kwargs is None else dict(feature_net_kwargs)
+
+    if "path" in payload:
+        if not hasattr(feature_net_cls, "load") or not callable(getattr(feature_net_cls, "load")):
+            raise ValueError(
+                "Feature net checkpoint requires a loadable feature_net_cls."
+            )
+        return feature_net_cls.load(payload["path"], map_location=map_location)
+
+    if "inner" in payload:
+        inner_feature_net = _load_feature_net_from_payload(
+            payload["inner"],
+            map_location=map_location,
+            strict=strict,
+        )
+        feature_net = feature_net_cls(**{payload["inner_arg_name"]: inner_feature_net})
+    else:
+        init_kwargs = dict(payload.get("init_kwargs", {}))
+        init_kwargs.update(feature_net_kwargs)
+        feature_net = feature_net_cls(*feature_net_args, **init_kwargs)
+
+    feature_net.load_state_dict(payload["state_dict"], strict=strict)
+    return feature_net
+
+
+def load_feature_net(
+    path: str | os.PathLike,
+    map_location: th.device | str = "cpu",
+    strict: bool = True,
+    feature_net_cls: type[nn.Module] | None = None,
+    feature_net_args: tuple[Any, ...] | None = None,
+    feature_net_kwargs: dict[str, Any] | None = None,
+) -> nn.Module:
+    """Load a feature net saved with :func:`save_feature_net`."""
+    checkpoint_path = Path(path)
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"No feature net checkpoint found at '{checkpoint_path}'.")
+
+    payload = th.load(checkpoint_path, map_location=map_location, weights_only=True)
+    feature_net = _load_feature_net_from_payload(
+        payload,
+        map_location=map_location,
+        strict=strict,
+        feature_net_cls=feature_net_cls,
+        feature_net_args=feature_net_args,
+        feature_net_kwargs=feature_net_kwargs,
+    )
+    feature_net.eval()
+    return feature_net
 
 
 class LinearDynamics(nn.Module):
@@ -209,6 +364,9 @@ class MLP(nn.Module):
         _check_layer_dims(layer_dims)
         _check_activations(activations, layer_dims)
 
+        self.layer_dims = list(layer_dims)
+        self.activations = list(activations)
+
         layers: list[nn.Module] = []
         for in_dim, out_dim, act_name in zip(
             layer_dims[:-1], layer_dims[1:], activations
@@ -245,6 +403,9 @@ class ResNet(nn.Module):
 
         _check_layer_dims(layer_dims)
         _check_activations(activations, layer_dims)
+
+        self.layer_dims = list(layer_dims)
+        self.activations = list(activations)
 
         layers: list[nn.Module] = []
         for in_dim, out_dim, act_name in zip(

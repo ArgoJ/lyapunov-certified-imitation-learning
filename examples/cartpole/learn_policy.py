@@ -9,9 +9,11 @@ from mpc_datagen import MPCDataset
 from lcil.utils import EarlyStopping
 from lcil.imitation_learning_mlp import *
 
-from cartpole_dyn import CartpoleDynamics
-from sys_cfg import PendulumOnCartConfig
-from model import CartpoleAngleWrapper
+from . import (
+    CartpoleDynamics,
+    CartpoleAngleWrapper,
+    PendulumOnCartConfig,
+)
 
 
 def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Namespace:

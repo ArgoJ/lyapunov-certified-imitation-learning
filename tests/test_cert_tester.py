@@ -88,8 +88,8 @@ class TestCertificationResultTester(unittest.TestCase):
             global_success=False,
             partial_success=False,
             rho=1.0,
-            certified_regions=np.empty((0, 2, 1), dtype=np.float32),
-            failed_regions=np.empty((0, 2, 1), dtype=np.float32),
+            certified_sublevel_regions=np.empty((0, 2, 1), dtype=np.float32),
+            uncertified_regions=np.empty((0, 2, 1), dtype=np.float32),
             outside_sublevel_regions=np.array([[[1.5], [1.7]]], dtype=np.float32),
         )
 
@@ -110,8 +110,8 @@ class TestCertificationResultTester(unittest.TestCase):
             global_success=False,
             partial_success=False,
             rho=1.0,
-            certified_regions=regions,
-            failed_regions=np.empty((0, 2, 1), dtype=np.float32),
+            certified_sublevel_regions=regions,
+            uncertified_regions=np.empty((0, 2, 1), dtype=np.float32),
             outside_sublevel_regions=np.empty((0, 2, 1), dtype=np.float32),
         )
 

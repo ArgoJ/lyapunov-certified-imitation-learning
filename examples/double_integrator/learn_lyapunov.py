@@ -212,8 +212,8 @@ def main() -> None:
                 state_indices=[0, 1],
                 state_labels=["x", "v"],
                 plot_3d=True,
-                certified_regions=cert_results.certified_regions,
-                uncertified_regions=cert_results.failed_regions,
+                certified_regions=cert_results.certified_sublevel_regions,
+                uncertified_regions=cert_results.uncertified_regions,
                 html_path=base_path / "lyapunov_plot.html",
             )
 

@@ -10,41 +10,24 @@ import numpy as np
 import plotly.graph_objects as go
 import torch as th
 
-from lcil.certification.adaptive import AdaptiveCertifier, AdaptiveCertificationConfig
+from lcil.certification import AdaptiveCertifier, LyapunovCertificationConfig
 from lcil.imitation_learning_mlp import MLPPolicy
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
 from lcil.lyapunov_learning.models import NeuralLyapunovCandidate
 from lcil.utils import MLP
 
-from cartpole_dyn import CartpoleDynamics
-from model import CartpoleAngleWrapper
+from . import (
+    CartpoleDynamics,
+    CartpoleAngleWrapper,
+    discover_latest_lyapunov_dir,
+    discover_latest_policy_dir,
+    load_policy_model
+)
 
 __logger__ = logging.getLogger("lcil.examples.cartpole.certify")
 
 _DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[2] / "results" / "cartpole"
 _DEFAULT_CERT_BOUND_SCALES = (0.15, 0.15, 0.05, 0.15)
-
-
-def _discover_latest_policy_dir(results_root: Path) -> Path:
-    candidates = sorted(
-        path for path in results_root.iterdir() if path.is_dir() and (path / "model.pt").exists()
-    )
-    if not candidates:
-        raise FileNotFoundError(f"No cartpole policy run with model.pt found under '{results_root}'.")
-    return candidates[-1]
-
-
-def _discover_latest_lyapunov_dir(policy_dir: Path) -> Path:
-    lyapunov_root = policy_dir / "lyapunov"
-    if not lyapunov_root.exists():
-        raise FileNotFoundError(f"No lyapunov directory found under '{policy_dir}'.")
-
-    candidates = sorted(checkpoint.parent for checkpoint in lyapunov_root.rglob("lyapunov_model.pt"))
-    if not candidates:
-        raise FileNotFoundError(
-            f"No Lyapunov checkpoint 'lyapunov_model.pt' found under '{lyapunov_root}'."
-        )
-    return candidates[-1]
 
 
 def _normalize_length(
@@ -266,9 +249,11 @@ def _point_to_dict(point) -> dict[str, object]:
     }
 
 
-def parse_args() -> argparse.Namespace:
-    default_policy_dir = _discover_latest_policy_dir(_DEFAULT_RESULTS_ROOT)
-    default_lyapunov_dir = _discover_latest_lyapunov_dir(default_policy_dir)
+def parse_args(
+    cert_config: LyapunovCertificationConfig,
+) -> argparse.Namespace:
+    default_policy_dir = discover_latest_policy_dir(_DEFAULT_RESULTS_ROOT)
+    default_lyapunov_dir = discover_latest_lyapunov_dir(default_policy_dir)
 
     parser = argparse.ArgumentParser(
         description="Adaptive cartpole certification analysis using the adaptive ABCrown/LiRPA pipeline."
@@ -342,14 +327,13 @@ def main() -> None:
         args.rho_min = float(lyap_box_summary["rho_min"])
         args.rho_max = float(lyap_box_summary["rho_max"])
 
-    certification_config = AdaptiveCertificationConfig(
+    certification_config = LyapunovCertificationConfig(
         state_dim=state_dim,
         cert_bounds=cert_bounds,
         kappa=float(lyapunov_training_config.kappa),
         bins_per_dim=tuple(int(value) for value in bins_per_dim),
         center_refinement_factor=tuple(float(value) for value in center_refinement_factor),
         origin_exclusion=float(args.origin_exclusion),
-        lirpa_bound_method=args.lirpa_bound_method,
         sublevel_tolerance=float(lyapunov_training_config.condition_tolerance),
         condition_tolerance=float(lyapunov_training_config.condition_tolerance),
         condition_margin=(

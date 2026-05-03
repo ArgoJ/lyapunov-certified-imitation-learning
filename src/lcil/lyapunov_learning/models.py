@@ -1,7 +1,9 @@
 import torch as th
 import torch.nn as nn
+from pathlib import Path
+from typing import Any
 
-from ..utils.base_models import ICNN, MLP
+from ..utils.base_models import ICNN, MLP, load_feature_net, save_feature_net
 
 
 class LyapunovNet(nn.Module):
@@ -80,6 +82,62 @@ class NeuralLyapunovCandidate(nn.Module):
             keepdim=True,
         )
         return feature_term + linear_term
+
+    def save(self, path: str | Path) -> None:
+        checkpoint_path = Path(path)
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
+        feature_net_path = checkpoint_path.with_name(
+            checkpoint_path.stem + "_feature_net.pt"
+        )
+        save_feature_net(self.feature_net, feature_net_path)
+
+        model_payload = {
+            "state_dict": self.state_dict(),
+            "feature_net_path": feature_net_path.name,
+            "state_dim": self.state_dim,
+            "eps": self.eps,
+        }
+        th.save(model_payload, checkpoint_path)
+
+    @classmethod
+    def load(
+        cls,
+        path: str | Path,
+        map_location: th.device | str = "cpu",
+        strict: bool = True,
+        feature_net_cls: type[nn.Module] | None = None,
+        feature_net_args: tuple[Any, ...] | None = None,
+        feature_net_kwargs: dict[str, Any] | None = None,
+    ) -> "NeuralLyapunovCandidate":
+        checkpoint_path = Path(path)
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(f"No checkpoint found at '{checkpoint_path}'.")
+        
+        payload = th.load(checkpoint_path, map_location=map_location, weights_only=True)
+        state_dim = payload["state_dim"]
+        eps = payload["eps"]
+
+        feature_net_path = checkpoint_path.with_name(payload["feature_net_path"])
+        feature_net = load_feature_net(
+            feature_net_path,
+            map_location=map_location,
+            strict=strict,
+            feature_net_cls=feature_net_cls,
+            feature_net_args=feature_net_args,
+            feature_net_kwargs=feature_net_kwargs,
+        )
+        
+        model = cls(
+            feature_net=feature_net,
+            state_dim=state_dim,
+            eps=eps,
+            x_star=payload["state_dict"].get("x_star", None),
+        ).to(map_location)
+        model.load_state_dict(payload["state_dict"], strict=strict)
+        model.eval()
+        return model
+
 
 
 class QuadraticLyapunovCandidate(nn.Module):

@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from lcil.utils import RK4Integrator
 
-from sys_cfg import PendulumOnCartConfig
+from .sys_cfg import PendulumOnCartConfig
 
 
 class CartpoleContinuousDynamics(nn.Module):
