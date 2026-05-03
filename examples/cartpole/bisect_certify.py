@@ -46,20 +46,6 @@ class BisectCertifyScriptConfig(ArgumentParserConfig):
     save_dir: str | None = config_field(default=None, help="Optional directory where certification details and tester results are written.")
 
 
-def _normalize_length(
-    values: Sequence[float] | Sequence[int],
-    state_dim: int,
-    *,
-    name: str,
-) -> tuple[float, ...] | tuple[int, ...]:
-    if len(values) == 1:
-        repeated = tuple(values[0] for _ in range(state_dim))
-        return repeated
-    if len(values) != state_dim:
-        raise ValueError(f"{name} must have length 1 or {state_dim}, got {len(values)}.")
-    return tuple(values)
-
-
 def _build_script_defaults() -> BisectCertifyScriptConfig:
     default_policy_dir = discover_latest_policy_dir(_DEFAULT_RESULTS_ROOT)
     default_lyapunov_dir = discover_latest_lyapunov_dir(default_policy_dir)
@@ -154,73 +140,12 @@ def _load_lyapunov_model(
     return lyap_model
 
 
-def _build_cert_bounds(
-    policy_model: CartpoleAngleWrapper,
-    scales: Sequence[float],
-) -> np.ndarray:
-    feature_net = policy_model.net
-    state_bounds = np.vstack(
-        [feature_net.global_config.constraints.lbx, feature_net.global_config.constraints.ubx]
-    ).astype(np.float32)
-    cert_scales = np.asarray(scales, dtype=np.float32).reshape(1, -1)
-    return state_bounds * cert_scales
-
-
-def _sample_cert_box_values(
-    lyap_model: NeuralLyapunovCandidate,
-    cert_bounds: np.ndarray,
-    device: th.device,
-) -> dict[str, float]:
-    bounds = th.as_tensor(cert_bounds, dtype=th.float32, device=device)
-    per_dim_endpoints = [bounds[:, idx] for idx in range(bounds.shape[1])]
-    corners = th.cartesian_prod(*per_dim_endpoints)
-    center = bounds.mean(dim=0, keepdim=True)
-    clipped_origin = th.clamp(th.zeros_like(center), min=bounds[0], max=bounds[1])
-    samples = th.cat([corners, center, clipped_origin], dim=0)
-
-    with th.no_grad():
-        values = lyap_model(samples).reshape(-1)
-
-    positive_values = values[values > 0.0]
-    max_value = float(values.max().item()) if values.numel() > 0 else 0.0
-    min_positive = float(positive_values.min().item()) if positive_values.numel() > 0 else 0.0
-    median_positive = float(positive_values.median().item()) if positive_values.numel() > 0 else 0.0
-
-    rho_max = max(1e-2, max_value)
-    rho_min = max(1e-3, 0.05 * rho_max)
-
-    return {
-        "num_samples": float(samples.shape[0]),
-        "center_value": float(values[-2].item()),
-        "origin_value": float(values[-1].item()),
-        "min_positive": min_positive,
-        "median_positive": median_positive,
-        "max_value": max_value,
-        "rho_min": rho_min,
-        "rho_max": rho_max,
-    }
-
-
-def _format_bounds(bounds: np.ndarray) -> str:
-    lb = ", ".join(f"{float(value):.4g}" for value in bounds[0].tolist())
-    ub = ", ".join(f"{float(value):.4g}" for value in bounds[1].tolist())
-    return f"lb=[{lb}], ub=[{ub}]"
-
-
 def main() -> None:
     script_config, certification_config = parse_args()
     device = th.device(script_config.device)
 
     policy_dir = Path(script_config.policy_dir).resolve()
     lyapunov_dir = Path(script_config.lyapunov_dir).resolve()
-    lyapunov_training_config = LyapunovTrainingConfig.load(lyapunov_dir / "training_config.json")
-    state_dim = int(lyapunov_training_config.state_dim)
-
-    cert_bound_scales = _normalize_length(
-        [float(value) for value in script_config.cert_bound_scales],
-        state_dim,
-        name="cert_bound_scales",
-    )
 
     policy_model = load_policy_model(policy_dir, device)
     lyap_model = _load_lyapunov_model(lyapunov_dir, device=device)
@@ -228,43 +153,15 @@ def main() -> None:
     dyn_model = CartpoleDynamics(dt=policy_model.net.global_config.dt).to(device)
     dyn_model.eval()
 
-    cert_bounds = _build_cert_bounds(policy_model, cert_bound_scales)
-    lyap_box_summary = _sample_cert_box_values(lyap_model, cert_bounds, device)
-
-    certification_config = replace(
-        certification_config,
-        state_dim=state_dim,
-        cert_bounds=cert_bounds,
-    )
-
-    if script_config.rho_estimate is None:
-        rho_estimate = max(
-            float(lyap_box_summary["median_positive"]),
-            float(lyap_box_summary["rho_min"]),
-            1e-3,
-        )
-    else:
-        rho_estimate = max(float(script_config.rho_estimate), 1e-3)
+    rho_estimate = script_config.rho_estimate
 
     save_dir = (
         Path(script_config.save_dir).resolve()
         if script_config.save_dir is not None
         else (lyapunov_dir / "bisect_certification").resolve()
     )
+    save_dir.mkdir(parents=True, exist_ok=True)
 
-    __logger__.info("Cartpole bisect certification setup")
-    __logger__.info("  policy dir: %s", policy_dir)
-    __logger__.info("  lyapunov dir: %s", lyapunov_dir)
-    __logger__.info("  save dir: %s", save_dir)
-    __logger__.info("  cert bounds: %s", _format_bounds(cert_bounds))
-    __logger__.info(
-        "  sampled V on cert box: center=%.6f, origin=%.6f, min_positive=%.6f, median_positive=%.6f, max=%.6f",
-        float(lyap_box_summary["center_value"]),
-        float(lyap_box_summary["origin_value"]),
-        float(lyap_box_summary["min_positive"]),
-        float(lyap_box_summary["median_positive"]),
-        float(lyap_box_summary["max_value"]),
-    )
     __logger__.info("  using rho estimate %.6f", rho_estimate)
 
     certifier = BisectCertifier(

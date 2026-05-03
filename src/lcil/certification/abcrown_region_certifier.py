@@ -242,8 +242,14 @@ class ABCrownRegionCertifier:
 
         status = str(result.status).strip()
         elapsed = str(result.stats.get("elapsed", "N/A"))
-        bab_vals = result.stats.get("bab", list())
-        bab_violation = bab_vals[1] if len(bab_vals) > 0 else "N/A"
+
+        if self._is_verified_status(status):
+            __logger__.info("Region verified by ABCrown in %ss.", elapsed)
+            bab_vals = result.stats.get("bab", list())
+            bab_violation = bab_vals[1] if len(bab_vals) > 1 else "N/A"
+        else:
+            bab_violation = "N/A"
+        __logger__.info(bab_vals)
         __logger__.info("ABCrown solver status: %s after %ss with violation %s", status, elapsed, bab_violation)
         return ABCrownRegionVerification(
             status=status,
