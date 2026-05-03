@@ -145,12 +145,19 @@ class ABCrownRegionCertifier:
         return normalized.startswith("unsafe")
 
     @staticmethod
+    def _format_bab_violation(value: Any) -> str:
+        if isinstance(value, th.Tensor):
+            if value.numel() != 1:
+                return str(value)
+            return f"{float(value.detach().cpu().item()):.3f}"
+        if isinstance(value, (int, float)):
+            return f"{float(value):.3f}"
+        return str(value)
+
+    @staticmethod
     def _extract_bab_violation(bab_vals: Any) -> str:
-        if isinstance(bab_vals, (list, tuple)):
-            if len(bab_vals) > 1 and not isinstance(bab_vals[1], (list, tuple)):
-                return str(bab_vals[1])
-            if len(bab_vals) > 0 and isinstance(bab_vals[0], (list, tuple)) and len(bab_vals[0]) > 1:
-                return str(bab_vals[0][1])
+        if isinstance(bab_vals, (list, tuple)) and len(bab_vals) > 0 and isinstance(bab_vals[0], (list, tuple)) and len(bab_vals[0]) > 1:
+            return f"{float(bab_vals[0][1].detach().cpu().item()):.3f}"
         return "N/A"
 
     def _setup_verifier(self) -> LyapunovMultiOutputVerifier:
