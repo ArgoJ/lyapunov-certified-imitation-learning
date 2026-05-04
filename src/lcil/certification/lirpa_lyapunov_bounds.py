@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import torch as th
+import torch.nn as nn
+import logging
+
 from contextlib import nullcontext
 from pkg_logger import suppress_native_output
 from dataclasses import dataclass
-
-import torch as th
-import torch.nn as nn
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
+__logger__ = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class LyapunovRegionBounds:
@@ -30,6 +32,20 @@ class LyapunovRegionBounds:
         outside = self.outside_mask(threshold)
         boundary = ~(inside | outside)
         return inside, boundary, outside
+    
+    def get_sublevel_masked_regions(self, regions: th.Tensor, threshold: float) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """Return ``(inside, boundary, outside)`` region tensors for ``V(x) <= threshold``."""
+        inside_mask, boundary_mask, outside_mask = self.sublevel_masks(threshold)
+        inside_regions = regions[inside_mask]
+        boundary_regions = regions[boundary_mask]
+        outside_regions = regions[outside_mask]
+        __logger__.info(
+            "Classified %d / %d regions as outside sublevel: V(x) > %.4f.",
+            len(outside_regions),
+            len(regions),
+            threshold,
+        )
+        return inside_regions, boundary_regions, outside_regions
 
 
 class LiRPALyapunovRegionBounds:

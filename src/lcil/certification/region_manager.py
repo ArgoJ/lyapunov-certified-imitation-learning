@@ -19,6 +19,9 @@ class RegionTable:
     upper_v: th.Tensor       # (N,)
     parent_ids: th.Tensor    # (N,), -1 for roots
     depth: th.Tensor         # (N,)
+    core_status: th.Tensor   # (N,), -1 for cex, 0 for unknown, 1 for core
+    complete_safe_max_rho: th.Tensor  # (N,)
+    
 
     @classmethod
     def empty(cls, device: th.device, state_dim: int) -> RegionTable:
@@ -32,6 +35,8 @@ class RegionTable:
             upper_v=empty_float.clone(),
             parent_ids=empty_long.clone(),
             depth=empty_long.clone(),
+            core_status=empty_long.clone(),
+            complete_safe_max_rho=empty_float.clone(),
         )
 
 @dataclass(frozen=True)
@@ -140,6 +145,13 @@ class RegionManager:
             upper_v=th.stack(new_upper, dim=0),
             parent_ids=th.tensor(new_parent_ids, dtype=th.long, device=self.device),
             depth=th.tensor(new_depth, dtype=th.long, device=self.device),
+            core_status=th.zeros(len(new_ids), dtype=th.long, device=self.device),
+            complete_safe_max_rho=th.full(
+                (len(new_ids),),
+                float("-inf"),
+                dtype=th.float32,
+                device=self.device,
+            ),
         )
 
         if self.region_table.ids.numel() == 0:
@@ -153,6 +165,8 @@ class RegionManager:
             upper_v=th.cat([self.region_table.upper_v, appended_table.upper_v], dim=0),
             parent_ids=th.cat([self.region_table.parent_ids, appended_table.parent_ids], dim=0),
             depth=th.cat([self.region_table.depth, appended_table.depth], dim=0),
+            core_status=th.cat([self.region_table.core_status, appended_table.core_status], dim=0),
+            complete_safe_max_rho=th.cat([self.region_table.complete_safe_max_rho, appended_table.complete_safe_max_rho], dim=0),
         )
 
     def cache_bounds_for_regions(
@@ -285,32 +299,80 @@ class RegionManager:
             return self.region_bounds
         return self.lookup_cached_region_bounds(regions)
 
-    def partition_regions_by_sublevel(
+    def _lookup_region_rows(self, regions: th.Tensor) -> th.Tensor:
+        """Return row indices in ``region_table`` for known regions.
+
+        Region ids are assigned monotonically and appended in the same order,
+        so the stored id also identifies the corresponding row position.
+        """
+        if len(regions) == 0:
+            return th.empty((0,), dtype=th.long, device=self.device)
+
+        row_indices: list[int] = []
+        for region in regions:
+            key = self.region_key(region)
+            if key not in self._region_ids:
+                raise KeyError("Region is not registered in the cache table.")
+            row_indices.append(int(self._region_ids[key]))
+
+        return th.tensor(row_indices, dtype=th.long, device=self.device)
+
+    def get_core_status(self, regions: th.Tensor) -> th.Tensor:
+        """Return cached core-certification status for ``regions``."""
+        rows = self._lookup_region_rows(regions)
+        return self.region_table.core_status[rows]
+
+    def get_complete_safe_mask(self, regions: th.Tensor, rho: float) -> th.Tensor:
+        """Return mask of regions already proven safe for all ``rho' <= rho``."""
+        rows = self._lookup_region_rows(regions)
+        return self.region_table.complete_safe_max_rho[rows] >= float(rho)
+
+    def update_core_status(
         self,
         regions: th.Tensor,
-        region_bounds: LyapunovRegionBounds,
-        rho: float,
         *,
-        sublevel_tolerance: float,
-    ) -> tuple[th.Tensor, th.Tensor]:
-        """Split regions into ``(relevant, irrelevant)`` using cached V bounds."""
+        verified_mask: th.Tensor,
+        counterexample_mask: th.Tensor,
+    ) -> None:
+        """Persist core-certification outcomes for ``regions``."""
         if len(regions) == 0:
-            return regions, regions[:0]
+            return
 
-        threshold = float(rho + sublevel_tolerance)
-        outside_mask = region_bounds.outside_mask(threshold)
-        relevant_regions = regions[~outside_mask]
-        irrelevant_regions = regions[outside_mask]
+        rows = self._lookup_region_rows(regions)
+        verified_rows = rows[verified_mask.to(device=self.device, dtype=th.bool)]
+        counterexample_rows = rows[counterexample_mask.to(device=self.device, dtype=th.bool)]
 
-        if len(irrelevant_regions) > 0:
-            __logger__.info(
-                "Classified %d / %d regions as irrelevant with V(x) > %.4f everywhere.",
-                len(irrelevant_regions),
-                len(regions),
-                threshold,
-            )
+        if len(verified_rows) > 0:
+            self.region_table.core_status[verified_rows] = 1
+        if len(counterexample_rows) > 0:
+            self.region_table.core_status[counterexample_rows] = -1
 
-        return relevant_regions, irrelevant_regions
+    def update_complete_safe_max_rho(
+        self,
+        regions: th.Tensor,
+        *,
+        verified_mask: th.Tensor,
+        rho: float,
+    ) -> None:
+        """Persist the largest rho for which ``regions`` were completely safe."""
+        if len(regions) == 0:
+            return
+
+        rows = self._lookup_region_rows(regions)
+        safe_rows = rows[verified_mask.to(device=self.device, dtype=th.bool)]
+        if len(safe_rows) == 0:
+            return
+
+        safe_rho = th.full(
+            (len(safe_rows),),
+            float(rho),
+            dtype=th.float32,
+            device=self.device,
+        )
+        self.region_table.complete_safe_max_rho[safe_rows] = th.maximum(
+            self.region_table.complete_safe_max_rho[safe_rows],
+            safe_rho,
+        )
 
     def split_regions(
         self,
