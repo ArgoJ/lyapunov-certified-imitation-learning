@@ -3,7 +3,7 @@ import importlib
 import sys
 import types
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from unittest import mock
 
@@ -41,8 +41,7 @@ ABCrownRegionCertifier = importlib.import_module(
     "lcil.certification.abcrown_region_certifier"
 ).ABCrownRegionCertifier
 cert_models_module = importlib.import_module("lcil.certification.models")
-LyapunovVerifier = cert_models_module.LyapunovVerifier
-LyapunovMultiOutputVerifier = cert_models_module.LyapunovMultiOutputVerifier
+LyapunovCoreVerifier = cert_models_module.LyapunovCoreVerifier
 
 
 @dataclass
@@ -116,6 +115,10 @@ class _FakeOutputVars:
     def __init__(self, dim: int):
         self.dim = dim
 
+    @property
+    def shape(self) -> tuple[int]:
+        return (self.dim,)
+
     def __getitem__(self, idx: int) -> _FakeOutputVar:
         if idx < 0 or idx >= self.dim:
             raise IndexError(idx)
@@ -150,6 +153,7 @@ class _FakeVerificationSpec:
 @dataclass
 class _FakeSolveResult:
     status: str
+    stats: dict[str, Any] = field(default_factory=dict)
 
 
 class _FakeABCrownSolver:

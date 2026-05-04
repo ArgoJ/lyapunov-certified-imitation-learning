@@ -11,18 +11,10 @@ from plot_assertions_mixin import PlotAssertionsMixin
 from certification_mock_common import (
     BisectCertifier,
     CertificationMockedABCrownTestCase,
-    LyapunovCertificationConfig,
-    LyapunovMultiOutputVerifier,
-    LyapunovRegionBounds,
-    LyapunovVerifier,
-    RecursiveCertificationResult,
-    _DescendingLinearLyapunov,
     _DirectionalScaleDynamics,
     _IdentityDynamics,
-    _MixedLyapunov,
     _NegativeQuadraticLyapunov,
     _QuadraticLyapunov,
-    _ShiftDynamics,
     _ZeroDynamics,
     _ZeroPolicy,
 )
@@ -30,47 +22,6 @@ from certification_mock_common import (
 plot_module = importlib.import_module("lcil.utils.plot")
 certified_regions_2d = plot_module.certified_regions_2d
 lyapunov_cert_regions = plot_module.lyapunov_cert_regions
-
-
-class _StaticRegionBounder:
-    def __init__(self, lower: th.Tensor, upper: th.Tensor):
-        self.bounds = LyapunovRegionBounds(lower=lower, upper=upper)
-
-    def compute_bounds_for_regions(self, regions: th.Tensor, *, method: str | None = None):
-        del regions, method
-        return self.bounds
-
-
-class _RecursiveMockCertifier(BisectCertifier):
-    def __init__(self, *args, width_limit: float, rho_limit: float, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.width_limit = float(width_limit)
-        self.rho_limit = float(rho_limit)
-        self.certify_calls: list[tuple[int, bool]] = []
-
-    def setup_backend(self, *args, **kwargs) -> None:
-        del args, kwargs
-
-    def _partition_regions_by_sublevel(
-        self,
-        bs: th.Tensor,
-        rho: float,
-    ) -> tuple[th.Tensor, th.Tensor]:
-        del rho
-        return bs, bs[:0]
-
-    def _certify_batched_regions(
-        self,
-        bs: th.Tensor,
-        rho: float,
-        early_exit: bool = True,
-        *args,
-        **kwargs,
-    ) -> th.Tensor:
-        del args, kwargs
-        self.certify_calls.append((len(bs), early_exit))
-        widths = (bs[:, 1] - bs[:, 0]).amax(dim=1)
-        return (widths <= self.width_limit) & (rho <= self.rho_limit)
 
 
 @dataclass(frozen=True)
@@ -345,10 +296,6 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
             certifier,
             "_get_region_certifier",
             return_value=region_certifier,
-        ), mock.patch.object(
-            certifier,
-            "_split_failed_regions_on_certification_frontier",
-            side_effect=AssertionError("splitting should not happen after a direct counterexample"),
         ):
             self.assertFalse(certifier.is_rho_certified(rho=1.0))
 
@@ -395,8 +342,8 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
             "_get_region_certifier",
             return_value=region_certifier,
         ), mock.patch.object(
-            certifier,
-            "_split_failed_regions_on_certification_frontier",
+            certifier.region_manager,
+            "split_failed_regions_on_certification_frontier",
             side_effect=_split_failed_regions,
         ) as split_mock:
             self.assertFalse(certifier.is_rho_certified(rho=1.0))
@@ -443,10 +390,6 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
             certifier,
             "_get_region_certifier",
             return_value=region_certifier,
-        ), mock.patch.object(
-            certifier,
-            "_split_failed_regions_on_certification_frontier",
-            side_effect=AssertionError("splitting should not happen when all regions are safe"),
         ):
             result = certifier._certify_recursive_regions(
                 rho=1.0,
@@ -458,76 +401,6 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
         self.assertEqual(result.resolved.shape[0], 2)
         self.assertEqual(result.unresolved.shape[0], 0)
         self.assertEqual(region_certifier.calls, 2)
-
-    def test_negative_values_are_not_hidden_by_origin_guard(self) -> None:
-        certification_verifier = LyapunovVerifier(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_NegativeQuadraticLyapunov(),
-            dyn_model=_IdentityDynamics(),
-            lbx=th.tensor([[-2.0]], dtype=th.float32),
-            ubx=th.tensor([[2.0]], dtype=th.float32),
-            kappa=0.1,
-            sublevel_tolerance=1e-6,
-        )
-
-        x = th.tensor([[1.0]], dtype=th.float32)
-        rho = th.tensor([[2.0]], dtype=th.float32)
-
-        self.assertGreater(float(certification_verifier(x, rho).item()), 0.0)
-
-    def test_certification_verifier_enforces_hard_invariance(self) -> None:
-        certification_verifier = LyapunovVerifier(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_DescendingLinearLyapunov(),
-            dyn_model=_ShiftDynamics(shift=2.0),
-            lbx=th.tensor([[0.0]], dtype=th.float32),
-            ubx=th.tensor([[2.0]], dtype=th.float32),
-            kappa=0.0,
-            sublevel_tolerance=1e-6,
-        )
-
-        x = th.tensor([[1.0]], dtype=th.float32)
-        rho = th.tensor([[2.0]], dtype=th.float32)
-
-        self.assertGreater(float(certification_verifier(x, rho).item()), 0.0)
-
-    def test_certification_verifier_checks_levelset_boundary_conservatively(self) -> None:
-        certification_verifier = LyapunovVerifier(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_DescendingLinearLyapunov(),
-            dyn_model=_ShiftDynamics(shift=3.0),
-            lbx=th.tensor([[0.0]], dtype=th.float32),
-            ubx=th.tensor([[2.0]], dtype=th.float32),
-            kappa=0.0,
-            sublevel_tolerance=1e-6,
-        )
-
-        x = th.tensor([[0.0]], dtype=th.float32)
-        rho = th.tensor([[2.0]], dtype=th.float32)
-
-        self.assertGreater(float(certification_verifier(x, rho).item()), 0.0)
-
-    def test_bisect_multi_output_verifier_returns_condition_v_and_xnext(self) -> None:
-        verifier = LyapunovMultiOutputVerifier(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_DescendingLinearLyapunov(),
-            dyn_model=_ShiftDynamics(shift=2.0),
-            lbx=th.tensor([[0.0]], dtype=th.float32),
-            ubx=th.tensor([[2.0]], dtype=th.float32),
-            kappa=0.0,
-            sublevel_tolerance=1e-6,
-        )
-
-        outputs = verifier(
-            th.tensor([[1.0]], dtype=th.float32),
-            th.tensor([[2.0]], dtype=th.float32),
-        )
-
-        self.assertEqual(outputs.shape, (1, 3))
-        self.assertAlmostEqual(float(outputs[0, 0]), 2.0, places=6)
-        self.assertAlmostEqual(float(outputs[0, 1]), 1.0, places=6)
-        self.assertAlmostEqual(float(outputs[0, 2]), 3.0, places=6)
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

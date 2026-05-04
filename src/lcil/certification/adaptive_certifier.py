@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import torch as th
 import torch.nn as nn
 
-from .abcrown_region_certifier import ABCrownRegionCertifier
+from .abcrown_region_certifier import CompleteABCrownCertifier
 from .config import LyapunovCertificationConfig
 from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds, LyapunovRegionBounds
 from .region_builder import RegionBuilder
@@ -111,7 +111,7 @@ class AdaptiveCertifier:
         self.last_result: AdaptiveCertificationResult | None = None
 
         self._region_bounder: LiRPALyapunovRegionBounds | None = None
-        self._abcrown_certifier: ABCrownRegionCertifier | None = None
+        self._abcrown_certifier: CompleteABCrownCertifier | None = None
 
     def _empty_regions(self) -> th.Tensor:
         return th.empty((0, 2, self.config.state_dim), dtype=th.float32, device=self.device)
@@ -270,8 +270,8 @@ class AdaptiveCertifier:
             )
         return self._region_bounder
 
-    def _build_abcrown_certifier(self) -> ABCrownRegionCertifier:
-        return ABCrownRegionCertifier(
+    def _build_abcrown_certifier(self) -> CompleteABCrownCertifier:
+        return CompleteABCrownCertifier(
             policy_model=self.policy_model,
             lyap_model=self.lyap_model,
             dyn_model=self.dyn_model,
@@ -317,7 +317,7 @@ class AdaptiveCertifier:
         if self.region_bounds is None:
             self.cache_region_bounds()
 
-    def _ensure_abcrown_backend(self) -> ABCrownRegionCertifier:
+    def _ensure_abcrown_backend(self) -> CompleteABCrownCertifier:
         if self._abcrown_certifier is None:
             self._abcrown_certifier = self._build_abcrown_certifier()
             self._abcrown_certifier.setup_backend()
@@ -405,7 +405,7 @@ class AdaptiveCertifier:
             )
             if is_certified.ndim != 1 or len(is_certified) != len(candidate_regions):
                 raise ValueError(
-                    "AdaptiveABCrownRegionCertifier.certify_regions().verified_mask must return one boolean per candidate region. "
+                    "AdaptiveCompleteABCrownCertifier.certify_regions().verified_mask must return one boolean per candidate region. "
                     f"Expected {len(candidate_regions)} values, got shape {tuple(is_certified.shape)}."
                 )
             inside_is_certified = is_certified[:pending_inside_count]

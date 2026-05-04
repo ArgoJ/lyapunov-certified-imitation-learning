@@ -8,7 +8,7 @@ from numpy.typing import NDArray
 
 from .bisect_certifier import RegionCertificationResult
 from .config import LyapunovCertificationConfig
-from .models import LyapunovVerifier
+from .models import LyapunovCoreVerifier
 from ..utils.base_config import JsonDataclass
 
 __logger__ = logging.getLogger(__name__)
@@ -92,17 +92,11 @@ class CertificationResultTester:
         self.lyap_model = lyap_model.to(self.device).eval()
         self.dyn_model = dyn_model.to(self.device).eval()
 
-        lbx = th.tensor(config.cert_bounds[0], dtype=th.float32, device=self.device).unsqueeze(0)
-        ubx = th.tensor(config.cert_bounds[1], dtype=th.float32, device=self.device).unsqueeze(0)
-
-        self.verifier = LyapunovVerifier(
+        self.verifier = LyapunovCoreVerifier(
             policy_model=self.policy_model,
             lyap_model=self.lyap_model,
             dyn_model=self.dyn_model,
-            lbx=lbx,
-            ubx=ubx,
             kappa=config.kappa,
-            sublevel_tolerance=config.sublevel_tolerance,
             condition_margin=config.condition_margin,
         ).to(self.device).eval()
 

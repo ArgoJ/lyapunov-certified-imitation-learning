@@ -21,8 +21,9 @@ from rich.progress import (
 
 from .config import LyapunovCertificationConfig
 from .region_builder import RegionBuilder
-from .abcrown_region_certifier import ABCrownRegionCertifier
-from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds
+from .region_manager import RegionManager
+from .abcrown_region_certifier import CompleteABCrownCertifier
+from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds, LyapunovRegionBounds
 from ..utils.helpers import none_to_float
 
 __logger__ = logging.getLogger(__name__)
@@ -194,52 +195,18 @@ class BisectCertifier:
 
         self.bounds = self._resolve_bounds(config.cert_bounds, device)
 
-        self.regions = None
         self.region_builder: RegionBuilder | None = None
         self.bounder: LiRPALyapunovRegionBounds | None = None
-        self.certifier: ABCrownRegionCertifier | None = None
+        self.certifier: CompleteABCrownCertifier | None = None
+        self.region_manager = RegionManager(
+            region_builder=self._get_region_builder(),
+        )
         self.details = None
 
 
     # ==========================================
-    # COMMON UTILITIES
+    # BUILDER AND GETTER
     # ==========================================
-    def _build_region_builder(self) -> RegionBuilder:
-        """Construct a region builder for the current certification bounds."""
-        return RegionBuilder(
-            bounds=self.bounds,
-            bins_per_dim=self.config.bins_per_dim,
-            center_refinement_factor=self.config.center_refinement_factor,
-            origin_exclusion=self.config.origin_exclusion,
-            device=self.device,
-        )
-
-    def _get_region_builder(self) -> RegionBuilder:
-        """Return the cached region builder used for region refinement."""
-        if self.region_builder is None:
-            self.region_builder = self._build_region_builder()
-        return self.region_builder
-
-    def _build_region_certifier(self) -> ABCrownRegionCertifier:
-        """Construct the shared per-region ABCrown certifier."""
-        return ABCrownRegionCertifier(
-            policy_model=self.policy_model,
-            lyap_model=self.lyap_model,
-            dyn_model=self.dyn_model,
-            config=self.config,
-            device=self.device,
-        )
-
-    def _get_region_certifier(self) -> ABCrownRegionCertifier:
-        """Return the cached ABCrown region certifier."""
-        if self.certifier is None:
-            self.certifier = self._build_region_certifier()
-        return self.certifier
-
-    def _build_safe_output_constraint(self, y, rho: float):
-        """Build the shared safe predicate for the multi-output verifier."""
-        return self._get_region_certifier()._build_safe_output_constraint(y=y, rho=rho)
-
     def _build_region_bounder(self) -> LiRPALyapunovRegionBounds:
         """Construct a LiRPA helper for classifying regions against ``V(x) <= rho``."""
         return LiRPALyapunovRegionBounds(
@@ -256,12 +223,93 @@ class BisectCertifier:
             self.bounder = self._build_region_bounder()
         return self.bounder
 
+    def _build_region_certifier(self) -> CompleteABCrownCertifier:
+        """Construct the shared per-region ABCrown certifier."""
+        return CompleteABCrownCertifier(
+            policy_model=self.policy_model,
+            lyap_model=self.lyap_model,
+            dyn_model=self.dyn_model,
+            config=self.config,
+            device=self.device,
+        )
+
+    def _get_region_certifier(self) -> CompleteABCrownCertifier:
+        """Return the cached ABCrown region certifier."""
+        if self.certifier is None:
+            self.certifier = self._build_region_certifier()
+        return self.certifier
+
+    def _build_region_builder(self) -> RegionBuilder:
+        """Construct a region builder for the current certification bounds."""
+        return RegionBuilder(
+            bounds=self.bounds,
+            bins_per_dim=self.config.bins_per_dim,
+            center_refinement_factor=self.config.center_refinement_factor,
+            origin_exclusion=self.config.origin_exclusion,
+            device=self.device,
+        )
+
+    def _get_region_builder(self) -> RegionBuilder:
+        """Return the cached region builder used for region refinement."""
+        if self.region_builder is None:
+            self.region_builder = self._build_region_builder()
+        return self.region_builder
+
+    
+    # ==========================================
+    # REGION UTILS
+    # ==========================================
+    @property
+    def regions(self) -> th.Tensor | None:
+        return self.region_manager.regions
+
+    @regions.setter
+    def regions(self, regions: th.Tensor | None) -> None:
+        if regions is None:
+            self.region_manager.clear_regions()
+            return
+        self.region_manager.set_regions(regions)
+
+    def _ensure_region_bounds(
+        self,
+        regions: th.Tensor | None = None,
+        *,
+        make_current: bool,
+    ) -> tuple[th.Tensor, LyapunovRegionBounds]:
+        """Return region bounds, computing and caching them on demand."""
+        target_regions, cached_region_bounds = self.region_manager.ensure_cached(
+            regions,
+            make_current=make_current,
+        )
+        if cached_region_bounds is not None:
+            return target_regions, cached_region_bounds
+
+        computed_region_bounds = self._get_region_bounder().compute_bounds_for_regions(
+            target_regions,
+            method=self.config.cert_method,
+        )
+
+        cached_region_bounds = self.region_manager.cache_region_bounds(
+            computed_region_bounds,
+            regions=target_regions,
+            make_current=make_current,
+        )
+        return target_regions, cached_region_bounds
+
+    def cache_region_bounds(self, regions: th.Tensor | None = None) -> LyapunovRegionBounds:
+        """Compute and cache V bounds for the current root certification regions."""
+        _, region_bounds = self._ensure_region_bounds(
+            regions,
+            make_current=True,
+        )
+        return region_bounds
+
     def _partition_regions_by_sublevel(
         self,
         bs: th.Tensor,
         rho: float,
     ) -> tuple[th.Tensor, th.Tensor]:
-        """Split regions into ``(relevant, irrelevant)`` using LiRPA bounds on ``V``.
+        """Split regions into ``(relevant, irrelevant)`` using V bounds.
 
         A region is irrelevant only when LiRPA proves ``V(x) > rho + tol`` over
         the entire box. Boundary-touching boxes remain relevant candidates and
@@ -270,25 +318,17 @@ class BisectCertifier:
         if len(bs) == 0:
             return bs, bs[:0]
 
-        threshold = float(rho + self.config.sublevel_tolerance)
-        region_bounds = self._get_region_bounder().compute_bounds_for_regions(
+        _, region_bounds = self._ensure_region_bounds(
             bs,
-            method=self.config.cert_method,
+            make_current=bs is self.regions,
         )
-        outside_mask = region_bounds.outside_mask(threshold)
-        relevant_bs = bs[~outside_mask]
-        irrelevant_bs = bs[outside_mask]
 
-        if len(irrelevant_bs) == 0:
-            return bs, bs[:0]
-
-        __logger__.info(
-            "Classified %d / %d regions as irrelevant with V(x) > %.6f everywhere.",
-            len(irrelevant_bs),
-            len(bs),
-            threshold,
+        return self.region_manager.partition_regions_by_sublevel(
+            bs,
+            region_bounds,
+            rho,
+            sublevel_tolerance=self.config.sublevel_tolerance,
         )
-        return relevant_bs, irrelevant_bs
 
 
     # =========================================
@@ -317,22 +357,6 @@ class BisectCertifier:
     def _unpack_regions(bs: th.Tensor) -> tuple[th.Tensor, th.Tensor]:
         """Unpack ``(N, 2, state_dim)`` regions into lower/upper bounds."""
         return bs[:, 0], bs[:, 1]
-
-    def _split_failed_regions_on_certification_frontier(
-        self,
-        failed_bs: th.Tensor,
-        resolved_bs: th.Tensor,
-    ) -> tuple[th.Tensor, th.Tensor]:
-        """Split only unresolved boxes adjacent to already resolved boxes.
-
-        Returns ``(retry_regions, terminal_regions)`` where only
-        ``retry_regions`` remain on the certification frontier and should be
-        certified again.
-        """
-        return self._get_region_builder().split_regions_adjacent_to_reference(
-            failed_bs,
-            resolved_bs,
-        )
 
 
     # ========================================
@@ -398,9 +422,6 @@ class BisectCertifier:
         early_exit: bool = False,
     ) -> RecursiveCertificationResult:
         """Run recursive certification for a fixed ``rho`` over all regions."""
-        if self.regions is None:
-            raise RuntimeError("Certification regions are not initialized.")
-
         recursive_result = RecursiveCertificationResult.empty(
             state_dim=self.config.state_dim,
             device=self.device,
@@ -464,7 +485,7 @@ class BisectCertifier:
                         progress.update(task, completed=max_depth + 1)
                     break
 
-                pending_bs, terminal_failed_bs = self._split_failed_regions_on_certification_frontier(
+                pending_bs, terminal_failed_bs = self.region_manager.split_failed_regions_on_certification_frontier(
                     step_result.unresolved,
                     recursive_result.resolved,
                 )
@@ -634,7 +655,8 @@ class BisectCertifier:
 
         __logger__.info("Starting Lyapunov certification.")
 
-        self.regions = self._get_region_builder().build_regions()
+        self.region_manager.build_root_regions()
+        self.cache_region_bounds()
 
         if self.config.rho_min > rho_estimate:
             __logger__.warning(

@@ -12,17 +12,41 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
+from abc import ABC, abstractmethod
 from typing import Any
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pkg_logger import suppress_native_output
 
-from .models import LyapunovMultiOutputVerifier
 from .config import LyapunovCertificationConfig
+from .models import (
+    LyapunovCoreVerifier,
+    build_safe_inside_sublevel_constraint,
+    build_safe_outside_sublevel_constraint,
+    build_safe_lyap_condition_constraint,
+)
 
 __logger__ = logging.getLogger(__name__)
 
 
+# ========================================================
+# HELPER
+# ========================================================
+def _normalize_status(status: str) -> str:
+    return str(status).strip().lower()
+
+def _is_verified_status(status: str) -> bool:
+    normalized = _normalize_status(status)
+    return normalized == "verified" or normalized.startswith("safe")
+
+def _is_counterexample_status(status: str) -> bool:
+    normalized = _normalize_status(status)
+    return normalized.startswith("unsafe")
+
+
+# ========================================================
+# DATACLASSES
+# ========================================================
 @dataclass(frozen=True)
 class ABCrownRegionVerification:
     """Status-aware verification result for a single packed region."""
@@ -70,41 +94,35 @@ class _ABCrownAPI:
     output_vars_fn: Any
 
 
-class _ABCrownModelWrapper(nn.Module):
-    """Freeze rho so ABCrown sees a clean map ``x -> y``."""
-
-    def __init__(self, verifier: nn.Module, device: th.device):
-        super().__init__()
-        self.verifier = verifier
-        self.register_buffer("rho", th.tensor(0.0, dtype=th.float32, device=device))
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return self.verifier(x, self.rho)
-
-
-class ABCrownRegionCertifier:
+# ========================================================
+# BASE ABCROWN CERTIFIER
+# ========================================================
+class BaseABCrownCertifier(ABC):
     """Shared ABCrown backend for certifying packed regions one by one."""
 
     def __init__(
         self,
-        policy_model: nn.Module,
-        lyap_model: nn.Module,
-        dyn_model: nn.Module,
         config: LyapunovCertificationConfig,
         device: th.device = th.device("cpu"),
     ) -> None:
         self.config = config
         self.device = device
 
-        self.policy_model = policy_model.to(self.device).eval()
-        self.lyap_model = lyap_model.to(self.device).eval()
-        self.dyn_model = dyn_model.to(self.device).eval()
-        self.bounds = th.as_tensor(self.config.cert_bounds, dtype=th.float32, device=self.device)
-
         self._abcrown_api: _ABCrownAPI | None = None
         self.abcrown_config: Any = None
-        self.wrapped_model: _ABCrownModelWrapper | None = None
-        self.setup_backend()
+        self.verifier: nn.Module | None = None
+
+    @abstractmethod
+    def _setup_verifier(self) -> nn.Module:
+        """Set up and return a verifier module instance for ABCrown."""
+
+    @abstractmethod
+    def _output_dim(self) -> int:
+        """Return the verifier output dimension expected by the ABCrown spec."""
+
+    @abstractmethod
+    def _build_safe_output_constraint(self, y, rho: float):
+        """Build a safe output constraint for ABCrown based on the verifier output y and sublevel rho."""
 
     def _get_abcrown_api(self) -> _ABCrownAPI:
         if self._abcrown_api is None:
@@ -131,20 +149,6 @@ class ABCrownRegionCertifier:
         return nullcontext()
 
     @staticmethod
-    def _normalize_status(status: str) -> str:
-        return str(status).strip().lower()
-
-    @classmethod
-    def _is_verified_status(cls, status: str) -> bool:
-        normalized = cls._normalize_status(status)
-        return normalized == "verified" or normalized.startswith("safe")
-
-    @classmethod
-    def _is_counterexample_status(cls, status: str) -> bool:
-        normalized = str(status).strip().lower()
-        return normalized.startswith("unsafe")
-
-    @staticmethod
     def _format_bab_violation(value: Any) -> str:
         if isinstance(value, th.Tensor):
             if value.numel() != 1:
@@ -160,20 +164,8 @@ class ABCrownRegionCertifier:
             return f"{float(bab_vals[0][1].detach().cpu().item()):.3f}"
         return "N/A"
 
-    def _setup_verifier(self) -> LyapunovMultiOutputVerifier:
-        return LyapunovMultiOutputVerifier(
-            policy_model=self.policy_model,
-            lyap_model=self.lyap_model,
-            dyn_model=self.dyn_model,
-            lbx=self.bounds[0].unsqueeze(0),
-            ubx=self.bounds[1].unsqueeze(0),
-            kappa=self.config.kappa,
-            sublevel_tolerance=self.config.sublevel_tolerance,
-            condition_margin=self.config.condition_margin,
-        )
-
     def setup_backend(self) -> None:
-        if self.wrapped_model is not None and self.abcrown_config is not None:
+        if self.verifier is not None and self.abcrown_config is not None:
             return
 
         abcrown_api = self._get_abcrown_api()
@@ -195,9 +187,8 @@ class ABCrownRegionCertifier:
             ()
         )
 
-        verifier = self._setup_verifier()
-        self.wrapped_model = _ABCrownModelWrapper(verifier, self.device)
-        self.wrapped_model.eval()
+        self.verifier = self._setup_verifier()
+        self.verifier.eval()
 
         __logger__.info(
             "Configured ABCrown region backend with solver_batch_size=%d on device=%s.",
@@ -205,40 +196,23 @@ class ABCrownRegionCertifier:
             self.device.type,
         )
 
-    def _build_safe_output_constraint(self, y, rho: float):
-        safe_outside_sublevel = y[1] > (rho + self.config.sublevel_tolerance)
-        safe_positive = y[1] > (-self.config.condition_tolerance)
-        safe_decrease = y[0] > (-self.config.condition_tolerance)
-
-        safe_x_next = None
-        global_lb = self.bounds[0]
-        global_ub = self.bounds[1]
-        for idx in range(self.config.state_dim):
-            coord_safe = (y[idx + 2] > (float(global_lb[idx]) - self.config.condition_tolerance)) & (
-                y[idx + 2] < (float(global_ub[idx]) + self.config.condition_tolerance)
-            )
-            safe_x_next = coord_safe if safe_x_next is None else (safe_x_next & coord_safe)
-
-        return safe_outside_sublevel | (safe_positive & safe_decrease & safe_x_next)
-
     def verify_region(self, region: th.Tensor, rho: float) -> ABCrownRegionVerification:
         if region.shape != (2, self.config.state_dim):
             raise ValueError(
                 f"region must have shape (2, {self.config.state_dim}); got {tuple(region.shape)}."
             )
 
-        if self.wrapped_model is None or self.abcrown_config is None:
+        if self.verifier is None or self.abcrown_config is None:
             raise RuntimeError("Adaptive ABCrown backend is not initialized.")
 
         abcrown_api = self._get_abcrown_api()
         region = region.to(device=self.device, dtype=th.float32)
         lb = region[0]
         ub = region[1]
-        self.wrapped_model.rho.fill_(float(rho))
 
         with self._get_suppress_ctx():
             x = abcrown_api.input_vars_fn(self.config.state_dim)
-            y = abcrown_api.output_vars_fn(2 + self.config.state_dim)
+            y = abcrown_api.output_vars_fn(self._output_dim())
 
             input_constraint = (x >= lb) & (x <= ub)
             output_constraint = self._build_safe_output_constraint(y=y, rho=float(rho))
@@ -251,7 +225,7 @@ class ABCrownRegionCertifier:
             )
             solver = abcrown_api.solver_cls(
                 spec=spec,
-                computing_graph=self.wrapped_model,
+                computing_graph=self.verifier,
                 config=self.abcrown_config,
             )
             result = solver.solve()
@@ -263,8 +237,8 @@ class ABCrownRegionCertifier:
         __logger__.info("ABCrown solver status: %s after %ss with violation %s", status, elapsed, bab_violation)
         return ABCrownRegionVerification(
             status=status,
-            verified=self._is_verified_status(status),
-            counterexample_found=self._is_counterexample_status(status),
+            verified=_is_verified_status(status),
+            counterexample_found=_is_counterexample_status(status),
         )
 
     def certify_regions(
@@ -324,3 +298,112 @@ class ABCrownRegionCertifier:
             counterexample_mask=counterexample_mask,
             unknown_mask=unknown_mask,
         )
+
+
+# ========================================================
+# ABCROWN CERTIFIER VARIANTS
+# ========================================================
+class CompleteABCrownCertifier(BaseABCrownCertifier):
+    """ABCrown certifier combining sublevel set certification and core Lyapunov condition verification."""
+
+    def __init__(
+        self,
+        policy_model: nn.Module,
+        lyap_model: nn.Module,
+        dyn_model: nn.Module,
+        config: LyapunovCertificationConfig,
+        device: th.device = th.device("cpu"),
+    ) -> None:
+        super().__init__(config=config, device=device)
+        self.policy_model = policy_model.to(self.device).eval()
+        self.lyap_model = lyap_model.to(self.device).eval()
+        self.dyn_model = dyn_model.to(self.device).eval()
+        self.bounds = th.as_tensor(self.config.cert_bounds, dtype=th.float32, device=self.device)
+        self.setup_backend()
+    
+    def _setup_verifier(self) -> nn.Module:
+        return LyapunovCoreVerifier(
+            policy_model=self.policy_model,
+            lyap_model=self.lyap_model,
+            dyn_model=self.dyn_model,
+            kappa=self.config.kappa,
+            condition_margin=self.config.condition_margin,
+        )
+
+    def _output_dim(self) -> int:
+        return 2 + self.config.state_dim
+    
+    def _build_safe_output_constraint(self, y, rho: float):
+        safe_outside_sublevel = build_safe_outside_sublevel_constraint(y[1], rho, self.config.sublevel_tolerance)
+        safe_condition = build_safe_lyap_condition_constraint(y, self.config.condition_tolerance, self.bounds[0], self.bounds[1])
+        return safe_outside_sublevel | safe_condition
+
+
+class CoreABCrownCertifier(BaseABCrownCertifier):
+    """ABCrown certifier focused on verifying the core Lyapunov condition without explicit sublevel constraints."""
+
+    def __init__(
+        self,
+        policy_model: nn.Module,
+        lyap_model: nn.Module,
+        dyn_model: nn.Module,
+        config: LyapunovCertificationConfig,
+        device: th.device = th.device("cpu"),
+    ) -> None:
+        super().__init__(config=config, device=device)
+        self.policy_model = policy_model.to(self.device).eval()
+        self.lyap_model = lyap_model.to(self.device).eval()
+        self.dyn_model = dyn_model.to(self.device).eval()
+        self.bounds = th.as_tensor(self.config.cert_bounds, dtype=th.float32, device=self.device)
+        self.setup_backend()
+    
+    def _setup_verifier(self) -> nn.Module:
+        return LyapunovCoreVerifier(
+            policy_model=self.policy_model,
+            lyap_model=self.lyap_model,
+            dyn_model=self.dyn_model,
+            kappa=self.config.kappa,
+            condition_margin=self.config.condition_margin,
+        )
+
+    def _output_dim(self) -> int:
+        return 2 + self.config.state_dim
+    
+    def _build_safe_output_constraint(self, y, rho: float):
+        del rho
+        return build_safe_lyap_condition_constraint(y, self.config.condition_tolerance, self.bounds[0], self.bounds[1])
+    
+
+class RhoABCrownCertifier(BaseABCrownCertifier):
+    """ABCrown certifier for strict rho-sublevel inclusion."""
+
+    def __init__(
+        self,
+        lyap_model: nn.Module,
+        config: LyapunovCertificationConfig,
+        device: th.device = th.device("cpu"),
+    ) -> None:
+        """Initialize the RhoABCrownCertifier.
+
+        Parameters
+        ----------
+        lyap_model : nn.Module
+            Lyapunov model x -> V(x) to be certified for rho-sublevel inclusion.
+        config : LyapunovCertificationConfig
+            Configuration for the Lyapunov certification process.
+        device : th.device, optional
+            Device to run the certification on, by default th.device("cpu")
+        """
+        super().__init__(config=config, device=device)
+        self.lyap_model = lyap_model.to(self.device).eval()
+        self.bounds = th.as_tensor(self.config.cert_bounds, dtype=th.float32, device=self.device)
+        self.setup_backend()
+    
+    def _setup_verifier(self) -> nn.Module:
+        return self.lyap_model
+
+    def _output_dim(self) -> int:
+        return 1
+    
+    def _build_safe_output_constraint(self, y, rho: float):
+        return build_safe_inside_sublevel_constraint(y[0], rho, self.config.sublevel_tolerance)
