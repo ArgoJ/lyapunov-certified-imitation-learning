@@ -82,21 +82,29 @@ class TestBisectRegionBounds(CertificationMockedABCrownTestCase):
             "_get_region_bounder",
             return_value=bounder,
         ):
-            relevant_high, irrelevant_high = certifier._partition_regions_by_sublevel(
-                regions,
-                rho=1.5,
+            cached_regions, cached_bounds = certifier._ensure_region_bounds(
+                certifier.regions,
+                make_current=True,
             )
-            relevant_low, irrelevant_low = certifier._partition_regions_by_sublevel(
-                regions,
+            partition_high = certifier.region_manager.partition_certification_regions(
+                cached_regions,
+                region_bounds=cached_bounds,
+                rho=1.5,
+                sublevel_tolerance=certifier.config.sublevel_tolerance,
+            )
+            partition_low = certifier.region_manager.partition_certification_regions(
+                cached_regions,
+                region_bounds=cached_bounds,
                 rho=0.5,
+                sublevel_tolerance=certifier.config.sublevel_tolerance,
             )
 
         self.assertEqual(bounder.calls, 1)
         self.assertIsNotNone(certifier.region_manager.region_bounds)
-        self.assertEqual(relevant_high.shape[0], 1)
-        self.assertEqual(irrelevant_high.shape[0], 1)
-        self.assertEqual(relevant_low.shape[0], 0)
-        self.assertEqual(irrelevant_low.shape[0], 2)
+        self.assertEqual(partition_high.inside_core_unchecked_regions.shape[0], 1)
+        self.assertEqual(partition_high.irrelevant_regions.shape[0], 1)
+        self.assertFalse(partition_low.has_relevant_regions)
+        self.assertEqual(partition_low.irrelevant_regions.shape[0], 2)
 
     def test_partition_regions_by_sublevel_reuses_cached_child_region_bounds(self) -> None:
         certifier = self._make_certifier(
@@ -121,20 +129,28 @@ class TestBisectRegionBounds(CertificationMockedABCrownTestCase):
             "_get_region_bounder",
             return_value=bounder,
         ):
-            relevant_first, irrelevant_first = certifier._partition_regions_by_sublevel(
+            cached_children, cached_bounds = certifier._ensure_region_bounds(
                 children,
-                rho=1.0,
+                make_current=False,
             )
-            relevant_second, irrelevant_second = certifier._partition_regions_by_sublevel(
+            partition_first = certifier.region_manager.partition_certification_regions(
+                cached_children,
+                region_bounds=cached_bounds,
+                rho=1.0,
+                sublevel_tolerance=certifier.config.sublevel_tolerance,
+            )
+            partition_second = certifier.region_manager.partition_certification_regions(
                 children.clone(),
+                region_bounds=cached_bounds,
                 rho=0.5,
+                sublevel_tolerance=certifier.config.sublevel_tolerance,
             )
 
         self.assertEqual(bounder.calls, 1)
-        self.assertEqual(relevant_first.shape[0], 1)
-        self.assertEqual(irrelevant_first.shape[0], 1)
-        self.assertEqual(relevant_second.shape[0], 0)
-        self.assertEqual(irrelevant_second.shape[0], 2)
+        self.assertEqual(partition_first.inside_core_unchecked_regions.shape[0], 1)
+        self.assertEqual(partition_first.irrelevant_regions.shape[0], 1)
+        self.assertFalse(partition_second.has_relevant_regions)
+        self.assertEqual(partition_second.irrelevant_regions.shape[0], 2)
 
 
 if __name__ == "__main__":

@@ -37,9 +37,9 @@ LyapunovCertificationConfig = importlib.import_module(
 LyapunovRegionBounds = importlib.import_module(
     "lcil.certification.lirpa_lyapunov_bounds"
 ).LyapunovRegionBounds
-ABCrownRegionCertifier = importlib.import_module(
+CompleteABCrownCertifier = importlib.import_module(
     "lcil.certification.abcrown_region_certifier"
-).ABCrownRegionCertifier
+).CompleteABCrownCertifier
 cert_models_module = importlib.import_module("lcil.certification.models")
 LyapunovCoreVerifier = cert_models_module.LyapunovCoreVerifier
 
@@ -402,7 +402,7 @@ class CertificationMockedABCrownTestCase(unittest.TestCase):
         if config is None:
             state_dim = int(config_kwargs.pop("state_dim", 1))
             config = cls.make_config(state_dim=state_dim, **config_kwargs)
-        return ABCrownRegionCertifier(
+        return CompleteABCrownCertifier(
             policy_model=_ZeroPolicy() if policy_model is None else policy_model,
             lyap_model=_QuadraticLyapunov() if lyap_model is None else lyap_model,
             dyn_model=_IdentityDynamics() if dyn_model is None else dyn_model,
