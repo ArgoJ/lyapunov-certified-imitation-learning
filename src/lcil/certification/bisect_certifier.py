@@ -410,17 +410,16 @@ class BisectCertifier:
         boundary_complete_candidates = partition.boundary_complete_candidate_regions
 
         __logger__.info(
-            "rho=%.6f batch routing: total=%d inside=%d boundary=%d outside=%d cached_complete=%d cached_core=%d inside_core_cex=%d inside_core_unknown=%d boundary_core_unknown=%d boundary_complete=%d.",
+            "rho=%.6f batch routing: total=%d outside=%d cached_complete=%d cached_core=%d inside_core_cex=%d inside_core_unknown=%d inside_core_unchecked=%d boundary_core_unchecked=%d boundary_complete=%d.",
             float(rho),
             len(bs),
-            len(inside_bs),
-            len(boundary_bs),
-            len(irrelevant_bs),
-            len(cached_complete_safe_bs),
-            len(cached_core_safe_bs),
+            len(partition.irrelevant_regions),
+            len(partition.cached_complete_safe_regions),
+            len(partition.cached_core_safe_regions),
             len(cached_inside_core_cex_bs),
-            len(inside_core_unknown_bs),
-            len(boundary_core_unknown_bs),
+            len(cached_inside_core_unknown_bs),
+            len(inside_core_unchecked_bs),
+            len(boundary_core_unchecked_bs),
             len(boundary_complete_candidates),
         )
 
