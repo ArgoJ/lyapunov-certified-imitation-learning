@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 import logging
-
 import torch as th
 
 from dataclasses import dataclass
+from enum import IntEnum
 
 from .lirpa_lyapunov_bounds import LyapunovRegionBounds
 from .region_builder import RegionBuilder
 
 __logger__ = logging.getLogger(__name__)
+
+class CoreStatus(IntEnum):
+    COUNTEREXAMPLE = -1
+    UNCHECKED = 0
+    SAFE = 1
+    UNKNOWN = 2
+
 
 @dataclass
 class RegionTable:
@@ -19,7 +27,7 @@ class RegionTable:
     upper_v: th.Tensor       # (N,)
     parent_ids: th.Tensor    # (N,), -1 for roots
     depth: th.Tensor         # (N,)
-    core_status: th.Tensor   # (N,), -1 for cex, 0 for unknown, 1 for core
+    core_status: th.Tensor   # (N,), -1 for cex, 0 for unchecked, 1 for safe, 2 for tried-unknown
     complete_safe_max_rho: th.Tensor  # (N,)
     
 
@@ -43,6 +51,45 @@ class RegionTable:
 class RegionBatch:
     ids: th.Tensor
     regions: th.Tensor
+
+
+@dataclass(frozen=True)
+class CertificationRegionPartition:
+    """Cached certification partition for one region batch at a fixed rho."""
+
+    irrelevant_regions: th.Tensor
+    cached_complete_safe_regions: th.Tensor
+    cached_core_safe_regions: th.Tensor
+    cached_inside_counterexample_regions: th.Tensor
+    cached_inside_unknown_regions: th.Tensor
+    inside_core_unchecked_regions: th.Tensor
+    boundary_core_unchecked_regions: th.Tensor
+    boundary_complete_candidate_regions: th.Tensor
+
+    @property
+    def has_relevant_regions(self) -> bool:
+        """Whether any inside or boundary regions remain after cache partitioning."""
+        return any(
+            regions.numel() > 0
+            for regions in (
+                self.cached_complete_safe_regions,
+                self.cached_core_safe_regions,
+                self.cached_inside_counterexample_regions,
+                self.cached_inside_unknown_regions,
+                self.inside_core_unchecked_regions,
+                self.boundary_core_unchecked_regions,
+                self.boundary_complete_candidate_regions,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class VerificationRegionUpdate:
+    """Resolved and failed regions produced by one certification pass."""
+
+    verified_regions: th.Tensor
+    failed_regions: th.Tensor
+    counterexample_found: bool = False
 
 
 class RegionManager:
@@ -70,6 +117,17 @@ class RegionManager:
         self.regions = None
         self.region_bounds = None
         self._cached_regions = None
+
+    def empty_regions(self) -> th.Tensor:
+        """Return an empty packed region tensor on the managed device."""
+        return th.empty((0, 2, self.state_dim), dtype=th.float32, device=self.device)
+
+    def pack_regions(self, region_parts: Sequence[th.Tensor]) -> th.Tensor:
+        """Concatenate non-empty region batches or return an empty packed tensor."""
+        non_empty_parts = [regions for regions in region_parts if len(regions) > 0]
+        if not non_empty_parts:
+            return self.empty_regions()
+        return th.cat(non_empty_parts, dim=0)
 
     def _coerce_regions(self, regions: th.Tensor) -> th.Tensor:
         """Move a region batch onto the managed device and dtype."""
@@ -145,7 +203,12 @@ class RegionManager:
             upper_v=th.stack(new_upper, dim=0),
             parent_ids=th.tensor(new_parent_ids, dtype=th.long, device=self.device),
             depth=th.tensor(new_depth, dtype=th.long, device=self.device),
-            core_status=th.zeros(len(new_ids), dtype=th.long, device=self.device),
+            core_status=th.full(
+                (len(new_ids),),
+                CoreStatus.UNCHECKED,
+                dtype=th.long,
+                device=self.device,
+            ),
             complete_safe_max_rho=th.full(
                 (len(new_ids),),
                 float("-inf"),
@@ -272,10 +335,6 @@ class RegionManager:
 
         return cached_region_bounds
 
-    def ensure_region_cache(self) -> None:
-        """Ensure a current region batch exists."""
-        self.ensure_regions()
-
     def classify_regions(
         self,
         rho: float,
@@ -286,12 +345,84 @@ class RegionManager:
         if rho < 0.0:
             raise ValueError(f"rho must be non-negative, got {rho}.")
 
-        self.ensure_region_cache()
+        self.ensure_regions()
         if self.region_bounds is None:
             raise RuntimeError("Cached V region bounds are not initialized.")
 
         threshold = float(rho + sublevel_tolerance)
         return self.region_bounds.sublevel_masks(threshold)
+
+    def partition_certification_regions(
+        self,
+        regions: th.Tensor,
+        *,
+        region_bounds: LyapunovRegionBounds,
+        rho: float,
+        sublevel_tolerance: float,
+    ) -> CertificationRegionPartition:
+        """Partition regions into cached and unchecked certification subsets."""
+        threshold = float(rho + sublevel_tolerance)
+        inside_regions, boundary_regions, irrelevant_regions = region_bounds.get_sublevel_masked_regions(
+            regions,
+            threshold,
+        )
+
+        if len(inside_regions) == 0 and len(boundary_regions) == 0:
+            empty = self.empty_regions()
+            return CertificationRegionPartition(
+                irrelevant_regions=irrelevant_regions,
+                cached_complete_safe_regions=empty,
+                cached_core_safe_regions=empty,
+                cached_inside_counterexample_regions=empty,
+                cached_inside_unknown_regions=empty,
+                inside_core_unchecked_regions=empty,
+                boundary_core_unchecked_regions=empty,
+                boundary_complete_candidate_regions=empty,
+            )
+
+        inside_complete_safe_mask = self.get_complete_safe_mask(inside_regions, rho)
+        boundary_complete_safe_mask = self.get_complete_safe_mask(boundary_regions, rho)
+        cached_complete_safe_regions = self.pack_regions(
+            (
+                inside_regions[inside_complete_safe_mask],
+                boundary_regions[boundary_complete_safe_mask],
+            )
+        )
+
+        pending_inside_regions = inside_regions[~inside_complete_safe_mask]
+        pending_boundary_regions = boundary_regions[~boundary_complete_safe_mask]
+
+        inside_core_status = self.get_core_status(pending_inside_regions)
+        boundary_core_status = self.get_core_status(pending_boundary_regions)
+
+        return CertificationRegionPartition(
+            irrelevant_regions=irrelevant_regions,
+            cached_complete_safe_regions=cached_complete_safe_regions,
+            cached_core_safe_regions=self.pack_regions(
+                (
+                    pending_inside_regions[inside_core_status == CoreStatus.SAFE],
+                    pending_boundary_regions[boundary_core_status == CoreStatus.SAFE],
+                )
+            ),
+            cached_inside_counterexample_regions=pending_inside_regions[
+                inside_core_status == CoreStatus.COUNTEREXAMPLE
+            ],
+            cached_inside_unknown_regions=pending_inside_regions[
+                inside_core_status == CoreStatus.UNKNOWN
+            ],
+            inside_core_unchecked_regions=pending_inside_regions[
+                inside_core_status == CoreStatus.UNCHECKED
+            ],
+            boundary_core_unchecked_regions=pending_boundary_regions[
+                boundary_core_status == CoreStatus.UNCHECKED
+            ],
+            boundary_complete_candidate_regions=self.pack_regions(
+                (
+                    pending_boundary_regions[boundary_core_status == CoreStatus.COUNTEREXAMPLE],
+                    pending_boundary_regions[boundary_core_status == CoreStatus.UNKNOWN],
+                )
+            ),
+        )
 
     def get_cached_region_bounds(self, regions: th.Tensor) -> LyapunovRegionBounds | None:
         """Return cached V bounds for ``regions`` when available."""
@@ -333,6 +464,7 @@ class RegionManager:
         *,
         verified_mask: th.Tensor,
         counterexample_mask: th.Tensor,
+        unknown_mask: th.Tensor,
     ) -> None:
         """Persist core-certification outcomes for ``regions``."""
         if len(regions) == 0:
@@ -341,11 +473,14 @@ class RegionManager:
         rows = self._lookup_region_rows(regions)
         verified_rows = rows[verified_mask.to(device=self.device, dtype=th.bool)]
         counterexample_rows = rows[counterexample_mask.to(device=self.device, dtype=th.bool)]
+        unknown_rows = rows[unknown_mask.to(device=self.device, dtype=th.bool)]
 
         if len(verified_rows) > 0:
-            self.region_table.core_status[verified_rows] = 1
+            self.region_table.core_status[verified_rows] = CoreStatus.SAFE
         if len(counterexample_rows) > 0:
-            self.region_table.core_status[counterexample_rows] = -1
+            self.region_table.core_status[counterexample_rows] = CoreStatus.COUNTEREXAMPLE
+        if len(unknown_rows) > 0:
+            self.region_table.core_status[unknown_rows] = CoreStatus.UNKNOWN
 
     def update_complete_safe_max_rho(
         self,
@@ -372,6 +507,54 @@ class RegionManager:
         self.region_table.complete_safe_max_rho[safe_rows] = th.maximum(
             self.region_table.complete_safe_max_rho[safe_rows],
             safe_rho,
+        )
+
+    def apply_core_certification_result(
+        self,
+        regions: th.Tensor,
+        *,
+        verified_mask: th.Tensor,
+        counterexample_mask: th.Tensor,
+        unknown_mask: th.Tensor,
+    ) -> VerificationRegionUpdate:
+        """Persist a core-certification pass and return verified/failed regions."""
+        verified_mask = verified_mask.to(device=self.device, dtype=th.bool)
+        counterexample_mask = counterexample_mask.to(device=self.device, dtype=th.bool)
+        unknown_mask = unknown_mask.to(device=self.device, dtype=th.bool)
+
+        self.update_core_status(
+            regions,
+            verified_mask=verified_mask,
+            counterexample_mask=counterexample_mask,
+            unknown_mask=unknown_mask,
+        )
+        failed_mask = counterexample_mask | unknown_mask
+        return VerificationRegionUpdate(
+            verified_regions=regions[verified_mask],
+            failed_regions=regions[failed_mask],
+            counterexample_found=bool(counterexample_mask.any().item()),
+        )
+
+    def apply_complete_certification_result(
+        self,
+        regions: th.Tensor,
+        *,
+        verified_mask: th.Tensor,
+        failed_mask: th.Tensor,
+        rho: float,
+    ) -> VerificationRegionUpdate:
+        """Persist a complete-certification pass and return verified/failed regions."""
+        verified_mask = verified_mask.to(device=self.device, dtype=th.bool)
+        failed_mask = failed_mask.to(device=self.device, dtype=th.bool)
+
+        self.update_complete_safe_max_rho(
+            regions,
+            verified_mask=verified_mask,
+            rho=rho,
+        )
+        return VerificationRegionUpdate(
+            verified_regions=regions[verified_mask],
+            failed_regions=regions[failed_mask],
         )
 
     def split_regions(

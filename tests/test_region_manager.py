@@ -161,15 +161,24 @@ class TestRegionManager(unittest.TestCase):
             upper=th.tensor([0.75, 1.25, 1.4], dtype=th.float32),
         )
 
-        relevant, irrelevant = self.manager.partition_regions_by_sublevel(
-            regions,
+        self.manager.cache_region_bounds(
             region_bounds,
+            regions=regions,
+            make_current=False,
+            is_root=True,
+        )
+
+        partition = self.manager.partition_certification_regions(
+            regions,
+            region_bounds=region_bounds,
             rho=1.0,
             sublevel_tolerance=0.0,
         )
 
-        th.testing.assert_close(relevant, regions[:2])
-        th.testing.assert_close(irrelevant, regions[2:])
+        self.assertTrue(partition.has_relevant_regions)
+        th.testing.assert_close(partition.inside_core_unchecked_regions, regions[:1])
+        th.testing.assert_close(partition.boundary_core_unchecked_regions, regions[1:2])
+        th.testing.assert_close(partition.irrelevant_regions, regions[2:])
 
     def test_split_failed_regions_on_certification_frontier_delegates_to_builder(self) -> None:
         failed_regions = th.tensor(

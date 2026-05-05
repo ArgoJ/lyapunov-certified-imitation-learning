@@ -1,7 +1,10 @@
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import torch as th
+
+from lcil.certification.abcrown_region_certifier import _is_verified_status
 
 from certification_mock_common import (
     CertificationMockedABCrownTestCase,
@@ -14,12 +17,10 @@ from certification_mock_common import (
 
 class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
     def test_is_verified_status_accepts_verified_and_safe_prefixes(self) -> None:
-        certifier = self.make_abcrown_region_certifier()
-
-        self.assertTrue(certifier._is_verified_status("verified"))
-        self.assertTrue(certifier._is_verified_status(" SAFE "))
-        self.assertTrue(certifier._is_verified_status("safe-incomplete"))
-        self.assertFalse(certifier._is_verified_status("unsafe"))
+        self.assertTrue(_is_verified_status("verified"))
+        self.assertTrue(_is_verified_status(" SAFE "))
+        self.assertTrue(_is_verified_status("safe-incomplete"))
+        self.assertFalse(_is_verified_status("unsafe"))
 
     def test_build_safe_output_constraint_respects_tolerances(self) -> None:
         certifier = self.make_abcrown_region_certifier(
@@ -56,9 +57,9 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
         certifier = self.make_abcrown_region_certifier(state_dim=1)
 
         with self.assertRaisesRegex(ValueError, "region must have shape"):
-            certifier.certify_region(th.zeros((1, 2, 1), dtype=th.float32), rho=1.0)
+            certifier.verify_region(th.zeros((1, 2, 1), dtype=th.float32), rho=1.0)
 
-    def test_certify_region_returns_true_for_safe_region_and_updates_rho(self) -> None:
+    def test_verify_region_returns_verified_for_safe_region(self) -> None:
         certifier = self.make_abcrown_region_certifier(
             lyap_model=_QuadraticLyapunov(),
             dyn_model=_IdentityDynamics(),
@@ -69,13 +70,13 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
         )
         region = th.tensor([[-0.5], [0.5]], dtype=th.float32)
 
-        is_safe = certifier.certify_region(region, rho=1.0)
+        verification = certifier.verify_region(region, rho=1.0)
 
-        self.assertTrue(is_safe)
-        self.assertIsNotNone(certifier.wrapped_model)
-        self.assertAlmostEqual(float(certifier.wrapped_model.rho.item()), 1.0, places=6)
+        self.assertTrue(verification.verified)
+        self.assertFalse(verification.counterexample_found)
+        self.assertIsNotNone(certifier.verifier)
 
-    def test_certify_region_returns_false_when_successor_leaves_global_bounds(self) -> None:
+    def test_verify_region_returns_counterexample_when_successor_leaves_global_bounds(self) -> None:
         certifier = self.make_abcrown_region_certifier(
             lyap_model=_QuadraticLyapunov(),
             dyn_model=_ShiftDynamics(shift=2.0),
@@ -86,11 +87,11 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
         )
         region = th.tensor([[1.0], [1.5]], dtype=th.float32)
 
-        is_safe = certifier.certify_region(region, rho=10.0)
+        verification = certifier.verify_region(region, rho=10.0)
 
-        self.assertFalse(is_safe)
-        self.assertIsNotNone(certifier.wrapped_model)
-        self.assertAlmostEqual(float(certifier.wrapped_model.rho.item()), 10.0, places=6)
+        self.assertFalse(verification.verified)
+        self.assertTrue(verification.counterexample_found)
+        self.assertIsNotNone(certifier.verifier)
 
     def test_certify_regions_honors_early_exit(self) -> None:
         certifier = self.make_abcrown_region_certifier(state_dim=1)
@@ -105,15 +106,34 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
 
         with mock.patch.object(
             certifier,
-            "certify_region",
-            side_effect=[True, False, True],
-        ) as certify_region_mock:
-            is_certified = certifier.certify_regions(regions, rho=0.25, early_exit=True)
+            "verify_region",
+            side_effect=[
+                SimpleNamespace(verified=True, counterexample_found=False),
+                SimpleNamespace(verified=False, counterexample_found=True),
+                SimpleNamespace(verified=True, counterexample_found=False),
+            ],
+        ) as verify_region_mock:
+            batch_result = certifier.certify_regions(regions, rho=0.25, early_exit=True)
 
         self.assertTrue(
-            th.equal(is_certified.cpu(), th.tensor([True, False, False], dtype=th.bool))
+            th.equal(
+                batch_result.verified_mask.cpu(),
+                th.tensor([True, False, False], dtype=th.bool),
+            )
         )
-        self.assertEqual(certify_region_mock.call_count, 2)
+        self.assertTrue(
+            th.equal(
+                batch_result.counterexample_mask.cpu(),
+                th.tensor([False, True, False], dtype=th.bool),
+            )
+        )
+        self.assertTrue(
+            th.equal(
+                batch_result.unknown_mask.cpu(),
+                th.tensor([False, False, False], dtype=th.bool),
+            )
+        )
+        self.assertEqual(verify_region_mock.call_count, 2)
 
 
 if __name__ == "__main__":

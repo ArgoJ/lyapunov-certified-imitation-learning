@@ -18,6 +18,8 @@ from certification_mock_common import (
     _ZeroDynamics,
     _ZeroPolicy,
 )
+from lcil.certification.lirpa_lyapunov_bounds import LyapunovRegionBounds
+from lcil.certification.region_manager import CertificationRegionPartition
 
 plot_module = importlib.import_module("lcil.utils.plot")
 certified_regions_2d = plot_module.certified_regions_2d
@@ -85,6 +87,20 @@ class _StatusAwareMockRegionCertifier:
             counterexample_mask=counterexample_mask,
             unknown_mask=unknown_mask,
         )
+
+
+def _complete_candidate_partition(regions: th.Tensor) -> CertificationRegionPartition:
+    empty = regions[:0]
+    return CertificationRegionPartition(
+        irrelevant_regions=empty,
+        cached_complete_safe_regions=empty,
+        cached_core_safe_regions=empty,
+        cached_inside_counterexample_regions=empty,
+        cached_inside_unknown_regions=empty,
+        inside_core_unchecked_regions=empty,
+        boundary_core_unchecked_regions=empty,
+        boundary_complete_candidate_regions=regions,
+    )
 
 
 class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCase):
@@ -288,10 +304,19 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
             ]
         )
 
+        certifier.region_manager.cache_region_bounds(
+            LyapunovRegionBounds(
+                lower=th.zeros((len(certifier.regions),), dtype=th.float32),
+                upper=th.zeros((len(certifier.regions),), dtype=th.float32),
+            ),
+            regions=certifier.regions,
+            make_current=True,
+        )
+
         with mock.patch.object(
-            certifier,
-            "_partition_regions_by_sublevel",
-            return_value=(certifier.regions, certifier.regions[:0]),
+            certifier.region_manager,
+            "partition_certification_regions",
+            return_value=_complete_candidate_partition(certifier.regions),
         ), mock.patch.object(
             certifier,
             "_get_region_certifier",
@@ -333,10 +358,19 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
             del resolved_bs
             return failed_bs[:0], failed_bs
 
+        certifier.region_manager.cache_region_bounds(
+            LyapunovRegionBounds(
+                lower=th.zeros((len(certifier.regions),), dtype=th.float32),
+                upper=th.zeros((len(certifier.regions),), dtype=th.float32),
+            ),
+            regions=certifier.regions,
+            make_current=True,
+        )
+
         with mock.patch.object(
-            certifier,
-            "_partition_regions_by_sublevel",
-            return_value=(certifier.regions, certifier.regions[:0]),
+            certifier.region_manager,
+            "partition_certification_regions",
+            return_value=_complete_candidate_partition(certifier.regions),
         ), mock.patch.object(
             certifier,
             "_get_region_certifier",
@@ -382,10 +416,19 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
             ]
         )
 
+        certifier.region_manager.cache_region_bounds(
+            LyapunovRegionBounds(
+                lower=th.zeros((len(certifier.regions),), dtype=th.float32),
+                upper=th.zeros((len(certifier.regions),), dtype=th.float32),
+            ),
+            regions=certifier.regions,
+            make_current=True,
+        )
+
         with mock.patch.object(
-            certifier,
-            "_partition_regions_by_sublevel",
-            return_value=(certifier.regions, certifier.regions[:0]),
+            certifier.region_manager,
+            "partition_certification_regions",
+            return_value=_complete_candidate_partition(certifier.regions),
         ), mock.patch.object(
             certifier,
             "_get_region_certifier",
@@ -401,6 +444,68 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
         self.assertEqual(result.resolved.shape[0], 2)
         self.assertEqual(result.unresolved.shape[0], 0)
         self.assertEqual(region_certifier.calls, 2)
+
+    def test_is_rho_certified_reuses_cached_core_unknown_regions(self) -> None:
+        certifier = self._make_certifier(
+            _QuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            kappa=0.0,
+        )
+        certifier.regions = th.tensor(
+            [
+                [[-1.0, -1.0, -1.0], [0.0, 0.0, 0.0]],
+                [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+            ],
+            dtype=th.float32,
+        )
+        certifier.region_manager.cache_region_bounds(
+            LyapunovRegionBounds(
+                lower=th.tensor([0.0, 0.0], dtype=th.float32),
+                upper=th.tensor([0.2, 0.3], dtype=th.float32),
+            ),
+            regions=certifier.regions,
+            make_current=True,
+        )
+        core_certifier = _StatusAwareMockRegionCertifier(
+            [
+                _MockVerificationResult(
+                    verified=False,
+                    counterexample_found=False,
+                    status="unknown",
+                ),
+                _MockVerificationResult(
+                    verified=False,
+                    counterexample_found=False,
+                    status="unknown",
+                ),
+            ]
+        )
+
+        with mock.patch.object(
+            certifier,
+            "_get_core_region_certifier",
+            return_value=core_certifier,
+        ), mock.patch.object(
+            certifier.region_manager,
+            "split_failed_regions_on_certification_frontier",
+            side_effect=lambda failed_bs, resolved_bs: (failed_bs[:0], failed_bs),
+        ):
+            first_result = certifier._certify_recursive_regions(
+                rho=1.0,
+                show_progress=False,
+                early_exit=False,
+            )
+            second_result = certifier._certify_recursive_regions(
+                rho=1.2,
+                show_progress=False,
+                early_exit=False,
+            )
+
+        self.assertEqual(core_certifier.calls, 2)
+        self.assertEqual(first_result.unresolved.shape[0], 2)
+        self.assertEqual(second_result.unresolved.shape[0], 2)
+        self.assertTrue(th.equal(first_result.unresolved, certifier.regions))
+        self.assertTrue(th.equal(second_result.unresolved, certifier.regions))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
