@@ -436,6 +436,21 @@ class BisectCertifier:
         boundary_core_unknown_bs = pending_boundary_bs[boundary_core_status == 0]
         boundary_complete_candidates = pending_boundary_bs[boundary_core_status == -1]
 
+        __logger__.info(
+            "rho=%.6f batch routing: total=%d inside=%d boundary=%d outside=%d cached_complete=%d cached_core=%d inside_core_cex=%d inside_core_unknown=%d boundary_core_unknown=%d boundary_complete=%d.",
+            float(rho),
+            len(bs),
+            len(inside_bs),
+            len(boundary_bs),
+            len(irrelevant_bs),
+            len(cached_complete_safe_bs),
+            len(cached_core_safe_bs),
+            len(cached_inside_core_cex_bs),
+            len(inside_core_unknown_bs),
+            len(boundary_core_unknown_bs),
+            len(boundary_complete_candidates),
+        )
+
         if len(inside_core_unknown_bs) > 0:
             inside_core_result = self._get_core_region_certifier().certify_regions(
                 regions=inside_core_unknown_bs,

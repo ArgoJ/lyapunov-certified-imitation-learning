@@ -58,6 +58,13 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     batch_size : int
         Batch size to use during certification. Larger batch sizes can improve 
         GPU utilization and speed up certification, but require more memory.
+    abcrown_timeout : float | None
+        Optional per-region ABCrown branch-and-bound timeout in seconds. Lower
+        values speed up rho search by turning hard regions into ``unknown``
+        sooner so they can be split instead of blocking one batch for minutes.
+    abcrown_max_domains : int | None
+        Optional cap on the number of branch-and-bound domains processed per
+        region. This provides a second runtime guard in addition to timeouts.
     max_recursion_depth : int
         Maximum recursion depth for the certification process. 
         This limits how many times the certification will recursively subdivide 
@@ -81,6 +88,8 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     condition_margin: float = config_field(default=0.0, help="Optional additive safety margin on the decrease term during certification.")
     suppress_native_output: bool = config_field(default=True, help="Whether to suppress native solver output during certification.")
     batch_size: int = config_field(default=512, help="Batch size used during certification.")
+    abcrown_timeout: float | None = config_field(default=None, help="Optional per-region ABCrown branch-and-bound timeout in seconds.")
+    abcrown_max_domains: int | None = config_field(default=None, help="Optional cap on ABCrown branch-and-bound domains per region.")
     max_recursion_depth: int = config_field(default=10, help="Maximum recursion depth for certification region splitting.")
     NP_ARRAY_FIELDS = ("cert_bounds",)
 
@@ -120,6 +129,10 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
             raise ValueError("condition_tolerance must be non-negative.")
         if self.condition_margin < 0.0:
             raise ValueError("condition_margin must be non-negative.")
+        if self.abcrown_timeout is not None and self.abcrown_timeout <= 0.0:
+            raise ValueError("abcrown_timeout must be positive when provided.")
+        if self.abcrown_max_domains is not None and self.abcrown_max_domains <= 0:
+            raise ValueError("abcrown_max_domains must be positive when provided.")
 
         raw_origin_exclusion = self.origin_exclusion
         normalized_origin_exclusion = raw_origin_exclusion
@@ -159,6 +172,8 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         condition_margin: float = 0.0,
         suppress_native_output: bool = True,
         batch_size: int = 512,
+        abcrown_timeout: float | None = None,
+        abcrown_max_domains: int | None = None,
         max_recursion_depth: int = 10,
     ) -> "LyapunovCertificationConfig":
         """Build a certification config from a training config.
@@ -187,6 +202,8 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
             "condition_margin": condition_margin,
             "suppress_native_output": suppress_native_output,
             "batch_size": batch_size,
+            "abcrown_timeout": abcrown_timeout,
+            "abcrown_max_domains": abcrown_max_domains,
             "max_recursion_depth": max_recursion_depth,
         }
         return LyapunovCertificationConfig(**config_values)

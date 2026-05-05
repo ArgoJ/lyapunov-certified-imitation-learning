@@ -169,7 +169,7 @@ class BaseABCrownCertifier(ABC):
             return
 
         abcrown_api = self._get_abcrown_api()
-        self.abcrown_config = (
+        config_builder = (
             abcrown_api.config_builder_cls.from_defaults()
             .set(general__device=self.device.type)
             .set(general__complete_verifier="input_bab")
@@ -184,16 +184,30 @@ class BaseABCrownCertifier(ABC):
             .set(bab__branching__input_split__split_partitions=2)
             .set(attack__pgd_order="before")
             .set(bab__decision_thresh=-float(self.config.condition_tolerance))
-            ()
         )
+        if self.config.abcrown_timeout is not None:
+            config_builder = config_builder.set(bab__timeout=float(self.config.abcrown_timeout))
+        if self.config.abcrown_max_domains is not None:
+            config_builder = config_builder.set(bab__max_domains=int(self.config.abcrown_max_domains))
+        self.abcrown_config = config_builder()
 
         self.verifier = self._setup_verifier()
         self.verifier.eval()
 
         __logger__.info(
-            "Configured ABCrown region backend with solver_batch_size=%d on device=%s.",
+            "Configured ABCrown region backend with solver_batch_size=%d on device=%s (timeout=%s, max_domains=%s).",
             int(self.config.batch_size),
             self.device.type,
+            (
+                f"{float(self.config.abcrown_timeout):.1f}s"
+                if self.config.abcrown_timeout is not None
+                else "default"
+            ),
+            (
+                str(int(self.config.abcrown_max_domains))
+                if self.config.abcrown_max_domains is not None
+                else "default"
+            ),
         )
 
     def verify_region(self, region: th.Tensor, rho: float) -> ABCrownRegionVerification:

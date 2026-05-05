@@ -69,6 +69,7 @@ def _build_certification_defaults(
         condition_margin=float(training_config.condition_margin),
         suppress_native_output=True,
         batch_size=32,
+        abcrown_timeout=60.0,
     )
 
 

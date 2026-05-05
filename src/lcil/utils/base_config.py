@@ -66,16 +66,42 @@ def _restore_typed_value(value: Any, annotation: Any) -> Any:
     origin = get_origin(annotation)
 
     if origin in (Union, UnionType):
-        for option in get_args(annotation):
-            if option is type(None):
-                continue
+        options = tuple(option for option in get_args(annotation) if option is not type(None))
+
+        if isinstance(value, list) and len(value) == 1:
+            scalar_options = tuple(
+                option for option in options if not _annotation_is_sequence(option)
+            )
+            for option in scalar_options:
+                try:
+                    return _restore_typed_value(value[0], option)
+                except (TypeError, ValueError, KeyError):
+                    continue
+
+        for option in options:
             try:
                 return _restore_typed_value(value, option)
             except (TypeError, ValueError, KeyError):
                 continue
         return value
 
+    if annotation in (str, int, float):
+        if isinstance(value, (list, tuple, dict)):
+            raise TypeError(f"Cannot restore {annotation} from {type(value).__name__}.")
+        return annotation(value)
+
+    if annotation in (Path, PathLike):
+        if isinstance(value, (list, tuple, dict)):
+            raise TypeError(f"Cannot restore {annotation} from {type(value).__name__}.")
+        return Path(value)
+
     if origin is list:
+        item_type = get_args(annotation)[0] if get_args(annotation) else Any
+        if isinstance(value, list):
+            return [_restore_typed_value(item, item_type) for item in value]
+        return value
+
+    if origin is Sequence:
         item_type = get_args(annotation)[0] if get_args(annotation) else Any
         if isinstance(value, list):
             return [_restore_typed_value(item, item_type) for item in value]
