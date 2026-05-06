@@ -69,6 +69,9 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         Maximum recursion depth for the certification process. 
         This limits how many times the certification will recursively subdivide 
         regions if they fail certification, to prevent infinite recursion in edge cases.
+    skip_boundary_core_cert : bool
+        Whether to skip the boundary-region core-certification prepass and send
+        boundary regions directly into complete certification.
     """
 
     state_dim: int = config_field(cli=False)
@@ -91,6 +94,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     abcrown_timeout: float | None = config_field(default=None, help="Optional per-region ABCrown branch-and-bound timeout in seconds.")
     abcrown_max_domains: int | None = config_field(default=None, help="Optional cap on ABCrown branch-and-bound domains per region.")
     max_recursion_depth: int = config_field(default=10, help="Maximum recursion depth for certification region splitting.")
+    skip_boundary_core_cert: bool = config_field(default=False, help="Skip the boundary-region core-certification prepass and route boundary regions directly to complete certification.")
     NP_ARRAY_FIELDS = ("cert_bounds",)
 
     def __post_init__(self) -> None:
@@ -175,6 +179,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         abcrown_timeout: float | None = None,
         abcrown_max_domains: int | None = None,
         max_recursion_depth: int = 10,
+        skip_boundary_core_cert: bool = False,
     ) -> "LyapunovCertificationConfig":
         """Build a certification config from a training config.
 
@@ -205,5 +210,6 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
             "abcrown_timeout": abcrown_timeout,
             "abcrown_max_domains": abcrown_max_domains,
             "max_recursion_depth": max_recursion_depth,
+            "skip_boundary_core_cert": skip_boundary_core_cert,
         }
         return LyapunovCertificationConfig(**config_values)

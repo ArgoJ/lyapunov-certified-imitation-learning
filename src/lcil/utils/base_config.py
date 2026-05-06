@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import itertools
 import json
 import numpy as np
@@ -30,6 +31,21 @@ def _to_json_compatible(value: Any) -> Any:
 
 def resolve_path(p: str | Path | None) -> str | None:
     return str(Path(p).resolve()) if p is not None else None
+
+
+def _safe_get_type_hints(obj: Any) -> dict[str, Any]:
+    """Return resolved type hints, re-importing the defining module if needed."""
+    try:
+        return get_type_hints(obj)
+    except (NameError, TypeError):
+        module_name = getattr(obj, "__module__", None)
+        if isinstance(module_name, str):
+            try:
+                importlib.import_module(module_name)
+                return get_type_hints(obj)
+            except (ImportError, NameError, TypeError):
+                pass
+        return {}
 
 
 def config_field(
@@ -208,10 +224,7 @@ class JsonDataclass:
         """Build config from a dictionary and restore numpy fields."""
         values = dict(data)
 
-        try:
-            type_hints = get_type_hints(cls)
-        except (NameError, TypeError):
-            type_hints = {}
+        type_hints = _safe_get_type_hints(cls)
 
         for field_name, annotation in type_hints.items():
             if field_name in values:
@@ -289,10 +302,7 @@ class ArgumentParserConfig:
             Scalar fields that should be registered with ``nargs='+'`` so they
             can drive grid/sweep expansion through ``iter_from_namespace``.
         """
-        try:
-            type_hints = get_type_hints(type(self))
-        except (NameError, TypeError):
-            type_hints = {}
+        type_hints = _safe_get_type_hints(type(self))
 
         for field_info in fields(self):
             if include_fields is not None and field_info.name not in include_fields:
@@ -342,10 +352,7 @@ class ArgumentParserConfig:
         ``itertools.product``. Sequence-typed config fields remain sequence-valued.
         Only fields that are present in the parsed namespace are considered.
         """
-        try:
-            type_hints = get_type_hints(type(self))
-        except (NameError, TypeError):
-            type_hints = {}
+        type_hints = _safe_get_type_hints(type(self))
 
         fixed_values: dict[str, Any] = {}
         sweep_field_names: list[str] = []

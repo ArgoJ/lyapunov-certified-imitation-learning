@@ -409,6 +409,15 @@ class BisectCertifier:
         boundary_core_unchecked_bs = partition.boundary_core_unchecked_regions
         boundary_complete_candidates = partition.boundary_complete_candidate_regions
 
+        if self.config.skip_boundary_core_cert and len(boundary_core_unchecked_bs) > 0:
+            boundary_complete_candidates = self.region_manager.pack_regions(
+                (
+                    boundary_complete_candidates,
+                    boundary_core_unchecked_bs,
+                )
+            )
+            boundary_core_unchecked_bs = self.region_manager.empty_regions()
+
         __logger__.info(
             "rho=%.6f batch routing: total=%d outside=%d cached_complete=%d cached_core=%d inside_core_cex=%d inside_core_unknown=%d inside_core_unchecked=%d boundary_core_unchecked=%d boundary_complete=%d.",
             float(rho),

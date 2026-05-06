@@ -89,6 +89,28 @@ class _StatusAwareMockRegionCertifier:
         )
 
 
+class _RecordingMockRegionCertifier(_StatusAwareMockRegionCertifier):
+    def __init__(self, results: list[_MockVerificationResult]):
+        super().__init__(results)
+        self.batches: list[th.Tensor] = []
+
+    def certify_regions(
+        self,
+        regions: th.Tensor,
+        rho: float,
+        *,
+        early_exit: bool = False,
+        show_progress: bool = False,
+    ) -> _MockBatchVerification:
+        self.batches.append(regions.clone())
+        return super().certify_regions(
+            regions,
+            rho,
+            early_exit=early_exit,
+            show_progress=show_progress,
+        )
+
+
 def _complete_candidate_partition(regions: th.Tensor) -> CertificationRegionPartition:
     empty = regions[:0]
     return CertificationRegionPartition(
@@ -444,6 +466,177 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
         self.assertEqual(result.resolved.shape[0], 2)
         self.assertEqual(result.unresolved.shape[0], 0)
         self.assertEqual(region_certifier.calls, 2)
+
+    def test_boundary_regions_use_core_before_complete_by_default(self) -> None:
+        certifier = self._make_certifier(
+            _QuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            kappa=0.0,
+        )
+        certifier.regions = th.tensor(
+            [
+                [[-1.0, -1.0, -1.0], [0.0, 0.0, 0.0]],
+                [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+            ],
+            dtype=th.float32,
+        )
+        certifier.region_manager.cache_region_bounds(
+            LyapunovRegionBounds(
+                lower=th.zeros((len(certifier.regions),), dtype=th.float32),
+                upper=th.zeros((len(certifier.regions),), dtype=th.float32),
+            ),
+            regions=certifier.regions,
+            make_current=True,
+        )
+
+        empty = certifier.regions[:0]
+        partition = CertificationRegionPartition(
+            irrelevant_regions=empty,
+            cached_complete_safe_regions=empty,
+            cached_core_safe_regions=empty,
+            cached_inside_counterexample_regions=empty,
+            cached_inside_unknown_regions=empty,
+            inside_core_unchecked_regions=empty,
+            boundary_core_unchecked_regions=certifier.regions,
+            boundary_complete_candidate_regions=empty,
+        )
+        complete_certifier = _RecordingMockRegionCertifier(
+            [
+                _MockVerificationResult(
+                    verified=True,
+                    counterexample_found=False,
+                    status="safe",
+                ),
+            ]
+        )
+        core_certifier = _RecordingMockRegionCertifier(
+            [
+                _MockVerificationResult(
+                    verified=True,
+                    counterexample_found=False,
+                    status="safe",
+                ),
+                _MockVerificationResult(
+                    verified=False,
+                    counterexample_found=False,
+                    status="unknown",
+                ),
+            ]
+        )
+
+        with mock.patch.object(
+            certifier.region_manager,
+            "partition_certification_regions",
+            return_value=partition,
+        ), mock.patch.object(
+            certifier,
+            "_get_region_certifier",
+            return_value=complete_certifier,
+        ), mock.patch.object(
+            certifier,
+            "_get_core_region_certifier",
+            return_value=core_certifier,
+        ):
+            result = certifier._process_regions(
+                certifier.regions,
+                rho=1.0,
+                early_exit=False,
+            )
+
+        self.assertEqual(len(complete_certifier.batches), 1)
+        self.assertEqual(len(core_certifier.batches), 1)
+        self.assertTrue(th.allclose(core_certifier.batches[0], certifier.regions))
+        self.assertTrue(th.allclose(complete_certifier.batches[0], certifier.regions[1:2]))
+        self.assertEqual(result.resolved.shape[0], 2)
+        self.assertEqual(result.unresolved.shape[0], 0)
+
+    def test_skip_boundary_core_cert_routes_boundary_regions_directly_to_complete(self) -> None:
+        config = self.make_config(
+            state_dim=3,
+            cert_bounds=np.array([[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]], dtype=np.float32),
+            kappa=0.0,
+            rho_min=1e-6,
+            bins_per_dim=4,
+            center_refinement_factor=0.7,
+            origin_exclusion=0.0,
+            max_scale_steps=6,
+            max_bisection_steps=6,
+            cert_method="alpha-crown",
+            condition_tolerance=1e-6,
+            max_recursion_depth=3,
+            skip_boundary_core_cert=True,
+        )
+        certifier = self.make_bisect_certifier(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_QuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            config=config,
+        )
+        certifier.regions = th.tensor(
+            [
+                [[-1.0, -1.0, -1.0], [0.0, 0.0, 0.0]],
+                [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+            ],
+            dtype=th.float32,
+        )
+        certifier.region_manager.cache_region_bounds(
+            LyapunovRegionBounds(
+                lower=th.zeros((len(certifier.regions),), dtype=th.float32),
+                upper=th.zeros((len(certifier.regions),), dtype=th.float32),
+            ),
+            regions=certifier.regions,
+            make_current=True,
+        )
+
+        empty = certifier.regions[:0]
+        partition = CertificationRegionPartition(
+            irrelevant_regions=empty,
+            cached_complete_safe_regions=empty,
+            cached_core_safe_regions=empty,
+            cached_inside_counterexample_regions=empty,
+            cached_inside_unknown_regions=empty,
+            inside_core_unchecked_regions=empty,
+            boundary_core_unchecked_regions=certifier.regions,
+            boundary_complete_candidate_regions=empty,
+        )
+        complete_certifier = _RecordingMockRegionCertifier(
+            [
+                _MockVerificationResult(
+                    verified=True,
+                    counterexample_found=False,
+                    status="safe",
+                ),
+                _MockVerificationResult(
+                    verified=True,
+                    counterexample_found=False,
+                    status="safe",
+                ),
+            ]
+        )
+
+        with mock.patch.object(
+            certifier.region_manager,
+            "partition_certification_regions",
+            return_value=partition,
+        ), mock.patch.object(
+            certifier,
+            "_get_region_certifier",
+            return_value=complete_certifier,
+        ), mock.patch.object(
+            certifier,
+            "_get_core_region_certifier",
+            side_effect=AssertionError("boundary core certifier should be skipped"),
+        ):
+            result = certifier._process_regions(
+                certifier.regions,
+                rho=1.0,
+                early_exit=False,
+            )
+
+        self.assertEqual(len(complete_certifier.batches), 1)
+        self.assertTrue(th.allclose(complete_certifier.batches[0], certifier.regions))
+        self.assertEqual(result.resolved.shape[0], 2)
+        self.assertEqual(result.unresolved.shape[0], 0)
 
     def test_is_rho_certified_reuses_cached_core_unknown_regions(self) -> None:
         certifier = self._make_certifier(

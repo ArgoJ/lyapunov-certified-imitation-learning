@@ -334,6 +334,7 @@ class CertificationMockedABCrownTestCase(unittest.TestCase):
         suppress_native_output: bool = True,
         batch_size: int = 512,
         max_recursion_depth: int = 3,
+        skip_boundary_core_cert: bool = False,
     ) -> Any:
         bounds = cert_bounds
         if bounds is None:
@@ -366,6 +367,7 @@ class CertificationMockedABCrownTestCase(unittest.TestCase):
             suppress_native_output=suppress_native_output,
             batch_size=batch_size,
             max_recursion_depth=max_recursion_depth,
+            skip_boundary_core_cert=skip_boundary_core_cert,
         )
 
     @classmethod

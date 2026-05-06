@@ -283,6 +283,26 @@ class TestArgumentParserConfig(unittest.TestCase):
         self.assertEqual(config.center_refinement_factor, (0.7, 0.7, 0.7, 0.7))
         self.assertEqual(config.origin_exclusion, 0.1)
 
+    def test_from_namespace_parses_skip_boundary_core_cert_boolean_flag(self) -> None:
+        parser = ArgumentParser()
+        defaults = LyapunovCertificationConfig(
+            state_dim=2,
+            cert_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]], dtype=float),
+            bins_per_dim=4,
+            center_refinement_factor=1.0,
+        )
+        defaults.add_to_argparse(
+            parser,
+            include_fields={"skip_boundary_core_cert"},
+        )
+
+        args = parser.parse_args([
+            "--skip-boundary-core-cert",
+        ])
+        config = defaults.from_namespace(args)
+
+        self.assertTrue(config.skip_boundary_core_cert)
+
 
 class TestGridSearchHelper(unittest.TestCase):
     def test_helper_infers_varying_fields_and_creates_run_dirs(self) -> None:
@@ -314,11 +334,11 @@ class TestGridSearchHelper(unittest.TestCase):
             )
 
             runs = list(helper)
+            self.assertTrue(all(run.output_dir.is_dir() for run in runs))
 
         self.assertEqual(len(helper), 4)
         self.assertEqual(helper.run_name_fields, ("learning_rate", "kappa"))
         self.assertEqual(helper.sweep_base_path.name, "20260425_120000")
-        self.assertTrue(all(run.output_dir.is_dir() for run in runs))
         self.assertEqual(runs[0].run_name, "lr_0.001__kappa_0.1__lyap_eps_0.1__curr_0.3-0.6-1")
         self.assertEqual(runs[0].description, "lr: 0.001, kappa: 0.1, lyap_eps: 0.1, curr: [0.3, 0.6, 1]")
         self.assertEqual(runs[-1].progress_message(), "[4/4] lr: 0.0005, kappa: 0.2, lyap_eps: 0.1, curr: [0.3, 0.6, 1]")
