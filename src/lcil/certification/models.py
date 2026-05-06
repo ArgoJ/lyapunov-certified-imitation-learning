@@ -82,28 +82,97 @@ def build_safe_outside_sublevel_constraint(y, rho: float, sublevel_tolerance: fl
     return y > (rho + sublevel_tolerance)
 
 
-def build_safe_inside_sublevel_constraint(y, rho: float, sublevel_tolerance: float):
-    r"""Build a strict inside-sublevel ABCrown predicate.
-
+def build_safe_lyap_positivity_constraint(
+    y,
+    condition_tolerance: float,
+    lyap_output_index: int = 1,
+):
+    """Build the positivity-only ABCrown predicate for ``V(x)``.
+    
     Parameters
     ----------
     y : Any
         The output from the Lyapunov verifier for ABCrown.
-    rho : float
-        The sublevel value for the Lyapunov function.
-    sublevel_tolerance : float
-        The tolerance added to the sublevel value.
+    condition_tolerance : float
+        The tolerance added to the positivity condition.
+    lyap_output_index : int
+        The index in the verifier output corresponding to the Lyapunov value.
 
     Returns
     -------
     Any
         A boolean indicating whether the condition is satisfied in ABCrown.
     """
-    return y < (rho + sublevel_tolerance)
+    return y[lyap_output_index] > (-condition_tolerance)
+
+
+def build_safe_lyap_decrease_constraint(y, condition_tolerance: float):
+    """Build the decrease-only ABCrown predicate for the Lyapunov margin.
+    
+    Parameters
+    ----------
+    y : Any
+        The output from the Lyapunov verifier for ABCrown.
+    condition_tolerance : float
+        The tolerance added to the decrease margin.
+    
+    Returns
+    -------
+    Any
+        A boolean indicating whether the condition is satisfied in ABCrown.
+
+    Limitations
+    -----------
+    Only can be use in combination with ``LyapunovCoreVerifier``.
+    """
+    return y[0] > (-condition_tolerance)
+
+
+def build_safe_lyap_invariance_constraint(
+    y,
+    condition_tolerance: float,
+    lb: th.Tensor,
+    ub: th.Tensor,
+):
+    """Build the state-invariance ABCrown predicate for ``x_next``.
+    
+    Parameters
+    ----------
+    y : Any
+        The output from the Lyapunov verifier for ABCrown.
+    condition_tolerance : float
+        The tolerance added to the condition values.
+    lb : th.Tensor
+        The lower bounds for the state variables.
+    ub : th.Tensor
+        The upper bounds for the state variables.
+
+    Returns
+    -------
+    Any
+        A boolean indicating whether the condition is satisfied in ABCrown.
+
+    Limitations
+    -----------
+    Only can be use in combination with ``LyapunovCoreVerifier``.
+    """
+    safe_x_next = None
+
+    if lb.numel() != ub.numel() or lb.numel() != y.shape[0] - 2:
+        raise ValueError("Dimension mismatch between bounds and verifier output.")
+
+    state_dim = lb.numel()
+    for idx in range(state_dim):
+        coord_safe = (y[idx + 2] > (float(lb[idx]) - condition_tolerance)) & (
+            y[idx + 2] < (float(ub[idx]) + condition_tolerance)
+        )
+        safe_x_next = coord_safe if safe_x_next is None else (safe_x_next & coord_safe)
+
+    return safe_x_next
+
 
 def build_safe_lyap_condition_constraint(y, condition_tolerance: float, lb: th.Tensor, ub: th.Tensor):
-    """Builds a safe output for the Lyapunov condition: 
-    \( V(x) > 0 \) and \( V(x_{\text{next}}) < V(x) \).
+    """Build the full Lyapunov-core predicate.
 
     Parameters
     ----------
@@ -120,20 +189,12 @@ def build_safe_lyap_condition_constraint(y, condition_tolerance: float, lb: th.T
     -------
     Any
         A boolean indicating whether the condition is satisfied in ABCrown.
+
+    Limitations
+    -----------
+    Only can be use in combination with ``LyapunovCoreVerifier``.
     """
-    safe_positive = y[1] > (-condition_tolerance)
-    safe_decrease = y[0] > (-condition_tolerance)
-
-    safe_x_next = None
-
-    if lb.numel() != ub.numel() or lb.numel() != y.shape[0] - 2:
-        raise ValueError("Dimension mismatch between bounds and verifier output.")
-    
-    state_dim = lb.numel()
-    for idx in range(state_dim):
-        coord_safe = (y[idx + 2] > (float(lb[idx]) - condition_tolerance)) & (
-            y[idx + 2] < (float(ub[idx]) + condition_tolerance)
-        )
-        safe_x_next = coord_safe if safe_x_next is None else (safe_x_next & coord_safe)
-
+    safe_positive = build_safe_lyap_positivity_constraint(y, condition_tolerance)
+    safe_decrease = build_safe_lyap_decrease_constraint(y, condition_tolerance)
+    safe_x_next = build_safe_lyap_invariance_constraint(y, condition_tolerance, lb, ub)
     return safe_positive & safe_decrease & safe_x_next

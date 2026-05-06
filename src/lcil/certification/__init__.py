@@ -8,7 +8,12 @@ from .cert_tester import (
     CertificationTesterResult,
     CertificationResultTester
 )
-from .abcrown_region_certifier import CompleteABCrownCertifier, CoreABCrownCertifier, RhoABCrownCertifier
+from .abcrown_region_certifier import CompleteABCrownCertifier, CoreABCrownCertifier
+from .core_constraint_inspector import (
+    ConstraintInspectionResult,
+    CoreConstraintInspectionResult,
+    CoreConstraintInspector,
+)
 from .region_builder import RegionBuilder
 from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds, LyapunovRegionBounds
 from .config import LyapunovCertificationConfig
@@ -23,7 +28,9 @@ __all__ = [
     "CertificationResultTester",
     "CompleteABCrownCertifier",
     "CoreABCrownCertifier",
-    "RhoABCrownCertifier",
+    "ConstraintInspectionResult",
+    "CoreConstraintInspectionResult",
+    "CoreConstraintInspector",
     "LyapunovCertificationConfig",
     "LyapunovCoreVerifier",
     "RegionBuilder",
