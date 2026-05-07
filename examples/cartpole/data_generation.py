@@ -22,7 +22,10 @@ from mpc_datagen.verification import (
     ROAVerifier,
 )
 
-from . import get_batch_ocp_solver, get_ocp_solver
+try:
+    from . import get_batch_ocp_solver
+except ImportError:
+    from acados_ocp import get_batch_ocp_solver
 
 __logger__ = logging.getLogger("mpc_datagen")
 

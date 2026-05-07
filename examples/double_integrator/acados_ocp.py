@@ -1,12 +1,14 @@
+import os
+
 import numpy as np
 
 from numpy.typing import NDArray
 from scipy.linalg import solve_discrete_are, block_diag
 from casadi import SX
 
-from mpc_datagen import mdg_linalg
+from mpc_datagen import add_temp_folder, mdg_linalg
 
-from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
+from acados_template import AcadosModel, AcadosOcp, AcadosOcpBatchSolver, AcadosOcpSolver
 
 
 # %% Model Definition
@@ -60,7 +62,7 @@ def get_model(A: NDArray, B: NDArray, dynamics_type: str = "continuous") -> Acad
 
 
 # %% OCP Solver Definition
-def get_ocp_solver(
+def get_ocp(
     A_c: NDArray, 
     B_c: NDArray, 
     Q: NDArray, 
@@ -73,8 +75,8 @@ def get_ocp_solver(
     bounds_scale: float = 10.0,
     dynamics_type: str = "continuous",
     terminal_box_halfwidth: float = 1.0,
-) -> tuple[AcadosOcpSolver, dict]:
-    """Create an acados OCP solver for a continuous-time linear system.
+) -> tuple[AcadosOcp, dict]:
+    """Create an acados OCP for a continuous-time linear system.
 
     Parameters
     ----------
@@ -93,8 +95,8 @@ def get_ocp_solver(
 
     Returns
     -------
-    solver : AcadosOcpSolver
-        Constructed acados OCP solver.
+    ocp : AcadosOcp
+        Constructed acados OCP.
     info : dict
         Useful information about the problem (A_d, B_d, P used).
     """
@@ -188,6 +190,92 @@ def get_ocp_solver(
         "bounds_scale": bounds_scale,
     }
 
-    
-    solver = AcadosOcpSolver(ocp, json_file=f"{ocp.model.name}_ocp.json")
+    return ocp, info
+
+
+def get_ocp_solver(
+    A_c: NDArray,
+    B_c: NDArray,
+    Q: NDArray,
+    R: NDArray,
+    P: NDArray | None = None,
+    dt: float = 0.1,
+    N: int = 20,
+    tol: float = 1e-8,
+    terminal_mode: str = "regional",
+    bounds_scale: float = 10.0,
+    dynamics_type: str = "continuous",
+    terminal_box_halfwidth: float = 1.0,
+    use_temp_dir: bool = True,
+) -> tuple[AcadosOcpSolver, dict]:
+    """Convenience function to directly get the OCP solver instance."""
+    ocp, info = get_ocp(
+        A_c=A_c,
+        B_c=B_c,
+        Q=Q,
+        R=R,
+        P=P,
+        dt=dt,
+        N=N,
+        tol=tol,
+        terminal_mode=terminal_mode,
+        bounds_scale=bounds_scale,
+        dynamics_type=dynamics_type,
+        terminal_box_halfwidth=terminal_box_halfwidth,
+    )
+    file_name = f"{ocp.model.name}_ocp.json"
+    if use_temp_dir:
+        ocp, file_name = add_temp_folder(ocp, file_name)
+
+    solver = AcadosOcpSolver(ocp, json_file=file_name, verbose=False)
     return solver, info
+
+
+def get_batch_ocp_solver(
+    A_c: NDArray,
+    B_c: NDArray,
+    Q: NDArray,
+    R: NDArray,
+    P: NDArray | None = None,
+    dt: float = 0.1,
+    N: int = 20,
+    tol: float = 1e-8,
+    batch_size: int = 100,
+    terminal_mode: str = "regional",
+    bounds_scale: float = 10.0,
+    dynamics_type: str = "continuous",
+    terminal_box_halfwidth: float = 1.0,
+    use_temp_dir: bool = True,
+) -> tuple[AcadosOcpBatchSolver, dict]:
+    """Convenience function to directly get a batch OCP solver instance."""
+    ocp, info = get_ocp(
+        A_c=A_c,
+        B_c=B_c,
+        Q=Q,
+        R=R,
+        P=P,
+        dt=dt,
+        N=N,
+        tol=tol,
+        terminal_mode=terminal_mode,
+        bounds_scale=bounds_scale,
+        dynamics_type=dynamics_type,
+        terminal_box_halfwidth=terminal_box_halfwidth,
+    )
+
+    num_threads = min(int(batch_size), os.cpu_count() or 1)
+    ocp.solver_options.with_batch_functionality = True
+    ocp.solver_options.num_threads_in_batch_solve = num_threads
+
+    file_name = f"{ocp.model.name}_batch_ocp.json"
+    if use_temp_dir:
+        ocp, file_name = add_temp_folder(ocp, file_name)
+
+    batch_solver = AcadosOcpBatchSolver(
+        ocp,
+        N_batch_init=int(batch_size),
+        num_threads_in_batch_solve=num_threads,
+        json_file=file_name,
+        verbose=False,
+    )
+    return batch_solver, info

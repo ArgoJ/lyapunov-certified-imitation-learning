@@ -15,7 +15,10 @@ from mpc_datagen.verification import (
     ROAVerifier,
 )
 
-from acados_ocp import get_ocp_solver
+try:
+    from . import get_batch_ocp_solver
+except ImportError:
+    from acados_ocp import get_batch_ocp_solver
 
 
 def setup_parser() -> argparse.ArgumentParser:
@@ -46,6 +49,12 @@ def setup_parser() -> argparse.ArgumentParser:
         default="results/double_integrator/data",
         help="Base output path for generated datasets and plots.",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=128,
+        help="Initial acados batch solver size for faster MPC data generation.",
+    )
     return parser
 
 
@@ -69,6 +78,7 @@ if __name__ == "__main__":
     T_sim = args.t_sim
     n_samples = args.n_samples
     bounds_scale = args.bound_scale
+    batch_size = args.batch_size
     terminal_box_halfwidth = 2.0
 
     def run_case(
@@ -81,19 +91,22 @@ if __name__ == "__main__":
         print("=" * 80)
 
         dt = 0.1
-        solver, info = get_ocp_solver(
+        solver, info = get_batch_ocp_solver(
             A_c, B_c,
             Q, R,
             dt=dt,
             N=N,
             tol=1e-8,
+            batch_size=batch_size,
             terminal_mode=terminal_mode,
             bounds_scale=bounds_scale,
             terminal_box_halfwidth=terminal_box_halfwidth,
         )
 
+        constraints = solver.ocp_solvers[0].acados_ocp.constraints if hasattr(solver, "ocp_solvers") else solver.acados_ocp.constraints
+
         sampler = UniqueBoundedSampler(
-            bounds=np.array([solver.acados_ocp.constraints.lbx, solver.acados_ocp.constraints.ubx]),
+            bounds=np.array([constraints.lbx, constraints.ubx]),
             min_dist=np.array([1e-2, 1e-3]),
             seed=4597525,
         )
@@ -105,14 +118,14 @@ if __name__ == "__main__":
             solver=solver,
             T_sim=T_sim,
             sampler=sampler,
-            reset_solver=True,
             xeps_cfg=eps_cfg,
+            solver_regen_interval=20,
         )
         dataset = generator.generate(n_samples=n_samples)
         dataset.validate()
         dataset.save(f"{base_path}/double_integrator_{terminal_mode}_N{N}_data.hdf5")
 
-        veri_stats = StabilityVerifier.verify(dataset, solver, alpha_required=1e-4)
+        veri_stats = StabilityVerifier.verify(dataset, alpha_required=1e-4)
         VerificationRender(veri_stats).render()
 
         if terminal_mode == "regional":
