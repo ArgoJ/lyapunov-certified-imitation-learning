@@ -4,6 +4,7 @@ from .cartpole_utils import (
     discover_latest_lyapunov_dir,
     discover_latest_policy_dir,
     load_policy_model,
+    default_model_path,
 )
 from .cartpole_dyn import CartpoleDynamics
 from .sys_cfg import PendulumOnCartConfig

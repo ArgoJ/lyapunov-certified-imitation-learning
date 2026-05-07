@@ -13,12 +13,22 @@ from lcil.imitation_learning_mlp.policy_rollout import (
     FeasibleSetSampler,
 )
 
-from . import (
-    CartpoleDynamics,
-    CartpoleAngleWrapper,
-    PendulumOnCartConfig,
-)
-from .acados_ocp import _linearized_inverted_pendulum_on_cart_matrices
+try:
+    from . import (
+        CartpoleDynamics,
+        CartpoleAngleWrapper,
+        PendulumOnCartConfig,
+        default_model_path,
+    )
+    from .acados_ocp import _linearized_inverted_pendulum_on_cart_matrices
+except ImportError:
+    from cartpole_utils import (
+        CartpoleDynamics,
+        CartpoleAngleWrapper,
+        PendulumOnCartConfig,
+        default_model_path,
+    )
+    from acados_ocp import _linearized_inverted_pendulum_on_cart_matrices
 
 
 
@@ -29,7 +39,7 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-path",
         type=str,
-        default="results/cartpole/20260416_154118/model.pt",
+        default=default_model_path(),
         help="Path to a trained policy checkpoint.",
     )
     parser.add_argument("--T-sim", "-T", type=int, default=200, help="Rollout horizon in seconds.")
@@ -66,9 +76,7 @@ def main() -> None:
     net = CartpoleAngleWrapper(feature_net=feature_net).to(device)
     net.eval()
 
-    # Override dataset path using the absolute or relative location of the model path
     val_dataset_path = model_path.parent / "val_dataset.pt"
-
     cfg = replace(net.net.global_config, T_sim=int(args.T_sim))
     val_dataset = StateActionDataset.load(val_dataset_path)
     sampler = FeasibleSetSampler(dataset=val_dataset)

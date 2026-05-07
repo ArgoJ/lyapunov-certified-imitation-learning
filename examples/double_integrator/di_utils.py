@@ -32,3 +32,8 @@ def load_policy_model(policy_dir: Path, device: th.device) -> MLPPolicy:
 	policy_model = MLPPolicy.load(policy_checkpoint, map_location=device).to(device)
 	policy_model.eval()
 	return policy_model
+
+
+def default_model_path() -> str:
+    results_root = Path(__file__).resolve().parents[2] / "results" / "double_integrator"
+    return str(discover_latest_policy_dir(results_root) / "model.pt")
