@@ -61,7 +61,7 @@ def _build_certification_defaults(
     training_config = LyapunovTrainingConfig.load(lyapunov_dir / "training_config.json")
     return LyapunovCertificationConfig.from_training_config(
         training_config,
-        cert_bounds=training_config.state_bounds,
+        cert_bounds=training_config.state_bounds, # TODO: apply percentage of these bounds
         bins_per_dim=2,
         center_refinement_factor=1.0,
         origin_exclusion=0.0,

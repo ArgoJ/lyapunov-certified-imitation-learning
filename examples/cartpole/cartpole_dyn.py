@@ -1,7 +1,7 @@
 import torch as th
 import torch.nn as nn
 
-from lcil.utils import RK4Integrator
+from lcil.utils import ERKIntegrator, IntegrationMethod
 
 from .sys_cfg import PendulumOnCartConfig
 
@@ -52,17 +52,19 @@ class CartpoleContinuousDynamics(nn.Module):
 
 
 class CartpoleDynamics(nn.Module):
-    """Cartpole dynamics with RK4-discretized continuous dynamics."""
+    """Cartpole dynamics with ERK-discretized continuous dynamics."""
 
     def __init__(
         self,
         dt: float = 0.1,
+        method: IntegrationMethod = IntegrationMethod.CLASSICAL_RK4,
         sys_cfg: PendulumOnCartConfig = PendulumOnCartConfig(),
     ):
         super().__init__()
         self.dt = float(dt)
         self.sys = CartpoleContinuousDynamics(sys_cfg=sys_cfg)
-        self.integrator = RK4Integrator(self.sys, dt=dt)
+        self.integrator = ERKIntegrator.build_compiled(self.sys, dt=dt, method=method)
+
 
     def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
         return self.integrator(x, u)

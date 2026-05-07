@@ -6,7 +6,9 @@ from .base_models import (
 	ICNN,
 	ResNet,
 	LinearDynamics,
-	RK4Integrator,
+    AffineDynamics,
+    ERKIntegrator,
+    IntegrationMethod,
 	Linearize,
 	save_model_checkpoint,
 )

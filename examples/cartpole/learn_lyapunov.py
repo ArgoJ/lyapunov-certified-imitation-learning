@@ -106,16 +106,7 @@ def main() -> None:
         adversarial_step_size=0.05,
         condition_margin=0.0,
     )
-    certification_defaults = LyapunovCertificationConfig(
-        state_dim=4,
-        cert_bounds=np.array([[-1.0, -1.0, -1.0, -1.0], [1.0, 1.0, 1.0, 1.0]], dtype=float),
-        rho_scaling=1.2,
-        bisection_tol=1e-2,
-        max_scale_steps=15,
-        max_bisection_steps=20,
-        cert_method="alpha-crown",
-    )
-    args = parse_cli_args(training_defaults, certification_defaults)
+    args = parse_cli_args(training_defaults)
     device = th.device(args.device)
 
     # Load policy and dynamics once (they don't change across runs)
@@ -170,7 +161,6 @@ def main() -> None:
             "training_bound_scales": curriculum_scales,
         },
     )
-    certification_base_config = certification_defaults.from_namespace(args, prefix="cert-")
 
     print(f"Starting grid search over {len(sweep)} configurations...")
 
@@ -182,7 +172,7 @@ def main() -> None:
         # ---------------------------------------------------------------------
         # 1. Initialize fresh Lyapunov Model (so it trains from scratch)
         # ---------------------------------------------------------------------
-        lyap_feature = MLP([5, 32, 32, 32, 1], ["tanh", "tanh", "tanh", "identity"]).to(device)
+        lyap_feature = MLP([5, 32, 32, 32, 1], ["tanh", "tanh", "tanh", "identity"]).to(device)  # TODO: relu and smaller model
         lyap_wrapper = CartpoleAngleWrapper(feature_net=lyap_feature)
         lyap_model = NeuralLyapunovCandidate(
             feature_net=lyap_wrapper,
@@ -199,24 +189,6 @@ def main() -> None:
             state_bounds=training_bounds,
             seed=sweep_config.seed + run_idx if sweep_config.seed is not None else None,
             tb_log_dir=lyap_path / "tb" / sweep.sweep_id / run.run_name,
-        )
-
-        certification_config = LyapunovCertificationConfig.from_training_config(
-            training_config,
-            bins_per_dim=args.cert_bins_per_dim,
-            center_refinement_factor=args.cert_center_refinement_factor,
-            origin_exclusion=certification_base_config.origin_exclusion,
-            rho_scaling=certification_base_config.rho_scaling,
-            bisection_tol=certification_base_config.bisection_tol,
-            max_scale_steps=certification_base_config.max_scale_steps,
-            max_bisection_steps=certification_base_config.max_bisection_steps,
-            cert_method=certification_base_config.cert_method,
-            sublevel_tolerance=certification_base_config.sublevel_tolerance,
-            condition_margin=certification_base_config.condition_margin,
-            suppress_native_output=certification_base_config.suppress_native_output,
-            batch_size=certification_base_config.batch_size,
-            max_recursion_depth=certification_base_config.max_recursion_depth,
-            cert_bounds=cert_bounds,
         )
 
         # ---------------------------------------------------------------------
@@ -261,35 +233,6 @@ def main() -> None:
         with (base_path / "curriculum_summary.json").open("w", encoding="utf-8") as summary_file:
             json.dump(curriculum_summary, summary_file, indent=2)
 
-        if args.skip_certification:
-            continue
-
-        # ---------------------------------------------------------------------
-        # 4. Certify
-        # ---------------------------------------------------------------------
-        certifier = BisectCertifier(
-            policy_model,
-            lyap_model,
-            dyn_model,
-            certification_config,
-            device,
-        )
-        cert_results = certifier.certify(max(train_results.rho_estimate, 1e-3))
-        certifier.save(base_path)
-
-        cert_tester = CertificationResultTester(
-            policy_model=policy_model,
-            lyap_model=lyap_model,
-            dyn_model=dyn_model,
-            config=certification_config,
-            device=device,
-        )
-        test_results = cert_tester.test_result(
-            cert_result=cert_results,
-            rollout_steps=args.test_rollout_steps,
-        )
-        test_results.save(base_path / "certification_tester_results.json")
-
         # ---------------------------------------------------------------------
         # 5. Plot & Save
         # ---------------------------------------------------------------------
@@ -301,19 +244,13 @@ def main() -> None:
                     v = lyap_model(x)
                 return v.detach().cpu().numpy().reshape(-1)
 
-            lcil_plt.lyapunov_cert_regions(
+            lcil_plt.lyapunov(
                 lyapunov_func=lyapunov_func,
-                certification_result=cert_results,
                 dataset=rollout_dataset[:100],
+                state_indices=[i for i in range(4)],
                 state_labels=state_labels,
                 html_path=base_path / "lyapunov_plot.html",
             )
-
-        lcil_plt.certified_regions_2d(
-            certification_result=cert_results,
-            state_labels=state_labels,
-            html_path=base_path / "certified_regions.html",
-        )
 
     print(f"\nGrid search complete. All results saved to: {sweep.sweep_base_path}")
 
