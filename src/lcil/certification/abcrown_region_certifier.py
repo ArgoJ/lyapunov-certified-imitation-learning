@@ -21,9 +21,11 @@ from pkg_logger import suppress_native_output
 from .config import LyapunovCertificationConfig
 from .models import (
     LyapunovCoreVerifier,
-    build_safe_inside_sublevel_constraint,
     build_safe_outside_sublevel_constraint,
+    build_safe_lyap_decrease_constraint,
     build_safe_lyap_condition_constraint,
+    build_safe_lyap_invariance_constraint,
+    build_safe_lyap_positivity_constraint,
 )
 
 __logger__ = logging.getLogger(__name__)
@@ -317,8 +319,8 @@ class BaseABCrownCertifier(ABC):
 # ========================================================
 # ABCROWN CERTIFIER VARIANTS
 # ========================================================
-class CompleteABCrownCertifier(BaseABCrownCertifier):
-    """ABCrown certifier combining sublevel set certification and core Lyapunov condition verification."""
+class BaseLyapunovCoreABCrownCertifier(BaseABCrownCertifier):
+    """Shared ABCrown backend for Lyapunov-core predicates."""
 
     def __init__(
         self,
@@ -334,7 +336,7 @@ class CompleteABCrownCertifier(BaseABCrownCertifier):
         self.dyn_model = dyn_model.to(self.device).eval()
         self.bounds = th.as_tensor(self.config.cert_bounds, dtype=th.float32, device=self.device)
         self.setup_backend()
-    
+
     def _setup_verifier(self) -> nn.Module:
         return LyapunovCoreVerifier(
             policy_model=self.policy_model,
@@ -346,50 +348,27 @@ class CompleteABCrownCertifier(BaseABCrownCertifier):
 
     def _output_dim(self) -> int:
         return 2 + self.config.state_dim
-    
+
+
+class CompleteABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
+    """ABCrown certifier combining sublevel set certification and core Lyapunov condition verification."""
+
     def _build_safe_output_constraint(self, y, rho: float):
         safe_outside_sublevel = build_safe_outside_sublevel_constraint(y[1], rho, self.config.sublevel_tolerance)
         safe_condition = build_safe_lyap_condition_constraint(y, self.config.condition_tolerance, self.bounds[0], self.bounds[1])
         return safe_outside_sublevel | safe_condition
 
 
-class CoreABCrownCertifier(BaseABCrownCertifier):
+class CoreABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
     """ABCrown certifier focused on verifying the core Lyapunov condition without explicit sublevel constraints."""
 
-    def __init__(
-        self,
-        policy_model: nn.Module,
-        lyap_model: nn.Module,
-        dyn_model: nn.Module,
-        config: LyapunovCertificationConfig,
-        device: th.device = th.device("cpu"),
-    ) -> None:
-        super().__init__(config=config, device=device)
-        self.policy_model = policy_model.to(self.device).eval()
-        self.lyap_model = lyap_model.to(self.device).eval()
-        self.dyn_model = dyn_model.to(self.device).eval()
-        self.bounds = th.as_tensor(self.config.cert_bounds, dtype=th.float32, device=self.device)
-        self.setup_backend()
-    
-    def _setup_verifier(self) -> nn.Module:
-        return LyapunovCoreVerifier(
-            policy_model=self.policy_model,
-            lyap_model=self.lyap_model,
-            dyn_model=self.dyn_model,
-            kappa=self.config.kappa,
-            condition_margin=self.config.condition_margin,
-        )
-
-    def _output_dim(self) -> int:
-        return 2 + self.config.state_dim
-    
     def _build_safe_output_constraint(self, y, rho: float):
         del rho
         return build_safe_lyap_condition_constraint(y, self.config.condition_tolerance, self.bounds[0], self.bounds[1])
-    
 
-class RhoABCrownCertifier(BaseABCrownCertifier):
-    """ABCrown certifier for strict rho-sublevel inclusion."""
+
+class PositivityABCrownCertifier(BaseABCrownCertifier):
+    """ABCrown certifier for Lyapunov positivity only."""
 
     def __init__(
         self,
@@ -397,27 +376,41 @@ class RhoABCrownCertifier(BaseABCrownCertifier):
         config: LyapunovCertificationConfig,
         device: th.device = th.device("cpu"),
     ) -> None:
-        """Initialize the RhoABCrownCertifier.
-
-        Parameters
-        ----------
-        lyap_model : nn.Module
-            Lyapunov model x -> V(x) to be certified for rho-sublevel inclusion.
-        config : LyapunovCertificationConfig
-            Configuration for the Lyapunov certification process.
-        device : th.device, optional
-            Device to run the certification on, by default th.device("cpu")
-        """
         super().__init__(config=config, device=device)
         self.lyap_model = lyap_model.to(self.device).eval()
-        self.bounds = th.as_tensor(self.config.cert_bounds, dtype=th.float32, device=self.device)
         self.setup_backend()
-    
+
     def _setup_verifier(self) -> nn.Module:
         return self.lyap_model
 
     def _output_dim(self) -> int:
         return 1
-    
+
     def _build_safe_output_constraint(self, y, rho: float):
-        return build_safe_inside_sublevel_constraint(y[0], rho, self.config.sublevel_tolerance)
+        del rho
+        return build_safe_lyap_positivity_constraint(
+            y,
+            self.config.condition_tolerance,
+            lyap_output_index=0,
+        )
+
+
+class DecreaseABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
+    """ABCrown certifier for the Lyapunov decrease condition only."""
+
+    def _build_safe_output_constraint(self, y, rho: float):
+        del rho
+        return build_safe_lyap_decrease_constraint(y, self.config.condition_tolerance)
+
+
+class InvarianceABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
+    """ABCrown certifier for state invariance only."""
+
+    def _build_safe_output_constraint(self, y, rho: float):
+        del rho
+        return build_safe_lyap_invariance_constraint(
+            y,
+            self.config.condition_tolerance,
+            self.bounds[0],
+            self.bounds[1],
+        )
