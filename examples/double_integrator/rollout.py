@@ -6,6 +6,7 @@ from pathlib import Path
 from scipy.linalg import solve_discrete_are
 
 from mpc_datagen import mdg_plt, StabilityVerifier, VerificationRender, mdg_linalg, MPCDataset
+from lcil.utils import IntegrationMethod
 from lcil.imitation_learning_mlp import MLPPolicy, StateActionDataset
 from lcil.imitation_learning_mlp.policy_rollout import (
     PolicyRolloutGenerator,
@@ -77,7 +78,10 @@ def main() -> None:
         )
 
     cfg = PolicyRolloutConfig.from_mpc_config(net.global_config, t_sim=40.0)
-    simulator = DoubleIntegratorDynamics(dt=cfg.dt)
+    simulator = DoubleIntegratorDynamics(
+        dt=cfg.dt,
+        method=IntegrationMethod.CLASSICAL_RK4
+    ).to(device)
     policy_rollout_generator = PolicyRolloutGenerator(
         policy=net,
         simulator=simulator,
@@ -101,8 +105,8 @@ def main() -> None:
 
     mdg_plt.mpc_trajectories(
         dataset=solved_dataset,
-        state_labels=["x", "v"],
-        control_labels=["u"],
+        state_labels=["$x$", "$v$"],
+        control_labels=["$u$"],
         plot_predictions=False,
         html_path=str(plot_path),
     )

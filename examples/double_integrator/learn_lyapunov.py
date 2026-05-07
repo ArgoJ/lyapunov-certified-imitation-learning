@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer
-from lcil.utils import lcil_plt, ICNN, MLP
+from lcil.utils import lcil_plt, ICNN, MLP, IntegrationMethod
 from lcil.imitation_learning_mlp import MLPPolicy
 from mpc_datagen import MPCDataset
 
@@ -74,7 +74,10 @@ def main() -> None:
     sweep_base_path = policy_path.parent / "lyapunov" / datetime.now().strftime("%Y%m%d_%H%M%S")
     sweep_base_path.mkdir(parents=True, exist_ok=True)
     
-    dyn_model = DoubleIntegratorDynamics(dt=policy_model.global_config.dt).to(device)
+    dyn_model = DoubleIntegratorDynamics(
+        dt=policy_model.global_config.dt,
+        method=IntegrationMethod.EXPLICIT_EULER
+    ).to(device)
     dyn_model.eval()
     
     rollout_dataset_path = policy_path.parent / "policy_rollouts.hdf5"

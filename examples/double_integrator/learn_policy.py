@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime
 
 from mpc_datagen import MPCDataset
-from lcil.utils import EarlyStopping
+from lcil.utils import EarlyStopping, IntegrationMethod
 from lcil.imitation_learning_mlp import *
 
 try:
@@ -87,7 +87,9 @@ def main() -> None:
             max_weight=5.0,
             min_weight=4.0),
         dynamics_loss=DynamicsAwareLoss(
-            dynamics=DoubleIntegratorDynamics(dt=dataset_cfg.dt), 
+            dynamics=DoubleIntegratorDynamics(
+                dt=dataset_cfg.dt,
+                method=IntegrationMethod.CLASSICAL_RK4), 
             x_min=th.tensor(dataset_cfg.constraints.lbx), 
             x_max=th.tensor(dataset_cfg.constraints.ubx)),
         lambda_dyn=5.0,
