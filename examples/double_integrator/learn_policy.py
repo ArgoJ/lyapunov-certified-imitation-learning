@@ -10,9 +10,10 @@ from lcil.utils import EarlyStopping
 from lcil.imitation_learning_mlp import *
 
 try:
-    from . import DoubleIntegratorDynamics
+    from . import DoubleIntegratorDynamics, default_dataset_path
 except ImportError:
     from double_integrator_dyn import DoubleIntegratorDynamics
+    from di_utils import default_dataset_path
 
 
 def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Namespace:
@@ -21,7 +22,7 @@ def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Names
     parser.add_argument(
         "--dataset-path",
         type=str,
-        default="results/double_integrator/data/double_integrator_regional_N20_data.hdf5",
+        default=default_dataset_path(),
         help="Path to the source MPC dataset (HDF5).",
     )
     parser.add_argument("--batch-size", type=int, default=256, help="Training batch size.")
