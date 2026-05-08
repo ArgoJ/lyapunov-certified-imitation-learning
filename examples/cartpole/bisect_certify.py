@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import argparse
 import logging
-from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-import numpy as np
 import torch as th
 
 from lcil.certification import (
@@ -15,14 +13,13 @@ from lcil.certification import (
     LyapunovCertificationConfig,
 )
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
-from lcil.lyapunov_learning.models import NeuralLyapunovCandidate
 from lcil.utils.base_config import ArgumentParserConfig, config_field
 
 from . import (
     CartpoleDynamics,
-    CartpoleAngleWrapper,
     discover_latest_lyapunov_dir,
     discover_latest_policy_dir,
+    load_lyapunov_model,
     load_policy_model,
 )
 
@@ -120,27 +117,6 @@ def parse_args() -> tuple[BisectCertifyScriptConfig, LyapunovCertificationConfig
         certification_defaults.from_namespace(args),
     )
 
-
-
-def _load_lyapunov_model(
-    lyapunov_dir: Path,
-    device: th.device,
-) -> NeuralLyapunovCandidate:
-    checkpoint_path = lyapunov_dir / "lyapunov_model.pt"
-    try:
-        lyap_model = NeuralLyapunovCandidate.load(
-            checkpoint_path,
-            map_location=device,
-        ).to(device)
-    except (FileNotFoundError, KeyError, TypeError, ValueError) as exc:
-        raise ValueError(
-            f"Lyapunov checkpoint '{checkpoint_path}' is not compatible with the new model save/load format. "
-            "Re-save the model with NeuralLyapunovCandidate.save before using this script."
-        ) from exc
-    lyap_model.eval()
-    return lyap_model
-
-
 def main() -> None:
     script_config, certification_config = parse_args()
     device = th.device(script_config.device)
@@ -149,7 +125,7 @@ def main() -> None:
     lyapunov_dir = Path(script_config.lyapunov_dir).resolve()
 
     policy_model = load_policy_model(policy_dir, device)
-    lyap_model = _load_lyapunov_model(lyapunov_dir, device=device)
+    lyap_model = load_lyapunov_model(lyapunov_dir, device)
 
     dyn_model = CartpoleDynamics(dt=policy_model.net.global_config.dt).to(device)
     dyn_model.eval()

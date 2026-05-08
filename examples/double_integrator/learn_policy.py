@@ -1,7 +1,6 @@
 import argparse
 import torch as th
 
-from dataclasses import replace
 from pathlib import Path
 from datetime import datetime
 
@@ -10,10 +9,9 @@ from lcil.utils import EarlyStopping, IntegrationMethod
 from lcil.imitation_learning_mlp import *
 
 try:
-    from . import DoubleIntegratorDynamics, default_dataset_path
+    from . import DoubleIntegratorDynamics, default_dataset_path, resolve_dataset_path
 except ImportError:
-    from double_integrator_dyn import DoubleIntegratorDynamics
-    from di_utils import default_dataset_path
+    from examples.double_integrator import DoubleIntegratorDynamics, default_dataset_path, resolve_dataset_path
 
 
 def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Namespace:
@@ -54,9 +52,9 @@ def main() -> None:
     )
     args = parse_cli_args(training_defaults)
     device = args.device
-    dataset_path = args.dataset_path
+    dataset_path = resolve_dataset_path(args.dataset_path)
 
-    source_dataset = MPCDataset.load(Path(dataset_path))
+    source_dataset = MPCDataset.load(dataset_path)
     if len(source_dataset) == 0:
         raise ValueError("MPCDataset is empty; cannot extract configuration.")
     dataset_cfg = source_dataset.global_config
@@ -69,7 +67,7 @@ def main() -> None:
     )
 
     train_loader, val_loader = create_train_and_val_dataloader(
-        mpc_dataset=dataset_path,
+        mpc_dataset=str(dataset_path),
         batch_size=args.batch_size,
         shuffle=True,
         drop_last=False,

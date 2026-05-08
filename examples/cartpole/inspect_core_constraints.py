@@ -34,7 +34,7 @@ class CoreInspectScriptConfig(ArgumentParserConfig):
         help="Policy run directory containing model.pt."
     )
     lyapunov_dir: str = config_field(
-        default=str(discover_latest_lyapunov_dir(_DEFAULT_RESULTS_ROOT)),
+        default=str(discover_latest_lyapunov_dir(discover_latest_policy_dir(_DEFAULT_RESULTS_ROOT))),
         help="Lyapunov run directory containing lyapunov_model.pt."
     )
     device: str = config_field(
@@ -102,7 +102,7 @@ def main() -> None:
     lyapunov_dir = Path(script_config.lyapunov_dir).resolve()
 
     policy_model = load_policy_model(policy_dir, device)
-    lyap_model = load_lyapunov_model(lyapunov_dir, device=device)
+    lyap_model = load_lyapunov_model(lyapunov_dir, device)
 
     dyn_model = CartpoleDynamics(dt=policy_model.net.global_config.dt).to(device)
     dyn_model.eval()

@@ -90,6 +90,32 @@ class TestERKIntegrator(unittest.TestCase):
                 target = th.tensor([[expected_value]], dtype=th.float64)
                 self.assertTrue(th.allclose(result, target, atol=1e-10, rtol=0.0))
 
+    def test_abcrown_compatible_ops_matches_vectorized_path(self) -> None:
+        dynamics = ExponentialDynamics()
+        x = th.tensor([[1.0]], dtype=th.float64)
+        u = th.zeros((1, 1), dtype=th.float64)
+
+        for method in IntegrationMethod:
+            with self.subTest(method=method.value):
+                vectorized = ERKIntegrator(
+                    dynamics,
+                    dt=0.1,
+                    method=method,
+                    dtype=th.float64,
+                    abcrown_compatible_ops=False,
+                )
+                abcrown_compatible = ERKIntegrator(
+                    dynamics,
+                    dt=0.1,
+                    method=method,
+                    dtype=th.float64,
+                    abcrown_compatible_ops=True,
+                )
+
+                self.assertTrue(
+                    th.allclose(vectorized(x, u), abcrown_compatible(x, u), atol=1e-12, rtol=0.0)
+                )
+
     def test_rejects_unknown_method(self) -> None:
         with self.assertRaises(ValueError):
             ERKIntegrator(ExponentialDynamics(), dt=0.1, method="rk5", dtype=th.float64)

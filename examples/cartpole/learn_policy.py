@@ -1,7 +1,6 @@
 import argparse
 import torch as th
 
-from dataclasses import replace
 from pathlib import Path
 from datetime import datetime
 
@@ -13,6 +12,8 @@ from . import (
     CartpoleDynamics,
     CartpoleAngleWrapper,
     PendulumOnCartConfig,
+    default_dataset_path,
+    resolve_dataset_path,
 )
 
 
@@ -22,7 +23,7 @@ def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Names
     parser.add_argument(
         "--dataset-path",
         type=str,
-        default=Path.cwd() / "results" / "cartpole" / "data" / "cartpole_N40_data.hdf5",
+        default=default_dataset_path(),
         help="Path to the source MPC dataset (HDF5).",
     )
     parser.add_argument("--batch-size", type=int, default=256, help="Training batch size.")
@@ -54,9 +55,9 @@ def main() -> None:
     )
     args = parse_cli_args(training_defaults)
     device = args.device
-    dataset_path = args.dataset_path
+    dataset_path = resolve_dataset_path(args.dataset_path)
 
-    source_dataset = MPCDataset.load(Path(dataset_path))
+    source_dataset = MPCDataset.load(dataset_path)
     if len(source_dataset) == 0:
         raise ValueError("MPCDataset is empty; cannot extract configuration.")
     dataset_cfg = source_dataset.global_config
@@ -72,7 +73,7 @@ def main() -> None:
     sys_cfg = PendulumOnCartConfig()
 
     train_loader, val_loader = create_train_and_val_dataloader(
-        mpc_dataset=dataset_path,
+        mpc_dataset=str(dataset_path),
         batch_size=args.batch_size,
         shuffle=True,
         drop_last=False,

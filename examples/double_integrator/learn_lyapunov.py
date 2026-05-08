@@ -6,12 +6,12 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer
+from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer, ThresholdMonitor
 from lcil.utils import lcil_plt, ICNN, MLP, IntegrationMethod
 from lcil.imitation_learning_mlp import MLPPolicy
 from mpc_datagen import MPCDataset
 
-from double_integrator_dyn import DoubleIntegratorDynamics
+from . import DoubleIntegratorDynamics, default_model_path
 
 
 def parse_cli_args(
@@ -24,11 +24,10 @@ def parse_cli_args(
     parser.add_argument(
         "--policy-path",
         type=str,
-        default="results/double_integrator/20260222_112847/model.pt",
+        default=default_model_path(),
         help="Path to the trained fixed policy model checkpoint.",
     )
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string.")
-    parser.add_argument("--seed", type=int, default=5912354, help="Random seed.")
 
     training_defaults.add_to_argparse(
         parser,
@@ -58,6 +57,7 @@ def main() -> None:
         steps_per_epoch=5,
         counterexample_every=10,
         train_policy_model=False,
+        seed=5912354,
     )
     args = parse_cli_args(training_defaults)
     device = th.device(args.device)
@@ -107,9 +107,9 @@ def main() -> None:
         base_path.mkdir(parents=True, exist_ok=True)
 
         # ---------------------------------------------------------------------
-        # 1. Initialize fresh Lyapunov Model (so it trains from scratch)
+        # 1. Initialize fresh Lyapunov Model
         # ---------------------------------------------------------------------
-        lyap_feature = MLP([2, 32, 1], ["tanh", "identity"]).to(device)
+        lyap_feature = MLP([2, 32, 32, 1], ["relu", "relu", "identity"]).to(device)
         lyap_model = NeuralLyapunovCandidate(
             feature_net=lyap_feature,
             state_dim=2,
@@ -136,8 +136,13 @@ def main() -> None:
             lyap_model=lyap_model,
             dyn_model=dyn_model,
             config=training_config,
+            rho_monitor=ThresholdMonitor(
+                threshold=1.0,
+                patience=5,
+            ),
             device=device,
         )
+        
         train_results = trainer.train()
         if train_results.aborted:
             print(f"Skipping run {run_name}: {train_results.abort_reason}")
@@ -158,7 +163,7 @@ def main() -> None:
                 lyapunov_func=lyapunov_func,
                 dataset=rollout_dataset[:100],
                 state_indices=[0, 1],
-                state_labels=["x", "v"],
+                state_labels=["$x$", "$v$"],
                 plot_3d=True,
                 html_path=base_path / "lyapunov_plot.html",
             )

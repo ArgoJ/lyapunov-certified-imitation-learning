@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import argparse
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import torch as th
 
 from lcil.certification import (
@@ -14,13 +13,13 @@ from lcil.certification import (
     LyapunovCertificationConfig,
 )
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
-from lcil.lyapunov_learning.models import NeuralLyapunovCandidate
 from lcil.utils.base_config import ArgumentParserConfig, config_field
 
 from . import (
     DoubleIntegratorDynamics,
     discover_latest_lyapunov_dir,
     discover_latest_policy_dir,
+    load_lyapunov_model,
     load_policy_model,
 )
 
@@ -34,8 +33,8 @@ _DEFAULT_CERT_BOUND_SCALES = (0.15, 0.15)
 class BisectCertifyScriptConfig(ArgumentParserConfig):
     policy_dir: str = config_field(help="Policy run directory containing model.pt.")
     lyapunov_dir: str = config_field(help="Lyapunov run directory containing lyapunov_model.pt.")
+    rho_estimate: float = config_field(help="Optional initial rho estimate for the bisection search.")
     device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
-    rho_estimate: float | None = config_field(default=None, help="Optional initial rho estimate for the bisection search.")
     test_rollout_steps: int = config_field(default=50, help="Closed-loop rollout steps per region center during empirical result testing.")
     cert_bound_scales: list[float] = config_field(
         default_factory=lambda: list(_DEFAULT_CERT_BOUND_SCALES),
@@ -50,6 +49,7 @@ def _build_script_defaults() -> BisectCertifyScriptConfig:
     return BisectCertifyScriptConfig(
         policy_dir=str(default_policy_dir),
         lyapunov_dir=str(default_lyapunov_dir),
+        rho_estimate=1.0,
     )
 
 
@@ -88,28 +88,7 @@ def _build_parser(
 
 def parse_args() -> tuple[BisectCertifyScriptConfig, LyapunovCertificationConfig]:
     script_defaults = _build_script_defaults()
-
-    bootstrap_parser = argparse.ArgumentParser(add_help=False)
-    script_defaults.add_to_argparse(
-        bootstrap_parser,
-        include_fields={"policy_dir", "lyapunov_dir"},
-    )
-    bootstrap_args, _ = bootstrap_parser.parse_known_args()
-    bootstrap_config = script_defaults.from_namespace(bootstrap_args)
-
-    bootstrap_policy_dir = Path(bootstrap_config.policy_dir).resolve()
-    bootstrap_lyapunov_dir = Path(bootstrap_config.lyapunov_dir).resolve()
-    default_policy_dir = Path(script_defaults.policy_dir).resolve()
-    default_lyapunov_dir = Path(script_defaults.lyapunov_dir).resolve()
-    if bootstrap_policy_dir != default_policy_dir and bootstrap_lyapunov_dir == default_lyapunov_dir:
-        bootstrap_lyapunov_dir = discover_latest_lyapunov_dir(bootstrap_policy_dir)
-
-    script_defaults = replace(
-        script_defaults,
-        policy_dir=str(bootstrap_policy_dir),
-        lyapunov_dir=str(bootstrap_lyapunov_dir),
-    )
-    certification_defaults = _build_certification_defaults(bootstrap_lyapunov_dir)
+    certification_defaults = _build_certification_defaults(Path(script_defaults.lyapunov_dir))
 
     parser = _build_parser(script_defaults, certification_defaults)
     args = parser.parse_args()
@@ -117,27 +96,6 @@ def parse_args() -> tuple[BisectCertifyScriptConfig, LyapunovCertificationConfig
         script_defaults.from_namespace(args),
         certification_defaults.from_namespace(args),
     )
-
-
-
-def _load_lyapunov_model(
-    lyapunov_dir: Path,
-    device: th.device,
-) -> NeuralLyapunovCandidate:
-    checkpoint_path = lyapunov_dir / "lyapunov_model.pt"
-    try:
-        lyap_model = NeuralLyapunovCandidate.load(
-            checkpoint_path,
-            map_location=device,
-        ).to(device)
-    except (FileNotFoundError, KeyError, TypeError, ValueError) as exc:
-        raise ValueError(
-            f"Lyapunov checkpoint '{checkpoint_path}' is not compatible with the new model save/load format. "
-            "Re-save the model with NeuralLyapunovCandidate.save before using this script."
-        ) from exc
-    lyap_model.eval()
-    return lyap_model
-
 
 def main() -> None:
     script_config, certification_config = parse_args()
@@ -147,9 +105,12 @@ def main() -> None:
     lyapunov_dir = Path(script_config.lyapunov_dir).resolve()
 
     policy_model = load_policy_model(policy_dir, device)
-    lyap_model = _load_lyapunov_model(lyapunov_dir, device=device)
+    lyap_model = load_lyapunov_model(lyapunov_dir, device)
 
-    dyn_model = DoubleIntegratorDynamics(dt=policy_model.global_config.dt).to(device)
+    dyn_model = DoubleIntegratorDynamics(
+        dt=policy_model.global_config.dt,
+        abcrown_compatible_ops=True,
+    ).to(device)
     dyn_model.eval()
 
     rho_estimate = script_config.rho_estimate

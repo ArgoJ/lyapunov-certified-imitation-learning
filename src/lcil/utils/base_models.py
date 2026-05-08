@@ -261,12 +261,14 @@ class ERKIntegrator(nn.Module):
         dynamics: Callable[[th.Tensor, th.Tensor], th.Tensor],
         dt: float,
         method: IntegrationMethod | str = IntegrationMethod.CLASSICAL_RK4,
+        abcrown_compatible_ops: bool = False,
         device: th.device | str = "cpu",
         dtype: th.dtype = th.float32,
     ) -> None:
         super().__init__()
         self.dynamics = dynamics
         self.dt = float(dt)
+        self.abcrown_compatible_ops = bool(abcrown_compatible_ops)
         self.device = th.device(device)
         self.dtype = dtype
 
@@ -356,7 +358,25 @@ class ERKIntegrator(nn.Module):
 
         return a_mat, b_vec
 
-    def _compute_explicit_stages(
+    def _compute_explicit_stages_abcrown_compatible(
+        self,
+        x: th.Tensor,
+        u: th.Tensor,
+        a_mat: th.Tensor,
+    ) -> list[th.Tensor]:
+        stages: list[th.Tensor] = []
+        for i in range(a_mat.shape[0]):
+            if i == 0:
+                stage_state = x
+            else:
+                stage_delta = th.zeros_like(x)
+                for j in range(i):
+                    stage_delta = stage_delta + a_mat[i, j] * stages[j]
+                stage_state = x + self.dt * stage_delta
+            stages.append(self.dynamics(stage_state, u))
+        return stages
+
+    def _compute_explicit_stages_vectorized(
         self,
         x: th.Tensor,
         u: th.Tensor,
@@ -380,8 +400,18 @@ class ERKIntegrator(nn.Module):
         """Integrate one step with the configured ERK scheme."""
         a_mat = self.a.to(device=x.device, dtype=x.dtype)
         b_vec = self.b.to(device=x.device, dtype=x.dtype)
-        k_tensor = self._compute_explicit_stages(x, u, a_mat)
-        return x + self.dt * th.tensordot(b_vec, k_tensor, dims=([0], [0]))
+
+        if not self.abcrown_compatible_ops:
+            k_tensor = self._compute_explicit_stages_vectorized(x, u, a_mat)
+            return x + self.dt * th.tensordot(b_vec, k_tensor, dims=([0], [0]))
+
+        stages = self._compute_explicit_stages_abcrown_compatible(x, u, a_mat)
+
+        update = th.zeros_like(x)
+        for idx, stage in enumerate(stages):
+            update = update + b_vec[idx] * stage
+
+        return x + self.dt * update
 
 
 class Linearize(nn.Module):

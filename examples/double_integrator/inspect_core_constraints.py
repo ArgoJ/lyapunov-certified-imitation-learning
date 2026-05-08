@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch as th
@@ -13,13 +13,14 @@ from lcil.certification import (
     LyapunovCertificationConfig,
 )
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
-from lcil.lyapunov_learning.models import NeuralLyapunovCandidate
+from lcil.utils import IntegrationMethod
 from lcil.utils.base_config import ArgumentParserConfig, config_field
 
 from . import (
     DoubleIntegratorDynamics,
     discover_latest_lyapunov_dir,
     discover_latest_policy_dir,
+    load_lyapunov_model,
     load_policy_model,
 )
 
@@ -80,67 +81,13 @@ def _build_parser(
 
 def parse_args() -> tuple[CoreInspectScriptConfig, LyapunovCertificationConfig]:
     script_defaults = _build_script_defaults()
-
-    bootstrap_parser = argparse.ArgumentParser(add_help=False)
-    script_defaults.add_to_argparse(
-        bootstrap_parser,
-        include_fields={"policy_dir", "lyapunov_dir"},
-    )
-    bootstrap_args, _ = bootstrap_parser.parse_known_args()
-    bootstrap_config = script_defaults.from_namespace(bootstrap_args)
-
-    bootstrap_policy_dir = Path(bootstrap_config.policy_dir).resolve()
-    bootstrap_lyapunov_dir = Path(bootstrap_config.lyapunov_dir).resolve()
-    default_policy_dir = Path(script_defaults.policy_dir).resolve()
-    default_lyapunov_dir = Path(script_defaults.lyapunov_dir).resolve()
-    if bootstrap_policy_dir != default_policy_dir and bootstrap_lyapunov_dir == default_lyapunov_dir:
-        bootstrap_lyapunov_dir = discover_latest_lyapunov_dir(bootstrap_policy_dir)
-
-    script_defaults = replace(
-        script_defaults,
-        policy_dir=str(bootstrap_policy_dir),
-        lyapunov_dir=str(bootstrap_lyapunov_dir),
-    )
-    certification_defaults = _build_certification_defaults(bootstrap_lyapunov_dir)
-
+    certification_defaults = _build_certification_defaults(Path(script_defaults.lyapunov_dir))
     parser = _build_parser(script_defaults, certification_defaults)
     args = parser.parse_args()
     return (
         script_defaults.from_namespace(args),
         certification_defaults.from_namespace(args),
     )
-
-
-def _load_lyapunov_model(
-    lyapunov_dir: Path,
-    device: th.device,
-) -> NeuralLyapunovCandidate:
-    checkpoint_path = lyapunov_dir / "lyapunov_model.pt"
-    try:
-        lyap_model = NeuralLyapunovCandidate.load(
-            checkpoint_path,
-            map_location=device,
-        ).to(device)
-    except (FileNotFoundError, KeyError, TypeError, ValueError) as exc:
-        raise ValueError(
-            f"Lyapunov checkpoint '{checkpoint_path}' is not compatible with the new model save/load format. "
-            "Re-save the model with NeuralLyapunovCandidate.save before using this script."
-        ) from exc
-    lyap_model.eval()
-    return lyap_model
-
-
-def _log_constraint_summary(result: ConstraintInspectionResult) -> None:
-    __logger__.info(
-        "%s summary: total=%d verified=%d counterexample=%d unknown=%d success=%s.",
-        result.name,
-        result.num_regions,
-        len(result.verified_regions),
-        len(result.counterexample_regions),
-        len(result.unknown_regions),
-        result.global_success,
-    )
-
 
 def main() -> None:
     script_config, certification_config = parse_args()
@@ -150,9 +97,13 @@ def main() -> None:
     lyapunov_dir = Path(script_config.lyapunov_dir).resolve()
 
     policy_model = load_policy_model(policy_dir, device)
-    lyap_model = _load_lyapunov_model(lyapunov_dir, device=device)
+    lyap_model = load_lyapunov_model(lyapunov_dir, device)
 
-    dyn_model = DoubleIntegratorDynamics(dt=policy_model.global_config.dt).to(device)
+    dyn_model = DoubleIntegratorDynamics(
+        dt=policy_model.global_config.dt, 
+        method=IntegrationMethod.EXPLICIT_EULER,
+        abcrown_compatible_ops=True,
+    ).to(device)
     dyn_model.eval()
 
     inspector = CoreConstraintInspector(
@@ -170,15 +121,9 @@ def main() -> None:
         certification_config.origin_exclusion,
     )
 
-    inspection_result = inspector.inspect(
+    inspector.inspect(
         show_progress=bool(script_config.show_progress),
     )
-
-    __logger__.info("Inspected %d certification regions.", len(inspection_result.regions))
-    _log_constraint_summary(inspection_result.positivity)
-    _log_constraint_summary(inspection_result.decrease)
-    _log_constraint_summary(inspection_result.invariance)
-
 
 if __name__ == "__main__":
     main()
