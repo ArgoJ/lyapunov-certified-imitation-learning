@@ -4,6 +4,7 @@ from .cartpole_utils import (
     discover_latest_lyapunov_dir,
     discover_latest_policy_dir,
     load_policy_model,
+    default_model_path,
     load_lyapunov_model,
 )
 from .cartpole_dyn import CartpoleDynamics

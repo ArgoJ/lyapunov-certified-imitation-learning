@@ -52,6 +52,11 @@ def load_policy_model(policy_dir: Path, device: th.device) -> CartpoleAngleWrapp
     policy_model.eval()
     return policy_model
 
+
+def default_model_path() -> str:
+    results_root = Path(__file__).resolve().parents[2] / "results" / "cartpole"
+    return str(discover_latest_policy_dir(results_root) / "model.pt")
+
 def load_lyapunov_model(lyapunov_dir: Path, device: th.device) -> NeuralLyapunovCandidate:
     checkpoint_path = lyapunov_dir / "lyapunov_model.pt"
     try:

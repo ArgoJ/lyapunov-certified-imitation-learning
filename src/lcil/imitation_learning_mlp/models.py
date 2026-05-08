@@ -50,8 +50,6 @@ class MLPPolicy(nn.Module):
         self.register_buffer("_u_min", u_min_tensor)
         self.register_buffer("_u_max", u_max_tensor)
 
-        self.train_dataset_path: str | None = None
-        self.val_dataset_path: str | None = None
         self.global_config: MPCConfig | dict[str, Any] | None = None
 
     @staticmethod

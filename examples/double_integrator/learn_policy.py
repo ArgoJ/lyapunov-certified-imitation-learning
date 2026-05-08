@@ -6,10 +6,14 @@ from pathlib import Path
 from datetime import datetime
 
 from mpc_datagen import MPCDataset
-from lcil.utils import EarlyStopping
+from lcil.utils import EarlyStopping, IntegrationMethod
 from lcil.imitation_learning_mlp import *
 
-from double_integrator_dyn import DoubleIntegratorDynamics
+try:
+    from . import DoubleIntegratorDynamics, default_dataset_path
+except ImportError:
+    from double_integrator_dyn import DoubleIntegratorDynamics
+    from di_utils import default_dataset_path
 
 
 def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Namespace:
@@ -18,17 +22,10 @@ def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Names
     parser.add_argument(
         "--dataset-path",
         type=str,
-        default="/home/josua/programming_stuff/projects/mpc-datagen/data/double_integrator_regional_N20_data.hdf5",
+        default=default_dataset_path(),
         help="Path to the source MPC dataset (HDF5).",
     )
-    training_defaults.add_to_argparse(parser, include_fields={"epochs", "learning_rate"})
     parser.add_argument("--batch-size", type=int, default=256, help="Training batch size.")
-    parser.add_argument(
-        "--save-folder",
-        type=str,
-        default="results/double_integrator",
-        help="Path where the trained model state dict will be saved.",
-    )
     parser.add_argument(
         "--near-duplicate-radius",
         type=float,
@@ -36,14 +33,24 @@ def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Names
         help="Optional near-duplicate L2 radius in normalized feature space.",
     )
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string (e.g. cpu, cuda).")
+    
+    training_defaults.add_to_argparse(
+        parser,
+        exclude_fields={"scheduler_type", "scheduler_kwargs", "tb_log_dir"},
+    )
     return parser.parse_args()
 
 
 def main() -> None:
+    base_path = Path("results/double_integrator")
+    iso = datetime.now().strftime('%Y%m%d_%H%M%S').replace(" ", "_").replace(":", "-")
+
     training_defaults = ImitationTrainingConfig(
         epochs=100,
         learning_rate=5e-4,
-        scheduler_type="cosine",
+        scheduler_type="plateau",
+        scheduler_kwargs={"mode": "min", "factor": 0.5, "patience": 10},
+        tb_log_dir=(base_path / "tb" / iso),
     )
     args = parse_cli_args(training_defaults)
     device = args.device
@@ -55,7 +62,7 @@ def main() -> None:
     dataset_cfg = source_dataset.global_config
 
     net = MLPPolicy(
-        [dataset_cfg.nx, 16, 16, dataset_cfg.nu],
+        [dataset_cfg.nx, 32, 32, dataset_cfg.nu],
         ["relu", "relu", "identity"],
         u_min=dataset_cfg.constraints.lbu,
         u_max=dataset_cfg.constraints.ubu,
@@ -77,19 +84,18 @@ def main() -> None:
         reference_loss=ReferenceWeightedMSELoss(
             reference=[dataset_cfg.cost.yref[-dataset_cfg.nu:]],
             alpha=1.0,
-            max_weight=1.0,
-            min_weight=0.7),
+            max_weight=5.0,
+            min_weight=4.0),
         dynamics_loss=DynamicsAwareLoss(
-            dynamics=DoubleIntegratorDynamics(dt=dataset_cfg.dt), 
+            dynamics=DoubleIntegratorDynamics(
+                dt=dataset_cfg.dt,
+                method=IntegrationMethod.CLASSICAL_RK4), 
             x_min=th.tensor(dataset_cfg.constraints.lbx), 
             x_max=th.tensor(dataset_cfg.constraints.ubx)),
-        lambda_dyn=2.0,
+        lambda_dyn=5.0,
     )
 
-    training_cfg = replace(
-        training_defaults.from_namespace(args),
-        scheduler_type="cosine",
-    )
+    training_cfg = training_defaults.from_namespace(args)
 
     trainer = PolicyTrainer(
         model=net,
@@ -102,7 +108,7 @@ def main() -> None:
     )
     trainer.train()
     trainer.save(
-        save_folder=Path(args.save_folder) / datetime.now().strftime('%Y%m%d_%H%M%S'), 
+        save_folder=base_path / iso, 
         global_config=source_dataset.global_config
     )
 

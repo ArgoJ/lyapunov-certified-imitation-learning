@@ -2,16 +2,14 @@ from __future__ import annotations
 
 import argparse
 import logging
-from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-import numpy as np
 import torch as th
 
 from lcil.certification import (
-    BisectCertifier,
-    CertificationResultTester,
+    ConstraintInspectionResult,
+    CoreConstraintInspector,
     LyapunovCertificationConfig,
 )
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
@@ -19,37 +17,29 @@ from lcil.lyapunov_learning.models import NeuralLyapunovCandidate
 from lcil.utils.base_config import ArgumentParserConfig, config_field
 
 from . import (
-    CartpoleDynamics,
-    CartpoleAngleWrapper,
+    DoubleIntegratorDynamics,
     discover_latest_lyapunov_dir,
     discover_latest_policy_dir,
     load_policy_model,
 )
 
-__logger__ = logging.getLogger("lcil.examples.cartpole.certify")
+__logger__ = logging.getLogger("lcil.examples.double_integrator.inspect_core_constraints")
 
-_DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[2] / "results" / "cartpole"
-_DEFAULT_CERT_BOUND_SCALES = (0.15, 0.15, 0.05, 0.15)
+_DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[2] / "results" / "double_integrator"
 
 
 @dataclass(frozen=True)
-class BisectCertifyScriptConfig(ArgumentParserConfig):
+class CoreInspectScriptConfig(ArgumentParserConfig):
     policy_dir: str = config_field(help="Policy run directory containing model.pt.")
     lyapunov_dir: str = config_field(help="Lyapunov run directory containing lyapunov_model.pt.")
     device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
-    rho_estimate: float | None = config_field(default=None, help="Optional initial rho estimate for the bisection search.")
-    test_rollout_steps: int = config_field(default=50, help="Closed-loop rollout steps per region center during empirical result testing.")
-    cert_bound_scales: list[float] = config_field(
-        default_factory=lambda: list(_DEFAULT_CERT_BOUND_SCALES),
-        help="Per-dimension scaling applied to policy state bounds to define certification bounds.",
-    )
-    save_dir: str | None = config_field(default=None, help="Optional directory where certification details and tester results are written.")
+    show_progress: bool = config_field(default=False, help="Show per-constraint ABCrown progress bars.")
 
 
-def _build_script_defaults() -> BisectCertifyScriptConfig:
+def _build_script_defaults() -> CoreInspectScriptConfig:
     default_policy_dir = discover_latest_policy_dir(_DEFAULT_RESULTS_ROOT)
     default_lyapunov_dir = discover_latest_lyapunov_dir(default_policy_dir)
-    return BisectCertifyScriptConfig(
+    return CoreInspectScriptConfig(
         policy_dir=str(default_policy_dir),
         lyapunov_dir=str(default_lyapunov_dir),
     )
@@ -61,7 +51,7 @@ def _build_certification_defaults(
     training_config = LyapunovTrainingConfig.load(lyapunov_dir / "training_config.json")
     return LyapunovCertificationConfig.from_training_config(
         training_config,
-        cert_bounds=training_config.state_bounds, # TODO: apply percentage of these bounds
+        cert_bounds=training_config.state_bounds,
         bins_per_dim=2,
         center_refinement_factor=1.0,
         origin_exclusion=0.0,
@@ -74,11 +64,11 @@ def _build_certification_defaults(
 
 
 def _build_parser(
-    script_defaults: BisectCertifyScriptConfig,
+    script_defaults: CoreInspectScriptConfig,
     certification_defaults: LyapunovCertificationConfig,
 ) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Bisection-based cartpole certification analysis with follow-up empirical rollout testing."
+        description="Inspect double-integrator Lyapunov core constraints with separate ABCrown checks."
     )
     script_defaults.add_to_argparse(parser)
     certification_defaults.add_to_argparse(
@@ -88,7 +78,7 @@ def _build_parser(
     return parser
 
 
-def parse_args() -> tuple[BisectCertifyScriptConfig, LyapunovCertificationConfig]:
+def parse_args() -> tuple[CoreInspectScriptConfig, LyapunovCertificationConfig]:
     script_defaults = _build_script_defaults()
 
     bootstrap_parser = argparse.ArgumentParser(add_help=False)
@@ -121,7 +111,6 @@ def parse_args() -> tuple[BisectCertifyScriptConfig, LyapunovCertificationConfig
     )
 
 
-
 def _load_lyapunov_model(
     lyapunov_dir: Path,
     device: th.device,
@@ -141,6 +130,18 @@ def _load_lyapunov_model(
     return lyap_model
 
 
+def _log_constraint_summary(result: ConstraintInspectionResult) -> None:
+    __logger__.info(
+        "%s summary: total=%d verified=%d counterexample=%d unknown=%d success=%s.",
+        result.name,
+        result.num_regions,
+        len(result.verified_regions),
+        len(result.counterexample_regions),
+        len(result.unknown_regions),
+        result.global_success,
+    )
+
+
 def main() -> None:
     script_config, certification_config = parse_args()
     device = th.device(script_config.device)
@@ -151,21 +152,10 @@ def main() -> None:
     policy_model = load_policy_model(policy_dir, device)
     lyap_model = _load_lyapunov_model(lyapunov_dir, device=device)
 
-    dyn_model = CartpoleDynamics(dt=policy_model.net.global_config.dt).to(device)
+    dyn_model = DoubleIntegratorDynamics(dt=policy_model.global_config.dt).to(device)
     dyn_model.eval()
 
-    rho_estimate = script_config.rho_estimate
-
-    save_dir = (
-        Path(script_config.save_dir).resolve()
-        if script_config.save_dir is not None
-        else (lyapunov_dir / "bisect_certification").resolve()
-    )
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    __logger__.info("Using rho estimate %.6f", rho_estimate)
-
-    certifier = BisectCertifier(
+    inspector = CoreConstraintInspector(
         policy_model=policy_model,
         lyap_model=lyap_model,
         dyn_model=dyn_model,
@@ -173,23 +163,22 @@ def main() -> None:
         device=device,
     )
 
-    cert_results = certifier.certify(rho_estimate)
-    certifier.save(save_dir)
+    __logger__.info(
+        "Running core constraint inspection with bins=%s, center_refinement=%s, origin_exclusion=%s.",
+        certification_config.bins_per_dim,
+        certification_config.center_refinement_factor,
+        certification_config.origin_exclusion,
+    )
 
-    cert_tester = CertificationResultTester(
-        policy_model=policy_model,
-        lyap_model=lyap_model,
-        dyn_model=dyn_model,
-        config=certification_config,
-        device=device,
+    inspection_result = inspector.inspect(
+        show_progress=bool(script_config.show_progress),
     )
-    test_results = cert_tester.test_result(
-        cert_result=cert_results,
-        rollout_steps=int(script_config.test_rollout_steps),
-    )
-    tester_results_path = save_dir / "certification_tester_results.json"
-    test_results.save(tester_results_path)
-    __logger__.info("Saved certification tester results to %s", tester_results_path)
+
+    __logger__.info("Inspected %d certification regions.", len(inspection_result.regions))
+    _log_constraint_summary(inspection_result.positivity)
+    _log_constraint_summary(inspection_result.decrease)
+    _log_constraint_summary(inspection_result.invariance)
+
 
 if __name__ == "__main__":
     main()

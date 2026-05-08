@@ -249,8 +249,8 @@ class BaseABCrownCertifier(ABC):
         status = str(result.status).strip()
         elapsed = f"{result.stats.get('elapsed', -1.0):.3f}s"
         bab_vals = result.stats.get("bab", list())
-        bab_violation = self._extract_bab_violation(bab_vals)
-        __logger__.info("ABCrown solver status: %s after %s with violation %s", status, elapsed, bab_violation)
+        bab_violation = f"violation={self._extract_bab_violation(bab_vals)}." if _is_verified_status(status) else "no violation."
+        __logger__.info("ABCrown solver status: %s after %s with %s", status, elapsed, bab_violation)
         return ABCrownRegionVerification(
             status=status,
             verified=_is_verified_status(status),

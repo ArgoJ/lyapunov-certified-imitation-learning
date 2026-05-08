@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -19,17 +18,16 @@ from lcil.lyapunov_learning.models import NeuralLyapunovCandidate
 from lcil.utils.base_config import ArgumentParserConfig, config_field
 
 from . import (
-    CartpoleDynamics,
-    CartpoleAngleWrapper,
+    DoubleIntegratorDynamics,
     discover_latest_lyapunov_dir,
     discover_latest_policy_dir,
     load_policy_model,
 )
 
-__logger__ = logging.getLogger("lcil.examples.cartpole.certify")
+__logger__ = logging.getLogger("lcil.examples.double_integrator.certify")
 
-_DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[2] / "results" / "cartpole"
-_DEFAULT_CERT_BOUND_SCALES = (0.15, 0.15, 0.05, 0.15)
+_DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[2] / "results" / "double_integrator"
+_DEFAULT_CERT_BOUND_SCALES = (0.15, 0.15)
 
 
 @dataclass(frozen=True)
@@ -78,7 +76,7 @@ def _build_parser(
     certification_defaults: LyapunovCertificationConfig,
 ) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Bisection-based cartpole certification analysis with follow-up empirical rollout testing."
+        description="Bisection-based double-integrator certification analysis with follow-up empirical rollout testing."
     )
     script_defaults.add_to_argparse(parser)
     certification_defaults.add_to_argparse(
@@ -151,7 +149,7 @@ def main() -> None:
     policy_model = load_policy_model(policy_dir, device)
     lyap_model = _load_lyapunov_model(lyapunov_dir, device=device)
 
-    dyn_model = CartpoleDynamics(dt=policy_model.net.global_config.dt).to(device)
+    dyn_model = DoubleIntegratorDynamics(dt=policy_model.global_config.dt).to(device)
     dyn_model.eval()
 
     rho_estimate = script_config.rho_estimate

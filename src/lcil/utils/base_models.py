@@ -2,6 +2,8 @@ import importlib
 import importlib.util
 import inspect
 import os
+from enum import Enum
+
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
@@ -205,7 +207,7 @@ def load_feature_net(
 
 
 class LinearDynamics(nn.Module):
-    """Simple linear dynamics model $\dot{x} = A x + B u$."""
+    r"""Simple linear dynamics model :math:`\dot{x} = A x + B u`."""
 
     def __init__(self, A: th.Tensor, B: th.Tensor):
         super().__init__()
@@ -216,8 +218,33 @@ class LinearDynamics(nn.Module):
         return F.linear(x, self.A) + F.linear(u, self.B)
 
 
-class RK4Integrator(nn.Module):
-    """Generic fourth-order Runge-Kutta integrator for control systems.
+class AffineDynamics(nn.Module):
+    r"""Simple affine dynamics model :math:`\dot{x} = A x + B u + c`."""
+
+    def __init__(self, A: th.Tensor, B: th.Tensor, c: th.Tensor):
+        super().__init__()
+        self.register_buffer("A", A)
+        self.register_buffer("B", B)
+        self.register_buffer("c", c)
+
+    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+        return F.linear(x, self.A) + F.linear(u, self.B) + self.c
+
+
+class IntegrationMethod(str, Enum):
+    """Supported explicit one-step integration methods."""
+
+    EXPLICIT_EULER = "explicit_euler"
+    HEUN2 = "heun2"
+    MIDPOINT_RK2 = "midpoint_rk2"
+    KUTTA3 = "kutta3"
+    HEUN3 = "heun3"
+    CLASSICAL_RK4 = "classical_rk4"
+    KUTTA_38_RK4 = "kutta_38_rk4"
+
+
+class ERKIntegrator(nn.Module):
+    """Explicit Runge-Kutta one-step integrator for control systems.
 
     Parameters
     ----------
@@ -225,24 +252,136 @@ class RK4Integrator(nn.Module):
         Continuous-time dynamics function :math:`\dot{x} = f(x, u)`.
     dt : float
         Integration step size.
+    method : IntegrationMethod | str
+        Explicit integration scheme to apply.
     """
 
     def __init__(
         self,
         dynamics: Callable[[th.Tensor, th.Tensor], th.Tensor],
         dt: float,
+        method: IntegrationMethod | str = IntegrationMethod.CLASSICAL_RK4,
+        device: th.device | str = "cpu",
+        dtype: th.dtype = th.float32,
     ) -> None:
         super().__init__()
         self.dynamics = dynamics
-        self.dt = dt
+        self.dt = float(dt)
+        self.device = th.device(device)
+        self.dtype = dtype
+
+        try:
+            self.method = method if isinstance(method, IntegrationMethod) else IntegrationMethod(method)
+        except ValueError as exc:
+            supported = ", ".join(integration_method.value for integration_method in IntegrationMethod)
+            raise ValueError(
+                f"Unsupported integration method '{method}'. Supported values are: {supported}."
+            ) from exc
+
+        a_mat, b_vec = self._get_butcher_tableau(self.method)
+        self.register_buffer("a", a_mat)
+        self.register_buffer("b", b_vec)
+        self.register_buffer("c", a_mat.sum(dim=1))
+
+    @classmethod
+    def build_compiled(cls, *args, **kwargs):
+        module = cls(*args, **kwargs)
+        return th.compile(module)
+
+    def _get_butcher_tableau(
+        self,
+        method: IntegrationMethod,
+    ) -> tuple[th.Tensor, th.Tensor]:
+        dtype = self.dtype
+        device = self.device
+
+        match method:
+            case IntegrationMethod.EXPLICIT_EULER:
+                a_mat = th.tensor([[0.0]], dtype=dtype, device=device)
+                b_vec = th.tensor([1.0], dtype=dtype, device=device)
+            case IntegrationMethod.HEUN2:
+                a_mat = th.tensor(
+                [[0.0, 0.0], [1.0, 0.0]],
+                dtype=dtype,
+                device=device,
+                )
+                b_vec = th.tensor([0.5, 0.5], dtype=dtype, device=device)
+            case IntegrationMethod.MIDPOINT_RK2:
+                a_mat = th.tensor(
+                [[0.0, 0.0], [0.5, 0.0]],
+                dtype=dtype,
+                device=device,
+                )
+                b_vec = th.tensor([0.0, 1.0], dtype=dtype, device=device)
+            case IntegrationMethod.KUTTA3:
+                a_mat = th.tensor(
+                [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [-1.0, 2.0, 0.0]],
+                dtype=dtype,
+                device=device,
+                )
+                b_vec = th.tensor([1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0], dtype=dtype, device=device)
+            case IntegrationMethod.HEUN3:
+                a_mat = th.tensor(
+                [[0.0, 0.0, 0.0], [1.0 / 3.0, 0.0, 0.0], [0.0, 2.0 / 3.0, 0.0]],
+                dtype=dtype,
+                device=device,
+                )
+                b_vec = th.tensor([1.0 / 4.0, 0.0, 3.0 / 4.0], dtype=dtype, device=device)
+            case IntegrationMethod.CLASSICAL_RK4:
+                a_mat = th.tensor(
+                    [
+                        [0.0, 0.0, 0.0, 0.0],
+                        [0.5, 0.0, 0.0, 0.0],
+                        [0.0, 0.5, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                    ],
+                    dtype=dtype,
+                    device=device,
+                )
+                b_vec = th.tensor([1.0 / 6.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 6.0], dtype=dtype, device=device)
+            case IntegrationMethod.KUTTA_38_RK4:
+                a_mat = th.tensor(
+                    [
+                    [0.0, 0.0, 0.0, 0.0],
+                    [1.0 / 3.0, 0.0, 0.0, 0.0],
+                    [-1.0 / 3.0, 1.0, 0.0, 0.0],
+                    [1.0, -1.0, 1.0, 0.0],
+                ],
+                dtype=dtype,
+                device=device,
+                )
+                b_vec = th.tensor([1.0 / 8.0, 3.0 / 8.0, 3.0 / 8.0, 1.0 / 8.0], dtype=dtype, device=device)
+            case _:
+                raise ValueError(f"Unsupported integration method '{method}'.")
+
+        return a_mat, b_vec
+
+    def _compute_explicit_stages(
+        self,
+        x: th.Tensor,
+        u: th.Tensor,
+        a_mat: th.Tensor,
+    ) -> th.Tensor:
+        stages: list[th.Tensor] = []
+        for i in range(a_mat.shape[0]):
+            if i == 0:
+                stage_state = x
+            else:
+                prev_stages = th.stack(stages, dim=0)
+                stage_state = x + self.dt * th.tensordot(
+                    a_mat[i, :i],
+                    prev_stages,
+                    dims=([0], [0]),
+                )
+            stages.append(self.dynamics(stage_state, u))
+        return th.stack(stages, dim=0)
 
     def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        """Integrate one step with RK4."""
-        k1 = self.dynamics(x, u)
-        k2 = self.dynamics(x + 0.5 * self.dt * k1, u)
-        k3 = self.dynamics(x + 0.5 * self.dt * k2, u)
-        k4 = self.dynamics(x + self.dt * k3, u)
-        return x + (self.dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+        """Integrate one step with the configured ERK scheme."""
+        a_mat = self.a.to(device=x.device, dtype=x.dtype)
+        b_vec = self.b.to(device=x.device, dtype=x.dtype)
+        k_tensor = self._compute_explicit_stages(x, u, a_mat)
+        return x + self.dt * th.tensordot(b_vec, k_tensor, dims=([0], [0]))
 
 
 class Linearize(nn.Module):

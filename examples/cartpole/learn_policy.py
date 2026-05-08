@@ -25,7 +25,6 @@ def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Names
         default=Path.cwd() / "results" / "cartpole" / "data" / "cartpole_N40_data.hdf5",
         help="Path to the source MPC dataset (HDF5).",
     )
-    training_defaults.add_to_argparse(parser, include_fields={"epochs", "learning_rate"})
     parser.add_argument("--batch-size", type=int, default=256, help="Training batch size.")
     parser.add_argument(
         "--near-duplicate-radius",
@@ -34,20 +33,28 @@ def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Names
         help="Optional near-duplicate L2 radius in normalized feature space.",
     )
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string (e.g. cpu, cuda).")
+    
+    training_defaults.add_to_argparse(
+        parser,
+        exclude_fields={"scheduler_type", "scheduler_kwargs", "tb_log_dir"}
+    )
     return parser.parse_args()
 
 
 def main() -> None:
+    base_path = Path("results/cartpole")
+    iso = datetime.now().strftime('%Y%m%d_%H%M%S').replace(" ", "_").replace(":", "-")
+
     training_defaults = ImitationTrainingConfig(
         epochs=200,
         learning_rate=5e-4,
         scheduler_type="plateau",
+        scheduler_kwargs={"mode": "min", "factor": 0.5, "patience": 4},
+        tb_log_dir=(base_path / "tb" / iso),
     )
     args = parse_cli_args(training_defaults)
     device = args.device
     dataset_path = args.dataset_path
-    base_path = Path("results/cartpole")
-    iso = datetime.now().strftime('%Y%m%d_%H%M%S').replace(" ", "_").replace(":", "-")
 
     source_dataset = MPCDataset.load(Path(dataset_path))
     if len(source_dataset) == 0:
@@ -89,12 +96,7 @@ def main() -> None:
         lambda_dyn=2.0,
     )
 
-    training_cfg = replace(
-        training_defaults.from_namespace(args),
-        scheduler_type="plateau",
-        scheduler_kwargs={"mode": "min", "factor": 0.5, "patience": 4},
-        tb_log_dir=(base_path / "tb" / iso),
-    )
+    training_cfg = training_defaults.from_namespace(args)
 
     trainer = PolicyTrainer(
         model=net,

@@ -1,14 +1,44 @@
 import argparse
-from pathlib import Path
+import logging
+import numpy as np
 
-from mpc_datagen import mdg_plt
+from pathlib import Path
+from scipy.linalg import solve_discrete_are
+
+from mpc_datagen import mdg_plt, StabilityVerifier, VerificationRender, mdg_linalg, MPCDataset
+from lcil.utils import IntegrationMethod
 from lcil.imitation_learning_mlp import MLPPolicy, StateActionDataset
 from lcil.imitation_learning_mlp.policy_rollout import (
     PolicyRolloutGenerator,
     PolicyRolloutConfig,
     FeasibleSetSampler,
 )
-from double_integrator_dyn import DoubleIntegratorDynamics
+
+try:
+    from . import DoubleIntegratorDynamics, default_model_path
+except ImportError:
+    from di_utils import default_model_path
+    from double_integrator_dyn import DoubleIntegratorDynamics
+
+__logger__ = logging.getLogger("lcil.examples.double_integrator.rollout")
+
+
+def _compute_mpc_quadratic_p(dt: float) -> np.ndarray:
+    """Compute the DARE Lyapunov matrix used by the MPC terminal ingredients."""
+    A=np.array([[0.0, 1.0], [0.0, 0.0]])
+    B=np.array([[0.0], [1.0]])
+
+    a_d, b_d = mdg_linalg.lin_c2d_rk4(A, B, dt, num_steps=1)
+    q = np.diag([15.0, 1.0])
+    r = np.diag([0.1])
+    return solve_discrete_are(a_d, b_d, q, r)
+
+
+def _set_quadratic_vn(dataset: MPCDataset, P: np.ndarray) -> None:
+    """Populate ``trajectory.V_N`` with the quadratic surrogate ``x.T @ P @ x``."""
+    for entry in dataset:
+        x = np.asarray(entry.trajectory.states, dtype=np.float64)
+        entry.trajectory.V_N = np.einsum("bi,ij,bj->b", x, P, x)
 
 
 def parse_cli_args() -> argparse.Namespace:
@@ -18,7 +48,7 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-path",
         type=str,
-        default="results/double_integrator/20260220_221524/model.pt",
+        default=default_model_path(),
         help="Path to a trained policy checkpoint.",
     )
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string (e.g. cpu, cuda).")
@@ -35,12 +65,23 @@ def main() -> None:
     net.to(device)
     net.eval()
 
-    print(f"dataset path: {net.val_dataset_path}")
-    cfg = PolicyRolloutConfig.from_mpc_config(net.global_config, t_sim=40.0)
-    dataset = StateActionDataset.load(net.val_dataset_path)
-    sampler = FeasibleSetSampler(dataset=dataset)
+    val_dataset_path = model_path.parent / "val_dataset.pt"
+    __logger__.info(f"dataset path: {val_dataset_path}")
+    if val_dataset_path.exists():
+        dataset = StateActionDataset.load(val_dataset_path)
+        sampler = FeasibleSetSampler(dataset=dataset)
+    else:
+        sampler = None
+        __logger__.warning(
+            "Policy model does not have a validation dataset path. "
+            "FeasibleSetSampler will not be able to sample from the dataset for rollouts."
+        )
 
-    simulator = DoubleIntegratorDynamics(dt=cfg.dt)
+    cfg = PolicyRolloutConfig.from_mpc_config(net.global_config, t_sim=40.0)
+    simulator = DoubleIntegratorDynamics(
+        dt=cfg.dt,
+        method=IntegrationMethod.CLASSICAL_RK4
+    ).to(device)
     policy_rollout_generator = PolicyRolloutGenerator(
         policy=net,
         simulator=simulator,
@@ -49,15 +90,23 @@ def main() -> None:
         device=device,
     )
     solved_dataset = policy_rollout_generator.generate(n_samples)
+
+    p_matrix = _compute_mpc_quadratic_p(cfg.dt)
+    _set_quadratic_vn(solved_dataset, p_matrix)
+    solved_dataset.validate()
     
     base_folder = model_path.parent
     output_path = base_folder / "policy_rollouts.hdf5"
     plot_path = base_folder / "policy_rollouts.html"
     solved_dataset.save(path=output_path, save_ocp_trajs=False)
+
+    veri_stats = StabilityVerifier.verify(solved_dataset)
+    VerificationRender(veri_stats).render()
+
     mdg_plt.mpc_trajectories(
         dataset=solved_dataset,
-        state_labels=["x", "v"],
-        control_labels=["u"],
+        state_labels=["$x$", "$v$"],
+        control_labels=["$u$"],
         plot_predictions=False,
         html_path=str(plot_path),
     )
