@@ -38,6 +38,17 @@ class ConstraintInspectionResult:
     def global_success(self) -> bool:
         return len(self.counterexample_regions) == 0 and len(self.unknown_regions) == 0 and self.num_regions > 0
 
+    def log_summary(self) -> None:
+        __logger__.info(
+            "%s summary: total=%d verified=%d counterexample=%d unknown=%d success=%s.",
+            self.name,
+            self.num_regions,
+            len(self.verified_regions),
+            len(self.counterexample_regions),
+            len(self.unknown_regions),
+            self.global_success,
+        )
+
 
 @dataclass(frozen=True)
 class CoreConstraintInspectionResult:
@@ -47,6 +58,12 @@ class CoreConstraintInspectionResult:
     positivity: ConstraintInspectionResult
     decrease: ConstraintInspectionResult
     invariance: ConstraintInspectionResult
+
+    def log_summary(self) -> None:
+        __logger__.info("Core constraint inspection summary:")
+        self.positivity.log_summary()
+        self.decrease.log_summary()
+        self.invariance.log_summary()
 
 
 class CoreConstraintInspector:
@@ -167,13 +184,7 @@ class CoreConstraintInspector:
             show_progress=show_progress,
         )
         result = self._pack_constraint_result(name, regions, batch_result)
-        __logger__.info(
-            "%s inspection result: verified=%d counterexample=%d unknown=%d.",
-            name,
-            len(result.verified_regions),
-            len(result.counterexample_regions),
-            len(result.unknown_regions),
-        )
+        result.log_summary()
         return result
 
     def inspect(
