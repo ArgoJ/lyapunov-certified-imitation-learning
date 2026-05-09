@@ -19,6 +19,11 @@ class _IdentityLyapunov(nn.Module):
         return x[:, :1]
 
 
+class _ZeroLyapunov(nn.Module):
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        return th.zeros((x.shape[0], 1), dtype=x.dtype, device=x.device)
+
+
 class _DoubleDynamics(nn.Module):
     def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
         del u
@@ -49,6 +54,23 @@ class TestCertificationResultTester(unittest.TestCase):
             device=th.device("cpu"),
         )
 
+    @classmethod
+    def _make_custom_tester(
+        cls,
+        *,
+        bounds: list[list[float]] | None = None,
+        policy_model: nn.Module | None = None,
+        lyap_model: nn.Module | None = None,
+        dyn_model: nn.Module | None = None,
+    ) -> CertificationResultTester:
+        return CertificationResultTester(
+            policy_model=_ZeroPolicy() if policy_model is None else policy_model,
+            lyap_model=_IdentityLyapunov() if lyap_model is None else lyap_model,
+            dyn_model=_DoubleDynamics() if dyn_model is None else dyn_model,
+            config=cls._make_config(bounds=bounds),
+            device=th.device("cpu"),
+        )
+
     def test_evaluate_regions_returns_empty_summary_for_missing_regions(self) -> None:
         tester = self._make_tester()
 
@@ -65,6 +87,7 @@ class TestCertificationResultTester(unittest.TestCase):
             self.assertEqual(result.violation_rate, 0.0)
             self.assertEqual(result.max_violation, 0.0)
             self.assertIsNone(result.violations_per_step)
+            self.assertIsNone(result.rollout_states)
 
     def test_evaluate_regions_uses_box_centers_for_rollout_checks(self) -> None:
         tester = self._make_tester()
@@ -81,6 +104,10 @@ class TestCertificationResultTester(unittest.TestCase):
         self.assertEqual(result.violation_rate, 1.0)
         self.assertAlmostEqual(result.max_violation, 2.0, places=6)
         np.testing.assert_allclose(result.violations_per_step, np.array([[2.0]], dtype=np.float32))
+        np.testing.assert_allclose(
+            result.rollout_states,
+            np.array([[[2.0], [4.0]]], dtype=np.float32),
+        )
 
     def test_test_result_does_not_hide_outside_sublevel_hard_violations(self) -> None:
         tester = self._make_tester()
@@ -101,6 +128,49 @@ class TestCertificationResultTester(unittest.TestCase):
         np.testing.assert_allclose(
             result.outside_sublevel.violations_per_step,
             np.array([[1.6]], dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            result.outside_sublevel.rollout_states,
+            np.array([[[1.6], [3.2]]], dtype=np.float32),
+        )
+
+    def test_evaluate_regions_captures_state_invariance_violations_from_verifier_output(self) -> None:
+        tester = self._make_custom_tester(
+            bounds=[[0.0], [3.0]],
+            lyap_model=_ZeroLyapunov(),
+        )
+        regions = np.array([[[1.0], [3.0]]], dtype=np.float32)
+
+        result = tester._evaluate_regions(
+            regions,
+            name="invariance",
+            tolerance=1e-6,
+            rollout_steps=1,
+        )
+
+        self.assertEqual(result.num_regions, 1)
+        self.assertEqual(result.violation_rate, 1.0)
+        self.assertAlmostEqual(result.max_violation, 1.0, places=6)
+        np.testing.assert_allclose(result.violations_per_step, np.array([[1.0]], dtype=np.float32))
+        np.testing.assert_allclose(
+            result.rollout_states,
+            np.array([[[2.0], [4.0]]], dtype=np.float32),
+        )
+
+    def test_evaluate_regions_records_all_rollout_states(self) -> None:
+        tester = self._make_tester()
+        regions = np.array([[[1.0], [3.0]]], dtype=np.float32)
+
+        result = tester._evaluate_regions(
+            regions,
+            name="rollout_length",
+            tolerance=1e-6,
+            rollout_steps=3,
+        )
+
+        np.testing.assert_allclose(
+            result.rollout_states,
+            np.array([[[2.0], [4.0], [8.0], [16.0]]], dtype=np.float32),
         )
 
     def test_rollout_steps_must_be_positive(self) -> None:

@@ -23,12 +23,13 @@ class CertificationCategoryTestResult(JsonDataclass):
     full boxes in the category.
     """
 
-    NP_ARRAY_FIELDS = ("violations_per_step",)
+    NP_ARRAY_FIELDS = ("violations_per_step", "rollout_states")
 
     violation_rate: float
     max_violation: float
     num_regions: int
     violations_per_step: NDArray | None = None
+    rollout_states: NDArray | None = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,7 @@ class CertificationResultTester:
         self.policy_model = policy_model.to(self.device).eval()
         self.lyap_model = lyap_model.to(self.device).eval()
         self.dyn_model = dyn_model.to(self.device).eval()
+        self.bounds = th.as_tensor(self.config.cert_bounds, dtype=th.float32, device=self.device)
 
         self.verifier = LyapunovCoreVerifier(
             policy_model=self.policy_model,
@@ -99,6 +101,31 @@ class CertificationResultTester:
             kappa=config.kappa,
             condition_margin=config.condition_margin,
         ).to(self.device).eval()
+
+    def _hard_condition_violation(self, verifier_output: th.Tensor) -> th.Tensor:
+        """Return the maximum raw Lyapunov-core deficit per sample.
+
+        The verifier output packs the decrease margin, current Lyapunov value,
+        and successor state. This helper converts that fused output into a
+        non-negative scalar violation magnitude matching the core certification
+        conditions: decrease, positivity, and state invariance.
+        """
+        decrease_margin = verifier_output[:, :1]
+        lyap_value = verifier_output[:, 1:2]
+        x_next = verifier_output[:, 2:]
+
+        lower_bounds = self.bounds[0].unsqueeze(0)
+        upper_bounds = self.bounds[1].unsqueeze(0)
+        violation_terms = th.cat(
+            (
+                th.clamp_min(-decrease_margin, 0.0),
+                th.clamp_min(-lyap_value, 0.0),
+                th.clamp_min(lower_bounds - x_next, 0.0),
+                th.clamp_min(x_next - upper_bounds, 0.0),
+            ),
+            dim=1,
+        )
+        return violation_terms.max(dim=1, keepdim=True).values
 
     def _evaluate_regions(
         self,
@@ -118,6 +145,7 @@ class CertificationResultTester:
                 max_violation=0.0,
                 num_regions=0,
                 violations_per_step=None,
+                rollout_states=None,
             )
 
         # One representative state per region: the geometric center of the box.
@@ -125,15 +153,17 @@ class CertificationResultTester:
         x_t = th.as_tensor(centers, dtype=th.float32, device=self.device)
 
         violations_over_time = []
+        rollout_states = [x_t.cpu().numpy()]
         with th.no_grad():
             for _ in range(rollout_steps):
-                _, hard_violation = self.verifier.condition_terms(x_t)
+                verifier_output = self.verifier(x_t)
+                hard_violation = self._hard_condition_violation(verifier_output)
                 violations_over_time.append(hard_violation.squeeze(-1).cpu().numpy())
-
-                u_t = self.policy_model(x_t)
-                x_t = self.dyn_model(x_t, u_t)
+                x_t = verifier_output[:, 2:]
+                rollout_states.append(x_t.cpu().numpy())
 
         violations_np = np.stack(violations_over_time, axis=0)
+        rollout_states_np = np.stack(rollout_states, axis=1)
         violation_mask = violations_np > tolerance
         traj_has_violation = violation_mask.any(axis=0)
 
@@ -153,6 +183,7 @@ class CertificationResultTester:
             max_violation=float(np.maximum(max_viol, 0.0)),
             num_regions=len(regions),
             violations_per_step=violations_np,
+            rollout_states=rollout_states_np,
         )
 
     def test_result(
