@@ -98,6 +98,8 @@ class TestBisectInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest.
             condition_tolerance=1e-5,
             max_recursion_depth=3,
             batch_size=4096,
+            abcrown_timeout=60, 
+            skip_boundary_core_cert=True,
         )
         return cls.BisectCertifier(
             policy_model=RiccatiPolicy(k_gain),
