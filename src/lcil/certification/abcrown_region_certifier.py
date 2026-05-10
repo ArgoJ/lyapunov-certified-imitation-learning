@@ -45,6 +45,10 @@ def _is_counterexample_status(status: str) -> bool:
     normalized = _normalize_status(status)
     return normalized.startswith("unsafe")
 
+def _is_unknown_status(status: str) -> bool:
+    normalized = _normalize_status(status)
+    return normalized.startswith("unknown")
+
 
 # ========================================================
 # DATACLASSES
@@ -249,7 +253,7 @@ class BaseABCrownCertifier(ABC):
         status = str(result.status).strip()
         elapsed = f"{result.stats.get('elapsed', -1.0):.3f}s"
         bab_vals = result.stats.get("bab", list())
-        bab_violation = f"violation={self._extract_bab_violation(bab_vals)}." if _is_verified_status(status) else "no violation."
+        bab_violation = f"violation={self._extract_bab_violation(bab_vals)}." if _is_unknown_status(status) else "no violation."
         __logger__.info("ABCrown solver status: %s after %s with %s", status, elapsed, bab_violation)
         return ABCrownRegionVerification(
             status=status,
