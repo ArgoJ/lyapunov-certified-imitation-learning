@@ -9,11 +9,10 @@ import torch as th
 
 from lcil.certification import (
     BisectCertifier,
-    CertificationResultTester,
     LyapunovCertificationConfig,
 )
-from lcil.lyapunov_learning.config import LyapunovTrainingConfig
-from lcil.utils.base_config import ArgumentParserConfig, config_field
+from lcil.lyapunov_learning import LyapunovTrainingConfig
+from lcil.utils import ArgumentParserConfig, config_field, lcil_plt
 
 from . import (
     DoubleIntegratorDynamics,
@@ -135,20 +134,19 @@ def main() -> None:
     cert_results = certifier.certify(rho_estimate)
     certifier.save(save_dir)
 
-    cert_tester = CertificationResultTester(
-        policy_model=policy_model,
-        lyap_model=lyap_model,
-        dyn_model=dyn_model,
-        config=certification_config,
-        device=device,
+    cert_bounds = certification_config.cert_bounds
+    plot_path = save_dir / "certification_regions_plot.html"
+    lcil_plt.certified_regions_2d(
+        certification_result=cert_results,
+        state_indices=[0, 1],
+        state_labels=["$x$", "$v$"],
+        bounds=[
+            (float(cert_bounds[0][0]), float(cert_bounds[1][0])),
+            (float(cert_bounds[0][1]), float(cert_bounds[1][1])),
+        ],
+        html_path=plot_path,
     )
-    test_results = cert_tester.test_result(
-        cert_result=cert_results,
-        rollout_steps=int(script_config.test_rollout_steps),
-    )
-    tester_results_path = save_dir / "certification_tester_results.json"
-    test_results.save(tester_results_path)
-    __logger__.info("Saved certification tester results to %s", tester_results_path)
+    __logger__.info("Saved certification region plot to %s", plot_path)
 
 if __name__ == "__main__":
     main()

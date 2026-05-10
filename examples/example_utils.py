@@ -15,22 +15,47 @@ ModelT = TypeVar("ModelT", bound=nn.Module)
 _RESULTS_ROOT = Path(__file__).resolve().parents[1] / "results"
 
 
+
+def require_file(path: Path | str, *, name: str) -> Path:
+    resolved = Path(path).resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"{name} not found: '{resolved}'.")
+    return resolved
+
+
+def require_dir(path: Path | str, *, name: str) -> Path:
+    resolved = Path(path).resolve()
+    if not resolved.is_dir():
+        raise FileNotFoundError(f"{name} not found: '{resolved}'.")
+    return resolved
+
+
+def resolve_root(
+    root_path: Path | str | None,
+    default_root: Path = _RESULTS_ROOT,
+) -> Path:
+    if root_path is not None:
+        resolved_root = Path(root_path)
+        return require_dir(resolved_root, name="Results root directory")
+    return require_dir(default_root, name="Default results root directory")
+
+
 def discover_latest_model_dir(results_root: Path, checkpoint_name: str) -> Path:
-    candidates = sorted(checkpoint.parent for checkpoint in results_root.rglob(checkpoint_name))
+    resolved_results_root = resolve_root(results_root)
+    candidates = sorted(checkpoint.parent for checkpoint in resolved_results_root.rglob(checkpoint_name))
     if not candidates:
-        raise FileNotFoundError(f"No checkpoint '{checkpoint_name}' found under '{results_root}'.")
+        raise FileNotFoundError(f"No checkpoint '{checkpoint_name}' found under '{resolved_results_root}'.")
     return candidates[-1]
 
 
-def discover_latest_policy_dir(results_root: Path) -> Path:
-    return discover_latest_model_dir(results_root, "model.pt")
+def discover_latest_policy_dir(results_root: Path | str | None = None) -> Path:
+    resolved_results_root = resolve_root(results_root)
+    return discover_latest_model_dir(resolved_results_root, "model.pt")
 
 
-def discover_latest_lyapunov_dir(policy_dir: Path) -> Path:
-    lyapunov_root = policy_dir / "lyapunov"
-    if not lyapunov_root.exists():
-        raise FileNotFoundError(f"No lyapunov directory found under '{policy_dir}'.")
-
+def discover_latest_lyapunov_dir(policy_dir: Path | str) -> Path:
+    resolved_policy_dir = require_dir(policy_dir, name="Policy run directory")
+    lyapunov_root = require_dir(resolved_policy_dir / "lyapunov", name="Lyapunov root directory")
     return discover_latest_model_dir(lyapunov_root, "lyapunov_model.pt")
 
 
@@ -44,6 +69,23 @@ def discover_latest_dataset_path(results_root: Path | str, dataset_pattern: str 
     if not candidates:
         raise FileNotFoundError(
             f"No dataset matching '{dataset_pattern}' found under '{resolved_results_root}'."
+        )
+    return candidates[-1]
+
+
+def discover_latest_cert_result_path(
+    results_root: Path | str,
+    result_name: str = "certification_details.npz",
+) -> Path:
+    resolved_results_root = Path(results_root)
+    candidates = sorted(
+        result_path
+        for result_path in resolved_results_root.rglob(result_name)
+        if result_path.is_file()
+    )
+    if not candidates:
+        raise FileNotFoundError(
+            f"No certification result '{result_name}' found under '{resolved_results_root}'."
         )
     return candidates[-1]
 
@@ -66,15 +108,25 @@ class GenericModelLoader:
     def __init__(self, checkpoint_name: str):
         self.checkpoint_name = checkpoint_name
 
-    def _resolve_model_dir(
+    def _resolve_checkpoint_path(
         self,
         model_dir: Path | str | None,
         results_root: Path | str | None = None,
     ) -> Path:
         if model_dir is not None:
-            return Path(model_dir)
-        resolved_results_root = Path(results_root) if results_root is not None else _RESULTS_ROOT
-        return discover_latest_model_dir(resolved_results_root, self.checkpoint_name)
+            resolved_model_path = Path(model_dir).resolve()
+            if resolved_model_path.suffix:
+                return require_file(
+                    resolved_model_path,
+                    name=f"{self.checkpoint_name} checkpoint",
+                )
+            return require_file(
+                resolved_model_path / self.checkpoint_name,
+                name=f"{self.checkpoint_name} checkpoint",
+            )
+
+        resolved_results_root = resolve_root(results_root)
+        return discover_latest_model_dir(resolved_results_root, self.checkpoint_name) / self.checkpoint_name
 
     def __call__(
         self,
@@ -83,8 +135,7 @@ class GenericModelLoader:
         device: th.device,
         results_root: Path | str | None = None,
     ) -> ModelT:
-        resolved_model_dir = self._resolve_model_dir(model_dir, results_root=results_root)
-        checkpoint_path = resolved_model_dir / self.checkpoint_name
+        checkpoint_path = self._resolve_checkpoint_path(model_dir, results_root=results_root)
         try:
             model = model_cls.load(checkpoint_path, map_location=device).to(device)
         except (AttributeError, FileNotFoundError, KeyError, TypeError, ValueError) as exc:
@@ -124,3 +175,10 @@ def default_lyapunov_model_path(results_root: Path | str | None = None) -> str:
 
 def default_dataset_path(results_root: Path | str, dataset_pattern: str = "*.hdf5") -> str:
     return str(discover_latest_dataset_path(results_root, dataset_pattern))
+
+
+def default_cert_result_path(
+    results_root: Path | str,
+    result_name: str = "certification_details.npz",
+) -> str:
+    return str(discover_latest_cert_result_path(results_root, result_name))

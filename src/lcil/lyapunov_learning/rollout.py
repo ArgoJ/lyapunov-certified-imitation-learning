@@ -39,6 +39,11 @@ class LyapunovRollout:
             )
         return v
 
+    def _rollout_memory_buffer(self) -> None:
+        for entry in self.dataset.memory_buffer:
+            states = np.asarray(entry.trajectory.states, dtype=np.float32)
+            entry.trajectory.V_N = self._compute_lyapunov_values(states)
+
     @contextmanager
     def _dataset_write_mode(self) -> Iterator[None]:
         """Temporarily open the backing HDF5 file in ``r+`` mode and restore ``r`` mode after."""
@@ -90,23 +95,33 @@ class LyapunovRollout:
         self.dataset._h5_file = h5py.File(self.dataset.file_path, "r")
         self.dataset._indices = self.dataset._collect_indices(self.dataset._h5_file)
 
-    def rollout(self, output_path: str | Path | None = None) -> Path:
-        """Compute ``trajectory.V_N`` and write it in-place or into a copied dataset file.
+    def rollout(self, output_path: str | Path | None = None) -> Path | None:
+        """Compute ``trajectory.V_N`` for an in-memory or file-backed dataset.
 
         Parameters
         ----------
         output_path : str | Path | None
             If provided, the current dataset file is copied to this path and ``V_N`` is
-            written to the copied file. If ``None``, the current dataset file is updated.
+            written to the copied file. For in-memory-only datasets, ``output_path`` must
+            remain ``None``.
 
         Returns
         -------
-        Path
-            Path to the dataset file that was updated.
+        Path | None
+            Path to the dataset file that was updated, or ``None`` when the dataset only
+            exists in memory.
         """
-        self._prepare_output_path(output_path)
-
         self.lyap_model.eval()
+        self._rollout_memory_buffer()
+
+        if self.dataset.file_path is None:
+            if output_path is not None:
+                raise ValueError(
+                    "Dataset file path is not set. Cannot write Lyapunov rollout to an output path."
+                )
+            return None
+
+        self._prepare_output_path(output_path)
         with self._dataset_write_mode():
             file_idx_offset = len(self.dataset.memory_buffer)
             for file_idx, _ in enumerate(self.dataset._indices):

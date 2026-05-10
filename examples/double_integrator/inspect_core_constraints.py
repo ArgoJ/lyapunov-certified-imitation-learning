@@ -8,7 +8,6 @@ from pathlib import Path
 import torch as th
 
 from lcil.certification import (
-    ConstraintInspectionResult,
     CoreConstraintInspector,
     LyapunovCertificationConfig,
 )

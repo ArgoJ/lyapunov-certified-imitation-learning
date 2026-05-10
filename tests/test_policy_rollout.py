@@ -1,11 +1,31 @@
 import unittest
 
 import numpy as np
+import torch as th
+import torch.nn as nn
 
+from lcil.lyapunov_learning import LyapunovRollout
 from lcil.imitation_learning_mlp.policy_rollout import (
     PolicyRolloutConfig,
+    PolicyRolloutGenerator,
     RandomBoundsSampler,
 )
+
+
+class _ZeroPolicy(nn.Module):
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        return th.zeros((x.shape[0], 1), dtype=x.dtype, device=x.device)
+
+
+class _IdentitySimulator(nn.Module):
+    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+        del u
+        return x
+
+
+class _QuadraticLyapunov(nn.Module):
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        return th.sum(x * x, dim=1, keepdim=True)
 
 
 class TestPolicyRolloutConfig(unittest.TestCase):
@@ -28,6 +48,50 @@ class TestPolicyRolloutConfig(unittest.TestCase):
         self.assertEqual(x0.shape, (2,))
         self.assertTrue(np.all(x0 >= bounds[0]))
         self.assertTrue(np.all(x0 <= bounds[1]))
+
+    def test_generator_and_lyapunov_rollout_accept_fixed_initial_states(self) -> None:
+        rollout_cfg = PolicyRolloutConfig(
+            T_sim=3,
+            dt=0.1,
+            nx=2,
+            nu=1,
+        )
+        generator = PolicyRolloutGenerator(
+            policy=_ZeroPolicy(),
+            simulator=_IdentitySimulator(),
+            cfg=rollout_cfg,
+            sampler=None,
+            device="cpu",
+        )
+
+        initial_states = np.array(
+            [
+                [0.0, 0.0],
+                [1.0, -2.0],
+            ],
+            dtype=np.float32,
+        )
+
+        dataset = generator.generate_from_states(initial_states)
+        self.assertEqual(len(dataset), 2)
+
+        first_traj = dataset[0].trajectory
+        second_traj = dataset[1].trajectory
+        np.testing.assert_allclose(first_traj.states[0], initial_states[0])
+        np.testing.assert_allclose(second_traj.states[0], initial_states[1])
+        np.testing.assert_allclose(first_traj.inputs, 0.0)
+        np.testing.assert_allclose(second_traj.inputs, 0.0)
+
+        lyapunov_rollout = LyapunovRollout(
+            mpc_dataset=dataset,
+            lyap_model=_QuadraticLyapunov(),
+            device="cpu",
+        )
+        result_path = lyapunov_rollout.rollout()
+
+        self.assertIsNone(result_path)
+        np.testing.assert_allclose(first_traj.V_N, np.zeros(4, dtype=np.float32))
+        np.testing.assert_allclose(second_traj.V_N, np.full(4, 5.0, dtype=np.float32))
 
 
 if __name__ == "__main__":

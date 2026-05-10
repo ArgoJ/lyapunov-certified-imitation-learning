@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer, ThresholdMonitor
-from lcil.utils import lcil_plt, ICNN, MLP, IntegrationMethod
+from lcil.utils import lcil_plt, MLP, IntegrationMethod
 from lcil.imitation_learning_mlp import MLPPolicy
 from mpc_datagen import MPCDataset
 
@@ -150,7 +150,7 @@ def main() -> None:
         trainer.save(base_path)
 
         # ---------------------------------------------------------------------
-        # 5. Plot & Save
+        # 4. Plot & Save
         # ---------------------------------------------------------------------
         if rollout_dataset is not None:
             def lyapunov_func(states: np.ndarray) -> np.ndarray:

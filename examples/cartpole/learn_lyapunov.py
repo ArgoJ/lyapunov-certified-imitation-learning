@@ -14,8 +14,8 @@ from lcil.lyapunov_learning import (
     LyapunovTrainer,
     ThresholdMonitor,
 )
-from lcil.certification import LyapunovCertificationConfig, BisectCertifier, CertificationResultTester
-from lcil.utils import lcil_plt, ICNN, MLP
+from lcil.certification import LyapunovCertificationConfig
+from lcil.utils import lcil_plt, MLP
 from lcil.imitation_learning_mlp import MLPPolicy
 from mpc_datagen import MPCDataset
 
@@ -234,7 +234,7 @@ def main() -> None:
             json.dump(curriculum_summary, summary_file, indent=2)
 
         # ---------------------------------------------------------------------
-        # 5. Plot & Save
+        # 4. Plot & Save
         # ---------------------------------------------------------------------
         state_labels = [r"$x$", r"$v$", r"$\theta$", r"$\dot{\theta}$"]
         if rollout_dataset is not None:

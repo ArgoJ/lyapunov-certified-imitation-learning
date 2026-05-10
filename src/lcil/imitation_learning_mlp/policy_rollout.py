@@ -35,6 +35,22 @@ def _normalize_bounds(
     return bounds_array
 
 
+def _normalize_initial_states(
+    initial_states: ArrayLike,
+    expected_dim: int,
+) -> NDArray:
+    states_array = np.asarray(initial_states, dtype=np.float32)
+    if states_array.ndim == 1:
+        states_array = states_array.reshape(1, -1)
+
+    if states_array.ndim != 2 or states_array.shape[1] != expected_dim:
+        raise ValueError(
+            f"initial_states must have shape (n, {expected_dim}), got {states_array.shape}."
+        )
+
+    return states_array
+
+
 
 # --- CONFIG ---
 @dataclass(slots=True)
@@ -214,14 +230,15 @@ class PolicyRolloutGenerator:
         self.t_sim = int(self.rollout_config.T_sim)
         self.dt = float(self.rollout_config.dt)
 
-        if sampler is None:
-            if self.rollout_config.state_bounds is None:
-                raise ValueError(
-                    "No sampler was provided and state_bounds are not set. "
-                    "Provide a sampler or set state_bounds in PolicyRolloutConfig."
-                )
+        if sampler is None and self.rollout_config.state_bounds is not None:
             sampler = RandomBoundsSampler(bounds=self.rollout_config.state_bounds)
         self.sampler = sampler
+
+    def _prepare_models(self) -> None:
+        self.policy.to(self.device)
+        self.policy.eval()
+        self.simulator.to(self.device)
+        self.simulator.eval()
 
     def _rollout_single(self, x0: NDArray, traj_id: int) -> MPCData:
         """
@@ -280,15 +297,31 @@ class PolicyRolloutGenerator:
 
     def generate(self, n_samples: int) -> MPCDataset:
         """Generate a dataset of `n_samples` policy rollouts using the configured sampler."""
-        self.policy.to(self.device)
-        self.policy.eval()
-        self.simulator.to(self.device)
-        self.simulator.eval()
+        if n_samples <= 0:
+            raise ValueError("n_samples must be positive.")
+        if self.sampler is None:
+            raise ValueError(
+                "No sampler is configured. Provide a sampler, set state_bounds in "
+                "PolicyRolloutConfig, or use generate_from_states()."
+            )
 
+        initial_states = np.stack(
+            [self.sampler.sample_x0() for _ in range(n_samples)],
+            axis=0,
+        )
+        return self.generate_from_states(initial_states)
+
+    def generate_from_states(self, initial_states: ArrayLike) -> MPCDataset:
+        """Generate policy rollouts from a fixed batch of initial states."""
+        normalized_initial_states = _normalize_initial_states(
+            initial_states,
+            expected_dim=self.mpc_config.nx,
+        )
+
+        self._prepare_models()
         dataset = MPCDataset()
 
-        for idx in track(range(n_samples), description="Generating Rollouts"):
-            x0 = self.sampler.sample_x0()
+        for idx, x0 in enumerate(track(normalized_initial_states, description="Generating Rollouts")):
             mpc_data = self._rollout_single(x0=x0, traj_id=idx)
             dataset.add(mpc_data)
 
