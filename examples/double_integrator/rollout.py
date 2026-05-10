@@ -1,6 +1,7 @@
 import argparse
 import logging
 import numpy as np
+import sys
 
 from pathlib import Path
 from scipy.linalg import solve_discrete_are
@@ -17,8 +18,10 @@ from lcil.imitation_learning_mlp.policy_rollout import (
 try:
     from . import DoubleIntegratorDynamics, default_model_path
 except ImportError:
-    from di_utils import default_model_path
-    from double_integrator_dyn import DoubleIntegratorDynamics
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from examples.double_integrator import DoubleIntegratorDynamics, default_model_path
 
 __logger__ = logging.getLogger("lcil.examples.double_integrator.rollout")
 
@@ -37,7 +40,7 @@ def _compute_mpc_quadratic_p(dt: float) -> np.ndarray:
 def _set_quadratic_vn(dataset: MPCDataset, P: np.ndarray) -> None:
     """Populate ``trajectory.V_N`` with the quadratic surrogate ``x.T @ P @ x``."""
     for entry in dataset:
-        x = np.asarray(entry.trajectory.states, dtype=np.float64)
+        x = np.asarray(entry.trajectory.states[:-1], dtype=np.float64)
         entry.trajectory.V_N = np.einsum("bi,ij,bj->b", x, P, x)
 
 

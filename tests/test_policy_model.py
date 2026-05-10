@@ -1,5 +1,4 @@
 import unittest
-import json
 import tempfile
 
 import numpy as np
@@ -60,10 +59,8 @@ class TestMLPPolicyConfigSerialization(unittest.TestCase):
 				global_config=cfg,
 			)
 
-			config_path = tmp_path / "config.json"
-			with open(config_path, "r") as handle:
-				payload = json.load(handle)
-		self.assertEqual(payload["global_config"], cfg.to_dict())
+			payload = th.load(checkpoint_path, map_location="cpu", weights_only=True)
+		self.assertEqual(payload["train_data_config"], cfg.to_dict())
 
 	def test_load_reconstructs_mpc_config_from_dict(self) -> None:
 		model = MLPPolicy(

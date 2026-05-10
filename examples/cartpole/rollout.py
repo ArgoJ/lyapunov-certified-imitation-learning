@@ -1,5 +1,6 @@
 import argparse
 import numpy as np
+import sys
 
 from dataclasses import replace
 from pathlib import Path
@@ -22,13 +23,16 @@ try:
     )
     from .acados_ocp import _linearized_inverted_pendulum_on_cart_matrices
 except ImportError:
-    from cartpole_utils import (
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from examples.cartpole import (
         CartpoleDynamics,
         CartpoleAngleWrapper,
         PendulumOnCartConfig,
         default_model_path,
     )
-    from acados_ocp import _linearized_inverted_pendulum_on_cart_matrices
+    from examples.cartpole.acados_ocp import _linearized_inverted_pendulum_on_cart_matrices
 
 
 
@@ -61,7 +65,7 @@ def _compute_mpc_quadratic_p(dt: float) -> np.ndarray:
 def _set_quadratic_vn(dataset: MPCDataset, P: np.ndarray) -> None:
     """Populate ``trajectory.V_N`` with the quadratic surrogate ``x.T @ P @ x``."""
     for entry in dataset:
-        x = np.asarray(entry.trajectory.states, dtype=np.float64)
+        x = np.asarray(entry.trajectory.states[:-1], dtype=np.float64)
         entry.trajectory.V_N = np.einsum("bi,ij,bj->b", x, P, x)
 
 

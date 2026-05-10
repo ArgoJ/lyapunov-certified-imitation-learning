@@ -22,15 +22,6 @@ if TYPE_CHECKING:
 
 __logger__ = logging.getLogger(__name__)
 
-_ROLLOUT_COLORS = (
-    "#1f77b4",
-    "#ff7f0e",
-    "#2ca02c",
-    "#d62728",
-    "#9467bd",
-    "#8c564b",
-)
-
 
 def _regions_to_np(regs: NDArray | None) -> NDArray:
     if regs is None or regs.shape[0] == 0:
@@ -405,79 +396,6 @@ def _add_regions(
         )
 
 
-def _resolve_rollout_z_values(
-    entry,
-    lyapunov_func: Callable[[NDArray], NDArray],
-) -> NDArray:
-    states = np.asarray(entry.trajectory.states, dtype=np.float64)
-    rollout_states = states[:-1]
-
-    if rollout_states.shape[0] == 0:
-        return np.empty((0,), dtype=np.float64)
-
-    traj_values = getattr(entry.trajectory, "V_N", None)
-    if traj_values is not None:
-        traj_values_np = np.asarray(traj_values, dtype=np.float64).reshape(-1)
-        if traj_values_np.shape[0] == rollout_states.shape[0]:
-            return traj_values_np
-        if traj_values_np.shape[0] == states.shape[0]:
-            return traj_values_np[:-1]
-
-    evaluated = np.asarray(lyapunov_func(rollout_states), dtype=np.float64).reshape(-1)
-    if evaluated.shape[0] != rollout_states.shape[0]:
-        raise ValueError(
-            "Lyapunov rollout values must align with the plotted rollout horizon: "
-            f"expected {rollout_states.shape[0]}, got {evaluated.shape[0]}."
-        )
-    return evaluated
-
-
-def _add_dataset_trajectories(
-    fig: go.Figure,
-    dataset: MPCDataset,
-    *,
-    state_pair: tuple[int, int],
-    plot_3d: bool,
-    lyapunov_func: Callable[[NDArray], NDArray],
-) -> None:
-    for idx, entry in enumerate(dataset):
-        states = np.asarray(entry.trajectory.states, dtype=np.float64)
-        rollout_states = states[:-1]
-        if rollout_states.shape[0] == 0:
-            continue
-
-        x_coords = rollout_states[:, state_pair[0]].reshape(-1)
-        y_coords = rollout_states[:, state_pair[1]].reshape(-1)
-        color = _ROLLOUT_COLORS[idx % len(_ROLLOUT_COLORS)]
-        name = "Rollouts" if idx == 0 else None
-        showlegend = idx == 0
-
-        if plot_3d:
-            z_coords = _resolve_rollout_z_values(entry, lyapunov_func)
-            fig.add_trace(
-                go.Scatter3d(
-                    x=x_coords,
-                    y=y_coords,
-                    z=z_coords,
-                    mode="lines",
-                    line=dict(color=color, width=5),
-                    name=name,
-                    showlegend=showlegend,
-                )
-            )
-            continue
-
-        fig.add_trace(
-            go.Scattergl(
-                x=x_coords,
-                y=y_coords,
-                mode="lines",
-                line=dict(color=color, width=2),
-                name=name,
-                showlegend=showlegend,
-            )
-        )
-
 def lyapunov_cert_regions(
     lyapunov_func: Callable[[NDArray], NDArray],
     certification_result: "RegionCertificationResult",
@@ -584,28 +502,19 @@ def lyapunov_cert_regions(
     for pair in pair_indices:
         fig_pair = lyapunov(
             lyapunov_func=lyapunov_func,
-            dataset=None,
+            dataset=dataset,
             state_indices=list(pair),
             state_labels=labels_full,
             limits=pair_limits[pair],
             resolution=resolution,
             plot_3d=plot_3d,
-            use_dataset_v=False,
+            use_dataset_v=has_dataset,
         )
 
         if isinstance(fig_pair, dict):
             fig = fig_pair[pair]
         else:
             fig = fig_pair
-
-        if has_dataset:
-            _add_dataset_trajectories(
-                fig,
-                dataset,
-                state_pair=pair,
-                plot_3d=plot_3d,
-                lyapunov_func=lyapunov_func,
-            )
 
         cert_pair, uncert_pair, ctex_pair = regions_by_pair[pair]
         _add_regions(

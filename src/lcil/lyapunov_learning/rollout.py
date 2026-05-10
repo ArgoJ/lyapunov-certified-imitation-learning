@@ -39,9 +39,12 @@ class LyapunovRollout:
             )
         return v
 
+    def _successor_states(self, states: NDArray) -> NDArray:
+        return np.asarray(states[:-1], dtype=np.float32)
+
     def _rollout_memory_buffer(self) -> None:
         for entry in self.dataset.memory_buffer:
-            states = np.asarray(entry.trajectory.states, dtype=np.float32)
+            states = self._successor_states(entry.trajectory.states)
             entry.trajectory.V_N = self._compute_lyapunov_values(states)
 
     @contextmanager
@@ -96,7 +99,7 @@ class LyapunovRollout:
         self.dataset._indices = self.dataset._collect_indices(self.dataset._h5_file)
 
     def rollout(self, output_path: str | Path | None = None) -> Path | None:
-        """Compute ``trajectory.V_N`` for an in-memory or file-backed dataset.
+        """Compute ``trajectory.V_N`` for successor states ``x1`` through ``x_T``.
 
         Parameters
         ----------
@@ -112,7 +115,8 @@ class LyapunovRollout:
             exists in memory.
         """
         self.lyap_model.eval()
-        self._rollout_memory_buffer()
+        if self.dataset.memory_buffer:
+            self._rollout_memory_buffer()
 
         if self.dataset.file_path is None:
             if output_path is not None:
@@ -123,15 +127,13 @@ class LyapunovRollout:
 
         self._prepare_output_path(output_path)
         with self._dataset_write_mode():
-            file_idx_offset = len(self.dataset.memory_buffer)
             for file_idx, _ in enumerate(self.dataset._indices):
-                dataset_idx = file_idx_offset + file_idx
-                entry_grp = self.dataset.get_grp(dataset_idx)
+                entry_grp = self.dataset.get_grp(file_idx)
                 traj_grp = entry_grp.get("trajectory", None)
                 if traj_grp is None:
-                    raise ValueError(f"Missing 'trajectory' group in entry '{dataset_idx}'.")
+                    raise ValueError(f"Missing 'trajectory' group in file entry '{file_idx}'.")
 
-                states = np.asarray(traj_grp["states"][:, :], dtype=np.float32)
+                states = self._successor_states(traj_grp["states"][:, :])
                 v = self._compute_lyapunov_values(states)
 
                 if "V_N" in traj_grp:

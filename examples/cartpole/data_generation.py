@@ -10,11 +10,11 @@
 import argparse
 import numpy as np
 import logging
+import sys
+
 from pathlib import Path
 from datetime import datetime
 
-import mpc_datagen.linalg as mdg_linalg
-import mpc_datagen.plots as mdg_plots
 from mpc_datagen import *
 from mpc_datagen.verification import (
     StabilityVerifier,
@@ -25,7 +25,10 @@ from mpc_datagen.verification import (
 try:
     from . import get_batch_ocp_solver
 except ImportError:
-    from acados_ocp import get_batch_ocp_solver
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from examples.cartpole.acados_ocp import get_batch_ocp_solver
 
 __logger__ = logging.getLogger("mpc_datagen")
 
@@ -137,7 +140,7 @@ def main():
     roa_bounds, c_min = roa_cert.roa_bounds()
 
     alpha = 1.0 if veri_stats.details.get("asym_stab_report", None) is None else veri_stats.details["asym_stab_report"].min_alpha
-    mdg_plots.all(
+    mdg_plt.all(
         dataset=dataset[:min(150, n_samples)],
         state_labels=["$x$", "$v$", "$\\theta$", "$\\dot{\\theta}$"],
         control_labels=["$a$"],

@@ -1,5 +1,6 @@
 import argparse
 import torch as th
+import sys
 
 from pathlib import Path
 from datetime import datetime
@@ -11,6 +12,9 @@ from lcil.imitation_learning_mlp import *
 try:
     from . import DoubleIntegratorDynamics, default_dataset_path, resolve_dataset_path
 except ImportError:
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
     from examples.double_integrator import DoubleIntegratorDynamics, default_dataset_path, resolve_dataset_path
 
 

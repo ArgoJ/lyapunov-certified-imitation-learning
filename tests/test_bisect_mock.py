@@ -128,32 +128,6 @@ def _complete_candidate_partition(regions: th.Tensor) -> CertificationRegionPart
 
 
 class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCase):
-    @staticmethod
-    def _make_rollout_dataset() -> MPCDataset:
-        mpc_config = MPCConfig(T_sim=2, nx=3, nu=1, dt=0.1)
-        traj = MPCTrajectory.empty_from_cfg(mpc_config)
-        traj.states[:, :] = np.array(
-            [
-                [0.0, 0.0, 0.0],
-                [0.5, 0.25, 0.0],
-                [1.0, 0.5, 0.0],
-            ],
-            dtype=np.float32,
-        )
-        traj.inputs[:, :] = 0.0
-        traj.V_N = np.array([0.0, 0.3125, 1.25], dtype=np.float32)
-
-        meta = MPCMeta(
-            id=0,
-            timestamp="2026-05-10T00:00:00+00:00",
-            steps_simulated=2,
-            status_codes=[0, 0],
-            feasible=True,
-        )
-
-        dataset = MPCDataset()
-        dataset.add(MPCData(trajectory=traj, meta=meta, config=mpc_config))
-        return dataset
 
     @classmethod
     def _make_certifier(
@@ -297,32 +271,6 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
             certification_result=result,
             stem="negative_lyapunov",
         )
-
-    def test_lyapunov_cert_regions_adds_3d_rollout_traces_for_t_plus_one_state_horizon(self) -> None:
-        certification_result = RegionCertificationResult(
-            global_success=False,
-            partial_success=False,
-            rho=1.0,
-            outside_sublevel_regions=np.empty((0, 2, 3), dtype=np.float32),
-            uncertified_regions=np.empty((0, 2, 3), dtype=np.float32),
-            certified_sublevel_regions=np.empty((0, 2, 3), dtype=np.float32),
-        )
-        rollout_dataset = self._make_rollout_dataset()
-
-        fig = lyapunov_cert_regions(
-            lyapunov_func=self._to_numpy_lyapunov(_QuadraticLyapunov(), state_dim=3),
-            certification_result=certification_result,
-            dataset=rollout_dataset,
-            state_indices=[0, 1],
-            state_labels=["x0", "x1"],
-            plot_3d=True,
-        )
-
-        self.assertIsNotNone(fig)
-        trace_types = [trace.type for trace in fig.data]
-        self.assertIn("surface", trace_types)
-        self.assertIn("scatter3d", trace_types)
-        self.assertTrue(any(getattr(trace, "name", None) == "Rollouts" for trace in fig.data))
 
     def test_mixed_lyapunov_has_safe_and_unsafe_regions(self) -> None:
         certifier = self._make_certifier(

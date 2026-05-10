@@ -79,14 +79,18 @@ class MLPPolicy(nn.Module):
     def save(
         self,
         path: str | Path,
-        global_config: MPCConfig = None,
+        global_config: MPCConfig | dict[str, Any] | None = None,
     ) -> None:
         checkpoint_path = Path(path)
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         
         if global_config is not None:
             self.global_config = global_config
-        resolved_global_cfg = self.global_config.to_dict() 
+
+        if isinstance(self.global_config, MPCConfig):
+            resolved_global_cfg = self.global_config.to_dict()
+        else:
+            resolved_global_cfg = self.global_config
 
         # Pytorch checkpoint with model state and architecture metadata
         model_payload = {
@@ -96,6 +100,7 @@ class MLPPolicy(nn.Module):
             "train_data_config": resolved_global_cfg
         }
         th.save(model_payload, checkpoint_path)
+
         __logger__.info(f"Saved policy weights and config to {checkpoint_path.parent}")
 
 
