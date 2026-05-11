@@ -46,7 +46,10 @@ def _set_quadratic_vn(dataset: MPCDataset, P: np.ndarray) -> None:
 
 def parse_cli_args() -> argparse.Namespace:
     """Parse command-line arguments for policy rollout settings."""
-    parser = argparse.ArgumentParser(description="Roll out a trained double-integrator imitation policy.")
+    parser = argparse.ArgumentParser(
+        description="Roll out a trained double-integrator imitation policy.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
     parser.add_argument("--n-samples", type=int, default=500, help="Number of rollout initial states.")
     parser.add_argument(
         "--model-path",

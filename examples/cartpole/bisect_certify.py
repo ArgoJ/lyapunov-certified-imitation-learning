@@ -75,7 +75,8 @@ def _build_parser(
     certification_defaults: LyapunovCertificationConfig,
 ) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Bisection-based cartpole certification analysis with follow-up empirical rollout testing."
+        description="Bisection-based cartpole certification analysis with follow-up empirical rollout testing.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     script_defaults.add_to_argparse(parser)
     certification_defaults.add_to_argparse(

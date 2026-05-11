@@ -31,7 +31,8 @@ def parse_cli_args(
 ) -> argparse.Namespace:
     """Parse command-line arguments for Lyapunov learning with a fixed policy."""
     parser = argparse.ArgumentParser(
-        description="Train and certify a Lyapunov candidate for a fixed inverted pendulum on cart policy."
+        description="Train and certify a Lyapunov candidate for a fixed inverted pendulum on cart policy.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
         "--policy-path", type=str, default="results/inverted_pendulum_on_cart/20260318_114317/model.pt",

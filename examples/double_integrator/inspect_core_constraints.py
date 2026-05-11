@@ -68,7 +68,8 @@ def _build_parser(
     certification_defaults: LyapunovCertificationConfig,
 ) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Inspect double-integrator Lyapunov core constraints with separate ABCrown checks."
+        description="Inspect double-integrator Lyapunov core constraints with separate ABCrown checks.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     script_defaults.add_to_argparse(parser)
     certification_defaults.add_to_argparse(

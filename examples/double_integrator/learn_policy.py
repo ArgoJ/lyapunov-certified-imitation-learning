@@ -20,7 +20,10 @@ except ImportError:
 
 def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Namespace:
     """Parse command-line arguments for policy training."""
-    parser = argparse.ArgumentParser(description="Train a double-integrator imitation policy.")
+    parser = argparse.ArgumentParser(
+        description="Train a double-integrator imitation policy.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
     parser.add_argument(
         "--dataset-path",
         type=str,
@@ -51,7 +54,7 @@ def main() -> None:
         epochs=100,
         learning_rate=5e-4,
         scheduler_type="plateau",
-        scheduler_kwargs={"mode": "min", "factor": 0.5, "patience": 10},
+        scheduler_kwargs={"mode": "min", "factor": 0.5, "patience": 5},
         tb_log_dir=(base_path / "tb" / iso),
     )
     args = parse_cli_args(training_defaults)
@@ -104,7 +107,7 @@ def main() -> None:
         dataloader=train_loader,
         training_config=training_cfg,
         val_dataloader=val_loader,
-        early_stopper=EarlyStopping(patience=10, delta=1e-4),
+        early_stopper=EarlyStopping(patience=20, delta=1e-4),
         loss_fn=loss_fn,
         device=device,
     )

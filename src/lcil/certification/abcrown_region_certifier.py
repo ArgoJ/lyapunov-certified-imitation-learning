@@ -37,9 +37,9 @@ __logger__ = logging.getLogger(__name__)
 def _normalize_status(status: str) -> str:
     return str(status).strip().lower()
 
-def _is_verified_status(status: str) -> bool:
+def _is_safe_status(status: str) -> bool:
     normalized = _normalize_status(status)
-    return normalized == "verified" or normalized.startswith("safe")
+    return normalized.startswith("safe")
 
 def _is_counterexample_status(status: str) -> bool:
     normalized = _normalize_status(status)
@@ -155,16 +155,6 @@ class BaseABCrownCertifier(ABC):
         return nullcontext()
 
     @staticmethod
-    def _format_bab_violation(value: Any) -> str:
-        if isinstance(value, th.Tensor):
-            if value.numel() != 1:
-                return str(value)
-            return f"{float(value.detach().cpu().item()):.3f}"
-        if isinstance(value, (int, float)):
-            return f"{float(value):.3f}"
-        return str(value)
-
-    @staticmethod
     def _extract_bab_violation(bab_vals: Any) -> str:
         if isinstance(bab_vals, (list, tuple)) and len(bab_vals) > 0 and isinstance(bab_vals[0], (list, tuple)) and len(bab_vals[0]) > 1:
             return f"{float(bab_vals[0][1].detach().cpu().item()):.3f}"
@@ -257,7 +247,7 @@ class BaseABCrownCertifier(ABC):
         __logger__.info("ABCrown solver status: %s after %s with %s", status, elapsed, bab_violation)
         return ABCrownRegionVerification(
             status=status,
-            verified=_is_verified_status(status),
+            verified=_is_safe_status(status),
             counterexample_found=_is_counterexample_status(status),
         )
 

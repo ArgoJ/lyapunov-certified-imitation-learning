@@ -53,7 +53,8 @@ def _build_script_defaults() -> RetestCertResultScriptConfig:
 def parse_args() -> RetestCertResultScriptConfig:
     script_defaults = _build_script_defaults()
     parser = argparse.ArgumentParser(
-        description="Load a saved certification result and rerun empirical center-rollout testing."
+        description="Load a saved certification result and rerun empirical center-rollout testing.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     script_defaults.add_to_argparse(parser)
     args = parser.parse_args()

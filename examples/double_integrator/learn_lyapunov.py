@@ -19,7 +19,8 @@ def parse_cli_args(
 ) -> argparse.Namespace:
     """Parse command-line arguments for Lyapunov learning with a fixed policy."""
     parser = argparse.ArgumentParser(
-        description="Train and certify a Lyapunov candidate for a fixed double-integrator policy."
+        description="Train and certify a Lyapunov candidate for a fixed double-integrator policy.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
         "--policy-path",

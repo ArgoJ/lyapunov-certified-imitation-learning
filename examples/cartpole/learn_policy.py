@@ -19,7 +19,10 @@ from . import (
 
 def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Namespace:
     """Parse command-line arguments for policy training."""
-    parser = argparse.ArgumentParser(description="Train a inverted pendulum on cart imitation policy.")
+    parser = argparse.ArgumentParser(
+        description="Train a inverted pendulum on cart imitation policy.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
     parser.add_argument(
         "--dataset-path",
         type=str,

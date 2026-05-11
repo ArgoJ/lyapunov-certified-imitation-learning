@@ -4,7 +4,7 @@ from unittest import mock
 
 import torch as th
 
-from lcil.certification.abcrown_region_certifier import _is_verified_status
+from lcil.certification.abcrown_region_certifier import _is_safe_status
 
 from certification_mock_common import (
     CertificationMockedABCrownTestCase,
@@ -17,10 +17,10 @@ from certification_mock_common import (
 
 class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
     def test_is_verified_status_accepts_verified_and_safe_prefixes(self) -> None:
-        self.assertTrue(_is_verified_status("verified"))
-        self.assertTrue(_is_verified_status(" SAFE "))
-        self.assertTrue(_is_verified_status("safe-incomplete"))
-        self.assertFalse(_is_verified_status("unsafe"))
+        self.assertTrue(_is_safe_status("verified"))
+        self.assertTrue(_is_safe_status(" SAFE "))
+        self.assertTrue(_is_safe_status("safe-incomplete"))
+        self.assertFalse(_is_safe_status("unsafe"))
 
     def test_build_safe_output_constraint_respects_tolerances(self) -> None:
         certifier = self.make_abcrown_region_certifier(

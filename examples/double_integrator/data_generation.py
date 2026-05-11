@@ -21,7 +21,8 @@ except ImportError:
 
 def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate MPC imitation datasets for the double integrator."
+        description="Generate MPC imitation datasets for the double integrator.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
         "--n-samples",

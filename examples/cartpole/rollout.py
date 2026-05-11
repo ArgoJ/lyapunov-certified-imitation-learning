@@ -38,7 +38,10 @@ except ImportError:
 
 def parse_cli_args() -> argparse.Namespace:
     """Parse command-line arguments for policy rollout settings."""
-    parser = argparse.ArgumentParser(description="Roll out a trained inverted pendulum on cart imitation policy.")
+    parser = argparse.ArgumentParser(
+        description="Roll out a trained inverted pendulum on cart imitation policy.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
     parser.add_argument("--n-samples", "-n", type=int, default=500, help="Number of rollout initial states.")
     parser.add_argument(
         "--model-path",

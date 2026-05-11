@@ -41,8 +41,7 @@ All folders in the `lcil` package do have somewhat a similar structure with:
 
 ## Coding Standards (Practical)
 
-- Prefer small functions with explicit inputs/outputs; add type hints on public APIs.
-- Use `PackageLogger` for logging (no `print()`).
+- Prefer small functions with explicit inputs/outputs; add type hints
 - Add NumPy-style docstrings for public functions/classes.
 - Don’t hand-edit anything under `c_generated_code/`.
 - If you change an on-disk dataset format, preserve backward compatibility or provide a migration.

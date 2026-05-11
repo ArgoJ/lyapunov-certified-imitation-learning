@@ -79,7 +79,8 @@ def parse_args(
     certification_defaults: LyapunovCertificationConfig,
 ) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Inspect cartpole Lyapunov core constraints with separate ABCrown checks."
+        description="Inspect cartpole Lyapunov core constraints with separate ABCrown checks.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     script_defaults.add_to_argparse(parser)
     certification_defaults.add_to_argparse(

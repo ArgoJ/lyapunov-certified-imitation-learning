@@ -34,7 +34,8 @@ __logger__ = logging.getLogger("mpc_datagen")
 
 def _setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate MPC imitation datasets for the inverted pendulum on cart."
+        description="Generate MPC imitation datasets for the inverted pendulum on cart.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
         "--n-samples", "-n",

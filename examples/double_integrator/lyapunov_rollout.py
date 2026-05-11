@@ -42,7 +42,8 @@ def _build_script_defaults() -> LyapunovRolloutScriptConfig:
 def parse_args() -> LyapunovRolloutScriptConfig:
     script_defaults = _build_script_defaults()
     parser = argparse.ArgumentParser(
-        description="Copy the policy rollout dataset into a Lyapunov run directory and add Lyapunov values."
+        description="Copy the policy rollout dataset into a Lyapunov run directory and add Lyapunov values.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     script_defaults.add_to_argparse(parser)
     args = parser.parse_args()
