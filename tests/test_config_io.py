@@ -8,8 +8,8 @@ import numpy as np
 
 from lcil.certification.config import LyapunovCertificationConfig
 from lcil.imitation_learning_mlp.config import ImitationTrainingConfig
-from lcil.lyapunov_learning import GridSearchHelper
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
+from lcil.utils import GridSearchHelper
 from lcil.utils.base_config import ArgumentParserConfig, JsonDataclass, config_field
 
 
@@ -92,6 +92,7 @@ class DummySweepConfig(ArgumentParserConfig):
     learning_rate: float = config_field(
         default=1e-3,
         help="Optimizer learning rate.",
+        display_alias="lr",
         argparse_kwargs={"nargs": "+"},
     )
     kappa: float = config_field(
@@ -324,7 +325,6 @@ class TestGridSearchHelper(unittest.TestCase):
                 output_root=tmp_dir,
                 sweep_id="20260425_120000",
                 field_aliases={
-                    "learning_rate": "lr",
                     "training_bound_scales": "curr",
                 },
                 extra_name_parts={
@@ -342,6 +342,24 @@ class TestGridSearchHelper(unittest.TestCase):
         self.assertEqual(runs[0].run_name, "lr_0.001__kappa_0.1__lyap_eps_0.1__curr_0.3-0.6-1")
         self.assertEqual(runs[0].description, "lr: 0.001, kappa: 0.1, lyap_eps: 0.1, curr: [0.3, 0.6, 1]")
         self.assertEqual(runs[-1].progress_message(), "[4/4] lr: 0.0005, kappa: 0.2, lyap_eps: 0.1, curr: [0.3, 0.6, 1]")
+
+    def test_helper_explicit_aliases_override_display_alias_metadata(self) -> None:
+        configs = [
+            DummySweepConfig(learning_rate=1e-3, kappa=0.1),
+            DummySweepConfig(learning_rate=5e-4, kappa=0.1),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            helper = GridSearchHelper(
+                configs,
+                output_root=tmp_dir,
+                sweep_id="20260425_120001",
+                field_aliases={"learning_rate": "eta"},
+            )
+            runs = list(helper)
+
+        self.assertEqual(runs[0].run_name, "eta_0.001")
+        self.assertEqual(runs[0].description, "eta: 0.001")
 
 
 if __name__ == "__main__":

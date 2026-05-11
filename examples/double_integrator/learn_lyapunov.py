@@ -1,17 +1,20 @@
 import argparse
 import torch as th
 import numpy as np
+import logging
 
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer, ThresholdMonitor
-from lcil.utils import lcil_plt, MLP, IntegrationMethod
+from lcil.utils import GridSearchHelper, lcil_plt, MLP, IntegrationMethod
 from lcil.imitation_learning_mlp import MLPPolicy
 from mpc_datagen import MPCDataset
 
 from . import DoubleIntegratorDynamics, default_model_path
+
+__logger__ = logging.getLogger("lcil.examples.double_integrator.learn_lyapunov")
 
 
 def parse_cli_args(
@@ -71,9 +74,7 @@ def main() -> None:
     ).to(device)
     policy_model.eval()
 
-    # Parent directory for this entire grid search sweep
-    sweep_base_path = policy_path.parent / "lyapunov" / datetime.now().strftime("%Y%m%d_%H%M%S")
-    sweep_base_path.mkdir(parents=True, exist_ok=True)
+    sweep_output_root = policy_path.parent / "lyapunov"
     
     dyn_model = DoubleIntegratorDynamics(
         dt=policy_model.global_config.dt,
@@ -88,24 +89,19 @@ def main() -> None:
 
     state_bounds = np.vstack([policy_model.global_config.constraints.lbx, policy_model.global_config.constraints.ubx])
 
-    training_sweep_configs = training_defaults.iter_from_namespace(args)
+    sweep: GridSearchHelper[LyapunovTrainingConfig] = GridSearchHelper.from_namespace(
+        training_defaults,
+        args,
+        output_root=sweep_output_root,
+        sweep_id=datetime.now().strftime("%Y%m%d_%H%M%S"),
+    )
 
-    print(f"Starting grid search over {len(training_sweep_configs)} configurations...")
+    __logger__.info(f"Starting grid search over {len(sweep)} configurations...")
 
-    for run_idx, sweep_config in enumerate(training_sweep_configs):
-        print(f"\n[{run_idx+1}/{len(training_sweep_configs)}] Running config -> "
-              f"lr: {sweep_config.learning_rate}, kappa: {sweep_config.kappa}, "
-              f"inv_w: {sweep_config.invariance_weight}, rho_g: {sweep_config.rho_growth_gamma}, "
-              f"roa_w: {sweep_config.roa_weight}, l1_w: {sweep_config.l1_weight}")
-        
-        # Create a specific folder for this parameter combination
-        run_name = (
-            f"lr_{sweep_config.learning_rate}__kappa_{sweep_config.kappa}"
-            f"__invw_{sweep_config.invariance_weight}__rhog_{sweep_config.rho_growth_gamma}"
-            f"__roaw_{sweep_config.roa_weight}__l1w_{sweep_config.l1_weight}"
-        )
-        base_path = sweep_base_path / run_name
-        base_path.mkdir(parents=True, exist_ok=True)
+    for run_idx, run in enumerate(sweep):
+        sweep_config = run.config
+        __logger__.info("%s", run.progress_message())
+        base_path = run.output_dir
 
         # ---------------------------------------------------------------------
         # 1. Initialize fresh Lyapunov Model
@@ -146,7 +142,7 @@ def main() -> None:
         
         train_results = trainer.train()
         if train_results.aborted:
-            print(f"Skipping run {run_name}: {train_results.abort_reason}")
+            __logger__.warning(f"Skipping run {run.run_name}: {train_results.abort_reason}")
             continue
         trainer.save(base_path)
 
@@ -169,7 +165,7 @@ def main() -> None:
                 html_path=base_path / "lyapunov_plot.html",
             )
 
-    print(f"\nGrid search complete. All results saved to: {sweep_base_path}")
+    __logger__.info(f"\nGrid search complete. All results saved to: {sweep.sweep_base_path}")
 
 
 if __name__ == "__main__":

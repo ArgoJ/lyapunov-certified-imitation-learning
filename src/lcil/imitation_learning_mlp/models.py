@@ -72,9 +72,13 @@ class MLPPolicy(nn.Module):
             )
         return flat_bound
 
+    def forward_raw(self, x: th.Tensor) -> th.Tensor:
+        """Return the unconstrained policy output used during imitation fitting."""
+        return self.mlp(x)
+
     def forward(self, x: th.Tensor) -> th.Tensor:
-        u = self.mlp(x)
-        return th.clamp(u, min=self._u_min, max=self._u_max)
+        raw_u = self.forward_raw(x)
+        return th.clamp(raw_u, min=self._u_min, max=self._u_max)
 
     def save(
         self,

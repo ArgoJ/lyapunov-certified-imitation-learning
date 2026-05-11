@@ -22,19 +22,29 @@ class CartpoleAngleWrapper(nn.Module):
         """
         super().__init__()
         self.net = feature_net
-    
-    def forward(self, x: th.Tensor) -> th.Tensor:
+
+    @staticmethod
+    def _transform_inputs(x: th.Tensor) -> th.Tensor:
         cart_pos_vel = x[:, :2]
         theta = x[:, 2:3]
         theta_dot = x[:, 3:]
-        
-        features = th.cat([
+
+        return th.cat([
             cart_pos_vel,
             th.sin(theta),
             th.cos(theta),
             theta_dot
         ], dim=-1)
-        
+
+    def forward_raw(self, x: th.Tensor) -> th.Tensor:
+        features = self._transform_inputs(x)
+        raw_forward = getattr(self.net, "forward_raw", None)
+        if callable(raw_forward):
+            return raw_forward(features)
+        return self.net(features)
+    
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        features = self._transform_inputs(x)
         return self.net(features)
 
     def save(self, path: str | Path, **feature_net_save_kwargs) -> None:

@@ -2,20 +2,20 @@ import argparse
 import json
 import torch as th
 import numpy as np
+import logging
 
 from dataclasses import replace
 from pathlib import Path
 from numpy.typing import NDArray
 
 from lcil.lyapunov_learning import (
-    GridSearchHelper,
     LyapunovTrainingConfig,
     NeuralLyapunovCandidate,
     LyapunovTrainer,
     ThresholdMonitor,
 )
 from lcil.certification import LyapunovCertificationConfig
-from lcil.utils import lcil_plt, MLP
+from lcil.utils import GridSearchHelper, lcil_plt, MLP
 from lcil.imitation_learning_mlp import MLPPolicy
 from mpc_datagen import MPCDataset
 
@@ -23,6 +23,8 @@ from . import (
     CartpoleDynamics,
     CartpoleAngleWrapper,
 )
+
+__logger__ = logging.getLogger("lcil.examples.cartpole.learn_lyapunov")
 
 
 def parse_cli_args(
@@ -138,36 +140,28 @@ def main() -> None:
     training_bounds = state_bounds * training_bounds_percentage[:, None].T
     cert_bounds = state_bounds * cert_percentage[:, None].T
     curriculum_scales = [float(scale) for scale in args.training_bound_scales]
-    print(f"State bounds:\n{state_bounds}")
-    print(f"Using training bounds:\n{training_bounds}")
-    print(f"Using certification bounds:\n{cert_bounds}")
-    print(f"Using training bound scales: {curriculum_scales}")
+    __logger__.info(f"State bounds:\n{state_bounds}")
+    __logger__.info(f"Using training bounds:\n{training_bounds}")
+    __logger__.info(f"Using certification bounds:\n{cert_bounds}")
+    __logger__.info(f"Using training bound scales: {curriculum_scales}")
 
     sweep: GridSearchHelper[LyapunovTrainingConfig] = GridSearchHelper.from_namespace(
         training_defaults,
         args,
         output_root=lyap_path,
         field_aliases={
-            "learning_rate": "lr",
-            "invariance_weight": "invw",
-            "rho_growth_gamma": "rhog",
-            "roa_weight": "roaw",
-            "l1_weight": "l1w",
-            "rho_estimate_quantile": "rhoq",
-            "condition_margin": "margin",
             "training_bound_scales": "curr",
-            "max_recursion_depth": "recursion",
         },
         extra_name_parts={
             "training_bound_scales": curriculum_scales,
         },
     )
 
-    print(f"Starting grid search over {len(sweep)} configurations...")
+    __logger__.info(f"Starting grid search over {len(sweep)} configurations...")
 
     for run_idx, run in enumerate(sweep):
         sweep_config = run.config
-        print(f"\n{run.progress_message()}, train_policy: {sweep_config.train_policy_model}")
+        __logger__.info(f"\n{run.progress_message()}, train_policy: {sweep_config.train_policy_model}")
         base_path = run.output_dir
 
         # ---------------------------------------------------------------------
@@ -210,10 +204,10 @@ def main() -> None:
         curriculum_result = trainer.train_with_scaled_bounds(curriculum_scales)
         train_results = curriculum_result.final_result
         if train_results is None:
-            print(f"Skipping run {run.run_name}: curriculum produced no training result")
+            __logger__.info(f"Skipping run {run.run_name}: curriculum produced no training result")
             continue
         if train_results.aborted:
-            print(f"Skipping run {run.run_name}: {train_results.abort_reason}")
+            __logger__.info(f"Skipping run {run.run_name}: {train_results.abort_reason}")
             continue
         trainer.save(base_path)
 
@@ -253,7 +247,7 @@ def main() -> None:
                 html_path=base_path / "lyapunov_plot.html",
             )
 
-    print(f"\nGrid search complete. All results saved to: {sweep.sweep_base_path}")
+    __logger__.info(f"\nGrid search complete. All results saved to: {sweep.sweep_base_path}")
 
 
 if __name__ == "__main__":

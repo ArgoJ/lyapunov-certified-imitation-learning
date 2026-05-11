@@ -76,25 +76,106 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
 
     state_dim: int = config_field(cli=False)
     cert_bounds: NDArray = config_field(cli=False)
-    kappa: float = config_field(default=0.05, help="Exponential decay factor in the Lyapunov decrease condition.")
-    rho_min: float = config_field(default=1e-6, help="Minimum admissible rho value.")
-    bins_per_dim: int | Sequence[int] = config_field(default=4, help="Initial certification bins per state dimension.")
-    center_refinement_factor: float | Sequence[float] = config_field(default=1.0, help="Optional geometric refinement factor for bins near the origin.")
-    origin_exclusion: float | Sequence[float] = config_field(default=0.0, help="Radius around the origin to skip during certification.")
-    rho_scaling: float = config_field(default=1.2, help="Multiplicative factor used in rho scaling before bisection.")
-    bisection_tol: float = config_field(default=1e-3, help="Tolerance used in rho bisection.")
-    max_scale_steps: int = config_field(default=20, help="Maximum rho scaling attempts during certification.")
-    max_bisection_steps: int = config_field(default=40, help="Maximum bisection iterations during certification.")
-    cert_method: str = config_field(default="alpha-crown", help="AutoLiRPA certification backend method.")
-    sublevel_tolerance: float = config_field(default=1e-6, help="Slack used in the rho-sublevel gate of the verification graph.")
-    condition_tolerance: float = config_field(default=1e-6, help="Numerical tolerance on the fused verifier output.")
-    condition_margin: float = config_field(default=0.0, help="Optional additive safety margin on the decrease term during certification.")
-    suppress_native_output: bool = config_field(default=True, help="Whether to suppress native solver output during certification.")
-    batch_size: int = config_field(default=512, help="Batch size used during certification.")
-    abcrown_timeout: float | None = config_field(default=None, help="Optional per-region ABCrown branch-and-bound timeout in seconds.")
-    abcrown_max_domains: int | None = config_field(default=None, help="Optional cap on ABCrown branch-and-bound domains per region.")
-    max_recursion_depth: int = config_field(default=10, help="Maximum recursion depth for certification region splitting.")
-    skip_boundary_core_cert: bool = config_field(default=False, help="Skip the boundary-region core-certification prepass and route boundary regions directly to complete certification.")
+
+    # Regions
+    bins_per_dim: int | Sequence[int] = config_field(
+        default=4,
+        help="Initial certification bins per state dimension."
+    )
+    center_refinement_factor: float | Sequence[float] = config_field(
+        default=1.0,
+        help="Optional geometric refinement factor for bins near the origin."
+    )
+    origin_exclusion: float | Sequence[float] = config_field(
+        default=0.0,
+        help="Radius around the origin to skip during certification."
+    )
+
+    # Certification parameters
+    kappa: float = config_field(
+        default=0.05,
+        help="Exponential decay factor in the Lyapunov decrease condition.",
+        display_alias="bounds",
+    )
+    rho_min: float = config_field(
+        default=1e-6,
+        help="Minimum admissible rho value.",
+        display_alias="\u03C1_min",
+    )
+    cert_method: str = config_field(
+        default="alpha-crown",
+        help="AutoLiRPA certification backend method.",
+        display_alias="method",
+    )
+    sublevel_tolerance: float = config_field(
+        default=1e-6,
+        help="Slack used in the rho-sublevel gate of the verification graph.",
+        display_alias="sublevel_tol",
+    )
+    condition_tolerance: float = config_field(
+        default=1e-6,
+        help="Numerical tolerance on the fused verifier output.",
+        display_alias="cond_tol",
+    )
+    condition_margin: float = config_field(
+        default=0.0,
+        help="Optional additive safety margin on the decrease term during certification.",
+        display_alias="margin",
+    )
+
+    # Search and Bisection parameters
+    rho_scaling: float = config_field(
+        default=1.2,
+        help="Multiplicative factor used in rho scaling before bisection.",
+        display_alias="\u03C1_scale",
+    )
+    bisection_tol: float = config_field(
+        default=1e-3,
+        help="Tolerance used in rho bisection.",
+        display_alias="bisect_tol",
+    )
+    max_scale_steps: int = config_field(
+        default=20,
+        help="Maximum rho scaling attempts during certification.",
+        display_alias="scale_steps"
+    )
+    max_bisection_steps: int = config_field(
+        default=40,
+        help="Maximum bisection iterations during certification.",
+        display_alias="bisect_steps",
+    )
+    max_recursion_depth: int = config_field(
+        default=10,
+        help="Maximum recursion depth for certification region splitting.",
+        display_alias="split_depth",
+    )
+    skip_boundary_core_cert: bool = config_field(
+        default=False,
+        help="Skip the boundary-region core-certification prepass and route boundary regions directly to complete certification.",
+        display_alias="skip_core_cert"
+    )
+
+
+    # AB-Crown specific
+    abcrown_timeout: float | None = config_field(
+        default=None,
+        help="Optional per-region ABCrown branch-and-bound timeout in seconds."
+    )
+    abcrown_max_domains: int | None = config_field(
+        default=None,
+        help="Optional cap on ABCrown branch-and-bound domains per region."
+    )
+    batch_size: int = config_field(
+        default=512,
+        help="Batch size used during certification."
+    )
+
+    # Others
+    suppress_native_output: bool = config_field(
+        default=True,
+        help="Whether to suppress native solver output during certification."
+    )
+
     NP_ARRAY_FIELDS = ("cert_bounds",)
 
     def __post_init__(self) -> None:

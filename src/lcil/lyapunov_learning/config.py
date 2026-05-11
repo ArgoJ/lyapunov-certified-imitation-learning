@@ -83,35 +83,155 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
 
     state_dim: int = config_field(cli=False)
     state_bounds: NDArray = config_field(cli=False)
-    initial_sample_size: int = config_field(default=1000, help="Number of initial random samples used for training.")
-    batch_size: int = config_field(default=512, help="Batch size for training iterations.")
-    outer_epochs: int = config_field(default=10, help="Number of outer CEGIS epochs.")
-    steps_per_epoch: int = config_field(default=500, help="Number of optimization steps per outer epoch.")
-    learning_rate: float = config_field(default=1e-2, help="Adam optimizer learning rate.")
-    train_policy_model: bool = config_field(default=True, help="Whether to jointly optimize policy parameters with the Lyapunov model.")
-    tb_log_dir: str | os.PathLike | None = config_field(default=None, help="TensorBoard logging directory.")
-    seed: int | None = config_field(default=None, help="Random seed for reproducibility.")
-    kappa: float = config_field(default=0.05, help="Exponential decay factor in the Lyapunov decrease condition.")
-    invariance_weight: float = config_field(default=1.0, help="Weight of the set-invariance penalty term.")
-    equilibrium_weight: float = config_field(default=0.01, help="Weight for keeping V(0) near zero.")
-    formal_positivity_weight: float = config_field(default=1.0, help="Weight of the positivity penalty over the training box.")
-    rho_growth_gamma: float = config_field(default=1.1, help="Growth factor used when estimating rho from boundary points.")
-    rho_boundary_samples: int = config_field(default=512, help="Number of boundary points used to estimate rho.")
-    rho_boundary_buffer_size: int | None = config_field(default=None, help="Optional cache size for retaining low-value boundary points.")
-    rho_descent_steps: int = config_field(default=15, help="Number of projected gradient steps for boundary-value descent.")
-    rho_step_size: float = config_field(default=0.05, help="Relative step size for boundary-value descent.")
-    rho_estimate_quantile: float = config_field(default=0.1, help="Quantile used for robust boundary-value aggregation in rho estimation.")
-    rho_min: float = config_field(default=1e-6, help="Minimum admissible rho value.")
-    adversarial_samples: int = config_field(default=1024, help="Number of PGD seed states for counterexample mining.")
-    counterexample_steps: int = config_field(default=30, help="PGD steps used during counterexample search.")
-    adversarial_step_size: float = config_field(default=0.05, help="Relative PGD step size for counterexample mining.")
-    counterexample_every: int = config_field(default=1, help="Frequency of counterexample mining in outer epochs.")
-    max_buffer: int = config_field(default=10000, help="Maximum size of the training buffer.")
-    roa_candidate_size: int = config_field(default=1024, help="Number of candidate states used in the ROA surrogate loss.")
-    roa_weight: float = config_field(default=0.1, help="Weight for the ROA surrogate term.")
-    l1_weight: float = config_field(default=1e-5, help="Weight for parameter L1 regularization.")
-    condition_tolerance: float = config_field(default=1e-6, help="Numerical tolerance for Lyapunov condition satisfaction.")
-    condition_margin: float = config_field(default=0.0, help="Safety margin enforced on the verifier output during training.")
+    initial_sample_size: int = config_field(
+        default=1000, 
+        help="Number of initial random samples used for training.",
+        display_alias="init_samples"
+    )
+    batch_size: int = config_field(
+        default=512,
+        help="Batch size for training iterations.",
+    )
+    outer_epochs: int = config_field(
+        default=10,
+        help="Number of outer CEGIS epochs.",
+        display_alias="epochs"
+    )
+    steps_per_epoch: int = config_field(
+        default=500,
+        help="Number of optimization steps per outer epoch.",
+        display_alias="steps/epoch"
+    )
+    learning_rate: float = config_field(
+        default=1e-2,
+        help="Adam optimizer learning rate.",
+        display_alias="lr",
+    )
+    train_policy_model: bool = config_field(
+        default=True,
+        help="Whether to jointly optimize policy parameters with the Lyapunov model."
+    )
+    seed: int | None = config_field(
+        default=None,
+        help="Random seed for reproducibility."
+    )
+    kappa: float = config_field(
+        default=0.05,
+        help="Exponential decay factor in the Lyapunov decrease condition.",
+        display_alias="\u03BA",
+    )
+    max_buffer: int = config_field(
+        default=10000,
+        help="Maximum size of the training buffer.",
+        display_alias="buff",
+    )
+    roa_candidate_size: int = config_field(
+        default=1024,
+        help="Number of candidate states used in the ROA surrogate loss.",
+        display_alias="roa_cand",
+    )
+    tb_log_dir: str | os.PathLike | None = config_field(
+        default=None,
+        help="TensorBoard logging directory."
+    )
+
+    # Weights
+    invariance_weight: float = config_field(
+        default=1.0,
+        help="Weight of the set-invariance penalty term.",
+        display_alias="invw",
+    )
+    equilibrium_weight: float = config_field(
+        default=0.01,
+        help="Weight for keeping V(0) near zero.",
+        display_alias="eqw",
+    )
+    formal_positivity_weight: float = config_field(
+        default=1.0,
+        help="Weight of the positivity penalty over the training box.",
+        display_alias="fpw",
+    )
+    roa_weight: float = config_field(
+        default=0.1,
+        help="Weight for the ROA surrogate term.",
+        display_alias="roaw",
+    )
+    l1_weight: float = config_field(
+        default=1e-5,
+        help="Weight for parameter L1 regularization.",
+        display_alias="l1w",
+    )
+
+    # Rho estimation parameters
+    rho_growth_gamma: float = config_field(
+        default=1.1,
+        help="Growth factor used when estimating rho from boundary points.",
+        display_alias="\u03C1_fac",
+    )
+    rho_boundary_samples: int = config_field(
+        default=512,
+        help="Number of boundary points used to estimate rho.",
+        display_alias="\u03C1_num",
+    )
+    rho_boundary_buffer_size: int | None = config_field(
+        default=None,
+        help="Optional cache size for retaining low-value boundary points.",
+        display_alias="\u03C1_buff",
+    )
+    rho_descent_steps: int = config_field(
+        default=15,
+        help="Number of projected gradient steps for boundary-value descent.",
+        display_alias="\u03C1_steps",
+    )
+    rho_step_size: float = config_field(
+        default=0.05,
+        help="Relative step size for boundary-value descent.",
+        display_alias="\u03C1_step",
+    )
+    rho_estimate_quantile: float = config_field(
+        default=0.1,
+        help="Quantile used for robust boundary-value aggregation in rho estimation.",
+        display_alias="\u03C1_quant",
+    )
+    rho_min: float = config_field(
+        default=1e-6,
+        help="Minimum admissible rho value.",
+        display_alias="\u03C1_min",
+    )
+
+    # PGD counterexample mining parameters
+    adversarial_samples: int = config_field(
+        default=1024,
+        help="Number of PGD seed states for counterexample mining.",
+        display_alias="cex_samples",
+    )
+    adversarial_step_size: float = config_field(
+        default=0.05,
+        help="Relative PGD step size for counterexample mining.",
+        display_alias="cex_step",
+    )
+    counterexample_steps: int = config_field(
+        default=30,
+        help="PGD steps used during counterexample search.",
+        display_alias="cex_steps",
+    )
+    counterexample_every: int = config_field(
+        default=1,
+        help="Frequency of counterexample mining in outer epochs.",
+        display_alias="cex_every",
+    )
+
+    # Tollerances
+    condition_tolerance: float = config_field(
+        default=1e-6,
+        help="Numerical tolerance for Lyapunov condition satisfaction.",
+        display_alias="cond_tol",
+    )
+    condition_margin: float = config_field(
+        default=0.0,
+        help="Safety margin enforced on the verifier output during training.",
+        display_alias="margin",
+    )
     NP_ARRAY_FIELDS = ("state_bounds",)
 
     def __post_init__(self):

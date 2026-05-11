@@ -186,6 +186,8 @@ class LyapunovTrainingMetrics:
             num_mined_counterexamples=self.num_mined_counterexamples,
             outer_iterations_completed=np.asarray(self.outer_iterations_completed, dtype=np.int64),
         )
+
+
 def _tb_writer_add_metrics(tb_writer: SummaryWriter, metrics: LyapunovTrainingMetrics) -> None:
     if tb_writer is not None:
         outer_iter = metrics.outer_iterations_completed - 1

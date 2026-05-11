@@ -42,12 +42,32 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
         not one of ``{"none", "step", "cosine", "plateau"}``.
     """
 
-    epochs: int = config_field(default=10, help="Number of optimization epochs.")
-    restore_best_model: bool = config_field(default=True, help="Whether to restore the best checkpoint tracked by early stopping.")
-    tb_log_dir: str | os.PathLike | None = config_field(default=None, help="TensorBoard logging directory.")
-    learning_rate: float = config_field(default=1e-3, help="Adam optimizer learning rate.")
-    scheduler_type: Literal["none", "step", "cosine", "plateau"] = config_field(default="none", help="Learning-rate scheduler variant.")
-    scheduler_kwargs: Mapping[str, Any] | None = config_field(default=None, cli=False)
+    epochs: int = config_field(
+        default=10, 
+        help="Number of optimization epochs."
+    )
+    restore_best_model: bool = config_field(
+        default=True,
+        help="Whether to restore the best checkpoint tracked by early stopping."
+    )
+    tb_log_dir: str | os.PathLike | None = config_field(
+        default=None,
+        help="TensorBoard logging directory."
+    )
+    learning_rate: float = config_field(
+        default=1e-3,
+        help="Adam optimizer learning rate.",
+        display_alias="lr",
+    )
+    scheduler_type: Literal["none", "step", "cosine", "plateau"] = config_field(
+        default="none",
+        help="Learning-rate scheduler variant.",
+        display_alias="scheduler",
+    )
+    scheduler_kwargs: Mapping[str, Any] | None = config_field(
+        default=None,
+        cli=False
+    )
 
     train_dataset_path: str | os.PathLike | None = field(init=False, default=None, metadata={"cli": False})
     val_dataset_path: str | os.PathLike | None = field(init=False, default=None, metadata={"cli": False})

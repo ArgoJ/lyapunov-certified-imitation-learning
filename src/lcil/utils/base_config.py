@@ -52,6 +52,7 @@ def config_field(
     *,
     help: str | None = None,
     description: str | None = None,
+    display_alias: str | None = None,
     cli: bool = True,
     argparse_kwargs: dict[str, Any] | None = None,
     **kwargs: Any,
@@ -63,6 +64,8 @@ def config_field(
         metadata["help"] = help
     if description is not None:
         metadata["description"] = description
+    if display_alias is not None:
+        metadata["display_alias"] = display_alias
 
     metadata.setdefault("cli", cli)
 

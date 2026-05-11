@@ -1,7 +1,7 @@
 from .trainer import LyapunovTrainer
 from .config import LyapunovTrainingConfig
 from .rollout import LyapunovRollout
-from .utils import GridSearchHelper, ThresholdMonitor, TrainingAbortedError
+from .utils import ThresholdMonitor, TrainingAbortedError
 from .models import (
     LyapunovNet,
     NeuralLyapunovCandidate,
@@ -25,7 +25,6 @@ __all__ = [
     "estimate_rho_from_boundary",
     "find_counter_examples",
     "sample_uniform_box",
-    "GridSearchHelper",
     "ThresholdMonitor",
     "TrainingAbortedError",
 ]

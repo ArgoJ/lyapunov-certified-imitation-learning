@@ -67,6 +67,28 @@ class PolicyTrainingMetrics:
             epochs_completed=0,
         )
 
+    def update(self, epoch: int, train_loss: float, val_loss: float | None, learning_rate: float) -> None:
+        """Update metric arrays with new values for a completed epoch.
+
+        Parameters
+        ----------
+        epoch : int
+            Index of the completed epoch (0-based).
+        train_loss : float
+            Average training loss for the completed epoch.
+        val_loss : float | None
+            Average validation loss for the completed epoch, or ``None`` if not applicable.
+        learning_rate : float
+            Learning rate used during the completed epoch.
+        """
+        if not (0 <= epoch < len(self.train_loss)):
+            raise IndexError(f"Epoch index {epoch} is out of bounds for metric arrays of length {len(self.train_loss)}.")
+
+        self.train_loss[epoch] = none_to_float(train_loss)
+        self.learning_rate[epoch] = none_to_float(learning_rate)
+        self.val_loss[epoch] = none_to_float(val_loss)
+        self.epochs_completed = max(self.epochs_completed, epoch + 1)
+
     def save(self, path: os.PathLike) -> None:
         metrics_path = Path(path)
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
@@ -77,6 +99,25 @@ class PolicyTrainingMetrics:
             learning_rate=self.learning_rate,
             epochs_completed=np.asarray(self.epochs_completed, dtype=np.int64),
         )
+
+
+def _tb_writer_add_metrics(tb_writer: SummaryWriter, metrics: PolicyTrainingMetrics) -> None:
+    if tb_writer is not None:
+        epoch = metrics.epochs_completed - 1
+        tb_writer.add_scalar("Policy/TrainLoss", metrics.train_loss[epoch], epoch)
+        if metrics.val_loss[epoch] is not None:
+            tb_writer.add_scalar("Loss/Validation", metrics.val_loss[epoch], epoch)
+        tb_writer.add_scalar("Policy/LearningRate", metrics.learning_rate[epoch], epoch)
+
+def _tb_writer_close(tb_writer: SummaryWriter | None) -> None:
+    if tb_writer is not None:
+        tb_writer.flush()
+        tb_writer.close()
+
+def _tb_writer_build(log_dir: os.PathLike | None) -> SummaryWriter | None:
+    if log_dir is not None:
+        return SummaryWriter(log_dir=log_dir)
+    return None
 
 
 
@@ -202,6 +243,28 @@ class PolicyTrainer:
         total_datapoints = train_datapoints + val_datapoints
         return 1.0 / total_datapoints if total_datapoints > 0 else 1.0
 
+    def _scheduller_step(self, monitored_metric: float) -> None:
+        """Utility to step the learning rate scheduler based on the monitored metric."""
+        if self.scheduler is not None:
+            if isinstance(self.scheduler, th.optim.lr_scheduler.ReduceLROnPlateau):
+                self.scheduler.step(monitored_metric)
+            else:
+                self.scheduler.step()
+
+    def _early_stopping_break(self, monitored_metric: float) -> bool:
+        """Utility to check early stopping conditions based on the monitored metric."""
+        if self.early_stopper is not None:
+            self.early_stopper(monitored_metric, self.model)
+            return self.early_stopper.early_stop
+        return False
+
+    def _predict_actions(self, nn_inputs: th.Tensor) -> th.Tensor:
+        """Use unclamped policy outputs when the model exposes them."""
+        raw_forward = getattr(self.model, "forward_raw", None)
+        if callable(raw_forward):
+            return raw_forward(nn_inputs)
+        return self.model(nn_inputs)
+
     def _train_epoch(self, progress: Progress, task: TaskID, bar_step: float) -> float:
         """Executes a single training epoch."""
         self.model.train()
@@ -212,7 +275,7 @@ class PolicyTrainer:
             nn_inputs, states, actions = self._extract_batch(batch)
 
             self.optimizer.zero_grad(set_to_none=True)
-            pred_actions = self.model(nn_inputs)
+            pred_actions = self._predict_actions(nn_inputs)
             
             if self._loss_requires_states:
                 loss = self.loss_fn(pred_actions, actions, states=states)
@@ -240,7 +303,7 @@ class PolicyTrainer:
         with th.no_grad():
             for batch in self.val_dataloader:
                 nn_inputs, states, actions = self._extract_batch(batch)
-                pred_actions = self.model(nn_inputs)
+                pred_actions = self._predict_actions(nn_inputs)
 
                 if self._loss_requires_states:
                     loss = self.loss_fn(pred_actions, actions, states=states)
@@ -269,8 +332,7 @@ class PolicyTrainer:
         self.loss_fn.to(self.device)
         self.model.to(self.device)
 
-        tb_writer = SummaryWriter(log_dir=self.training_config.tb_log_dir) \
-            if SummaryWriter is not None else None
+        tb_writer = _tb_writer_build(log_dir=self.training_config.tb_log_dir)
         metrics = PolicyTrainingMetrics.from_num_epochs(epochs)
         bar_step = self._get_bar_step()
 
@@ -292,42 +354,22 @@ class PolicyTrainer:
                 lr=float("nan"),
             )
             for epoch in range(epochs):
-                # Training loop
                 train_avg_loss = self._train_epoch(progress, task, bar_step)
-
-                # Validation
                 val_avg_loss = self._validate_epoch(progress, task, bar_step)
 
                 # Update metrics
                 current_lr = float(self.optimizer.param_groups[0]["lr"])
-                metrics.train_loss[epoch] = float(train_avg_loss)
-                metrics.val_loss[epoch] = float(val_avg_loss) if val_avg_loss is not None else np.nan
-                metrics.learning_rate[epoch] = current_lr
-                metrics.epochs_completed = epoch + 1
+                metrics.update(epoch, train_avg_loss, val_avg_loss, current_lr)
                 monitored_metric = val_avg_loss if val_avg_loss is not None else train_avg_loss
-
-                # TensorBoard logging
-                if tb_writer is not None:
-                    tb_writer.add_scalar("Loss/Train", train_avg_loss, epoch)
-                    if val_avg_loss is not None:
-                        tb_writer.add_scalar("Loss/Validation", val_avg_loss, epoch)
-                    tb_writer.add_scalar("Optimization/Learning_Rate", current_lr, epoch)
-
-                # Scheduler step
-                if self.scheduler is not None:
-                    if isinstance(self.scheduler, th.optim.lr_scheduler.ReduceLROnPlateau):
-                        self.scheduler.step(monitored_metric)
-                    else:
-                        self.scheduler.step()
+                self._scheduller_step(monitored_metric)
+                _tb_writer_add_metrics(tb_writer, metrics)
 
                 # Early stopping
-                if self.early_stopper is not None:
-                    self.early_stopper(monitored_metric, self.model)
-                    if self.early_stopper.early_stop:
-                        __logger__.info(
-                            f"Early stopping at epoch {epoch + 1:d} (loss {monitored_metric:.6f}).",
-                        )
-                        break
+                if self._early_stopping_break(monitored_metric):
+                    __logger__.info(
+                        f"Early stopping at epoch {epoch + 1:d} (loss {monitored_metric:.6f}).",
+                    )
+                    break
 
                 # Update bar
                 progress.update(
@@ -338,10 +380,7 @@ class PolicyTrainer:
                 )
                 
         self.metrics = metrics
-
-        if tb_writer is not None:
-            tb_writer.flush()
-            tb_writer.close()
+        _tb_writer_close(tb_writer)
         
         if (
             self.early_stopper is not None

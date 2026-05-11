@@ -4,11 +4,15 @@ import tempfile
 import numpy as np
 
 import torch as th
+import torch.nn as nn
 
 from pathlib import Path
+from torch.utils.data import DataLoader, TensorDataset
 
 from mpc_datagen import MPCConfig
+from lcil.imitation_learning_mlp.config import ImitationTrainingConfig
 from lcil.imitation_learning_mlp.models import MLPPolicy
+from lcil.imitation_learning_mlp.trainer import PolicyTrainer
 
 
 class TestMLPPolicyBounds(unittest.TestCase):
@@ -35,6 +39,59 @@ class TestMLPPolicyBounds(unittest.TestCase):
 				u_min=[-1.0, -2.0],
 				u_max=[1.0, 2.0],
 			)
+
+	def test_forward_raw_returns_unclamped_output(self) -> None:
+		model = MLPPolicy(
+			layer_sizes=[1, 1],
+			activations=["identity"],
+			u_min=-1.0,
+			u_max=1.0,
+		)
+
+		with th.no_grad():
+			linear = model.mlp.net[0]
+			assert isinstance(linear, nn.Linear)
+			linear.weight.fill_(2.0)
+			linear.bias.fill_(0.0)
+
+		x = th.tensor([[2.0]])
+
+		bounded = model(x)
+		raw = model.forward_raw(x)
+
+		self.assertTrue(th.allclose(bounded, th.tensor([[1.0]])))
+		self.assertTrue(th.allclose(raw, th.tensor([[4.0]])))
+
+
+class _WrappedRawPolicy(nn.Module):
+	def __init__(self) -> None:
+		super().__init__()
+		self.weight = nn.Parameter(th.tensor([[2.0]]))
+
+	def forward_raw(self, x: th.Tensor) -> th.Tensor:
+		return x @ self.weight
+
+	def forward(self, x: th.Tensor) -> th.Tensor:
+		return th.clamp(self.forward_raw(x), min=-1.0, max=1.0)
+
+
+class TestPolicyTrainerRawPredictions(unittest.TestCase):
+	def test_trainer_prefers_forward_raw_for_wrapped_models(self) -> None:
+		model = _WrappedRawPolicy()
+		dataloader = DataLoader(
+			TensorDataset(th.tensor([[1.0]]), th.tensor([[2.0]])),
+			batch_size=1,
+		)
+		trainer = PolicyTrainer(
+			model=model,
+			dataloader=dataloader,
+			training_config=ImitationTrainingConfig(epochs=1),
+		)
+
+		trainer.model.eval()
+		pred = trainer._predict_actions(th.tensor([[1.0]]))
+
+		self.assertTrue(th.allclose(pred, th.tensor([[2.0]])))
 
 
 class TestMLPPolicyConfigSerialization(unittest.TestCase):
