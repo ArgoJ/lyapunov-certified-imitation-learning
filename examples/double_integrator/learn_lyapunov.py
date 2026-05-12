@@ -161,7 +161,7 @@ def main() -> None:
                 dataset=rollout_dataset[:100],
                 state_indices=[0, 1],
                 state_labels=["$x$", "$v$"],
-                plot_3d=True,
+                plot_3d=False,
                 html_path=base_path / "lyapunov_plot.html",
             )
 
