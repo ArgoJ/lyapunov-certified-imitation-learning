@@ -314,7 +314,24 @@ class RegionManager:
         make_current: bool = True,
         is_root: bool | None = None,
     ) -> LyapunovRegionBounds:
-        """Cache bounds for the current or provided regions and mark them current."""
+        """Cache bounds for the current or provided regions and mark them current.
+        
+        Parameters
+        ----------
+        region_bounds : LyapunovRegionBounds
+            V bounds for the regions to cache.
+        regions : th.Tensor | None, optional
+            Regions for which to cache bounds. If None, use the current regions.
+        make_current : bool, optional
+            Whether to mark the cached bounds as current.
+        is_root : bool | None, optional
+            Whether the regions are root regions. If None, determine automatically.
+
+        Returns
+        -------
+        LyapunovRegionBounds
+            Cached V bounds for the regions.
+        """
         current_regions = self._resolve_regions(regions, make_current=make_current)
         if is_root is None:
             is_root = make_current and self.region_table.ids.numel() == 0
@@ -341,7 +358,20 @@ class RegionManager:
         *,
         sublevel_tolerance: float,
     ) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
-        """Classify cached current regions relative to the guarded rho-sublevel threshold."""
+        """Classify cached current regions relative to the guarded rho-sublevel threshold.
+        
+        Parameters
+        ----------
+        rho : float
+            Current rho threshold for certification.
+        sublevel_tolerance : float
+            Tolerance to guard against numerical errors in sublevel classification.
+
+        Returns
+        -------
+        tuple[th.Tensor, th.Tensor, th.Tensor]
+            Masks for (inside, boundary, irrelevant) regions relative to the rho-sublevel threshold.
+        """
         if rho < 0.0:
             raise ValueError(f"rho must be non-negative, got {rho}.")
 
@@ -360,7 +390,26 @@ class RegionManager:
         rho: float,
         sublevel_tolerance: float,
     ) -> CertificationRegionPartition:
-        """Partition regions into cached and unchecked certification subsets."""
+        """Partition regions into cached and unchecked certification subsets.
+        First gate every region against the current rho-sublevel,
+        then reuse cached core-safe results, which are rho-independent.
+
+        Parameters
+        ----------
+        regions : th.Tensor
+            Regions to partition, shape (N, 2, nx).
+        region_bounds : LyapunovRegionBounds
+            V bounds for ``regions``.
+        rho : float
+            Current rho threshold for certification.
+        sublevel_tolerance : float
+            Tolerance to guard against numerical errors in sublevel classification.
+
+        Returns
+        -------
+        CertificationRegionPartition
+            Partition of ``regions`` into cached and unchecked subsets for core and complete certification.
+        """
         threshold = float(rho + sublevel_tolerance)
         inside_regions, boundary_regions, irrelevant_regions = region_bounds.get_sublevel_masked_regions(
             regions,

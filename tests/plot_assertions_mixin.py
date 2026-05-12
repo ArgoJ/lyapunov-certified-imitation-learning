@@ -1,10 +1,11 @@
 import os
 import tempfile
+import unittest
 from pathlib import Path
 from typing import Any, Callable
 
 
-class PlotAssertionsMixin:
+class PlotAssertionsMixin(unittest.TestCase):
     def _assert_plot_artifacts_written(self, requested_html_path: Path) -> None:
         if requested_html_path.exists() and requested_html_path.is_file():
             self.assertGreater(requested_html_path.stat().st_size, 0)

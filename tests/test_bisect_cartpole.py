@@ -22,7 +22,7 @@ certified_regions_2d = plot_module.certified_regions_2d
 lyapunov_cert_regions = plot_module.lyapunov_cert_regions
 
 
-class TestBisectInvertedPendulumOnCartIntegration(PlotAssertionsMixin, unittest.TestCase):
+class TestBisectInvertedPendulumOnCartIntegration(PlotAssertionsMixin):
     @classmethod
     def setUpClass(cls) -> None:
         run_bisect_integration = os.environ.get("LCIL_RUN_BISECT_INTEGRATION", "0") == "1"

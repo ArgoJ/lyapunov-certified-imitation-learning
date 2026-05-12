@@ -16,12 +16,15 @@ from shared_double_integrator import (
     riccati_gain_and_value_matrix,
 )
 
+
+mdg_plot_module = importlib.import_module("mpc_datagen.plot")
+roa_plt = mdg_plot_module.roa
 plot_module = importlib.import_module("lcil.utils.plot")
 certified_regions_2d = plot_module.certified_regions_2d
 lyapunov_cert_regions = plot_module.lyapunov_cert_regions
 
 
-class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin, unittest.TestCase):
+class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
     @classmethod
     def setUpClass(cls) -> None:
         run_bisect_integration = os.environ.get("LCIL_RUN_BISECT_INTEGRATION", "0") == "1"
@@ -173,6 +176,27 @@ class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin, unittest.TestCa
                 "lyapunov_func": lyap_func,
                 "state_labels": state_labels,
                 "certification_result": certification_result,
+            },
+        )
+
+    def _assert_roa_plot_written(
+        self,
+        lyap_model: nn.Module,
+        certification_result,
+        stem: str,
+        state_labels: list[str],
+    ) -> None:
+        lyap_func = self._to_numpy_lyapunov(
+            lyap_model=lyap_model,
+            state_dim=2,
+        )
+        self._assert_plot_written(
+            plot_fn=roa_plt,
+            stem=stem,
+            plot_kwargs={
+                "lyapunov_func": lyap_func,
+                "state_labels": state_labels,
+                "c_level": certification_result.rho,
             },
         )
 
