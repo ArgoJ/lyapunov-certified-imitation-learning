@@ -17,7 +17,7 @@ from shared_double_integrator import (
 )
 
 
-mdg_plot_module = importlib.import_module("mpc_datagen.plot")
+mdg_plot_module = importlib.import_module("mpc_datagen.plots")
 roa_plt = mdg_plot_module.roa
 plot_module = importlib.import_module("lcil.utils.plot")
 certified_regions_2d = plot_module.certified_regions_2d
@@ -185,6 +185,7 @@ class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
         certification_result,
         stem: str,
         state_labels: list[str],
+        limits: list[tuple[float, float]],
     ) -> None:
         lyap_func = self._to_numpy_lyapunov(
             lyap_model=lyap_model,
@@ -195,8 +196,9 @@ class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
             stem=stem,
             plot_kwargs={
                 "lyapunov_func": lyap_func,
-                "state_labels": state_labels,
                 "c_level": certification_result.rho,
+                "nx": 2,
+                "state_labels": state_labels,
             },
         )
 
@@ -218,6 +220,13 @@ class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
             certification_result=result,
             stem=f"{base}_lyapunov",
             state_labels=state_labels,
+        )
+        self._assert_roa_plot_written(
+            lyap_model=certifier.lyap_model,
+            certification_result=result,
+            stem=f"{base}_roa",
+            state_labels=state_labels,
+            limits=[tuple(axis_bounds) for axis_bounds in certifier.config.cert_bounds.T],
         )
         self.assertGreaterEqual(result.uncertified_regions.shape[0], 0)
         self.assertGreater(result.certified_sublevel_regions.shape[0], 0)
