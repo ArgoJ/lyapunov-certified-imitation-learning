@@ -1,6 +1,7 @@
 from .dataset import (
-    StateActionDataset, 
-    create_state_action_dataloader, 
+    StateActionDataset,
+    SequenceStateActionDataset,
+    create_state_action_dataloader,
     create_train_and_val_dataloader,
     save_state_action_dataset_subset,
 )
@@ -13,6 +14,7 @@ from .loss import ReferenceWeightedMSELoss, DynamicsAwareLoss, ReferenceWeighted
 __all__ = [
     # Dataset and dataloader utilities
     "StateActionDataset",
+    "SequenceStateActionDataset",
     "create_state_action_dataloader",
     "create_train_and_val_dataloader",
     "save_state_action_dataset_subset",

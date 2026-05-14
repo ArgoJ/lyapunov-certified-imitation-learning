@@ -4,60 +4,61 @@ import logging
 import numpy as np
 import torch as th
 
+from collections.abc import Sequence
 from pathlib import Path
 from numpy.typing import NDArray
 from torch.utils.data import DataLoader, Dataset, random_split
+from typing import Literal
 from rich.progress import track
 from mpc_datagen import MPCDataset, MPCMeta, MPCTrajectory
 
 __logger__ = logging.getLogger(__name__)
 
 
+def _to_tensor(array: NDArray | th.Tensor, name: str, dims: int) -> th.Tensor:
+    """Convert input arrays/tensors to contiguous CPU tensors with the specified number of dimensions."""
+    if isinstance(array, th.Tensor):
+        tensor = array.detach().cpu()
+    else:
+        tensor = th.as_tensor(np.asarray(array))
+
+    if tensor.ndim != dims:
+        raise ValueError(f"{name} must be {dims}D, got shape {tuple(tensor.shape)}.")
+
+    return tensor.contiguous()
+
+def _resolve_dtype(dtype_value: th.dtype | str) -> th.dtype:
+    """Resolve serialized dtype payloads to ``torch.dtype``."""
+    if isinstance(dtype_value, th.dtype):
+        return dtype_value
+
+    if isinstance(dtype_value, str):
+        normalized = dtype_value.removeprefix("torch.")
+        if hasattr(th, normalized):
+            resolved = getattr(th, normalized)
+            if isinstance(resolved, th.dtype):
+                return resolved
+
+    raise ValueError(f"Invalid dtype in dataset file: {dtype_value}")
+
+def _resolve_mpc_dataset(mpc_dataset: MPCDataset | os.PathLike) -> MPCDataset:
+    """Resolve `MPCDataset` input from object or filesystem path."""
+    if isinstance(mpc_dataset, MPCDataset):
+        return mpc_dataset
+
+    if isinstance(mpc_dataset, (str, os.PathLike)):
+        return MPCDataset.load(Path(mpc_dataset))
+
+    raise TypeError(
+        "mpc_dataset must be an MPCDataset or path-like object "
+        f"(str, pathlib.Path, os.PathLike), got {type(mpc_dataset).__name__}."
+    )
+
+
+
 class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
     """In-memory imitation-learning dataset backed by ``MPCDataset``."""
 
-    @staticmethod
-    def _to_tensor_2d(array: NDArray | th.Tensor, name: str) -> th.Tensor:
-        """Convert input arrays/tensors to contiguous 2D CPU tensors."""
-        if isinstance(array, th.Tensor):
-            tensor = array.detach().cpu()
-        else:
-            tensor = th.as_tensor(np.asarray(array))
-
-        if tensor.ndim != 2:
-            raise ValueError(f"{name} must be 2D, got shape {tuple(tensor.shape)}.")
-
-        return tensor.contiguous()
-
-    @staticmethod
-    def _resolve_dtype(dtype_value: th.dtype | str) -> th.dtype:
-        """Resolve serialized dtype payloads to ``torch.dtype``."""
-        if isinstance(dtype_value, th.dtype):
-            return dtype_value
-
-        if isinstance(dtype_value, str):
-            normalized = dtype_value.removeprefix("torch.")
-            if hasattr(th, normalized):
-                resolved = getattr(th, normalized)
-                if isinstance(resolved, th.dtype):
-                    return resolved
-
-        raise ValueError(f"Invalid dtype in dataset file: {dtype_value}")
-
-    @staticmethod
-    def _resolve_mpc_dataset(mpc_dataset: MPCDataset | os.PathLike) -> MPCDataset:
-        """Resolve `MPCDataset` input from object or filesystem path."""
-        if isinstance(mpc_dataset, MPCDataset):
-            return mpc_dataset
-
-        if isinstance(mpc_dataset, (str, os.PathLike)):
-            return MPCDataset.load(Path(mpc_dataset))
-
-        raise TypeError(
-            "mpc_dataset must be an MPCDataset or path-like object "
-            f"(str, pathlib.Path, os.PathLike), got {type(mpc_dataset).__name__}."
-        )
-    
     def __init__(
         self,
         states: NDArray | th.Tensor,
@@ -87,9 +88,9 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         if near_duplicate_radius is not None and near_duplicate_radius <= 0:
             raise ValueError("near_duplicate_radius must be positive when provided.")
 
-        states_tensor = self._to_tensor_2d(states, name="states")
-        actions_tensor = self._to_tensor_2d(actions, name="actions")
-        refs_tensor = self._to_tensor_2d(refs, name="refs") if refs is not None else None
+        states_tensor = _to_tensor(states, name="states", dims=2)
+        actions_tensor = _to_tensor(actions, name="actions", dims=2)
+        refs_tensor = _to_tensor(refs, name="refs", dims=2) if refs is not None else None
         if states_tensor.shape[0] != actions_tensor.shape[0]:
             raise ValueError(
                 "states/actions sample count mismatch: "
@@ -192,7 +193,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         dtype_payload = payload["dtype"]
         near_duplicate_radius = payload["near_duplicate_radius"]
 
-        dtype = cls._resolve_dtype(dtype_payload)
+        dtype = _resolve_dtype(dtype_payload)
         dataset = cls(
             states=states,
             actions=actions,
@@ -213,7 +214,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         near_duplicate_radius: float | None = None,
     ) -> StateActionDataset:
         """Create a ``StateActionDataset`` by extracting samples from an MPC dataset."""
-        resolved_mpc_dataset = cls._resolve_mpc_dataset(mpc_dataset)
+        resolved_mpc_dataset = _resolve_mpc_dataset(mpc_dataset)
         states, actions = cls._load_samples_from_mpc_dataset(resolved_mpc_dataset)
 
         return cls(
@@ -390,6 +391,404 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         return th.sort(keep_idx).values
 
 
+class SequenceStateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
+    """Trajectory-aware imitation dataset backed by fixed-length state windows."""
+
+    def __init__(
+        self,
+        states: NDArray | th.Tensor,
+        actions: NDArray | th.Tensor,
+        refs: NDArray | th.Tensor | None = None,
+        dtype: th.dtype = th.float32,
+        target_mode: Literal["last", "per_step"] = "last",
+        stride: int = 1,
+        trajectory_ids: NDArray | th.Tensor | None = None,
+        start_indices: NDArray | th.Tensor | None = None,
+    ) -> None:
+        """Initialize a fixed-length sequence imitation dataset.
+
+        Parameters
+        ----------
+        states : numpy.ndarray or torch.Tensor
+            State windows with shape ``(num_windows, sequence_length, nx)``.
+        actions : numpy.ndarray or torch.Tensor
+            Action targets with shape ``(num_windows, nu)`` for ``target_mode='last'``
+            or ``(num_windows, sequence_length, nu)`` for ``target_mode='per_step'``.
+        refs : numpy.ndarray or torch.Tensor, optional
+            Optional reference windows with shape ``(num_windows, sequence_length, nref)``.
+        dtype : torch.dtype, optional
+            Output tensor dtype for states, actions, and references.
+        target_mode : {"last", "per_step"}, optional
+            Whether each sequence predicts only the last action or one action per token.
+        stride : int, optional
+            Sliding-window stride used when constructing the dataset.
+        trajectory_ids : numpy.ndarray or torch.Tensor, optional
+            Integer trajectory identifier per window with shape ``(num_windows,)``.
+        start_indices : numpy.ndarray or torch.Tensor, optional
+            Start index of each window inside its source trajectory with shape ``(num_windows,)``.
+        """
+        if target_mode not in {"last", "per_step"}:
+            raise ValueError("target_mode must be either 'last' or 'per_step'.")
+        if stride <= 0:
+            raise ValueError("stride must be positive.")
+
+        states_tensor = _to_tensor(states, name="states", dims=3)
+        actions_tensor = _to_tensor(actions, name="actions", dims=(2 if target_mode == "last" else 3))
+        refs_tensor = _to_tensor(refs, name="refs", dims=3) if refs is not None else None
+
+        if states_tensor.shape[0] != actions_tensor.shape[0]:
+            raise ValueError(
+                "states/actions sample count mismatch: "
+                f"got {states_tensor.shape[0]} state windows and {actions_tensor.shape[0]} action targets."
+            )
+        if refs_tensor is not None and states_tensor.shape[:2] != refs_tensor.shape[:2]:
+            raise ValueError(
+                "states/refs window shape mismatch: "
+                f"got states shape {tuple(states_tensor.shape)} and refs shape {tuple(refs_tensor.shape)}."
+            )
+        if target_mode == "per_step" and states_tensor.shape[:2] != actions_tensor.shape[:2]:
+            raise ValueError(
+                "states/actions window shape mismatch for per_step targets: "
+                f"got states shape {tuple(states_tensor.shape)} and actions shape {tuple(actions_tensor.shape)}."
+            )
+
+        total_samples = int(states_tensor.shape[0])
+
+        if trajectory_ids is None:
+            trajectory_ids_tensor = th.full((total_samples,), -1, dtype=th.int64)
+        else:
+            trajectory_ids_tensor = th.as_tensor(trajectory_ids, dtype=th.int64).flatten().contiguous()
+        if trajectory_ids_tensor.numel() != total_samples:
+            raise ValueError(
+                f"trajectory_ids must have {total_samples} elements, got {trajectory_ids_tensor.numel()}."
+            )
+
+        if start_indices is None:
+            start_indices_tensor = th.full((total_samples,), -1, dtype=th.int64)
+        else:
+            start_indices_tensor = th.as_tensor(start_indices, dtype=th.int64).flatten().contiguous()
+        if start_indices_tensor.numel() != total_samples:
+            raise ValueError(
+                f"start_indices must have {total_samples} elements, got {start_indices_tensor.numel()}."
+            )
+
+        self.dtype = dtype
+        self.target_mode = target_mode
+        self.stride = int(stride)
+        self.sequence_length = int(states_tensor.shape[1]) if states_tensor.ndim == 3 else 0
+
+        self._states = states_tensor.to(dtype=self.dtype)
+        self._actions = actions_tensor.to(dtype=self.dtype)
+        self._refs = refs_tensor.to(dtype=self.dtype) if refs_tensor is not None else None
+        self._trajectory_ids = trajectory_ids_tensor
+        self._start_indices = start_indices_tensor
+        self._total_samples = total_samples
+
+    def __len__(self) -> int:
+        """Return the number of sequence windows in the dataset."""
+        return self._total_samples
+
+    def __getitem__(self, idx: int) -> tuple[th.Tensor, th.Tensor] | tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """Return one sequence window and its action target."""
+        if self._total_samples == 0:
+            raise IndexError("Cannot index an empty sequence dataset.")
+
+        if idx < 0:
+            idx += self._total_samples
+        if idx < 0 or idx >= self._total_samples:
+            raise IndexError(f"Index {idx} is out of bounds for dataset size {self._total_samples}.")
+
+        if self._refs is not None:
+            return self._states[idx], self._actions[idx], self._refs[idx]
+        return self._states[idx], self._actions[idx]
+
+    @property
+    def trajectory_ids(self) -> th.Tensor:
+        """Return the source trajectory id for each sequence window."""
+        return self._trajectory_ids
+
+    @property
+    def start_indices(self) -> th.Tensor:
+        """Return the source start index for each sequence window."""
+        return self._start_indices
+
+    def save(self, path: os.PathLike) -> None:
+        """Save sequence windows and metadata to a ``.pt`` file."""
+        target_path = Path(path).resolve()
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        payload = {
+            "states": self._states.detach().cpu(),
+            "actions": self._actions.detach().cpu(),
+            "refs": self._refs.detach().cpu() if self._refs is not None else None,
+            "dtype": self.dtype,
+            "num_samples": self._total_samples,
+            "target_mode": self.target_mode,
+            "sequence_length": self.sequence_length,
+            "stride": self.stride,
+            "trajectory_ids": self._trajectory_ids.detach().cpu(),
+            "start_indices": self._start_indices.detach().cpu(),
+        }
+        th.save(payload, target_path)
+
+    @classmethod
+    def load(cls, path: os.PathLike) -> "SequenceStateActionDataset":
+        """Load a serialized sequence dataset from a ``.pt`` file."""
+        source_path = Path(path)
+        if not source_path.is_file():
+            raise FileNotFoundError(f"Dataset file not found at {source_path}.")
+
+        payload = th.load(source_path, map_location="cpu")
+        required_keys = {
+            "states",
+            "actions",
+            "refs",
+            "dtype",
+            "num_samples",
+            "target_mode",
+            "sequence_length",
+            "stride",
+            "trajectory_ids",
+            "start_indices",
+        }
+        if not required_keys.issubset(payload.keys()):
+            missing = required_keys - payload.keys()
+            raise ValueError(f"Missing keys in dataset file: {missing}")
+
+        dtype = _resolve_dtype(payload["dtype"])
+        dataset = cls(
+            states=payload["states"],
+            actions=payload["actions"],
+            refs=payload["refs"],
+            dtype=dtype,
+            target_mode=str(payload["target_mode"]),
+            stride=int(payload["stride"]),
+            trajectory_ids=payload["trajectory_ids"],
+            start_indices=payload["start_indices"],
+        )
+        return dataset
+
+    @classmethod
+    def from_subset(
+        cls,
+        dataset_subset: Dataset[tuple[th.Tensor, th.Tensor]],
+        dtype: th.dtype | None = None,
+    ) -> "SequenceStateActionDataset":
+        """Create a ``SequenceStateActionDataset`` from a subset wrapper dataset."""
+        if not (hasattr(dataset_subset, "dataset") and hasattr(dataset_subset, "indices")):
+            raise TypeError("dataset_subset must expose 'dataset' and 'indices' attributes.")
+
+        parent_dataset = getattr(dataset_subset, "dataset")
+        subset_indices = th.as_tensor(getattr(dataset_subset, "indices"), dtype=th.int64)
+        parent_states = getattr(parent_dataset, "_states", None)
+        parent_actions = getattr(parent_dataset, "_actions", None)
+        parent_refs = getattr(parent_dataset, "_refs", None)
+        parent_trajectory_ids = getattr(parent_dataset, "_trajectory_ids", None)
+        parent_start_indices = getattr(parent_dataset, "_start_indices", None)
+
+        if parent_states is None or parent_actions is None:
+            raise TypeError("Subset parent dataset must expose '_states' and '_actions' tensors.")
+
+        split_states = parent_states.index_select(0, subset_indices).detach().cpu()
+        split_actions = parent_actions.index_select(0, subset_indices).detach().cpu()
+        split_refs = parent_refs.index_select(0, subset_indices).detach().cpu() if parent_refs is not None else None
+        split_trajectory_ids = (
+            parent_trajectory_ids.index_select(0, subset_indices).detach().cpu()
+            if parent_trajectory_ids is not None else None
+        )
+        split_start_indices = (
+            parent_start_indices.index_select(0, subset_indices).detach().cpu()
+            if parent_start_indices is not None else None
+        )
+
+        resolved_dtype = dtype
+        if resolved_dtype is None:
+            parent_dtype = getattr(parent_dataset, "dtype", None)
+            resolved_dtype = parent_dtype if isinstance(parent_dtype, th.dtype) else split_states.dtype
+
+        return cls(
+            states=split_states,
+            actions=split_actions,
+            refs=split_refs,
+            dtype=resolved_dtype,
+            target_mode=getattr(parent_dataset, "target_mode", "last"),
+            stride=int(getattr(parent_dataset, "stride", 1)),
+            trajectory_ids=split_trajectory_ids,
+            start_indices=split_start_indices,
+        )
+
+    @classmethod
+    def from_trajectories(
+        cls,
+        state_trajectories: Sequence[NDArray | th.Tensor],
+        action_trajectories: Sequence[NDArray | th.Tensor],
+        sequence_length: int,
+        stride: int = 1,
+        refs_trajectories: Sequence[NDArray | th.Tensor] | None = None,
+        dtype: th.dtype = th.float32,
+        target_mode: Literal["last", "per_step"] = "last",
+        trajectory_ids: Sequence[int] | None = None,
+    ) -> "SequenceStateActionDataset":
+        """Build fixed-length sequence windows from in-memory trajectories."""
+        if sequence_length <= 0:
+            raise ValueError("sequence_length must be positive.")
+        if stride <= 0:
+            raise ValueError("stride must be positive.")
+        if len(state_trajectories) != len(action_trajectories):
+            raise ValueError(
+                "state_trajectories/action_trajectories length mismatch: "
+                f"got {len(state_trajectories)} states and {len(action_trajectories)} actions."
+            )
+        if refs_trajectories is not None and len(state_trajectories) != len(refs_trajectories):
+            raise ValueError(
+                "state_trajectories/refs_trajectories length mismatch: "
+                f"got {len(state_trajectories)} states and {len(refs_trajectories)} refs."
+            )
+        if trajectory_ids is not None and len(state_trajectories) != len(trajectory_ids):
+            raise ValueError(
+                "trajectory_ids must have one entry per trajectory, got "
+                f"{len(trajectory_ids)} ids for {len(state_trajectories)} trajectories."
+            )
+
+        state_windows: list[th.Tensor] = []
+        action_targets: list[th.Tensor] = []
+        refs_windows: list[th.Tensor] = []
+        window_trajectory_ids: list[int] = []
+        window_start_indices: list[int] = []
+
+        expected_nx: int | None = None
+        expected_nu: int | None = None
+        expected_nref: int | None = None
+
+        for traj_index, (states, actions) in enumerate(zip(state_trajectories, action_trajectories, strict=True)):
+            states_tensor = _to_tensor(states, name="states", dims=2)
+            actions_tensor = _to_tensor(actions, name="actions", dims=2)
+            refs_tensor = (
+                _to_tensor(refs_trajectories[traj_index], name="refs", dims=2)
+                if refs_trajectories is not None else None
+            )
+
+            if states_tensor.shape[0] != actions_tensor.shape[0]:
+                raise ValueError(
+                    "Trajectory state/action length mismatch: "
+                    f"got {states_tensor.shape[0]} states and {actions_tensor.shape[0]} actions "
+                    f"for trajectory index {traj_index}."
+                )
+            if refs_tensor is not None and states_tensor.shape[0] != refs_tensor.shape[0]:
+                raise ValueError(
+                    "Trajectory state/ref length mismatch: "
+                    f"got {states_tensor.shape[0]} states and {refs_tensor.shape[0]} refs "
+                    f"for trajectory index {traj_index}."
+                )
+
+            nx = int(states_tensor.shape[1])
+            nu = int(actions_tensor.shape[1])
+            if expected_nx is None:
+                expected_nx = nx
+                expected_nu = nu
+                expected_nref = int(refs_tensor.shape[1]) if refs_tensor is not None else None
+            elif nx != expected_nx or nu != expected_nu:
+                raise ValueError(
+                    "Inconsistent state/action dimensions across trajectories: "
+                    f"expected (nx={expected_nx}, nu={expected_nu}), got (nx={nx}, nu={nu}) "
+                    f"for trajectory index {traj_index}."
+                )
+            if refs_tensor is not None and expected_nref is not None and refs_tensor.shape[1] != expected_nref:
+                raise ValueError(
+                    "Inconsistent reference dimension across trajectories: "
+                    f"expected nref={expected_nref}, got nref={refs_tensor.shape[1]} "
+                    f"for trajectory index {traj_index}."
+                )
+
+            trajectory_id = traj_index if trajectory_ids is None else int(trajectory_ids[traj_index])
+            num_steps = int(states_tensor.shape[0])
+            if num_steps < sequence_length:
+                continue
+
+            for start_idx in range(0, num_steps - sequence_length + 1, stride):
+                end_idx = start_idx + sequence_length
+                state_windows.append(states_tensor[start_idx:end_idx])
+                if target_mode == "last":
+                    action_targets.append(actions_tensor[end_idx - 1])
+                else:
+                    action_targets.append(actions_tensor[start_idx:end_idx])
+                if refs_tensor is not None:
+                    refs_windows.append(refs_tensor[start_idx:end_idx])
+                window_trajectory_ids.append(trajectory_id)
+                window_start_indices.append(start_idx)
+
+        nx = 0 if expected_nx is None else expected_nx
+        nu = 0 if expected_nu is None else expected_nu
+        nref = 0 if expected_nref is None else expected_nref
+        if state_windows:
+            states_tensor = th.stack(state_windows, dim=0)
+            actions_tensor = th.stack(action_targets, dim=0)
+            refs_tensor = th.stack(refs_windows, dim=0) if refs_windows else None
+        else:
+            states_tensor = th.empty((0, sequence_length, nx), dtype=dtype)
+            if target_mode == "last":
+                actions_tensor = th.empty((0, nu), dtype=dtype)
+            else:
+                actions_tensor = th.empty((0, sequence_length, nu), dtype=dtype)
+            refs_tensor = th.empty((0, sequence_length, nref), dtype=dtype) if refs_trajectories is not None else None
+
+        return cls(
+            states=states_tensor,
+            actions=actions_tensor,
+            refs=refs_tensor,
+            dtype=dtype,
+            target_mode=target_mode,
+            stride=stride,
+            trajectory_ids=window_trajectory_ids,
+            start_indices=window_start_indices,
+        )
+
+    @classmethod
+    def from_mpc_dataset(
+        cls,
+        mpc_dataset: MPCDataset | os.PathLike,
+        sequence_length: int,
+        stride: int = 1,
+        dtype: th.dtype = th.float32,
+        use_references: bool = False,
+        target_mode: Literal["last", "per_step"] = "last",
+    ) -> "SequenceStateActionDataset":
+        """Create a sequence dataset by extracting fixed windows from an MPC dataset."""
+        if use_references:
+            raise NotImplementedError("Sequence reference extraction is not implemented yet.")
+
+        resolved_mpc_dataset = _resolve_mpc_dataset(mpc_dataset)
+        if resolved_mpc_dataset.memory_buffer:
+            resolved_mpc_dataset.save(mode="a")
+
+        if resolved_mpc_dataset._h5_file is None:
+            raise ValueError("MPCDataset must have an HDF5 file loaded to build the sequence dataset.")
+
+        state_trajectories: list[NDArray] = []
+        action_trajectories: list[NDArray] = []
+
+        indices = list(resolved_mpc_dataset._indices)
+        for traj_index, key in enumerate(track(indices, description="Extracting sequence windows")):
+            grp = resolved_mpc_dataset._h5_file[key]
+            meta = MPCMeta.from_hdf5(grp)
+            steps = int(meta.steps_simulated)
+            if steps <= 0 or meta.feasible == False:
+                continue
+
+            traj = MPCTrajectory.from_hdf5(grp, fields=["states", "inputs"])
+            state_trajectories.append(np.ascontiguousarray(traj.states[:steps, :]))
+            action_trajectories.append(np.ascontiguousarray(traj.inputs[:steps, :]))
+
+        return cls.from_trajectories(
+            state_trajectories=state_trajectories,
+            action_trajectories=action_trajectories,
+            sequence_length=sequence_length,
+            stride=stride,
+            dtype=dtype,
+            target_mode=target_mode,
+        )
+
+
 def save_state_action_dataset_subset(
     dataset: Dataset[tuple[th.Tensor, th.Tensor]],
     path: os.PathLike,
@@ -416,9 +815,13 @@ def save_state_action_dataset_subset(
         return True
 
     if hasattr(dataset, "dataset") and hasattr(dataset, "indices"):
-        split_dataset = StateActionDataset.from_subset(dataset)
-        split_dataset.save(target_path)
-        return True
+        parent_dataset = getattr(dataset, "dataset")
+        parent_cls = type(parent_dataset)
+        from_subset = getattr(parent_cls, "from_subset", None)
+        if callable(from_subset):
+            split_dataset = from_subset(dataset)
+            split_dataset.save(target_path)
+            return True
 
     __logger__.warning(f"Could not save dataset split for type '{type(dataset).__name__}'.")
     return False
