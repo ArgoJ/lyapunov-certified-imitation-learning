@@ -142,7 +142,7 @@ class MLPPolicy(nn.Module):
         model.load_state_dict(state_dict, strict=strict)
         model.global_config = global_cfg
 
-        __logger__.info(f"Loaded MLPPolicy from {checkpoint_path}")
+        __logger__.info(f"Loaded {cls.__name__} from {checkpoint_path}")
         return model
 
 
@@ -388,7 +388,7 @@ class TransformerPolicy(nn.Module):
         }
         th.save(model_payload, checkpoint_path)
 
-        __logger__.info(f"Saved transformer policy weights and config to {checkpoint_path.parent}")
+        __logger__.info(f"Saved {self.__class__.__name__} weights and config to {checkpoint_path.parent}")
 
     @classmethod
     def load(
@@ -448,5 +448,5 @@ class TransformerPolicy(nn.Module):
         model.load_state_dict(state_dict, strict=strict)
         model.global_config = global_cfg
 
-        __logger__.info(f"Loaded TransformerPolicy from {checkpoint_path}")
+        __logger__.info(f"Loaded {cls.__name__} from {checkpoint_path}")
         return model

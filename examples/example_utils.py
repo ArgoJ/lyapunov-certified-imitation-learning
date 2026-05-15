@@ -143,8 +143,6 @@ class GenericModelLoader:
                 f"Checkpoint '{checkpoint_path}' is not compatible with the new model save/load format. "
                 f"Re-save the model with {model_cls.__name__}.save before using this script."
             ) from exc
-
-        __logger__.info("Loaded %s from %s", model_cls.__name__, checkpoint_path)
         model.eval()
         return model
 
