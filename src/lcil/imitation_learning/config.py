@@ -26,6 +26,8 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
         disabled.
     learning_rate : float, optional
         Adam optimizer learning rate. Must be positive.
+    weight_decay : float, optional
+        Adam optimizer weight decay coefficient. Must be non-negative.
     scheduler_type : {"none", "step", "cosine", "plateau"}, optional
         Learning-rate scheduler variant.
     scheduler_kwargs : Mapping[str, Any] or None, optional
@@ -97,6 +99,10 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="Adam optimizer learning rate.",
         display_alias="lr",
     )
+    weight_decay: float = config_field(
+        default=0.0,
+        help="Adam optimizer weight decay coefficient.",
+    )
     scheduler_type: Literal["none", "step", "cosine", "plateau"] = config_field(
         default="none",
         help="Learning-rate scheduler variant.",
@@ -134,6 +140,8 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
             raise ValueError("epochs must be positive.")
         if self.learning_rate <= 0:
             raise ValueError("learning_rate must be positive.")
+        if self.weight_decay < 0:
+            raise ValueError("weight_decay must be non-negative.")
         if self.scheduler_type not in {"none", "step", "cosine", "plateau"}:
             raise ValueError(f"Invalid scheduler_type: {self.scheduler_type}")
 

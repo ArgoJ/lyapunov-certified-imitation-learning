@@ -63,6 +63,7 @@ class TestConfigRoundtrip(unittest.TestCase):
             restore_best_model=False,
             tb_log_dir="runs/test",
             learning_rate=5e-4,
+            weight_decay=1e-5,
             scheduler_type="plateau",
             scheduler_kwargs={
                 "mode": "min",

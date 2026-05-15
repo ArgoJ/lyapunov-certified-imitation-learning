@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 
 def _get_activation(name: str) -> nn.Module:
@@ -81,10 +81,15 @@ def _build_feature_net_payload(
         return payload
 
     if hasattr(feature_net, "layer_dims") and hasattr(feature_net, "activations"):
-        payload["init_kwargs"] = {
+        init_kwargs = {
             "layer_dims": list(feature_net.layer_dims),
             "activations": list(feature_net.activations),
         }
+        if hasattr(feature_net, "dropout"):
+            init_kwargs["dropout"] = float(feature_net.dropout)
+        if hasattr(feature_net, "normalization"):
+            init_kwargs["normalization"] = str(feature_net.normalization)
+        payload["init_kwargs"] = init_kwargs
         payload["state_dict"] = feature_net.state_dict()
         return payload
 
@@ -521,29 +526,51 @@ class MLP(nn.Module):
         Layer sizes including input and output dimensions.
     activations : list[str]
         Activation names for each layer transition.
+    dropout : float, optional
+        Dropout probability applied after each hidden activation.
+    normalization : {"none", "layer_norm"}, optional
+        Optional normalization applied on hidden-layer pre-activations.
     """
 
     def __init__(
         self, 
         layer_dims: list[int],
-        activations: list[str]
+        activations: list[str],
+        dropout: float = 0.0,
+        normalization: Literal["none", "layer_norm"] = "none",
     ):
         super(MLP, self).__init__()
 
         _check_layer_dims(layer_dims)
         _check_activations(activations, layer_dims)
+        if not 0.0 <= float(dropout) < 1.0:
+            raise ValueError("dropout must be in the interval [0, 1).")
+
+        normalization_name = str(normalization).strip().lower()
+        if normalization_name not in {"none", "layer_norm"}:
+            raise ValueError("normalization must be either 'none' or 'layer_norm'.")
 
         self.layer_dims = list(layer_dims)
         self.activations = list(activations)
+        self.dropout = float(dropout)
+        self.normalization = normalization_name
 
         layers: list[nn.Module] = []
-        for in_dim, out_dim, act_name in zip(
+        num_transitions = len(layer_dims) - 1
+        for idx, (in_dim, out_dim, act_name) in enumerate(zip(
             layer_dims[:-1], layer_dims[1:], activations
-        ):
+        )):
+            is_output_layer = idx == num_transitions - 1
+
             layers.append(nn.Linear(in_dim, out_dim))
+            if not is_output_layer and self.normalization == "layer_norm":
+                layers.append(nn.LayerNorm(out_dim))
+
             activation = _get_activation(act_name)
             if not isinstance(activation, nn.Identity):
                 layers.append(activation)
+            if not is_output_layer and self.dropout > 0.0:
+                layers.append(nn.Dropout(p=self.dropout))
 
         self.net = nn.Sequential(*layers)
         

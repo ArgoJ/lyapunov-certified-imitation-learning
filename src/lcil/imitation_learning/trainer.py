@@ -175,6 +175,7 @@ class PolicyTrainer:
         self.optimizer: th.optim.Optimizer = th.optim.Adam(
             self.model.parameters(),
             lr=float(self.training_config.learning_rate),
+            weight_decay=float(self.training_config.weight_decay),
         )
         self.scheduler = self._configure_scheduler()
         self.metrics: PolicyTrainingMetrics | None = None

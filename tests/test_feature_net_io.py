@@ -75,6 +75,31 @@ class TestFeatureNetIO(unittest.TestCase):
         self.assertIsInstance(loaded.net, MLP)
         self.assertTrue(th.allclose(loaded(x), expected))
 
+    def test_roundtrip_wrapped_regularized_mlp_feature_net(self) -> None:
+        feature_net = WrappedFeatureNet(
+            MLP([5, 8, 1], ["tanh", "identity"], dropout=0.2, normalization="layer_norm")
+        )
+        feature_net.eval()
+        x = th.tensor(
+            [
+                [0.2, -0.1, 0.3, 0.4],
+                [-0.4, 0.5, -0.2, 0.1],
+            ],
+            dtype=th.float32,
+        )
+        expected = feature_net(x)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            checkpoint_path = Path(tmp_dir) / "wrapped_regularized_feature_net.pt"
+            save_feature_net(feature_net, checkpoint_path)
+            loaded = load_feature_net(checkpoint_path)
+
+        self.assertIsInstance(loaded, WrappedFeatureNet)
+        self.assertIsInstance(loaded.net, MLP)
+        self.assertAlmostEqual(loaded.net.dropout, 0.2)
+        self.assertEqual(loaded.net.normalization, "layer_norm")
+        self.assertTrue(th.allclose(loaded(x), expected))
+
     def test_roundtrip_saveable_feature_net(self) -> None:
         feature_net = SaveableFeatureNet()
         with th.no_grad():

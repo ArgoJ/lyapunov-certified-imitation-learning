@@ -19,6 +19,8 @@ class MLPPolicy(nn.Module):
         self,
         layer_sizes: list[int],
         activations: list[str],
+        dropout: float = 0.0,
+        normalization: Literal["none", "layer_norm"] = "none",
         u_min: float | list[float] | th.Tensor | None = None,
         u_max: float | list[float] | th.Tensor | None = None,
     ) -> None:
@@ -31,6 +33,10 @@ class MLPPolicy(nn.Module):
             List of layer sizes, including input and output dimensions. For example, [2, 16, 16, 1] would create a network with input dimension 2, two hidden layers of size 16, and output dimension 1.
         activations : list of str
             List of activation function names for each hidden layer. The length should be one less than the length of layer_sizes. Supported activations include "relu", "tanh", "sigmoid", "identity", etc.
+        dropout : float, optional
+            Dropout probability applied after each hidden activation.
+        normalization : {"none", "layer_norm"}, optional
+            Optional normalization applied on hidden-layer pre-activations.
         u_min : float or list[float] or torch.Tensor or None, optional
             Lower control bound(s). If provided, policy outputs are clamped from below.
             Can be a scalar or per-control-dimension bounds.
@@ -41,7 +47,14 @@ class MLPPolicy(nn.Module):
         super().__init__()
         self.layer_sizes = list(layer_sizes)
         self.activations = list(activations)
-        self.mlp = MLP(layer_dims=layer_sizes, activations=activations)
+        self.dropout = float(dropout)
+        self.normalization = str(normalization).strip().lower()
+        self.mlp = MLP(
+            layer_dims=layer_sizes,
+            activations=activations,
+            dropout=self.dropout,
+            normalization=self.normalization,
+        )
 
         output_dim = layer_sizes[-1]
         u_min_tensor = self._validate_bound_shape(bound=u_min, output_dim=output_dim, name="u_min")
@@ -101,6 +114,8 @@ class MLPPolicy(nn.Module):
             "state_dict": self.state_dict(),
             "layer_sizes": list(self.layer_sizes),
             "activations": list(self.activations),
+            "dropout": self.dropout,
+            "normalization": self.normalization,
             "train_data_config": resolved_global_cfg
         }
         th.save(model_payload, checkpoint_path)
@@ -127,18 +142,27 @@ class MLPPolicy(nn.Module):
         state_dict = checkpoint["state_dict"]
         layer_sizes = checkpoint.get("layer_sizes", None)
         activations = checkpoint.get("activations", None)
+        dropout = float(checkpoint.get("dropout", 0.0))
+        normalization = str(checkpoint.get("normalization", "none"))
         raw_global_cfg = checkpoint.get("train_data_config", None)
 
         if layer_sizes is None or activations is None:
             raise ValueError("Missing architecture metadata in model.pt.")
 
-        global_cfg = MPCConfig.from_dict(raw_global_cfg)
+        global_cfg = None if raw_global_cfg is None else MPCConfig.from_dict(raw_global_cfg)
 
         # Model instantiation
         u_min = state_dict.get("_u_min", None)
         u_max = state_dict.get("_u_max", None)
 
-        model = cls(layer_sizes=layer_sizes, activations=activations, u_min=u_min, u_max=u_max)
+        model = cls(
+            layer_sizes=layer_sizes,
+            activations=activations,
+            dropout=dropout,
+            normalization=normalization,
+            u_min=u_min,
+            u_max=u_max,
+        )
         model.load_state_dict(state_dict, strict=strict)
         model.global_config = global_cfg
 

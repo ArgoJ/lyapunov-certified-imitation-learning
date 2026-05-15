@@ -92,6 +92,20 @@ class TestPolicyTrainerRawPredictions(unittest.TestCase):
 
 		self.assertTrue(th.allclose(pred, th.tensor([[2.0]])))
 
+	def test_trainer_applies_weight_decay_from_config(self) -> None:
+		model = _WrappedRawPolicy()
+		dataloader = DataLoader(
+			TensorDataset(th.tensor([[1.0]]), th.tensor([[2.0]])),
+			batch_size=1,
+		)
+		trainer = PolicyTrainer(
+			model=model,
+			dataloader=dataloader,
+			training_config=ImitationTrainingConfig(epochs=1, weight_decay=1e-2),
+		)
+
+		self.assertAlmostEqual(trainer.optimizer.param_groups[0]["weight_decay"], 1e-2)
+
 
 class TestMLPPolicyConfigSerialization(unittest.TestCase):
 	def test_save_stores_mpc_config_and_dataset_paths(self) -> None:
@@ -138,6 +152,24 @@ class TestMLPPolicyConfigSerialization(unittest.TestCase):
 		self.assertAlmostEqual(loaded.global_config.dt, cfg.dt)
 		np.testing.assert_allclose(loaded.global_config.constraints.lbx, cfg.constraints.lbx)
 		np.testing.assert_allclose(loaded.global_config.constraints.ubx, cfg.constraints.ubx)
+
+	def test_load_preserves_regularization_metadata(self) -> None:
+		model = MLPPolicy(
+			layer_sizes=[2, 16, 1],
+			activations=["relu", "identity"],
+			dropout=0.25,
+			normalization="layer_norm",
+		)
+
+		with tempfile.TemporaryDirectory() as tmp_dir:
+			checkpoint_path = Path(tmp_dir) / "model.pt"
+			model.save(checkpoint_path)
+			loaded = MLPPolicy.load(checkpoint_path)
+
+		self.assertAlmostEqual(loaded.dropout, 0.25)
+		self.assertEqual(loaded.normalization, "layer_norm")
+		self.assertTrue(any(isinstance(module, nn.LayerNorm) for module in loaded.mlp.net))
+		self.assertTrue(any(isinstance(module, nn.Dropout) for module in loaded.mlp.net))
 
 
 class TestDoubleIntegratorPolicyLoader(unittest.TestCase):

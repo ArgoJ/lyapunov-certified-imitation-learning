@@ -60,6 +60,8 @@ def main() -> None:
     net = MLPPolicy(
         [dataset_cfg.nx, 32, 32, dataset_cfg.nu],
         ["relu", "relu", "identity"],
+        dropout=0.15,
+        normalization="layer_norm",
         u_min=dataset_cfg.constraints.lbu,
         u_max=dataset_cfg.constraints.ubu,
     )
