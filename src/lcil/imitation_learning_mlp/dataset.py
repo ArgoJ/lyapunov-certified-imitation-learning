@@ -7,7 +7,7 @@ import torch as th
 from collections.abc import Sequence
 from pathlib import Path
 from numpy.typing import NDArray
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset, Subset, random_split
 from typing import Literal
 from rich.progress import track
 from mpc_datagen import MPCDataset, MPCMeta, MPCTrajectory
@@ -766,9 +766,10 @@ class SequenceStateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
 
         state_trajectories: list[NDArray] = []
         action_trajectories: list[NDArray] = []
+        trajectory_ids: list[int] = []
 
         indices = list(resolved_mpc_dataset._indices)
-        for traj_index, key in enumerate(track(indices, description="Extracting sequence windows")):
+        for key in track(indices, description="Extracting sequence windows"):
             grp = resolved_mpc_dataset._h5_file[key]
             meta = MPCMeta.from_hdf5(grp)
             steps = int(meta.steps_simulated)
@@ -778,6 +779,7 @@ class SequenceStateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
             traj = MPCTrajectory.from_hdf5(grp, fields=["states", "inputs"])
             state_trajectories.append(np.ascontiguousarray(traj.states[:steps, :]))
             action_trajectories.append(np.ascontiguousarray(traj.inputs[:steps, :]))
+            trajectory_ids.append(int(meta.id))
 
         return cls.from_trajectories(
             state_trajectories=state_trajectories,
@@ -786,7 +788,50 @@ class SequenceStateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
             stride=stride,
             dtype=dtype,
             target_mode=target_mode,
+            trajectory_ids=trajectory_ids,
         )
+
+
+def split_sequence_dataset_by_trajectory(
+    dataset: SequenceStateActionDataset,
+    val_fraction: float = 0.1,
+    generator: th.Generator | None = None,
+) -> tuple[Subset[tuple[th.Tensor, th.Tensor]], Subset[tuple[th.Tensor, th.Tensor]]]:
+    """Split a sequence dataset into train/validation subsets without trajectory leakage."""
+    if not (0.0 < val_fraction < 1.0):
+        raise ValueError("val_fraction must be in (0., 1.).")
+    if len(dataset) <= 0:
+        raise ValueError("Cannot split an empty sequence dataset.")
+
+    trajectory_ids = dataset.trajectory_ids.detach().cpu().to(dtype=th.int64)
+    if trajectory_ids.numel() != len(dataset):
+        raise ValueError(
+            "trajectory_ids length mismatch: "
+            f"got {trajectory_ids.numel()} ids for dataset size {len(dataset)}."
+        )
+    if th.any(trajectory_ids < 0):
+        raise ValueError(
+            "Trajectory-aware splitting requires non-negative trajectory_ids for all sequence windows."
+        )
+
+    unique_trajectory_ids = th.unique(trajectory_ids, sorted=True)
+    if unique_trajectory_ids.numel() < 2:
+        raise ValueError("Need at least two unique trajectories for a train/validation split.")
+
+    num_val_trajectories = int(np.floor(float(unique_trajectory_ids.numel()) * val_fraction))
+    num_val_trajectories = max(1, min(num_val_trajectories, int(unique_trajectory_ids.numel()) - 1))
+
+    permutation = th.randperm(unique_trajectory_ids.numel(), generator=generator)
+    val_trajectory_ids = unique_trajectory_ids.index_select(0, permutation[:num_val_trajectories])
+    val_mask = th.isin(trajectory_ids, val_trajectory_ids)
+    train_mask = ~val_mask
+
+    train_indices = th.nonzero(train_mask, as_tuple=False).flatten().tolist()
+    val_indices = th.nonzero(val_mask, as_tuple=False).flatten().tolist()
+    if not train_indices or not val_indices:
+        raise ValueError("Trajectory-aware split produced an empty train or validation subset.")
+
+    return Subset(dataset, train_indices), Subset(dataset, val_indices)
 
 
 def save_state_action_dataset_subset(
@@ -826,61 +871,6 @@ def save_state_action_dataset_subset(
     __logger__.warning(f"Could not save dataset split for type '{type(dataset).__name__}'.")
     return False
 
-
-def create_state_action_dataloader(
-    mpc_dataset: MPCDataset | os.PathLike,
-    batch_size: int = 256,
-    shuffle: bool = True,
-    drop_last: bool = False,
-    num_workers: int = 0,
-    pin_memory: bool = False,
-    dtype: th.dtype = th.float32,
-    near_duplicate_radius: float | None = None,
-) -> DataLoader[tuple[th.Tensor, th.Tensor]]:
-    """Create a DataLoader for imitation learning from an ``MPCDataset``.
-
-    Parameters
-    ----------
-    mpc_dataset : MPCDataset or path-like
-        Source MPC dataset object or path to an HDF5 dataset.
-    batch_size : int, optional
-        Number of samples per batch.
-    shuffle : bool, optional
-        Whether to shuffle sample indices each epoch.
-    drop_last : bool, optional
-        Drop the last incomplete batch if True.
-    num_workers : int, optional
-        Number of DataLoader worker processes. Defaults to ``0`` to avoid
-        multiprocessing issues with shared HDF5 file handles.
-    pin_memory : bool, optional
-        Enable pinned host memory for faster host-to-device transfer.
-    dtype : torch.dtype, optional
-        Tensor dtype for states/actions emitted by the dataset.
-    near_duplicate_radius : float, optional
-        Optional near-duplicate filter radius in L2 distance over concatenated
-        state-action vectors. The voxel representative is selected by distance
-        to per-sample stage references computed from ``LinearLSCost`` via
-        ``cost.get_y(states, actions) - cost.yref`` when available.
-    """
-    dataset = StateActionDataset.from_mpc_dataset(
-        mpc_dataset=mpc_dataset,
-        dtype=dtype,
-        near_duplicate_radius=near_duplicate_radius,
-    )
-    if len(dataset) <= 0:
-        raise ValueError(
-            "No imitation-learning samples available in MPC dataset. "
-            "Ensure at least one trajectory has steps_simulated > 0 and valid state/input arrays."
-        )
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        drop_last=drop_last,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-    )
-    
 
 def create_train_and_val_dataloader(
     mpc_dataset: MPCDataset | os.PathLike,
@@ -951,6 +941,65 @@ def create_train_and_val_dataloader(
     num_val = len(dataset) - num_train
 
     train_dataset, val_dataset = random_split(dataset, [num_train, num_val])
+
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        drop_last=drop_last,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+
+    return train_dataloader, val_dataloader
+
+
+def create_sequence_train_and_val_dataloader(
+    mpc_dataset: MPCDataset | os.PathLike,
+    sequence_length: int,
+    batch_size: int = 256,
+    shuffle: bool = True,
+    drop_last: bool = False,
+    num_workers: int = 0,
+    pin_memory: bool = False,
+    dtype: th.dtype = th.float32,
+    val_fraction: float = 0.1,
+    stride: int = 1,
+    target_mode: Literal["last", "per_step"] = "last",
+    split_seed: int | None = None,
+) -> tuple[DataLoader[tuple[th.Tensor, th.Tensor]], DataLoader[tuple[th.Tensor, th.Tensor]]]:
+    """Create trajectory-aware train and validation dataloaders for sequence imitation learning."""
+    dataset = SequenceStateActionDataset.from_mpc_dataset(
+        mpc_dataset=mpc_dataset,
+        sequence_length=sequence_length,
+        stride=stride,
+        dtype=dtype,
+        target_mode=target_mode,
+    )
+    if len(dataset) <= 0:
+        raise ValueError(
+            "No sequence imitation-learning samples available in MPC dataset. "
+            "Ensure at least one feasible trajectory has at least sequence_length simulated steps."
+        )
+
+    generator = None
+    if split_seed is not None:
+        generator = th.Generator()
+        generator.manual_seed(int(split_seed))
+
+    train_dataset, val_dataset = split_sequence_dataset_by_trajectory(
+        dataset=dataset,
+        val_fraction=val_fraction,
+        generator=generator,
+    )
 
     train_dataloader = DataLoader(
         train_dataset,

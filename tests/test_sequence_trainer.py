@@ -22,6 +22,8 @@ class TestSequencePolicyTrainer(unittest.TestCase):
             stride=1,
             target_mode="last",
         )
+        self.assertEqual(len(dataset), 4)
+        
         dataloader = DataLoader(dataset, batch_size=2, shuffle=False)
 
         model = TransformerPolicy(

@@ -17,11 +17,9 @@ from shared_double_integrator import (
 )
 
 
-mdg_plot_module = importlib.import_module("mpc_datagen.plots")
-roa_plt = mdg_plot_module.roa
-plot_module = importlib.import_module("lcil.utils.plot")
-certified_regions_2d = plot_module.certified_regions_2d
-lyapunov_cert_regions = plot_module.lyapunov_cert_regions
+
+from mpc_datagen.plots import roa
+from lcil.utils.plot import certified_regions_2d, lyapunov_cert_regions
 
 
 class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
@@ -192,7 +190,7 @@ class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
             state_dim=2,
         )
         self._assert_plot_written(
-            plot_fn=roa_plt,
+            plot_fn=roa,
             stem=stem,
             plot_kwargs={
                 "lyapunov_func": lyap_func,

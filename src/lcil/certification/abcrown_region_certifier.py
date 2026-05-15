@@ -39,7 +39,7 @@ def _normalize_status(status: str) -> str:
 
 def _is_safe_status(status: str) -> bool:
     normalized = _normalize_status(status)
-    return normalized.startswith("safe")
+    return normalized.startswith("safe") or normalized.startswith("verified")
 
 def _is_counterexample_status(status: str) -> bool:
     normalized = _normalize_status(status)

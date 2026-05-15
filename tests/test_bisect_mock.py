@@ -6,7 +6,6 @@ from unittest import mock
 import numpy as np
 import torch as th
 import torch.nn as nn
-from mpc_datagen import MPCConfig, MPCData, MPCDataset, MPCMeta, MPCTrajectory
 from plot_assertions_mixin import PlotAssertionsMixin
 
 from certification_mock_common import (
@@ -19,13 +18,9 @@ from certification_mock_common import (
     _ZeroDynamics,
     _ZeroPolicy,
 )
-from lcil.certification.bisect_certifier import RegionCertificationResult
 from lcil.certification.lirpa_lyapunov_bounds import LyapunovRegionBounds
 from lcil.certification.region_manager import CertificationRegionPartition
-
-plot_module = importlib.import_module("lcil.utils.plot")
-certified_regions_2d = plot_module.certified_regions_2d
-lyapunov_cert_regions = plot_module.lyapunov_cert_regions
+from lcil.utils.plot import certified_regions_2d, lyapunov_cert_regions
 
 
 @dataclass(frozen=True)

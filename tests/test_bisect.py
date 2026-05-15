@@ -2,16 +2,13 @@ import importlib
 import os
 import sys
 import unittest
-from unittest import mock
-
 import numpy as np
 import torch as th
 import torch.nn as nn
+
 from plot_assertions_mixin import PlotAssertionsMixin
 
-plot_module = importlib.import_module("lcil.utils.plot")
-certified_regions_2d = plot_module.certified_regions_2d
-lyapunov_cert_regions = plot_module.lyapunov_cert_regions
+from lcil.utils.plot import certified_regions_2d, lyapunov_cert_regions
 
 
 class _ZeroPolicy(nn.Module):
