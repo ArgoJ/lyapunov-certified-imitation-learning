@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from lcil.certification.config import LyapunovCertificationConfig
-from lcil.imitation_learning_mlp.config import ImitationTrainingConfig
+from lcil.imitation_learning.config import ImitationTrainingConfig
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
 from lcil.utils import GridSearchHelper
 from lcil.utils.base_config import ArgumentParserConfig, JsonDataclass, config_field
@@ -49,6 +49,16 @@ class TestConfigRoundtrip(unittest.TestCase):
 
     def test_imitation_training_config_save(self) -> None:
         training_cfg = ImitationTrainingConfig(
+            dataset_path="data/imitation.h5",
+            sequence_length=3,
+            stride=2,
+            target_mode="all",
+            val_fraction=0.15,
+            split_seed=123,
+            split_strategy="trajectory",
+            use_references=False,
+            near_duplicate_radius=5e-4,
+            batch_size=128,
             epochs=12,
             restore_best_model=False,
             tb_log_dir="runs/test",

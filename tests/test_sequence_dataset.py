@@ -7,14 +7,33 @@ from pathlib import Path
 import torch as th
 from torch.utils.data import Subset
 
-from lcil.imitation_learning_mlp.dataset import (
+from lcil.imitation_learning.config import ImitationTrainingConfig
+from lcil.imitation_learning.dataset import (
+    StateActionDataset,
     SequenceStateActionDataset,
+    create_train_and_val_dataloader,
     save_state_action_dataset_subset,
     split_sequence_dataset_by_trajectory,
 )
 
 
 class TestSequenceStateActionDataset(unittest.TestCase):
+    def test_save_helper_supports_state_action_dataset_subsets(self) -> None:
+        dataset = StateActionDataset(
+            states=th.tensor([[0.0], [1.0], [2.0], [3.0]]),
+            actions=th.tensor([[5.0], [6.0], [7.0], [8.0]]),
+        )
+        subset = Subset(dataset, [0, 2])
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            checkpoint_path = Path(tmp_dir) / "state_subset.pt"
+            self.assertTrue(save_state_action_dataset_subset(subset, checkpoint_path))
+            loaded = StateActionDataset.load(checkpoint_path)
+
+        self.assertEqual(len(loaded), 2)
+        th.testing.assert_close(loaded[0][0], th.tensor([0.0]))
+        th.testing.assert_close(loaded[1][1], th.tensor([7.0]))
+
     def test_from_trajectories_builds_last_token_windows(self) -> None:
         state_trajectories = [
             th.tensor([[0.0], [1.0], [2.0], [3.0], [4.0]]),
@@ -60,6 +79,20 @@ class TestSequenceStateActionDataset(unittest.TestCase):
         self.assertEqual(states.shape, (2, 1))
         self.assertEqual(actions.shape, (2, 1))
         th.testing.assert_close(actions, th.tensor([[11.0], [12.0]]))
+
+    def test_target_mode_all_is_accepted_as_per_step_alias(self) -> None:
+        dataset = SequenceStateActionDataset.from_trajectories(
+            state_trajectories=[th.tensor([[0.0], [1.0], [2.0], [3.0]])],
+            action_trajectories=[th.tensor([[10.0], [11.0], [12.0], [13.0]])],
+            sequence_length=2,
+            stride=1,
+            target_mode="all",
+        )
+
+        _, actions = dataset[0]
+
+        self.assertEqual(dataset.target_mode, "all")
+        self.assertEqual(actions.shape, (2, 1))
 
     def test_save_and_load_round_trip_preserves_metadata(self) -> None:
         dataset = SequenceStateActionDataset.from_trajectories(
@@ -204,6 +237,65 @@ class TestSequenceStateActionDatasetFromMPCDataset(unittest.TestCase):
 
     def test_from_mpc_dataset_supports_multi_step_windows(self) -> None:
         self._assert_mpc_window_shapes(sequence_length=5)
+
+    def test_create_train_and_val_dataloader_uses_sequence_config_values(self) -> None:
+        training_cfg = ImitationTrainingConfig(
+            dataset_path=self.dataset_path,
+            sequence_length=3,
+            stride=1,
+            target_mode="all",
+            val_fraction=0.5,
+            split_seed=7,
+            split_strategy="trajectory",
+            batch_size=4,
+            epochs=1,
+        )
+
+        train_loader, val_loader = create_train_and_val_dataloader(
+            training_cfg,
+        )
+
+        train_dataset = SequenceStateActionDataset.from_subset(train_loader.dataset)
+        val_dataset = SequenceStateActionDataset.from_subset(val_loader.dataset)
+
+        self.assertEqual(train_dataset.sequence_length, 3)
+        self.assertEqual(train_dataset.target_mode, "all")
+        self.assertEqual(train_loader.batch_size, 4)
+        self.assertFalse(set(train_dataset.trajectory_ids.tolist()) & set(val_dataset.trajectory_ids.tolist()))
+
+    def test_create_train_and_val_dataloader_uses_flat_dataset_when_sequence_length_is_one(self) -> None:
+        training_cfg = ImitationTrainingConfig(
+            dataset_path=self.dataset_path,
+            sequence_length=1,
+            val_fraction=0.5,
+            split_seed=7,
+            split_strategy="random",
+            near_duplicate_radius=1e-3,
+            batch_size=3,
+            epochs=1,
+        )
+
+        train_loader, val_loader = create_train_and_val_dataloader(
+            training_cfg,
+        )
+
+        train_dataset = StateActionDataset.from_subset(train_loader.dataset)
+        val_dataset = StateActionDataset.from_subset(val_loader.dataset)
+
+        self.assertGreater(len(train_dataset), 0)
+        self.assertGreater(len(val_dataset), 0)
+        self.assertEqual(train_loader.batch_size, 3)
+
+    def test_flat_dataloader_rejects_trajectory_split(self) -> None:
+        training_cfg = ImitationTrainingConfig(
+            dataset_path=self.dataset_path,
+            sequence_length=1,
+            split_strategy="trajectory",
+            epochs=1,
+        )
+
+        with self.assertRaises(ValueError):
+            create_train_and_val_dataloader(training_cfg)
 
 
 if __name__ == "__main__":

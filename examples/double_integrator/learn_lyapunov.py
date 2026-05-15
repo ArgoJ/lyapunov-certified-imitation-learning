@@ -7,12 +7,17 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from lcil.lyapunov_learning import LyapunovTrainingConfig, NeuralLyapunovCandidate, LyapunovTrainer, ThresholdMonitor
+from lcil.lyapunov_learning import (
+    LyapunovTrainingConfig,
+    NeuralLyapunovCandidate,
+    LyapunovTrainer,
+    ThresholdMonitor,
+    FromRolloutsPolicyWrapper,
+)
 from lcil.utils import GridSearchHelper, lcil_plt, MLP, IntegrationMethod
-from lcil.imitation_learning_mlp import MLPPolicy
 from mpc_datagen import MPCDataset
 
-from . import DoubleIntegratorDynamics, default_model_path
+from . import DoubleIntegratorDynamics, default_model_path, load_policy_model
 
 __logger__ = logging.getLogger("lcil.examples.double_integrator.learn_lyapunov")
 
@@ -68,16 +73,15 @@ def main() -> None:
 
     # Load policy and dynamics once (they don't change across runs)
     policy_path = Path(args.policy_path)
-    policy_model = MLPPolicy.load(
-        path=policy_path,
-        map_location=device,
-    ).to(device)
-    policy_model.eval()
+    policy_model = load_policy_model(policy_path, device)
+    policy_global_config = policy_model.global_config
+    policy_sequence_length = int(getattr(policy_model, "max_seq_len", 1))
+    uses_sequence_policy = policy_sequence_length > 1
 
     sweep_output_root = policy_path.parent / "lyapunov"
     
     dyn_model = DoubleIntegratorDynamics(
-        dt=policy_model.global_config.dt,
+        dt=policy_global_config.dt,
         method=IntegrationMethod.EXPLICIT_EULER
     ).to(device)
     dyn_model.eval()
@@ -87,7 +91,26 @@ def main() -> None:
     if rollout_dataset_path.exists():
         rollout_dataset = MPCDataset.load(rollout_dataset_path)
 
-    state_bounds = np.vstack([policy_model.global_config.constraints.lbx, policy_model.global_config.constraints.ubx])
+    if uses_sequence_policy:
+        if rollout_dataset is None:
+            raise FileNotFoundError(
+                "Sequence policy detected but no rollout dataset was found at "
+                f"'{rollout_dataset_path}'. Run the policy rollout first so Lyapunov learning "
+                "can reconstruct transformer history with FromRolloutsPolicyWrapper."
+            )
+        __logger__.info(
+            "Sequence policy detected (max_seq_len=%d). Wrapping policy with rollout-based history.",
+            policy_sequence_length,
+        )
+        policy_model = FromRolloutsPolicyWrapper.from_rollouts(
+            policy=policy_model,
+            rollout_source=rollout_dataset,
+            sequence_length=policy_sequence_length,
+        ).to(device)
+    else:
+        __logger__.info("Using policy directly for Lyapunov learning.")
+
+    state_bounds = np.vstack([policy_global_config.constraints.lbx, policy_global_config.constraints.ubx])
 
     sweep: GridSearchHelper[LyapunovTrainingConfig] = GridSearchHelper.from_namespace(
         training_defaults,
@@ -118,7 +141,7 @@ def main() -> None:
         # ---------------------------------------------------------------------
         training_config = replace(
             sweep_config,
-            state_dim=policy_model.global_config.nx,
+            state_dim=policy_global_config.nx,
             state_bounds=state_bounds,
             train_policy_model=False,
             seed=sweep_config.seed + run_idx if sweep_config.seed is not None else None,

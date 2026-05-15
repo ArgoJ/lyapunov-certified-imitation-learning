@@ -8,7 +8,7 @@ import torch as th
 
 from mpc_datagen import MPCConfig
 
-from lcil.imitation_learning_mlp.transformer import TransformerPolicy
+from lcil.imitation_learning import TransformerPolicy
 
 
 class TestTransformerPolicyBounds(unittest.TestCase):

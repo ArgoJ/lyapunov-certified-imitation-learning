@@ -16,7 +16,7 @@ from lcil.lyapunov_learning import (
 )
 from lcil.certification import LyapunovCertificationConfig
 from lcil.utils import GridSearchHelper, lcil_plt, MLP
-from lcil.imitation_learning_mlp import MLPPolicy
+from lcil.imitation_learning import MLPPolicy
 from mpc_datagen import MPCDataset
 
 from . import (

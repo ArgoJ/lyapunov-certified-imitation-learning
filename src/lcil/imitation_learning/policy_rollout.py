@@ -11,7 +11,7 @@ from rich.progress import track
 
 from mpc_datagen import MPCConfig, MPCData, MPCDataset, MPCMeta, MPCTrajectory
 
-from .dataset import StateActionDataset
+from .dataset import SequenceStateActionDataset, StateActionDataset
 
 __logger__ = logging.getLogger(__name__)
 
@@ -171,7 +171,11 @@ class RandomBoundsSampler(StateSampler):
 
 
 class FeasibleSetSampler(StateSampler):
-    def __init__(self, dataset: StateActionDataset, seed: int | None = None) -> None:
+    def __init__(
+        self,
+        dataset: StateActionDataset | SequenceStateActionDataset,
+        seed: int | None = None,
+    ) -> None:
         self.dataset = dataset
         self.rng = np.random.default_rng(seed)
 
@@ -180,7 +184,10 @@ class FeasibleSetSampler(StateSampler):
 
     def sample_x0(self) -> NDArray:
         idx = int(self.rng.integers(low=0, high=len(self.dataset)))
-        x0, _ = self.dataset[idx]
+        sample = self.dataset[idx]
+        x0 = sample[0]
+        if x0.ndim == 2:
+            x0 = x0[-1]
         return np.asarray(x0.detach().cpu().numpy(), dtype=np.float32)
 
 
@@ -240,6 +247,37 @@ class PolicyRolloutGenerator:
         self.simulator.to(self.device)
         self.simulator.eval()
 
+    def _policy_context_length(self) -> int:
+        """Return the number of recent states to feed into sequence-aware policies."""
+        context_length = getattr(self.policy, "max_seq_len", 1)
+        try:
+            return max(int(context_length), 1)
+        except (TypeError, ValueError):
+            return 1
+
+    def _build_policy_input(self, traj: MPCTrajectory, step_idx: int) -> th.Tensor:
+        """Create the current policy input from the most recent rollout states."""
+        context_length = self._policy_context_length()
+        if context_length <= 1:
+            current_state = traj.states[step_idx]
+            return th.as_tensor(current_state, dtype=th.float32, device=self.device).unsqueeze(0)
+
+        start_idx = max(0, step_idx - context_length + 1)
+        state_window = traj.states[start_idx:step_idx + 1]
+        return th.as_tensor(state_window, dtype=th.float32, device=self.device).unsqueeze(0)
+
+    @staticmethod
+    def _reduce_policy_output(policy_output: th.Tensor) -> th.Tensor:
+        """Reduce policy outputs to one action vector per rollout step."""
+        if policy_output.ndim == 2:
+            return policy_output
+        if policy_output.ndim == 3:
+            return policy_output[:, -1, :]
+        raise ValueError(
+            "Policy output must have shape (batch, nu) or (batch, seq_len, nu), "
+            f"got {tuple(policy_output.shape)}."
+        )
+
     def _rollout_single(self, x0: NDArray, traj_id: int) -> MPCData:
         """
         Roll out one trajectory from `x0` and return an `MPCData` entry.
@@ -263,7 +301,8 @@ class PolicyRolloutGenerator:
             for k in range(self.t_sim):
                 x_k = traj.states[k]
                 x_tensor = th.as_tensor(x_k, dtype=th.float32, device=self.device).unsqueeze(0)
-                u_tensor = self.policy(x_tensor)
+                policy_input = self._build_policy_input(traj, step_idx=k)
+                u_tensor = self._reduce_policy_output(self.policy(policy_input))
                 u_vec = np.asarray(u_tensor.squeeze(0).detach().cpu().numpy(), dtype=np.float32).reshape(-1)
                 if u_vec.size != self.mpc_config.nu:
                     raise ValueError(

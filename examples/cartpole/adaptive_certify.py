@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 import torch as th
 
 from lcil.certification import AdaptiveCertifier, LyapunovCertificationConfig
-from lcil.imitation_learning_mlp import MLPPolicy
+from lcil.imitation_learning import MLPPolicy
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
 from lcil.lyapunov_learning.models import NeuralLyapunovCandidate
 from lcil.utils import MLP

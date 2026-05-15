@@ -1,4 +1,5 @@
 from __future__ import annotations
+import inspect
 import os
 import logging
 import numpy as np
@@ -8,11 +9,15 @@ from collections.abc import Sequence
 from pathlib import Path
 from numpy.typing import NDArray
 from torch.utils.data import DataLoader, Dataset, Subset, random_split
-from typing import Literal
+from typing import Literal, TypeVar
 from rich.progress import track
 from mpc_datagen import MPCDataset, MPCMeta, MPCTrajectory
 
+from .config import ImitationTrainingConfig
+
 __logger__ = logging.getLogger(__name__)
+
+TConfigValue = TypeVar("TConfigValue")
 
 
 def _to_tensor(array: NDArray | th.Tensor, name: str, dims: int) -> th.Tensor:
@@ -53,6 +58,72 @@ def _resolve_mpc_dataset(mpc_dataset: MPCDataset | os.PathLike) -> MPCDataset:
         "mpc_dataset must be an MPCDataset or path-like object "
         f"(str, pathlib.Path, os.PathLike), got {type(mpc_dataset).__name__}."
     )
+
+
+def _build_split_generator(split_seed: int | None) -> th.Generator | None:
+    """Create a reproducible split generator when a seed is provided."""
+    if split_seed is None:
+        return None
+    generator = th.Generator()
+    generator.manual_seed(int(split_seed))
+    return generator
+
+
+def _materialize_subset_dataset(
+    dataset_subset: Dataset[tuple[th.Tensor, th.Tensor]],
+    dataset_cls: type[Dataset[tuple[th.Tensor, th.Tensor]]] | None = None,
+    dtype: th.dtype | None = None,
+) -> Dataset[tuple[th.Tensor, th.Tensor]]:
+    """Materialize a subset into a concrete in-memory dataset instance."""
+    if not (hasattr(dataset_subset, "dataset") and hasattr(dataset_subset, "indices")):
+        raise TypeError("dataset_subset must expose 'dataset' and 'indices' attributes.")
+
+    parent_dataset = getattr(dataset_subset, "dataset")
+    resolved_dataset_cls = type(parent_dataset) if dataset_cls is None else dataset_cls
+    subset_indices = th.as_tensor(getattr(dataset_subset, "indices"), dtype=th.int64)
+
+    parent_states = getattr(parent_dataset, "_states", None)
+    parent_actions = getattr(parent_dataset, "_actions", None)
+    parent_refs = getattr(parent_dataset, "_refs", None)
+    if parent_states is None or parent_actions is None:
+        raise TypeError("Subset parent dataset must expose '_states' and '_actions' tensors.")
+
+    init_kwargs: dict[str, object] = {
+        "states": parent_states.index_select(0, subset_indices).detach().cpu(),
+        "actions": parent_actions.index_select(0, subset_indices).detach().cpu(),
+    }
+    if parent_refs is not None:
+        init_kwargs["refs"] = parent_refs.index_select(0, subset_indices).detach().cpu()
+
+    resolved_dtype = dtype
+    if resolved_dtype is None:
+        parent_dtype = getattr(parent_dataset, "dtype", None)
+        resolved_dtype = parent_dtype if isinstance(parent_dtype, th.dtype) else init_kwargs["states"].dtype
+    init_kwargs["dtype"] = resolved_dtype
+
+    constructor_parameters = inspect.signature(resolved_dataset_cls.__init__).parameters
+    optional_values = {
+        "target_mode": getattr(parent_dataset, "target_mode", None),
+        "stride": getattr(parent_dataset, "stride", None),
+    }
+
+    parent_trajectory_ids = getattr(parent_dataset, "_trajectory_ids", None)
+    if parent_trajectory_ids is not None:
+        optional_values["trajectory_ids"] = (
+            parent_trajectory_ids.index_select(0, subset_indices).detach().cpu()
+        )
+
+    parent_start_indices = getattr(parent_dataset, "_start_indices", None)
+    if parent_start_indices is not None:
+        optional_values["start_indices"] = (
+            parent_start_indices.index_select(0, subset_indices).detach().cpu()
+        )
+
+    for name, value in optional_values.items():
+        if name in constructor_parameters:
+            init_kwargs[name] = value
+
+    return resolved_dataset_cls(**init_kwargs)
 
 
 
@@ -182,7 +253,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
             raise FileNotFoundError(f"Dataset file not found at {source_path}.")
 
         payload = th.load(source_path, map_location="cpu")
-        required_keys = {"states", "actions", "dtype", "near_duplicate_radius", "num_samples", "refs"}
+        required_keys = {"states", "actions", "dtype", "num_samples", "refs"}
         if not required_keys.issubset(payload.keys()):
             missing = required_keys - payload.keys()
             raise ValueError(f"Missing keys in dataset file: {missing}")
@@ -191,17 +262,13 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         actions = payload["actions"]
         references = payload["refs"]
         dtype_payload = payload["dtype"]
-        near_duplicate_radius = payload["near_duplicate_radius"]
-
         dtype = _resolve_dtype(dtype_payload)
         dataset = cls(
             states=states,
             actions=actions,
             refs=references,
             dtype=dtype,
-            near_duplicate_radius=None,
         )
-        dataset.near_duplicate_radius = near_duplicate_radius
         
         return dataset
 
@@ -232,34 +299,10 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         dtype: th.dtype | None = None,
     ) -> StateActionDataset:
         """Create a ``StateActionDataset`` from a subset wrapper dataset."""
-        if not (hasattr(dataset_subset, "dataset") and hasattr(dataset_subset, "indices")):
-            raise TypeError("dataset_subset must expose 'dataset' and 'indices' attributes.")
-
-        parent_dataset = getattr(dataset_subset, "dataset")
-        subset_indices = th.as_tensor(getattr(dataset_subset, "indices"), dtype=th.int64)
-        parent_states = getattr(parent_dataset, "_states", None)
-        parent_actions = getattr(parent_dataset, "_actions", None)
-        parent_refs = getattr(parent_dataset, "_refs", None)
-
-        if parent_states is None or parent_actions is None:
-            raise TypeError("Subset parent dataset must expose '_states' and '_actions' tensors.")
-
-        split_states = parent_states.index_select(0, subset_indices).detach().cpu()
-        split_actions = parent_actions.index_select(0, subset_indices).detach().cpu()
-        split_refs = parent_refs.index_select(0, subset_indices).detach().cpu() if parent_refs is not None else None
-
-        resolved_dtype = dtype
-        if resolved_dtype is None:
-            parent_dtype = getattr(parent_dataset, "dtype", None)
-            resolved_dtype = parent_dtype if isinstance(parent_dtype, th.dtype) else split_states.dtype
-
-        return cls(
-            states=split_states,
-            actions=split_actions,
-            refs=split_refs,
-            dtype=resolved_dtype,
-            near_duplicate_radius=None,
-        )
+        materialized = _materialize_subset_dataset(dataset_subset, dataset_cls=cls, dtype=dtype)
+        if not isinstance(materialized, cls):
+            raise TypeError(f"Expected materialized subset to be of type '{cls.__name__}'.")
+        return materialized
 
     @staticmethod
     def _load_samples_from_mpc_dataset(mpc_dataset: MPCDataset) -> tuple[NDArray, NDArray]:
@@ -400,7 +443,7 @@ class SequenceStateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         actions: NDArray | th.Tensor,
         refs: NDArray | th.Tensor | None = None,
         dtype: th.dtype = th.float32,
-        target_mode: Literal["last", "per_step"] = "last",
+        target_mode: Literal["last", "per_step", "all"] = "last",
         stride: int = 1,
         trajectory_ids: NDArray | th.Tensor | None = None,
         start_indices: NDArray | th.Tensor | None = None,
@@ -427,8 +470,6 @@ class SequenceStateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         start_indices : numpy.ndarray or torch.Tensor, optional
             Start index of each window inside its source trajectory with shape ``(num_windows,)``.
         """
-        if target_mode not in {"last", "per_step"}:
-            raise ValueError("target_mode must be either 'last' or 'per_step'.")
         if stride <= 0:
             raise ValueError("stride must be positive.")
 
@@ -575,47 +616,10 @@ class SequenceStateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         dtype: th.dtype | None = None,
     ) -> "SequenceStateActionDataset":
         """Create a ``SequenceStateActionDataset`` from a subset wrapper dataset."""
-        if not (hasattr(dataset_subset, "dataset") and hasattr(dataset_subset, "indices")):
-            raise TypeError("dataset_subset must expose 'dataset' and 'indices' attributes.")
-
-        parent_dataset = getattr(dataset_subset, "dataset")
-        subset_indices = th.as_tensor(getattr(dataset_subset, "indices"), dtype=th.int64)
-        parent_states = getattr(parent_dataset, "_states", None)
-        parent_actions = getattr(parent_dataset, "_actions", None)
-        parent_refs = getattr(parent_dataset, "_refs", None)
-        parent_trajectory_ids = getattr(parent_dataset, "_trajectory_ids", None)
-        parent_start_indices = getattr(parent_dataset, "_start_indices", None)
-
-        if parent_states is None or parent_actions is None:
-            raise TypeError("Subset parent dataset must expose '_states' and '_actions' tensors.")
-
-        split_states = parent_states.index_select(0, subset_indices).detach().cpu()
-        split_actions = parent_actions.index_select(0, subset_indices).detach().cpu()
-        split_refs = parent_refs.index_select(0, subset_indices).detach().cpu() if parent_refs is not None else None
-        split_trajectory_ids = (
-            parent_trajectory_ids.index_select(0, subset_indices).detach().cpu()
-            if parent_trajectory_ids is not None else None
-        )
-        split_start_indices = (
-            parent_start_indices.index_select(0, subset_indices).detach().cpu()
-            if parent_start_indices is not None else None
-        )
-
-        resolved_dtype = dtype
-        if resolved_dtype is None:
-            parent_dtype = getattr(parent_dataset, "dtype", None)
-            resolved_dtype = parent_dtype if isinstance(parent_dtype, th.dtype) else split_states.dtype
-
-        return cls(
-            states=split_states,
-            actions=split_actions,
-            refs=split_refs,
-            dtype=resolved_dtype,
-            target_mode=getattr(parent_dataset, "target_mode", "last"),
-            stride=int(getattr(parent_dataset, "stride", 1)),
-            trajectory_ids=split_trajectory_ids,
-            start_indices=split_start_indices,
-        )
+        materialized = _materialize_subset_dataset(dataset_subset, dataset_cls=cls, dtype=dtype)
+        if not isinstance(materialized, cls):
+            raise TypeError(f"Expected materialized subset to be of type '{cls.__name__}'.")
+        return materialized
 
     @classmethod
     def from_trajectories(
@@ -626,7 +630,7 @@ class SequenceStateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         stride: int = 1,
         refs_trajectories: Sequence[NDArray | th.Tensor] | None = None,
         dtype: th.dtype = th.float32,
-        target_mode: Literal["last", "per_step"] = "last",
+        target_mode: Literal["last", "per_step", "all"] = "last",
         trajectory_ids: Sequence[int] | None = None,
     ) -> "SequenceStateActionDataset":
         """Build fixed-length sequence windows from in-memory trajectories."""
@@ -751,7 +755,7 @@ class SequenceStateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         stride: int = 1,
         dtype: th.dtype = th.float32,
         use_references: bool = False,
-        target_mode: Literal["last", "per_step"] = "last",
+        target_mode: Literal["last", "per_step", "all"] = "last",
     ) -> "SequenceStateActionDataset":
         """Create a sequence dataset by extracting fixed windows from an MPC dataset."""
         if use_references:
@@ -790,6 +794,30 @@ class SequenceStateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
             target_mode=target_mode,
             trajectory_ids=trajectory_ids,
         )
+
+
+def load_imitation_dataset(
+    path: os.PathLike,
+) -> StateActionDataset | SequenceStateActionDataset:
+    """Load either a flat or sequence imitation dataset from a serialized ``.pt`` file."""
+    source_path = Path(path)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Dataset file not found at {source_path}.")
+
+    payload = th.load(source_path, map_location="cpu")
+    if not isinstance(payload, dict) or "states" not in payload:
+        raise TypeError("Unsupported dataset file format. Expected a dict payload with 'states'.")
+
+    states = payload["states"]
+    states_tensor = states if isinstance(states, th.Tensor) else th.as_tensor(states)
+    if states_tensor.ndim == 2:
+        return StateActionDataset.load(source_path)
+    if states_tensor.ndim == 3:
+        return SequenceStateActionDataset.load(source_path)
+    raise ValueError(
+        "Unsupported serialized dataset state shape: "
+        f"expected 2D or 3D states, got {tuple(states_tensor.shape)}."
+    )
 
 
 def split_sequence_dataset_by_trajectory(
@@ -860,38 +888,36 @@ def save_state_action_dataset_subset(
         return True
 
     if hasattr(dataset, "dataset") and hasattr(dataset, "indices"):
-        parent_dataset = getattr(dataset, "dataset")
-        parent_cls = type(parent_dataset)
-        from_subset = getattr(parent_cls, "from_subset", None)
-        if callable(from_subset):
-            split_dataset = from_subset(dataset)
+        try:
+            split_dataset = _materialize_subset_dataset(dataset)
             split_dataset.save(target_path)
             return True
+        except (TypeError, ValueError) as exc:
+            __logger__.warning(
+                "Could not materialize dataset subset for type '%s': %s",
+                type(dataset).__name__,
+                exc,
+            )
 
     __logger__.warning(f"Could not save dataset split for type '{type(dataset).__name__}'.")
     return False
 
 
 def create_train_and_val_dataloader(
-    mpc_dataset: MPCDataset | os.PathLike,
-    batch_size: int = 256,
+    training_config: ImitationTrainingConfig,
     shuffle: bool = True,
     drop_last: bool = False,
     num_workers: int = 0,
     pin_memory: bool = False,
     dtype: th.dtype = th.float32,
-    near_duplicate_radius: float | None = None,
-    val_fraction: float = 0.1,
 ) -> tuple[DataLoader[tuple[th.Tensor, th.Tensor]], DataLoader[tuple[th.Tensor, th.Tensor]]]:
     """
     Create train and validation DataLoaders for imitation learning from an ``MPCDataset``.
 
     Parameters
     ----------
-    mpc_dataset : MPCDataset or path-like
-        Source MPC dataset object or path to an HDF5 dataset.
-    batch_size : int, optional
-        Number of samples per batch.
+    training_config : ImitationTrainingConfig
+        Training configuration controlling dataset construction and splitting.
     shuffle : bool, optional
         Whether to shuffle sample indices each epoch.
     drop_last : bool, optional
@@ -903,14 +929,7 @@ def create_train_and_val_dataloader(
         Enable pinned host memory for faster host-to-device transfer.
     dtype : torch.dtype, optional
         Tensor dtype for states/actions emitted by the dataset.
-    near_duplicate_radius : float, optional
-        Optional near-duplicate filter radius in L2 distance over concatenated
-        state-action vectors. The voxel representative is selected by distance
-        to per-sample stage references computed from ``LinearLSCost`` via
-        ``cost.get_y(states, actions) - cost.yref`` when available.
-    val_fraction : float, optional
-        Fraction of samples to use for validation (default is 0.1).
-        
+
     Returns
     -------
     train_dataloader : DataLoader[tuple[th.Tensor, th.Tensor]]
@@ -920,86 +939,76 @@ def create_train_and_val_dataloader(
         
     Raises
     ------
-        ValueError if no samples are available in the dataset or if val_fraction is not in (0., 1.).
+        ValueError if no samples are available in the dataset or if the split configuration is invalid.
     """
-    
+    val_fraction = float(training_config.val_fraction)
+    split_seed = int(training_config.split_seed)
+    use_references = bool(training_config.use_references)
+    batch_size = int(training_config.batch_size)
+    sequence_length = int(training_config.sequence_length)
+
     if not (0.0 < val_fraction < 1.0):
         raise ValueError("val_fraction must be in (0., 1.).")
 
-    dataset = StateActionDataset.from_mpc_dataset(
-        mpc_dataset=mpc_dataset,
-        dtype=dtype,
-        near_duplicate_radius=near_duplicate_radius,
-    )
-    if len(dataset) <= 0:
-        raise ValueError(
-            "No imitation-learning samples available in MPC dataset. "
-            "Ensure at least one trajectory has steps_simulated > 0 and valid state/input arrays."
+    generator = _build_split_generator(split_seed)
+
+    if sequence_length <= 1:
+        if training_config.split_strategy != "random":
+            raise ValueError(
+                "split_strategy='trajectory' requires sequence_length > 1 because "
+                "StateActionDataset samples do not retain trajectory ids."
+            )
+
+        dataset = StateActionDataset.from_mpc_dataset(
+            mpc_dataset=training_config.dataset_path,
+            dtype=dtype,
+            use_references=use_references,
+            near_duplicate_radius=training_config.near_duplicate_radius,
         )
+        if len(dataset) <= 0:
+            raise ValueError(
+                "No imitation-learning samples available in MPC dataset. "
+                "Ensure at least one trajectory has steps_simulated > 0 and valid state/input arrays."
+            )
 
-    num_train = int(len(dataset) * (1.0 - val_fraction))
-    num_val = len(dataset) - num_train
-
-    train_dataset, val_dataset = random_split(dataset, [num_train, num_val])
-
-    train_dataloader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        drop_last=drop_last,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-    )
-    val_dataloader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        drop_last=False,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-    )
-
-    return train_dataloader, val_dataloader
-
-
-def create_sequence_train_and_val_dataloader(
-    mpc_dataset: MPCDataset | os.PathLike,
-    sequence_length: int,
-    batch_size: int = 256,
-    shuffle: bool = True,
-    drop_last: bool = False,
-    num_workers: int = 0,
-    pin_memory: bool = False,
-    dtype: th.dtype = th.float32,
-    val_fraction: float = 0.1,
-    stride: int = 1,
-    target_mode: Literal["last", "per_step"] = "last",
-    split_seed: int | None = None,
-) -> tuple[DataLoader[tuple[th.Tensor, th.Tensor]], DataLoader[tuple[th.Tensor, th.Tensor]]]:
-    """Create trajectory-aware train and validation dataloaders for sequence imitation learning."""
-    dataset = SequenceStateActionDataset.from_mpc_dataset(
-        mpc_dataset=mpc_dataset,
-        sequence_length=sequence_length,
-        stride=stride,
-        dtype=dtype,
-        target_mode=target_mode,
-    )
-    if len(dataset) <= 0:
-        raise ValueError(
-            "No sequence imitation-learning samples available in MPC dataset. "
-            "Ensure at least one feasible trajectory has at least sequence_length simulated steps."
+        num_train = int(len(dataset) * (1.0 - val_fraction))
+        num_val = len(dataset) - num_train
+        train_dataset, val_dataset = random_split(
+            dataset,
+            [num_train, num_val],
+            generator=generator,
         )
+    else:
+        dataset = SequenceStateActionDataset.from_mpc_dataset(
+            mpc_dataset=training_config.dataset_path,
+            sequence_length=sequence_length,
+            stride=training_config.stride,
+            dtype=dtype,
+            use_references=use_references,
+            target_mode=training_config.target_mode,
+        )
+        if len(dataset) <= 0:
+            raise ValueError(
+                "No sequence imitation-learning samples available in MPC dataset. "
+                "Ensure at least one feasible trajectory has at least sequence_length simulated steps."
+            )
 
-    generator = None
-    if split_seed is not None:
-        generator = th.Generator()
-        generator.manual_seed(int(split_seed))
-
-    train_dataset, val_dataset = split_sequence_dataset_by_trajectory(
-        dataset=dataset,
-        val_fraction=val_fraction,
-        generator=generator,
-    )
+        if training_config.split_strategy == "trajectory":
+            train_dataset, val_dataset = split_sequence_dataset_by_trajectory(
+                dataset=dataset,
+                val_fraction=val_fraction,
+                generator=generator,
+            )
+        elif training_config.split_strategy == "random":
+            num_train = int(len(dataset) * (1.0 - val_fraction))
+            num_val = len(dataset) - num_train
+            train_dataset, val_dataset = random_split(
+                dataset,
+                [num_train, num_val],
+                generator=generator,
+            )
+        else:
+            raise ValueError(f"Unsupported split_strategy: {training_config.split_strategy}")
 
     train_dataloader = DataLoader(
         train_dataset,

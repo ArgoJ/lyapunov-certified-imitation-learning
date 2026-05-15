@@ -11,7 +11,7 @@ import torch as th
 from mpc_datagen import MPCDataset
 
 from lcil.certification import CertificationResultTester, LyapunovCertificationConfig
-from lcil.imitation_learning_mlp.policy_rollout import PolicyRolloutConfig, PolicyRolloutGenerator
+from lcil.imitation_learning.policy_rollout import PolicyRolloutConfig, PolicyRolloutGenerator
 from lcil.lyapunov_learning import LyapunovRollout
 from lcil.certification.bisect_certifier import RegionCertificationResult
 from lcil.utils import lcil_plt

@@ -10,9 +10,8 @@ from pathlib import Path
 from torch.utils.data import DataLoader, TensorDataset
 
 from mpc_datagen import MPCConfig
-from lcil.imitation_learning_mlp.config import ImitationTrainingConfig
-from lcil.imitation_learning_mlp.models import MLPPolicy
-from lcil.imitation_learning_mlp.trainer import PolicyTrainer
+from lcil.imitation_learning import ImitationTrainingConfig, MLPPolicy, PolicyTrainer, TransformerPolicy
+from examples.double_integrator import load_policy_model
 
 
 class TestMLPPolicyBounds(unittest.TestCase):
@@ -139,6 +138,41 @@ class TestMLPPolicyConfigSerialization(unittest.TestCase):
 		self.assertAlmostEqual(loaded.global_config.dt, cfg.dt)
 		np.testing.assert_allclose(loaded.global_config.constraints.lbx, cfg.constraints.lbx)
 		np.testing.assert_allclose(loaded.global_config.constraints.ubx, cfg.constraints.ubx)
+
+
+class TestDoubleIntegratorPolicyLoader(unittest.TestCase):
+	def test_load_policy_model_auto_detects_mlp_checkpoint(self) -> None:
+		model = MLPPolicy(
+			layer_sizes=[2, 8, 1],
+			activations=["relu", "identity"],
+		)
+		cfg = MPCConfig(T_sim=10, N=5, nx=2, nu=1, dt=0.1)
+
+		with tempfile.TemporaryDirectory() as tmp_dir:
+			checkpoint_path = Path(tmp_dir) / "model.pt"
+			model.save(checkpoint_path, global_config=cfg)
+			loaded = load_policy_model(checkpoint_path, th.device("cpu"))
+
+		self.assertIsInstance(loaded, MLPPolicy)
+
+	def test_load_policy_model_auto_detects_transformer_checkpoint(self) -> None:
+		model = TransformerPolicy(
+			input_dim=2,
+			output_dim=1,
+			d_model=8,
+			nhead=2,
+			num_encoder_layers=1,
+			dim_feedforward=16,
+			max_seq_len=4,
+		)
+		cfg = MPCConfig(T_sim=10, N=5, nx=2, nu=1, dt=0.1)
+
+		with tempfile.TemporaryDirectory() as tmp_dir:
+			checkpoint_path = Path(tmp_dir) / "model.pt"
+			model.save(checkpoint_path, global_config=cfg)
+			loaded = load_policy_model(checkpoint_path, th.device("cpu"))
+
+		self.assertIsInstance(loaded, TransformerPolicy)
 
 
 if __name__ == "__main__":

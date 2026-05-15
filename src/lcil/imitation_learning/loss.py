@@ -80,7 +80,19 @@ class DynamicsAwareLoss(nn.Module):
         if not self._has_lower_bound and not self._has_upper_bound:
             return th.tensor(0.0, device=states.device)
 
-        next_states_pred = self.dynamics(states, pred_actions)
+        aligned_states = states
+        if states.ndim == pred_actions.ndim + 1:
+            aligned_states = states[:, -1, :]
+        elif states.ndim == pred_actions.ndim and states.ndim == 3:
+            aligned_states = states.reshape(-1, states.shape[-1])
+            pred_actions = pred_actions.reshape(-1, pred_actions.shape[-1])
+        elif states.ndim != pred_actions.ndim:
+            raise ValueError(
+                "states/pred_actions rank mismatch: "
+                f"got states ndim {states.ndim} and pred_actions ndim {pred_actions.ndim}."
+            )
+
+        next_states_pred = self.dynamics(aligned_states, pred_actions)
         constraint_loss = th.tensor(0.0, device=states.device)
 
         if self._has_upper_bound:

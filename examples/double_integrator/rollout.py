@@ -8,20 +8,20 @@ from scipy.linalg import solve_discrete_are
 
 from mpc_datagen import mdg_plt, StabilityVerifier, VerificationRender, mdg_linalg, MPCDataset
 from lcil.utils import IntegrationMethod
-from lcil.imitation_learning_mlp import MLPPolicy, StateActionDataset
-from lcil.imitation_learning_mlp.policy_rollout import (
+from lcil.imitation_learning import load_imitation_dataset
+from lcil.imitation_learning.policy_rollout import (
     PolicyRolloutGenerator,
     PolicyRolloutConfig,
     FeasibleSetSampler,
 )
 
 try:
-    from . import DoubleIntegratorDynamics, default_model_path
+    from . import DoubleIntegratorDynamics, default_model_path, load_policy_model
 except ImportError:
     repo_root = Path(__file__).resolve().parents[2]
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
-    from examples.double_integrator import DoubleIntegratorDynamics, default_model_path
+    from examples.double_integrator import DoubleIntegratorDynamics, default_model_path, load_policy_model
 
 __logger__ = logging.getLogger("lcil.examples.double_integrator.rollout")
 
@@ -67,14 +67,12 @@ def main() -> None:
     model_path = Path(args.model_path)
     n_samples = args.n_samples
 
-    net = MLPPolicy.load(model_path, map_location=device)
-    net.to(device)
-    net.eval()
+    net = load_policy_model(model_path, device)
 
     val_dataset_path = model_path.parent / "val_dataset.pt"
     __logger__.info(f"dataset path: {val_dataset_path}")
     if val_dataset_path.exists():
-        dataset = StateActionDataset.load(val_dataset_path)
+        dataset = load_imitation_dataset(val_dataset_path)
         sampler = FeasibleSetSampler(dataset=dataset)
     else:
         sampler = None

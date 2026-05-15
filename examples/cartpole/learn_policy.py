@@ -6,7 +6,7 @@ from datetime import datetime
 
 from mpc_datagen import MPCDataset
 from lcil.utils import EarlyStopping
-from lcil.imitation_learning_mlp import *
+from lcil.imitation_learning import *
 
 from . import (
     CartpoleDynamics,
@@ -23,19 +23,6 @@ def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Names
         description="Train a inverted pendulum on cart imitation policy.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument(
-        "--dataset-path",
-        type=str,
-        default=default_dataset_path(),
-        help="Path to the source MPC dataset (HDF5).",
-    )
-    parser.add_argument("--batch-size", type=int, default=256, help="Training batch size.")
-    parser.add_argument(
-        "--near-duplicate-radius",
-        type=float,
-        default=1e-4,
-        help="Optional near-duplicate L2 radius in normalized feature space.",
-    )
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string (e.g. cpu, cuda).")
     
     training_defaults.add_to_argparse(
@@ -50,6 +37,9 @@ def main() -> None:
     iso = datetime.now().strftime('%Y%m%d_%H%M%S').replace(" ", "_").replace(":", "-")
 
     training_defaults = ImitationTrainingConfig(
+        dataset_path=default_dataset_path(),
+        val_fraction=0.2,
+        split_strategy="random",
         epochs=200,
         learning_rate=5e-4,
         scheduler_type="plateau",
@@ -57,8 +47,9 @@ def main() -> None:
         tb_log_dir=(base_path / "tb" / iso),
     )
     args = parse_cli_args(training_defaults)
+    training_cfg = training_defaults.from_namespace(args)
     device = args.device
-    dataset_path = resolve_dataset_path(args.dataset_path)
+    dataset_path = resolve_dataset_path(training_cfg.dataset_path)
 
     source_dataset = MPCDataset.load(dataset_path)
     if len(source_dataset) == 0:
@@ -76,15 +67,12 @@ def main() -> None:
     sys_cfg = PendulumOnCartConfig()
 
     train_loader, val_loader = create_train_and_val_dataloader(
-        mpc_dataset=str(dataset_path),
-        batch_size=args.batch_size,
+        training_cfg,
         shuffle=True,
         drop_last=False,
         num_workers=0,
         pin_memory=True,
         dtype=th.float32,
-        near_duplicate_radius=args.near_duplicate_radius,
-        val_fraction=0.2,
     )
 
     loss_fn = ReferenceWeightedDynamicsAwareLoss(
@@ -99,8 +87,6 @@ def main() -> None:
             x_max=th.tensor(dataset_cfg.constraints.ubx)),
         lambda_dyn=2.0,
     )
-
-    training_cfg = training_defaults.from_namespace(args)
 
     trainer = PolicyTrainer(
         model=net,

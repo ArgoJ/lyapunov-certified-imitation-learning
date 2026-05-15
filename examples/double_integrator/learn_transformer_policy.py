@@ -1,6 +1,7 @@
 import argparse
 import torch as th
 import sys
+import logging
 
 from pathlib import Path
 from datetime import datetime
@@ -16,6 +17,8 @@ except ImportError:
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
     from examples.double_integrator import DoubleIntegratorDynamics, default_dataset_path, resolve_dataset_path
+
+__logger__ = logging.getLogger("lcil.examples.double_integrator.learn_transformer_policy")
 
 
 def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Namespace:
@@ -39,8 +42,9 @@ def main() -> None:
 
     training_defaults = ImitationTrainingConfig(
         dataset_path=default_dataset_path(),
+        sequence_length=5,
         val_fraction=0.2,
-        split_strategy="random",
+        split_strategy="trajectory",
         epochs=100,
         learning_rate=5e-4,
         scheduler_type="plateau",
@@ -57,12 +61,19 @@ def main() -> None:
         raise ValueError("MPCDataset is empty; cannot extract configuration.")
     dataset_cfg = source_dataset.global_config
 
-    net = MLPPolicy(
-        [dataset_cfg.nx, 32, 32, dataset_cfg.nu],
-        ["relu", "relu", "identity"],
+    net = TransformerPolicy(
+        input_dim=dataset_cfg.nx,
+        output_dim=dataset_cfg.nu,
+        d_model=32,
+        nhead=4,
+        num_encoder_layers=2,
+        dim_feedforward=64,
+        max_seq_len=5,
         u_min=dataset_cfg.constraints.lbu,
         u_max=dataset_cfg.constraints.ubu,
     )
+
+    __logger__.info(net)
 
     train_loader, val_loader = create_train_and_val_dataloader(
         training_cfg,

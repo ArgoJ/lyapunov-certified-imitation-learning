@@ -8,8 +8,8 @@ from scipy.linalg import solve_discrete_are
 
 from mpc_datagen import mdg_plt, mdg_linalg, MPCDataset
 from mpc_datagen.verification import StabilityVerifier, VerificationRender
-from lcil.imitation_learning_mlp import MLPPolicy, StateActionDataset
-from lcil.imitation_learning_mlp.policy_rollout import (
+from lcil.imitation_learning import MLPPolicy, StateActionDataset
+from lcil.imitation_learning.policy_rollout import (
     PolicyRolloutGenerator,
     FeasibleSetSampler,
 )
