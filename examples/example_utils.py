@@ -115,14 +115,19 @@ class GenericModelLoader:
     ) -> Path:
         if model_dir is not None:
             resolved_model_path = Path(model_dir).resolve()
-            if resolved_model_path.suffix:
+            if resolved_model_path.is_dir():
+                return require_file(
+                    resolved_model_path / self.checkpoint_name,
+                    name=f"{self.checkpoint_name} checkpoint",
+                )
+            if resolved_model_path.is_file():
                 return require_file(
                     resolved_model_path,
                     name=f"{self.checkpoint_name} checkpoint",
                 )
-            return require_file(
-                resolved_model_path / self.checkpoint_name,
-                name=f"{self.checkpoint_name} checkpoint",
+            raise FileNotFoundError(
+                f"Could not resolve '{resolved_model_path}' as either a directory containing "
+                f"'{self.checkpoint_name}' or as a checkpoint file."
             )
 
         resolved_results_root = resolve_root(results_root)
