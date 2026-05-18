@@ -17,8 +17,7 @@ from lcil.utils.base_config import ArgumentParserConfig, config_field
 
 from . import (
     DoubleIntegratorDynamics,
-    discover_latest_lyapunov_dir,
-    discover_latest_policy_dir,
+    discover_latest_policy_and_lyapunov_dirs,
     load_lyapunov_model,
     load_policy_model,
 )
@@ -53,8 +52,7 @@ class DiagnoseABCrownScriptConfig(ArgumentParserConfig):
 
 
 def _build_script_defaults() -> DiagnoseABCrownScriptConfig:
-    default_policy_dir = discover_latest_policy_dir(_DEFAULT_RESULTS_ROOT)
-    default_lyapunov_dir = discover_latest_lyapunov_dir(default_policy_dir)
+    default_policy_dir, default_lyapunov_dir = discover_latest_policy_and_lyapunov_dirs(_DEFAULT_RESULTS_ROOT)
     return DiagnoseABCrownScriptConfig(
         policy_dir=str(default_policy_dir),
         lyapunov_dir=str(default_lyapunov_dir),

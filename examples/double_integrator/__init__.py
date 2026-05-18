@@ -17,6 +17,7 @@ from ..example_utils import (
     resolve_dataset_path as _resolve_dataset_path,
     discover_latest_lyapunov_dir as _discover_latest_lyapunov_dir,
     discover_latest_policy_dir as _discover_latest_policy_dir,
+    discover_latest_policy_and_lyapunov_dirs as _discover_latest_policy_and_lyapunov_dirs,
     load_lyapunov_model as _load_lyapunov_model,
     load_policy_model as _load_policy_model,
 )
@@ -34,6 +35,10 @@ def discover_latest_policy_dir(results_root: Path | str | None = None):
 def discover_latest_lyapunov_dir(policy_dir: Path | str | None = None):
     resolved_policy_dir = discover_latest_policy_dir() if policy_dir is None else policy_dir
     return _discover_latest_lyapunov_dir(resolved_policy_dir)
+
+
+def discover_latest_policy_and_lyapunov_dirs(results_root: Path | str | None = None, max_search: int = 100):
+    return _discover_latest_policy_and_lyapunov_dirs(results_root or _RESULTS_ROOT, max_search=max_search)
 
 
 def _resolve_policy_model_cls(model_path: Path) -> type[nn.Module]:

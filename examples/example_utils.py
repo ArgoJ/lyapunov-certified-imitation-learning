@@ -40,26 +40,122 @@ def resolve_root(
     return require_dir(default_root, name="Default results root directory")
 
 
-def discover_latest_model_dir(results_root: Path, checkpoint_name: str) -> Path:
+def discover_model_dir(results_root: Path, checkpoint_name: str, n: int = -1) -> Path:
+    """Discover the directory containing the nth latest checkpoint with the given name under the results root.
+
+    Parameters
+    ----------
+    results_root : Path
+        Root directory under which to search for checkpoint-containing subdirectories.
+    checkpoint_name : str
+        Name of the checkpoint file to search for.
+    n : int, optional
+        Index of the checkpoint to return, by default -1 (latest checkpoint).
+
+    Returns
+    -------
+    Path
+        Directory containing the nth latest checkpoint.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no checkpoint with the given name is found.
+    """
     resolved_results_root = resolve_root(results_root)
     candidates = sorted(checkpoint.parent for checkpoint in resolved_results_root.rglob(checkpoint_name))
     if not candidates:
         raise FileNotFoundError(f"No checkpoint '{checkpoint_name}' found under '{resolved_results_root}'.")
-    return candidates[-1]
+    return candidates[n]
 
 
 def discover_latest_policy_dir(results_root: Path | str | None = None) -> Path:
-    resolved_results_root = resolve_root(results_root)
-    return discover_latest_model_dir(resolved_results_root, "model.pt")
+    """Discover the directory containing the nth latest policy checkpoint.
+
+    Parameters
+    ----------
+    results_root : Path | str | None, optional
+        Root directory under which to search for policy checkpoints, by default None
+
+    Returns
+    -------
+    Path
+        Directory containing the nth latest policy checkpoint.
+    """
+    return discover_model_dir(results_root, "model.pt", n=-1)
 
 
 def discover_latest_lyapunov_dir(policy_dir: Path | str) -> Path:
+    """Discover the directory containing the nth latest Lyapunov checkpoint.
+
+    Parameters
+    ----------
+    policy_dir : Path | str
+        Directory containing the policy checkpoints.
+
+    Returns
+    -------
+    Path
+        Directory containing the nth latest Lyapunov checkpoint.
+    """
     resolved_policy_dir = require_dir(policy_dir, name="Policy run directory")
     lyapunov_root = require_dir(resolved_policy_dir / "lyapunov", name="Lyapunov root directory")
-    return discover_latest_model_dir(lyapunov_root, "lyapunov_model.pt")
+    return discover_model_dir(lyapunov_root, "lyapunov_model.pt", n=-1)
+
+
+def discover_latest_policy_and_lyapunov_dirs(results_root: Path | str | None = None, max_search: int = 100) -> tuple[Path, Path]:
+    """Discover the directories containing the latest policy and Lyapunov checkpoints.
+
+    Parameters
+    ----------
+    results_root : Path | str | None, optional
+        Root directory under which to search for policy and Lyapunov checkpoints, by default None
+    max_search : int, optional
+        Maximum number of recent policy checkpoints to search through, by default 100
+
+    Returns
+    -------
+    tuple[Path, Path]
+        Directories containing the latest policy and Lyapunov checkpoints.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no matching policy and Lyapunov checkpoints are found.
+    """
+    for n in range(1, max_search + 1):
+        try:
+            policy_dir = discover_model_dir(results_root, "model.pt", n=-n)
+            lyapunov_dir = discover_model_dir(policy_dir / "lyapunov", "lyapunov_model.pt", n=-1)
+            return policy_dir, lyapunov_dir
+        except FileNotFoundError:
+            pass
+    raise FileNotFoundError(
+        f"No matching policy and Lyapunov checkpoints found under '{results_root}' after searching "
+        f"through the {max_search} most recent policy checkpoints."
+    )
 
 
 def discover_latest_dataset_path(results_root: Path | str, dataset_pattern: str = "*.hdf5") -> Path:
+    """Discover the latest dataset file matching the given pattern under the results root.
+
+    Parameters
+    ----------
+    results_root : Path | str
+        Root directory under which to search for dataset files.
+    dataset_pattern : str, optional
+        Pattern to match dataset files, by default "*.hdf5"
+
+    Returns
+    -------
+    Path
+        Path to the latest dataset file matching the pattern.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no dataset file matching the pattern is found.
+    """
     resolved_results_root = Path(results_root)
     candidates = sorted(
         dataset_path
@@ -131,7 +227,7 @@ class GenericModelLoader:
             )
 
         resolved_results_root = resolve_root(results_root)
-        return discover_latest_model_dir(resolved_results_root, self.checkpoint_name) / self.checkpoint_name
+        return discover_model_dir(resolved_results_root, self.checkpoint_name) / self.checkpoint_name
 
     def __call__(
         self,
@@ -168,12 +264,12 @@ load_lyapunov_model = GenericModelLoader("lyapunov_model.pt")
 
 def default_model_path(results_root: Path | str | None = None) -> str:
     resolved_results_root = Path(results_root) if results_root is not None else _RESULTS_ROOT
-    return str(discover_latest_model_dir(resolved_results_root, "model.pt") / "model.pt")
+    return str(discover_model_dir(resolved_results_root, "model.pt") / "model.pt")
 
 
 def default_lyapunov_model_path(results_root: Path | str | None = None) -> str:
     resolved_results_root = Path(results_root) if results_root is not None else _RESULTS_ROOT
-    return str(discover_latest_model_dir(resolved_results_root, "lyapunov_model.pt") / "lyapunov_model.pt")
+    return str(discover_model_dir(resolved_results_root, "lyapunov_model.pt") / "lyapunov_model.pt")
 
 
 def default_dataset_path(results_root: Path | str, dataset_pattern: str = "*.hdf5") -> str:
