@@ -201,8 +201,60 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         retained = state_buffer.cexs.flatten()
         expected = th.tensor([0.9, 0.4, 0.2], dtype=th.float32)
 
-        self.assertEqual(len(state_buffer), 4)
+        self.assertEqual(state_buffer.state_count, 4)
+        self.assertEqual(state_buffer.cex_count, 3)
+        self.assertEqual(len(state_buffer), 7)
         self.assertTrue(th.allclose(retained, expected))
+
+    def test_dynamic_state_buffer_sample_returns_requested_batch_size(self) -> None:
+        state_buffer = DynamicStateBuffer(
+            initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
+            max_size=4,
+            device=th.device("cpu"),
+        )
+
+        batch = state_buffer.sample(batch_size=5)
+
+        self.assertEqual(batch.shape, (5, 1))
+        self.assertTrue(th.all((batch == 1.0) | (batch == 2.0)).item())
+
+    def test_dynamic_state_buffer_sample_uses_regular_and_cex_pools_separately(self) -> None:
+        state_buffer = DynamicStateBuffer(
+            initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
+            max_size=8,
+            device=th.device("cpu"),
+        )
+        state_buffer.register_cex(th.tensor([[10.0]], dtype=th.float32))
+
+        batch = state_buffer.sample(batch_size=4, cex_fraction=0.5)
+        batch_values = batch.flatten()
+
+        self.assertEqual(batch.shape, (4, 1))
+        self.assertEqual(int((batch_values == 10.0).sum().item()), 1)
+        self.assertTrue(th.all((batch_values != 10.0) <= ((batch_values == 1.0) | (batch_values == 2.0))).item())
+
+    def test_dynamic_state_buffer_rejects_empty_initial_states(self) -> None:
+        with self.assertRaisesRegex(ValueError, "initial_states cannot be empty"):
+            DynamicStateBuffer(
+                initial_states=th.empty((0, 1), dtype=th.float32),
+                max_size=4,
+                device=th.device("cpu"),
+            )
+
+    def test_dynamic_state_buffer_sample_clamps_out_of_range_cex_fraction(self) -> None:
+        state_buffer = DynamicStateBuffer(
+            initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
+            max_size=4,
+            device=th.device("cpu"),
+        )
+        state_buffer.register_cex(th.tensor([[10.0]], dtype=th.float32))
+
+        batch = state_buffer.sample(batch_size=4, cex_fraction=2.0)
+        batch_values = batch.flatten()
+
+        self.assertEqual(batch.shape, (4, 1))
+        self.assertEqual(int((batch_values == 10.0).sum().item()), 1)
+        self.assertTrue(th.all((batch_values == 10.0) | (batch_values == 1.0) | (batch_values == 2.0)).item())
 
     def test_trainer_mining_uses_current_rho_estimate(self) -> None:
         config = LyapunovTrainingConfig(

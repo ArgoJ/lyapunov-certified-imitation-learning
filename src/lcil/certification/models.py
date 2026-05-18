@@ -44,6 +44,10 @@ class LyapunovCoreVerifier(nn.Module):
         self.kappa = float(kappa)
         self.condition_margin = float(condition_margin)
 
+        remove_dropout(self.policy)
+        remove_dropout(self.lyap)
+        remove_dropout(self.dyn)
+
     def _closed_loop_terms(
         self,
         x: th.Tensor,
@@ -198,3 +202,14 @@ def build_safe_lyap_condition_constraint(y, condition_tolerance: float, lb: th.T
     safe_decrease = build_safe_lyap_decrease_constraint(y, condition_tolerance)
     safe_x_next = build_safe_lyap_invariance_constraint(y, condition_tolerance, lb, ub)
     return safe_positive & safe_decrease & safe_x_next
+
+
+def remove_dropout(module):
+    """Recursively replace all nn.Dropout layers in the given module with nn.Identity."""
+    for name, child in module.named_children():
+        if isinstance(child, nn.Dropout):
+            setattr(module, name, nn.Identity())
+        else:
+            remove_dropout(child)
+            
+    return module

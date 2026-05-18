@@ -120,6 +120,10 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="Exponential decay factor in the Lyapunov decrease condition.",
         display_alias="\u03BA",
     )
+    dropout: float = config_field(
+        default=0.0,
+        help="Dropout probability for the policy model."
+    )
     max_buffer: int = config_field(
         default=10000,
         help="Maximum size of the training buffer.",
@@ -201,7 +205,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
 
     # PGD counterexample mining parameters
     adversarial_samples: int = config_field(
-        default=1024,
+        default=4096,
         help="Number of PGD seed states for counterexample mining.",
         display_alias="cex_samples",
     )
@@ -211,7 +215,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="cex_step",
     )
     counterexample_steps: int = config_field(
-        default=30,
+        default=10,
         help="PGD steps used during counterexample search.",
         display_alias="cex_steps",
     )
@@ -221,7 +225,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="cex_every",
     )
 
-    # Tollerances
+    # Tolerances
     condition_tolerance: float = config_field(
         default=1e-6,
         help="Numerical tolerance for Lyapunov condition satisfaction.",
@@ -243,6 +247,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
             raise ValueError("Learning rate must be positive.")
         if self.batch_size <= 0:
             raise ValueError("Batch size must be positive.")
+        if not (0.0 <= self.dropout <= 1.0):
+            raise ValueError("dropout must be in [0, 1].")
         if self.formal_positivity_weight < 0.0:
             raise ValueError("formal_positivity_weight must be non-negative.")
         if self.condition_margin < 0.0:

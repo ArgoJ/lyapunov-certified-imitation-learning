@@ -151,7 +151,7 @@ class LyapunovTrainingMetrics:
         rho_diagnostics: BoundaryRhoDiagnostics,
     ):
         self.loss[outer_iter] = loss_value
-        self.buffer_size[outer_iter] = float(len(state_buffer))
+        self.buffer_size[outer_iter] = float(state_buffer.state_count)
         self.num_mined_counterexamples[outer_iter] = float(num_mined_counterexamples)
         self.outer_iterations_completed = outer_iter + 1
 
@@ -368,7 +368,6 @@ class LyapunovTrainer:
 
         mining_interval = max(1, int(self.config.counterexample_every))
         rho_estimate = self.config.rho_min
-        num_mined_counterexamples = 0
         total_steps = self.config.outer_epochs * self.config.steps_per_epoch
 
         tb_writer = _tb_writer_build(self.config.tb_log_dir)
@@ -389,8 +388,8 @@ class LyapunovTrainer:
                 total=float(total_steps),
                 loss=float("nan"),
                 rho=float(rho_estimate),
-                pool=float(len(state_buffer)),
-                cex=float(num_mined_counterexamples),
+                pool=float(state_buffer.state_count),
+                cex=float(state_buffer.cex_count),
             )
             for outer_iter in range(self.config.outer_epochs):
                 last_loss_value = np.nan
@@ -412,7 +411,7 @@ class LyapunovTrainer:
                     )
                     self.results = LyapunovTrainingResult(
                         rho_estimate=rho_estimate,
-                        num_mined_counterexamples=num_mined_counterexamples,
+                        num_mined_counterexamples=state_buffer.cex_count,
                         train_time=train_time,
                         aborted=True,
                         abort_reason=abort_reason,
@@ -429,7 +428,6 @@ class LyapunovTrainer:
                 # Mine counterexamples (CEGIS)
                 if (outer_iter + 1) % mining_interval == 0:
                     new_cex = self._mine_new_counterexamples(rho_estimate=rho_estimate)
-                    num_mined_counterexamples += new_cex.shape[0]
                     state_buffer.register_cex(
                         new_cex,
                         objective=lambda x: self.loss_module.mining_objective(
@@ -437,6 +435,8 @@ class LyapunovTrainer:
                             rho_estimate=rho_estimate,
                         ),
                     )
+                    if new_cex.numel() == 0:
+                        __logger__.info("No new counterexamples mined at outer iteration %d.", outer_iter)
                     roa_candidates = self._build_roa_candidates()
 
                 # Inner training loop
@@ -458,8 +458,8 @@ class LyapunovTrainer:
                         advance=1.0,
                         loss=none_to_float(loss.item()),
                         rho=none_to_float(rho_estimate),
-                        pool=none_to_float(len(state_buffer)),
-                        cex=none_to_float(num_mined_counterexamples),
+                        pool=none_to_float(state_buffer.state_count),
+                        cex=none_to_float(state_buffer.cex_count),
                     )
                     last_loss_value = float(loss.item())
 
@@ -467,7 +467,7 @@ class LyapunovTrainer:
                     outer_iter=outer_iter,
                     loss_value=last_loss_value,
                     state_buffer=state_buffer,
-                    num_mined_counterexamples=num_mined_counterexamples,
+                    num_mined_counterexamples=state_buffer.cex_count,
                     rho_diagnostics=rho_diagnostics,
                 )
                 _tb_writer_add_metrics(tb_writer, metrics)
@@ -477,7 +477,7 @@ class LyapunovTrainer:
 
         self.results = LyapunovTrainingResult(
             rho_estimate=rho_estimate,
-            num_mined_counterexamples=num_mined_counterexamples,
+            num_mined_counterexamples=state_buffer.cex_count,
             train_time=train_time,
         )
         self.metrics = metrics

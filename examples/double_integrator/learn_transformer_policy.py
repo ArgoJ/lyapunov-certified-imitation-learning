@@ -68,7 +68,8 @@ def main() -> None:
         nhead=4,
         num_encoder_layers=2,
         dim_feedforward=64,
-        max_seq_len=5,
+        max_seq_len=training_cfg.sequence_length,
+        dropout=training_cfg.dropout,
         u_min=dataset_cfg.constraints.lbu,
         u_max=dataset_cfg.constraints.ubu,
     )

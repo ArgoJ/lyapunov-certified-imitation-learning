@@ -1,3 +1,4 @@
+import copy
 import importlib
 import importlib.util
 import inspect
@@ -666,3 +667,325 @@ class ICNN(nn.Module):
             else:
                 z = activation(self.W_x[idx](x) + self.W_z[idx - 1](z))
         return z
+
+
+
+
+
+class CertifiableTransformerEncoderLayer(nn.Module):
+    """Transformer encoder layer built from verifier-friendly tensor ops.
+
+    Parameters
+    ----------
+    d_model : int
+        Token embedding dimension.
+    nhead : int
+        Number of attention heads.
+    dim_feedforward : int, optional
+        Hidden dimension of the feed-forward block.
+    dropout : float, optional
+        Dropout probability used in the attention and feed-forward blocks.
+        A value of ``0.0`` avoids introducing dropout nodes into the graph.
+    activation : str | nn.Module, optional
+        Feed-forward activation.
+    layer_norm_eps : float, optional
+        Epsilon used by both layer-normalization modules.
+    batch_first : bool, optional
+        Whether the input shape is ``(batch, seq_len, d_model)``.
+    norm_first : bool, optional
+        Whether to apply pre-norm instead of post-norm.
+    bias : bool, optional
+        Whether to include biases in the linear projections.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        dim_feedforward: int = 2048,
+        dropout: float = 0.0,
+        activation: str | nn.Module = "relu",
+        layer_norm_eps: float = 1e-5,
+        batch_first: bool = True,
+        norm_first: bool = False,
+        bias: bool = True,
+    ) -> None:
+        super().__init__()
+
+        if d_model <= 0:
+            raise ValueError("d_model must be positive.")
+        if nhead <= 0:
+            raise ValueError("nhead must be positive.")
+        if d_model % nhead != 0:
+            raise ValueError("d_model must be divisible by nhead.")
+        if dim_feedforward <= 0:
+            raise ValueError("dim_feedforward must be positive.")
+        if not 0.0 <= float(dropout) < 1.0:
+            raise ValueError("dropout must be in the interval [0, 1).")
+
+        self.d_model = int(d_model)
+        self.nhead = int(nhead)
+        self.head_dim = self.d_model // self.nhead
+        self.dim_feedforward = int(dim_feedforward)
+        self.dropout = float(dropout)
+        self.batch_first = bool(batch_first)
+        self.norm_first = bool(norm_first)
+
+        if isinstance(activation, str):
+            self.activation = _get_activation(activation)
+        elif isinstance(activation, nn.Module):
+            self.activation = activation
+        else:
+            raise TypeError("activation must be a string or nn.Module instance.")
+
+        self.q_proj = nn.Linear(self.d_model, self.d_model, bias=bias)
+        self.k_proj = nn.Linear(self.d_model, self.d_model, bias=bias)
+        self.v_proj = nn.Linear(self.d_model, self.d_model, bias=bias)
+        self.out_proj = nn.Linear(self.d_model, self.d_model, bias=bias)
+
+        self.linear1 = nn.Linear(self.d_model, self.dim_feedforward, bias=bias)
+        self.linear2 = nn.Linear(self.dim_feedforward, self.d_model, bias=bias)
+
+        self.norm1 = nn.LayerNorm(self.d_model, eps=layer_norm_eps)
+        self.norm2 = nn.LayerNorm(self.d_model, eps=layer_norm_eps)
+
+        self.attn_output_dropout = nn.Identity() if self.dropout == 0.0 else nn.Dropout(p=self.dropout)
+        self.ff_hidden_dropout = nn.Identity() if self.dropout == 0.0 else nn.Dropout(p=self.dropout)
+        self.ff_output_dropout = nn.Identity() if self.dropout == 0.0 else nn.Dropout(p=self.dropout)
+
+    def _ensure_batch_first(self, src: th.Tensor) -> th.Tensor:
+        if src.ndim != 3:
+            raise ValueError("Expected src to have shape (batch, seq_len, d_model) or (seq_len, batch, d_model).")
+        if self.batch_first:
+            return src
+        return src.transpose(0, 1)
+
+    def _restore_layout(self, src: th.Tensor) -> th.Tensor:
+        if self.batch_first:
+            return src
+        return src.transpose(0, 1)
+
+    def _reshape_to_heads(self, tensor: th.Tensor) -> th.Tensor:
+        batch_size, seq_len, _ = tensor.shape
+        return tensor.reshape(batch_size, seq_len, self.nhead, self.head_dim).transpose(1, 2)
+
+    def _merge_heads(self, tensor: th.Tensor) -> th.Tensor:
+        batch_size, _, seq_len, _ = tensor.shape
+        return tensor.transpose(1, 2).reshape(batch_size, seq_len, self.d_model)
+
+    def _build_causal_mask(self, seq_len: int, device: th.device) -> th.Tensor:
+        return th.triu(th.ones(seq_len, seq_len, dtype=th.bool, device=device), diagonal=1)
+
+    def _canonicalize_attention_mask(
+        self,
+        src_mask: th.Tensor | None,
+        batch_size: int,
+        seq_len: int,
+        device: th.device,
+        dtype: th.dtype,
+    ) -> tuple[th.Tensor | None, th.Tensor | None]:
+        if src_mask is None:
+            return None, None
+
+        mask = src_mask.to(device=device)
+        if mask.ndim == 2:
+            if tuple(mask.shape) != (seq_len, seq_len):
+                raise ValueError("2D src_mask must have shape (seq_len, seq_len).")
+            mask = mask.unsqueeze(0).unsqueeze(0)
+        elif mask.ndim == 3:
+            if tuple(mask.shape) == (batch_size, seq_len, seq_len):
+                mask = mask.unsqueeze(1)
+            elif tuple(mask.shape) == (batch_size * self.nhead, seq_len, seq_len):
+                mask = mask.reshape(batch_size, self.nhead, seq_len, seq_len)
+            else:
+                raise ValueError(
+                    "3D src_mask must have shape (batch, seq_len, seq_len) or "
+                    "(batch * nhead, seq_len, seq_len)."
+                )
+        elif mask.ndim == 4:
+            if mask.shape[-2:] != (seq_len, seq_len):
+                raise ValueError("4D src_mask must end with shape (seq_len, seq_len).")
+            if mask.shape[0] not in {1, batch_size}:
+                raise ValueError("4D src_mask batch dimension must be 1 or batch size.")
+            if mask.shape[1] not in {1, self.nhead}:
+                raise ValueError("4D src_mask head dimension must be 1 or nhead.")
+        else:
+            raise ValueError("src_mask must be 2D, 3D, or 4D.")
+
+        if mask.dtype == th.bool:
+            return mask, None
+        return None, mask.to(dtype=dtype)
+
+    def _canonicalize_key_padding_mask(
+        self,
+        src_key_padding_mask: th.Tensor | None,
+        batch_size: int,
+        seq_len: int,
+        device: th.device,
+        dtype: th.dtype,
+    ) -> tuple[th.Tensor | None, th.Tensor | None]:
+        if src_key_padding_mask is None:
+            return None, None
+
+        mask = src_key_padding_mask.to(device=device)
+        if mask.ndim == 1:
+            if batch_size != 1 or mask.shape[0] != seq_len:
+                raise ValueError("1D src_key_padding_mask is only supported for batch size 1.")
+            mask = mask.unsqueeze(0)
+        if tuple(mask.shape) != (batch_size, seq_len):
+            raise ValueError("src_key_padding_mask must have shape (batch, seq_len).")
+
+        mask = mask[:, None, None, :]
+        if mask.dtype == th.bool:
+            return mask, None
+        return None, mask.to(dtype=dtype)
+
+    def _apply_masks(
+        self,
+        scores: th.Tensor,
+        src_mask: th.Tensor | None,
+        src_key_padding_mask: th.Tensor | None,
+    ) -> th.Tensor:
+        batch_size, _, seq_len, _ = scores.shape
+        src_bool_mask, src_additive_mask = self._canonicalize_attention_mask(
+            src_mask=src_mask,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            device=scores.device,
+            dtype=scores.dtype,
+        )
+        pad_bool_mask, pad_additive_mask = self._canonicalize_key_padding_mask(
+            src_key_padding_mask=src_key_padding_mask,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            device=scores.device,
+            dtype=scores.dtype,
+        )
+
+        if src_additive_mask is not None:
+            scores = scores + src_additive_mask
+        if pad_additive_mask is not None:
+            scores = scores + pad_additive_mask
+
+        blocked_mask = src_bool_mask
+        if pad_bool_mask is not None:
+            blocked_mask = pad_bool_mask if blocked_mask is None else th.logical_or(blocked_mask, pad_bool_mask)
+        if blocked_mask is not None:
+            scores = th.where(blocked_mask, th.full_like(scores, -1e9), scores)
+
+        return scores
+
+    def _self_attention(
+        self,
+        src: th.Tensor,
+        src_mask: th.Tensor | None = None,
+        src_key_padding_mask: th.Tensor | None = None,
+    ) -> th.Tensor:
+        q = self._reshape_to_heads(self.q_proj(src))
+        k = self._reshape_to_heads(self.k_proj(src))
+        v = self._reshape_to_heads(self.v_proj(src))
+
+        scale = self.head_dim ** -0.5
+        scores = th.matmul(q, k.transpose(-2, -1)) * scale
+        scores = self._apply_masks(scores, src_mask=src_mask, src_key_padding_mask=src_key_padding_mask)
+        attention_weights = th.softmax(scores, dim=-1)
+        attention_weights = self.attn_output_dropout(attention_weights)
+
+        context = th.matmul(attention_weights, v)
+        context = self._merge_heads(context)
+        return self.out_proj(context)
+
+    def _feed_forward(self, src: th.Tensor) -> th.Tensor:
+        hidden = self.linear1(src)
+        hidden = self.activation(hidden)
+        hidden = self.ff_hidden_dropout(hidden)
+        hidden = self.linear2(hidden)
+        return self.ff_output_dropout(hidden)
+
+    def forward(
+        self,
+        src: th.Tensor,
+        src_mask: th.Tensor | None = None,
+        src_key_padding_mask: th.Tensor | None = None,
+        is_causal: bool = False,
+    ) -> th.Tensor:
+        src_batch_first = self._ensure_batch_first(src)
+        if src_batch_first.shape[-1] != self.d_model:
+            raise ValueError(f"Expected last dimension {self.d_model}, got {src_batch_first.shape[-1]}.")
+
+        seq_len = src_batch_first.shape[1]
+        resolved_mask = src_mask
+        if is_causal and resolved_mask is None:
+            resolved_mask = self._build_causal_mask(seq_len=seq_len, device=src_batch_first.device)
+
+        if self.norm_first:
+            attn_input = self.norm1(src_batch_first)
+            attn_output = self._self_attention(
+                attn_input,
+                src_mask=resolved_mask,
+                src_key_padding_mask=src_key_padding_mask,
+            )
+            src_batch_first = src_batch_first + self.attn_output_dropout(attn_output)
+            ff_input = self.norm2(src_batch_first)
+            src_batch_first = src_batch_first + self._feed_forward(ff_input)
+            return self._restore_layout(src_batch_first)
+
+        attn_output = self._self_attention(
+            src_batch_first,
+            src_mask=resolved_mask,
+            src_key_padding_mask=src_key_padding_mask,
+        )
+        src_batch_first = self.norm1(src_batch_first + self.attn_output_dropout(attn_output))
+        src_batch_first = self.norm2(src_batch_first + self._feed_forward(src_batch_first))
+        return self._restore_layout(src_batch_first)
+
+
+class CertifiableTransformerEncoder(nn.Module):
+    """Stacked transformer encoder built from certifiable encoder layers.
+
+    Parameters
+    ----------
+    encoder_layer : CertifiableTransformerEncoderLayer
+        Prototype layer that is cloned ``num_layers`` times.
+    num_layers : int
+        Number of stacked encoder layers.
+    norm : nn.Module | None, optional
+        Optional normalization applied to the encoder output.
+    """
+
+    def __init__(
+        self,
+        encoder_layer: CertifiableTransformerEncoderLayer,
+        num_layers: int,
+        norm: nn.Module | None = None,
+    ) -> None:
+        super().__init__()
+
+        if not isinstance(encoder_layer, CertifiableTransformerEncoderLayer):
+            raise TypeError("encoder_layer must be an instance of CertifiableTransformerEncoderLayer.")
+        if num_layers <= 0:
+            raise ValueError("num_layers must be positive.")
+
+        self.layers = nn.ModuleList([copy.deepcopy(encoder_layer) for _ in range(int(num_layers))])
+        self.num_layers = int(num_layers)
+        self.norm = norm
+
+    def forward(
+        self,
+        src: th.Tensor,
+        mask: th.Tensor | None = None,
+        src_key_padding_mask: th.Tensor | None = None,
+        is_causal: bool = False,
+    ) -> th.Tensor:
+        output = src
+        for layer in self.layers:
+            output = layer(
+                output,
+                src_mask=mask,
+                src_key_padding_mask=src_key_padding_mask,
+                is_causal=is_causal,
+            )
+
+        if self.norm is not None:
+            output = self.norm(output)
+        return output

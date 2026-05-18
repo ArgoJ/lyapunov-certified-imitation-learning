@@ -103,6 +103,10 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=0.0,
         help="Adam optimizer weight decay coefficient.",
     )
+    dropout: float = config_field(
+        default=0.0,
+        help="Dropout probability for the policy model."
+    )
     scheduler_type: Literal["none", "step", "cosine", "plateau"] = config_field(
         default="none",
         help="Learning-rate scheduler variant.",
@@ -131,8 +135,8 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
             raise ValueError("stride must be positive.")
         if self.target_mode not in {"last", "all"}:
             raise ValueError(f"Invalid target_mode: {self.target_mode}")
-        if not (0.0 < self.val_fraction < 1.0):
-            raise ValueError("val_fraction must be in (0, 1).")
+        if not (0.0 <= self.val_fraction <= 1.0):
+            raise ValueError("val_fraction must be in [0, 1].")
         if self.split_strategy not in {"random", "trajectory"}:
             raise ValueError(f"Invalid split_strategy: {self.split_strategy}")
 
@@ -142,6 +146,8 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
             raise ValueError("learning_rate must be positive.")
         if self.weight_decay < 0:
             raise ValueError("weight_decay must be non-negative.")
+        if not (0.0 <= self.dropout <= 1.0):
+            raise ValueError("dropout must be in [0, 1].")
         if self.scheduler_type not in {"none", "step", "cosine", "plateau"}:
             raise ValueError(f"Invalid scheduler_type: {self.scheduler_type}")
 

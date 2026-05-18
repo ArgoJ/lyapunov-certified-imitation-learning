@@ -52,7 +52,7 @@ class NeuralLyapunovCandidate(nn.Module):
         self.feature_net = feature_net
         self.state_dim = state_dim
         self.eps = float(eps)
-        self.r_factor = nn.Parameter(th.eye(state_dim))
+        self.r_factor = nn.Parameter(th.eye(state_dim)) # TODO: maybe preset with lqr
         if x_star is None:
             x_star = th.zeros(state_dim, dtype=th.float32)
         self.register_buffer("x_star", x_star.reshape(1, state_dim))

@@ -1,5 +1,7 @@
-1. ~~start with pipeline on double integrator~~
-2. simplify cartpole example
-3. run without splitting
-4. build rollout for lyapunov
-5. build rollout for previously specified states
+- ~~start with pipeline on double integrator~~
+- ~~simplify cartpole example~~
+- run without splitting
+- ~~build rollout for lyapunov~~
+
+- make lyapunov descent plot for learned lyapunov
+- use Shoelace formula to estimate state based roa

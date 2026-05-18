@@ -45,6 +45,7 @@ class BoundaryStateBuffer:
     def __len__(self) -> int:
         return self.states.shape[0]
 
+
 class DynamicStateBuffer:
     """A dynamic replay buffer for CEGIS counterexamples and initial states, strictly kept on the specified device."""
     def __init__(
@@ -61,14 +62,16 @@ class DynamicStateBuffer:
         self.cex_buffer_size = max_size if cex_buffer_size is None else int(cex_buffer_size)
         if self.cex_buffer_size <= 0:
             raise ValueError("cex_buffer_size must be positive.")
+        if self.states.numel() == 0:
+            raise ValueError("initial_states cannot be empty.")
 
     def add(self, new_states: th.Tensor) -> None:
         """Adds new states to the buffer and strictly enforces the maximum size."""
         if new_states.numel() == 0:
             return
-            
+
         self.states = th.cat((self.states, new_states), dim=0).to(self.device)
-        
+
         if self.states.shape[0] > self.max_size:
             # Randomly sub-sample to respect the max_buffer limit
             keep_idx = th.randperm(self.states.shape[0], device=self.device)[:self.max_size]
@@ -104,7 +107,7 @@ class DynamicStateBuffer:
         """
         Uniformly samples a batch of states from the buffer, injecting a 
         portion of recent counterexamples if available.
-        
+
         Parameters
         ----------
         batch_size : int
@@ -112,29 +115,37 @@ class DynamicStateBuffer:
         cex_fraction: float
             Maximum fraction of the batch reserved for recent CEXs.
         """
-        current_size = self.states.shape[0]
-        actual_batch_size = min(batch_size, current_size)
-        
-        num_cexs = self.cexs.shape[0]
-        
-        if num_cexs > 0:
-            max_inject = int(actual_batch_size * cex_fraction)
-            n_inject = min(num_cexs, max_inject)
-            
-            # Pick random CEXs to inject into the batch
-            cex_idx = th.randint(low=0, high=num_cexs, size=(n_inject,), device=self.device)
-            injected_cexs = self.cexs[cex_idx]
-            
-            # Fill remaining batch with random samples from the main buffer
-            n_regular = actual_batch_size - n_inject
-            reg_idx = th.randint(low=0, high=current_size, size=(n_regular,), device=self.device)
-            regular_states = self.states[reg_idx]
-            
-            return th.cat((injected_cexs, regular_states), dim=0)
-            
-        else:
-            batch_idx = th.randint(low=0, high=current_size, size=(actual_batch_size,), device=self.device)
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive.")
+        if not (0.0 <= cex_fraction <= 1.0):
+            cex_fraction = max(0.0, min(cex_fraction, 1.0))
+
+        state_count = self.state_count
+        cex_count = self.cex_count
+
+        if cex_count == 0:
+            batch_idx = th.randint(low=0, high=state_count, size=(batch_size,), device=self.device)
             return self.states[batch_idx]
 
-    def __len__(self) -> int:
+        max_inject = int(batch_size * cex_fraction)
+        n_inject = min(cex_count, max_inject)
+
+        cex_idx = th.randint(low=0, high=cex_count, size=(n_inject,), device=self.device)
+        injected_cexs = self.cexs[cex_idx]
+
+        n_regular = batch_size - n_inject
+        reg_idx = th.randint(low=0, high=state_count, size=(n_regular,), device=self.device)
+        regular_states = self.states[reg_idx]
+
+        return th.cat((injected_cexs, regular_states), dim=0)
+
+    @property
+    def state_count(self) -> int:
         return self.states.shape[0]
+
+    @property
+    def cex_count(self) -> int:
+        return self.cexs.shape[0]
+
+    def __len__(self) -> int:
+        return self.state_count + self.cex_count

@@ -9,10 +9,12 @@ from .base_models import (
 	ResNet,
 	LinearDynamics,
     AffineDynamics,
+    CertifiableTransformerEncoder,
+    CertifiableTransformerEncoderLayer,
     ERKIntegrator,
     IntegrationMethod,
 	Linearize,
 	save_model_checkpoint,
 )
 from .early_stopping import EarlyStopping
-from .helpers import none_to_float
+from .helpers import none_to_float, shoelace

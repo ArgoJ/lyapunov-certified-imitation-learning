@@ -7,7 +7,11 @@ from typing import Any, Literal
 
 from mpc_datagen import MPCConfig
 
-from ..utils.base_models import MLP, _get_activation
+from ..utils.base_models import (
+    MLP,
+    CertifiableTransformerEncoder,
+    CertifiableTransformerEncoderLayer,
+)
 
 __logger__ = logging.getLogger(__name__)
 
@@ -183,7 +187,7 @@ class TransformerPolicy(nn.Module):
         num_encoder_layers: int = 2,
         dim_feedforward: int = 256,
         dropout: float = 0.0,
-        activation: str = "gelu",
+        activation: str = "relu",
         max_seq_len: int = 1,
         causal: bool = True,
         output_mode: Literal["last", "per_step"] = "last",
@@ -259,19 +263,19 @@ class TransformerPolicy(nn.Module):
         self.causal = bool(causal)
         self.output_mode = output_mode
 
-        encoder_layer = nn.TransformerEncoderLayer(
+        encoder_layer = CertifiableTransformerEncoderLayer(
             d_model=self.d_model,
             nhead=self.nhead,
             dim_feedforward=self.dim_feedforward,
             dropout=self.dropout,
-            activation=_get_activation(self.activation),
+            activation=self.activation,
             batch_first=True,
             norm_first=False,
         )
         self.input_projection = nn.Linear(self.input_dim, self.d_model)
         self.positional_encoding = nn.Parameter(th.zeros(self.max_seq_len, self.d_model))
-        self.embedding_dropout = nn.Dropout(self.dropout)
-        self.encoder = nn.TransformerEncoder(
+        self.embedding_dropout = nn.Identity() if self.dropout == 0.0 else nn.Dropout(self.dropout)
+        self.encoder = CertifiableTransformerEncoder(
             encoder_layer=encoder_layer,
             num_layers=self.num_encoder_layers,
             norm=nn.LayerNorm(self.d_model),
@@ -338,21 +342,7 @@ class TransformerPolicy(nn.Module):
             diagonal=1,
         )
 
-    def _reduce_sequence_output(self, raw_u: th.Tensor, squeeze_sequence: bool) -> th.Tensor:
-        if squeeze_sequence:
-            return raw_u.squeeze(1)
-        if self.output_mode == "last":
-            return raw_u[:, -1, :]
-        return raw_u
-
-    def forward_raw(self, x: th.Tensor) -> th.Tensor:
-        """Return the unconstrained policy output used during imitation fitting."""
-        sequence, squeeze_sequence = self._prepare_inputs(x)
-        if sequence.size(-1) != self.input_dim:
-            raise ValueError(
-                f"Expected input_dim={self.input_dim}, got {sequence.size(-1)}."
-            )
-
+    def _encode_sequence(self, sequence: th.Tensor) -> th.Tensor:
         seq_len = sequence.size(1)
         if seq_len > self.max_seq_len:
             raise ValueError(
@@ -366,8 +356,22 @@ class TransformerPolicy(nn.Module):
             embedded,
             mask=self._build_attention_mask(seq_len, embedded.device),
         )
-        raw_u = self.output_projection(encoded)
-        return self._reduce_sequence_output(raw_u, squeeze_sequence)
+        return self.output_projection(encoded)
+
+    def forward_raw(self, x: th.Tensor) -> th.Tensor:
+        """Return the unconstrained policy output used during imitation fitting."""
+        sequence, squeeze_sequence = self._prepare_inputs(x)
+        if sequence.size(-1) != self.input_dim:
+            raise ValueError(
+                f"Expected input_dim={self.input_dim}, got {sequence.size(-1)}."
+            )
+
+        raw_u = self._encode_sequence(sequence)
+        if squeeze_sequence:
+            return raw_u[:, 0, :]
+        if self.output_mode == "last":
+            return raw_u[:, -1, :]
+        return raw_u
 
     def forward(self, x: th.Tensor) -> th.Tensor:
         raw_u = self.forward_raw(x)
