@@ -18,6 +18,10 @@ from .region_builder import RegionBuilder
 from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds, LyapunovRegionBounds
 from .config import LyapunovCertificationConfig
 from .models import LyapunovCoreVerifier
+from .metrics import (
+    LevelSetEstimate,
+    estimate_level_set_area,
+)
 
 __all__ = [
     "RegionCertificationResult",
@@ -33,7 +37,9 @@ __all__ = [
     "CoreConstraintInspector",
     "LyapunovCertificationConfig",
     "LyapunovCoreVerifier",
+    "LevelSetEstimate",
     "RegionBuilder",
     "LiRPALyapunovRegionBounds",
     "LyapunovRegionBounds",
+    "estimate_level_set_area",
 ]

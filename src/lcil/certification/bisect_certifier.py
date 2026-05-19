@@ -71,14 +71,10 @@ class RegionCertificationResult:
             "partial_success",
             "rho",
             "outside_sublevel_regions",
+            "uncertified_regions",
+            "certified_sublevel_regions",
         }
-        has_uncertified_key = "uncertified_regions" in data.files or "failed_regions" in data.files
-        has_certified_key = "certified_sublevel_regions" in data.files or "certified_regions" in data.files
         missing_keys = required_keys.difference(data.files)
-        if not has_uncertified_key:
-            missing_keys.add("uncertified_regions")
-        if not has_certified_key:
-            missing_keys.add("certified_sublevel_regions")
         if missing_keys:
             missing = ", ".join(sorted(missing_keys))
             raise ValueError(f"Missing keys in certification result file: {missing}")
@@ -88,14 +84,8 @@ class RegionCertificationResult:
             partial_success=bool(np.asarray(data["partial_success"]).item()),
             rho=float(np.asarray(data["rho"]).item()),
             outside_sublevel_regions=np.asarray(data["outside_sublevel_regions"]),
-            uncertified_regions=np.asarray(
-                data["uncertified_regions"] if "uncertified_regions" in data.files else data["failed_regions"]
-            ),
-            certified_sublevel_regions=np.asarray(
-                data["certified_sublevel_regions"]
-                if "certified_sublevel_regions" in data.files
-                else data["certified_regions"]
-            ),
+            uncertified_regions=np.asarray(data["uncertified_regions"]),
+            certified_sublevel_regions=np.asarray(data["certified_sublevel_regions"]),
         )
 
 
