@@ -20,7 +20,7 @@ from .config import LyapunovCertificationConfig
 from .models import LyapunovCoreVerifier
 from .metrics import (
     LevelSetEstimate,
-    estimate_level_set_area,
+    estimate_level_set_volume,
 )
 
 __all__ = [
@@ -41,5 +41,5 @@ __all__ = [
     "RegionBuilder",
     "LiRPALyapunovRegionBounds",
     "LyapunovRegionBounds",
-    "estimate_level_set_area",
+    "estimate_level_set_volume",
 ]

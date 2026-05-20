@@ -1,14 +1,31 @@
 import numpy as np
 import torch as th
 import torch.nn as nn
+
+from numpy.typing import ArrayLike
 from math import gamma, pi
 
 
 def analytical_quadratic_level_set_measure(
     rho: float,
-    p_matrix: np.ndarray,
+    p_matrix: ArrayLike,
 ) -> float:
-    """Return the nD measure of the quadratic sublevel set ``x^T P x <= rho``."""
+    """Return the nD measure of the quadratic sublevel set ``x^T P x <= rho``.
+    $$ \text{measure} = \frac{\pi^{n/2}}{\Gamma(n/2 + 1)} \frac{\rho^{n/2}}{\sqrt{\prod_{i=1}^n \lambda_i}} $$
+    where $\lambda_i$ are the eigenvalues of $P$.
+    
+    Parameters
+    ----------
+    rho : float
+        The sublevel set value.
+    p_matrix : ArrayLike
+        The positive definite matrix P defining the quadratic form.
+
+    Returns
+    -------
+    measure : float
+        The nD measure of the set {x : x^T P x <= rho}.
+    """
     if rho < 0.0:
         raise ValueError(f"rho must be non-negative, got {rho}.")
 
@@ -24,9 +41,9 @@ def analytical_quadratic_level_set_measure(
         raise ValueError("p_matrix must be positive definite.")
 
     num_states = p_sym.shape[0]
-    unit_ball_measure = pi ** (0.5 * num_states) / gamma(0.5 * num_states + 1.0)
+    unit_ball_volume = pi ** (0.5 * num_states) / gamma(0.5 * num_states + 1.0)
     return float(
-        unit_ball_measure * rho ** (0.5 * num_states) / np.sqrt(np.prod(eigenvalues))
+        unit_ball_volume * rho ** (0.5 * num_states) / np.sqrt(np.prod(eigenvalues))
     )
 
 

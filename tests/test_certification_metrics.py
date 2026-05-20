@@ -12,7 +12,7 @@ from shared_utils import (
 
 from lcil.certification.metrics import (
     _sample_unit_sphere_directions,
-    estimate_level_set_area,
+    estimate_level_set_volume,
 )
 
 
@@ -27,11 +27,11 @@ class TestCertificationMetrics(unittest.TestCase):
 
     def test_origin_outside_sublevel_set_raises_error(self) -> None: 
         with self.assertRaises(ValueError):
-            estimate_level_set_area(_OffsetLyapunov(), rho=1.0, num_states=2)
+            estimate_level_set_volume(_OffsetLyapunov(), rho=1.0, num_states=2)
 
     def test_initial_radius_above_max_radius_raises_error(self) -> None:
         with self.assertRaisesRegex(ValueError, "initial_radius"):
-            estimate_level_set_area(
+            estimate_level_set_volume(
                 _QuadraticLyapunov(),
                 rho=1.0,
                 num_states=2,
@@ -40,7 +40,7 @@ class TestCertificationMetrics(unittest.TestCase):
             )
 
     def test_estimate_level_set_area_matches_unit_disk(self) -> None:
-        estimate = estimate_level_set_area(
+        estimate = estimate_level_set_volume(
             _QuadraticLyapunov(),
             rho=1.0,
             num_states=2,
@@ -50,11 +50,10 @@ class TestCertificationMetrics(unittest.TestCase):
         self.assertEqual(estimate.directions.shape, (256, 2))
         np.testing.assert_allclose(estimate.radii, 1.0, atol=5e-6)
         self.assertFalse(estimate.truncated)
-        self.assertAlmostEqual(estimate.measure, np.pi, delta=1e-4)
-        self.assertAlmostEqual(estimate.area, np.pi, delta=1e-4)
+        self.assertAlmostEqual(estimate.volume, np.pi, delta=1e-4)
 
     def test_estimate_level_set_area_matches_unit_ball(self) -> None:
-        estimate = estimate_level_set_area(
+        estimate = estimate_level_set_volume(
             _QuadraticLyapunov(),
             rho=1.0,
             num_states=3,
@@ -63,12 +62,12 @@ class TestCertificationMetrics(unittest.TestCase):
 
         np.testing.assert_allclose(estimate.radii, 1.0, atol=5e-6)
         self.assertFalse(estimate.truncated)
-        self.assertAlmostEqual(estimate.measure, 4.0 * np.pi / 3.0, delta=1e-4)
+        self.assertAlmostEqual(estimate.volume, 4.0 * np.pi / 3.0, delta=1e-4)
 
     def test_estimate_level_set_area_truncation(self) -> None:
         # V(x) <= 100 -> radius should be 10.0
         # artificially set max_radius to 2.0.
-        estimate = estimate_level_set_area(
+        estimate = estimate_level_set_volume(
             _QuadraticLyapunov(),
             rho=100.0,
             num_states=2,
@@ -77,13 +76,13 @@ class TestCertificationMetrics(unittest.TestCase):
         )
 
         # All rays should be truncated at 2.0, so the area should be pi * 2^2 = 4pi.
-        self.assertAlmostEqual(estimate.measure, 4.0 * np.pi, delta=1e-5)
+        self.assertAlmostEqual(estimate.volume, 4.0 * np.pi, delta=1e-5)
         self.assertTrue(estimate.truncated)
         self.assertEqual(estimate.truncated_fraction, 1.0)
         np.testing.assert_allclose(estimate.radii, 2.0)
 
     def test_nonfinite_values_are_treated_as_ray_exit(self) -> None:
-        estimate = estimate_level_set_area(
+        estimate = estimate_level_set_volume(
             _NonFiniteOutsideUnitBallLyapunov(),
             rho=4.0,
             num_states=2,
@@ -95,11 +94,11 @@ class TestCertificationMetrics(unittest.TestCase):
 
         self.assertFalse(estimate.truncated)
         np.testing.assert_allclose(estimate.radii, 1.0, atol=5e-5)
-        self.assertAlmostEqual(estimate.measure, np.pi, delta=1e-4)
+        self.assertAlmostEqual(estimate.volume, np.pi, delta=1e-4)
 
     def test_non_monotonic_rays_raise_error(self) -> None:
         with self.assertRaisesRegex(ValueError, "star-shaped"):
-            estimate_level_set_area(
+            estimate_level_set_volume(
                 _NonMonotonicRadialLyapunov(),
                 rho=1.1,
                 num_states=2,
@@ -108,7 +107,7 @@ class TestCertificationMetrics(unittest.TestCase):
             )
 
     def test_estimate_level_set_area_matches_ellipse(self) -> None:
-        estimate = estimate_level_set_area(
+        estimate = estimate_level_set_volume(
             _EllipticalLyapunov(),
             rho=1.0,
             num_states=2,
@@ -121,7 +120,7 @@ class TestCertificationMetrics(unittest.TestCase):
         self.assertFalse(estimate.truncated)
         # Tolerance slightly higher due to Monte Carlo error in asymmetric 
         # shapes being larger than in perfect circles.
-        self.assertAlmostEqual(estimate.measure, expected_area, delta=5e-3)
+        self.assertAlmostEqual(estimate.volume, expected_area, delta=5e-3)
 
 
 if __name__ == "__main__":
