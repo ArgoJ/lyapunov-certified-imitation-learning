@@ -33,6 +33,7 @@ from .counterexample import (
     sample_uniform_box,
 )
 from .utils import ThresholdMonitor
+from ..utils.base_config import JsonDataclass
 from ..utils.base_models import save_model_checkpoint
 from ..utils.helpers import none_to_float
 
@@ -40,7 +41,7 @@ __logger__ = logging.getLogger(__name__)
 
 
 @dataclass
-class LyapunovTrainingResult:
+class LyapunovTrainingResult(JsonDataclass):
     rho_estimate: float
     num_mined_counterexamples: int
     train_time: float
@@ -49,24 +50,30 @@ class LyapunovTrainingResult:
     lyap_model_path: os.PathLike | None = None
     policy_model_path: os.PathLike | None = None
 
+    DEFAULT_FILE_NAME = "training_result.json"
+
     @property
     def completed(self) -> bool:
         return not self.aborted
 
 
 @dataclass
-class LyapunovTrainingCurriculumStage:
+class LyapunovTrainingCurriculumStage(JsonDataclass):
     stage_index: int
     state_bounds: NDArray
     scale: NDArray
     result: LyapunovTrainingResult
 
+    NP_ARRAY_FIELDS = ("state_bounds", "scale")
+
 
 @dataclass
-class LyapunovTrainingCurriculumResult:
+class LyapunovTrainingCurriculumResult(JsonDataclass):
     stages: list[LyapunovTrainingCurriculumStage]
     aborted_result: LyapunovTrainingResult | None = None
     aborted_stage_index: int | None = None
+
+    DEFAULT_FILE_NAME = "training_curriculum_result.json"
 
     @property
     def aborted(self) -> bool:
@@ -599,5 +606,6 @@ class LyapunovTrainer:
         if self.results is not None:
             self.results.lyap_model_path = str(lyap_model_path)
             self.results.policy_model_path = str(policy_model_path)
+            self.results.save(save_folder)
         
         __logger__.info(f"Saved lyapunov results to {save_folder}")

@@ -9,6 +9,11 @@ import numpy as np
 from lcil.certification.config import LyapunovCertificationConfig
 from lcil.imitation_learning.config import ImitationTrainingConfig
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
+from lcil.lyapunov_learning.trainer import (
+    LyapunovTrainingCurriculumResult,
+    LyapunovTrainingCurriculumStage,
+    LyapunovTrainingResult,
+)
 from lcil.utils import GridSearchHelper
 from lcil.utils.base_config import ArgumentParserConfig, JsonDataclass, config_field
 
@@ -30,6 +35,65 @@ class TestConfigRoundtrip(unittest.TestCase):
 
         self.assertEqual(loaded_cfg.__class__, training_cfg.__class__)
         self.assertEqual(loaded_cfg.to_dict(), training_cfg.to_dict())
+
+    def test_lyapunov_training_result_save(self) -> None:
+        training_result = LyapunovTrainingResult(
+            rho_estimate=1.25,
+            num_mined_counterexamples=7,
+            train_time=3.5,
+            aborted=True,
+            abort_reason="rho threshold reached",
+            lyap_model_path=Path("checkpoints/lyapunov_model.pt"),
+            policy_model_path=Path("checkpoints/policy_model.pt"),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            saved_path = training_result.save(out_dir)
+            loaded_result = LyapunovTrainingResult.load(saved_path)
+
+        self.assertEqual(saved_path.name, "training_result.json")
+        self.assertEqual(loaded_result.__class__, training_result.__class__)
+        self.assertEqual(loaded_result.to_dict(), training_result.to_dict())
+        self.assertIsInstance(loaded_result.lyap_model_path, Path)
+        self.assertIsInstance(loaded_result.policy_model_path, Path)
+
+    def test_lyapunov_training_curriculum_result_save(self) -> None:
+        curriculum_result = LyapunovTrainingCurriculumResult(
+            stages=[
+                LyapunovTrainingCurriculumStage(
+                    stage_index=0,
+                    state_bounds=np.array([[-1.0, -0.5], [1.0, 0.5]], dtype=float),
+                    scale=np.array([0.5, 0.5], dtype=float),
+                    result=LyapunovTrainingResult(
+                        rho_estimate=0.8,
+                        num_mined_counterexamples=2,
+                        train_time=1.0,
+                    ),
+                ),
+            ],
+            aborted_result=LyapunovTrainingResult(
+                rho_estimate=1.1,
+                num_mined_counterexamples=4,
+                train_time=2.0,
+                aborted=True,
+                abort_reason="monitor triggered",
+            ),
+            aborted_stage_index=1,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            saved_path = curriculum_result.save(out_dir)
+            loaded_result = LyapunovTrainingCurriculumResult.load(saved_path)
+
+        self.assertEqual(saved_path.name, "training_curriculum_result.json")
+        self.assertEqual(loaded_result.__class__, curriculum_result.__class__)
+        self.assertEqual(loaded_result.to_dict(), curriculum_result.to_dict())
+        self.assertEqual(len(loaded_result.stages), 1)
+        self.assertIsInstance(loaded_result.stages[0].state_bounds, np.ndarray)
+        self.assertIsInstance(loaded_result.stages[0].scale, np.ndarray)
+        self.assertIsInstance(loaded_result.stages[0].result, LyapunovTrainingResult)
 
     def test_certification_config_save(self) -> None:
         certification_cfg = LyapunovCertificationConfig(

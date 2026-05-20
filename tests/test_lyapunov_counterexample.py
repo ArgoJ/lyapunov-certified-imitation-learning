@@ -1,5 +1,7 @@
 import unittest
+import tempfile
 from unittest.mock import patch
+from pathlib import Path
 
 import numpy as np
 import torch as th
@@ -463,6 +465,35 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         np.testing.assert_allclose(stage_bounds_seen[1], expected_stage_bounds[1])
         np.testing.assert_allclose(trainer.config.state_bounds, expected_stage_bounds[1])
         self.assertAlmostEqual(curriculum_result.final_result.rho_estimate, 2.0, places=6)
+
+    def test_trainer_save_writes_training_result_json(self) -> None:
+        config = LyapunovTrainingConfig(
+            state_dim=1,
+            state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
+            train_policy_model=False,
+        )
+        trainer = LyapunovTrainer(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_TrainableQuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            config=config,
+        )
+        trainer.results = LyapunovTrainingResult(
+            rho_estimate=0.75,
+            num_mined_counterexamples=3,
+            train_time=1.25,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            trainer.save(out_dir)
+            loaded_result = LyapunovTrainingResult.load(out_dir)
+
+        self.assertAlmostEqual(loaded_result.rho_estimate, 0.75, places=6)
+        self.assertEqual(loaded_result.num_mined_counterexamples, 3)
+        self.assertEqual(loaded_result.train_time, 1.25)
+        self.assertEqual(loaded_result.lyap_model_path, out_dir / "lyapunov_model.pt")
+        self.assertEqual(loaded_result.policy_model_path, out_dir / "policy_model.pt")
 
 
 if __name__ == "__main__":

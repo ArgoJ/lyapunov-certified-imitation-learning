@@ -164,10 +164,10 @@ def main() -> None:
         )
         
         train_results = trainer.train()
+        trainer.save(base_path)
         if train_results.aborted:
             __logger__.warning(f"Skipping run {run.run_name}: {train_results.abort_reason}")
             continue
-        trainer.save(base_path)
 
         # ---------------------------------------------------------------------
         # 4. Plot & Save
