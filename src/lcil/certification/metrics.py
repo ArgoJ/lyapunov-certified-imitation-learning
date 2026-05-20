@@ -126,6 +126,7 @@ def _find_level_ray_intersections(
     growth_factor: float = 2.0,
     max_radius: float = 1e6,
     max_bisection_steps: int = 60,
+    bisection_tol: float = 1e-5,
 ) -> tuple[NDArray, NDArray]:
     """Approximate the first radial exit of ``V(x) <= c_level`` along multiple rays.
     
@@ -147,6 +148,8 @@ def _find_level_ray_intersections(
         The maximum radius to search.
     max_bisection_steps: int, optional
         The maximum number of bisection steps to perform.
+    bisection_tol: float, optional
+        The tolerance for convergence in the bisection method when refining ray intersections.
 
     Returns
     -------
@@ -171,6 +174,8 @@ def _find_level_ray_intersections(
         raise ValueError(
             f"max_bisection_steps must be non-negative, got {max_bisection_steps}."
         )
+    if bisection_tol <= 0.0:
+        raise ValueError(f"bisection_tol must be positive, got {bisection_tol}.")
 
     active_mask = th.ones(num_directions, dtype=th.bool, device=device)
     low = th.zeros(num_directions, 1, dtype=th.float32, device=device)
@@ -275,8 +280,8 @@ def _find_level_ray_intersections(
         curr_r[finite_active_indices] = 0.5 * (low_next + high_next)
 
         converged = (
-            (th.abs(err_detached).squeeze(-1) < 1e-5)
-            | ((high_next - low_next).squeeze(-1) < 1e-5)
+            (th.abs(err_detached).squeeze(-1) < bisection_tol)
+            | ((high_next - low_next).squeeze(-1) < bisection_tol)
         )
         converged_indices = finite_active_indices[converged]
         active_roots[converged_indices] = False
@@ -295,6 +300,7 @@ def estimate_level_set_measure(
     growth_factor: float = 2.0,
     max_radius: float = 1e6,
     max_bisection_steps: int = 60,
+    bisection_tol: float = 1e-5,
 ) -> LevelSetEstimate:
     """Estimate the star-shaped nD measure of ``V(x) <= rho`` from sphere rays.
 
@@ -318,6 +324,8 @@ def estimate_level_set_measure(
         The maximum radius to search for ray intersections.
     max_bisection_steps: int, optional
         The maximum number of bisection steps to perform for refining ray intersections.
+    bisection_tol: float, optional
+        The tolerance for convergence in the bisection method when refining ray intersections.
 
     Returns
     -------
@@ -349,6 +357,7 @@ def estimate_level_set_measure(
         growth_factor=growth_factor,
         max_radius=max_radius,
         max_bisection_steps=max_bisection_steps,
+        bisection_tol=bisection_tol,
     )
 
     unit_sphere_surface_area = _unit_sphere_surface_area(num_states)
