@@ -4,6 +4,14 @@ from unittest.mock import patch
 import numpy as np
 import torch as th
 import torch.nn as nn
+from shared_utils import (
+    _FirstCoordinateValue,
+    _IdentityDynamics,
+    _LinearValue,
+    _QuadraticLyapunov,
+    _TrainableQuadraticLyapunov,
+    _ZeroPolicy,
+)
 
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
 from lcil.lyapunov_learning.buffer import BoundaryStateBuffer, DynamicStateBuffer
@@ -15,47 +23,6 @@ from lcil.lyapunov_learning.counterexample import (
 from lcil.lyapunov_learning.loss import FormalPositivityLoss, LyapunovTrainingLoss
 from lcil.lyapunov_learning.trainer import LyapunovTrainer, LyapunovTrainingResult
 from lcil.lyapunov_learning.utils import ThresholdMonitor
-
-
-class _FirstCoordinateValue(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return x[:, :1]
-
-
-class _ZeroPolicy(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return th.zeros((x.shape[0], 1), dtype=x.dtype, device=x.device)
-
-
-class _IdentityDynamics(nn.Module):
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        return x
-
-
-class _QuadraticLyapunov(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return x.pow(2).sum(dim=1, keepdim=True)
-
-
-class _TrainableQuadraticLyapunov(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.scale = nn.Parameter(th.ones(1, dtype=th.float32))
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return self.scale * x.pow(2).sum(dim=1, keepdim=True)
-
-
-class _LinearValue(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.linear = nn.Linear(1, 1, bias=False)
-        with th.no_grad():
-            self.linear.weight.fill_(1.0)
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return self.linear(x)
 
 
 class TestLyapunovCounterexamples(unittest.TestCase):

@@ -8,15 +8,18 @@ import torch as th
 import torch.nn as nn
 from plot_assertions_mixin import PlotAssertionsMixin
 
-from certification_mock_common import (
-    BisectCertifier,
-    CertificationMockedABCrownTestCase,
+
+from shared_utils import (
     _DirectionalScaleDynamics,
     _IdentityDynamics,
     _NegativeQuadraticLyapunov,
     _QuadraticLyapunov,
     _ZeroDynamics,
     _ZeroPolicy,
+)
+from certification_mock_common import (
+    BisectCertifier,
+    CertificationMockedABCrownTestCase,
 )
 from lcil.certification.lirpa_lyapunov_bounds import LyapunovRegionBounds
 from lcil.certification.region_manager import CertificationRegionPartition

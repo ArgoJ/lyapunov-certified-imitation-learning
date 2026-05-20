@@ -2,11 +2,13 @@ import unittest
 
 import torch as th
 
-from certification_mock_common import (
-    LyapunovCoreVerifier,
+from shared_utils import (
     _DescendingLinearLyapunov,
     _ShiftDynamics,
     _ZeroPolicy,
+)
+from certification_mock_common import (
+    LyapunovCoreVerifier,
 )
 
 

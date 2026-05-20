@@ -7,57 +7,14 @@ import torch as th
 import torch.nn as nn
 
 from plot_assertions_mixin import PlotAssertionsMixin
+from shared_utils import (
+    _DirectionalScaleDynamics,
+    _QuadraticLyapunov,
+    _ZeroDynamics,
+    _ZeroPolicy,
+)
 
 from lcil.utils.plot import certified_regions_2d, lyapunov_cert_regions
-
-
-class _ZeroPolicy(nn.Module):
-    def __init__(self, nu: int = 1):
-        super().__init__()
-        self.nu = nu
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return th.zeros((x.shape[0], self.nu), dtype=x.dtype, device=x.device)
-
-
-class _ZeroDynamics(nn.Module):
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        return th.zeros_like(x)
-
-
-class _IdentityDynamics(nn.Module):
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        return x
-
-
-class _DirectionalScaleDynamics(nn.Module):
-    def __init__(self, base_scale: float = 0.8, axis_gain: float = 0.4):
-        super().__init__()
-        self.base_scale = float(base_scale)
-        self.axis_gain = float(axis_gain)
-
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        scale = self.base_scale + self.axis_gain * x[:, :1]
-        return scale * x
-
-
-class _QuadraticLyapunov(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return (x * x).sum(dim=1, keepdim=True)
-
-
-class _MixedLyapunov(nn.Module):
-    def __init__(self, alpha: float = 0.3, beta: float = 1.5):
-        super().__init__()
-        self.alpha = float(alpha)
-        self.beta = float(beta)
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        r2 = (x * x).sum(dim=1, keepdim=True)
-        return self.beta * r2 - self.alpha * (r2 * r2)
 
 
 def _load_real_bisect_modules() -> tuple[type, type]:

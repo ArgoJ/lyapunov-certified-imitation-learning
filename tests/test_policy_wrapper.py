@@ -4,34 +4,15 @@ import unittest
 import torch as th
 
 from pathlib import Path
+from shared_utils import _RecordingSequencePolicy
 
 from lcil.imitation_learning import SequenceStateActionDataset, StateActionDataset
 from lcil.lyapunov_learning import FromRolloutsPolicyWrapper, RepeatCurrentPolicyWrapper
 
 
-class _RecordingSequencePolicy(th.nn.Module):
-    def __init__(self, max_seq_len: int) -> None:
-        super().__init__()
-        self.max_seq_len = max_seq_len
-        self.last_forward_input: th.Tensor | None = None
-        self.last_forward_raw_input: th.Tensor | None = None
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        self.last_forward_input = x.detach().cpu().clone()
-        if x.ndim == 2:
-            x = x.unsqueeze(1)
-        return x.sum(dim=-1, keepdim=True)
-
-    def forward_raw(self, x: th.Tensor) -> th.Tensor:
-        self.last_forward_raw_input = x.detach().cpu().clone()
-        if x.ndim == 2:
-            x = x.unsqueeze(1)
-        return 2.0 * x[..., :1]
-
-
 class TestRepeatCurrentPolicyWrapper(unittest.TestCase):
     def test_repeat_current_wrapper_repeats_state_window(self) -> None:
-        policy = _RecordingSequencePolicy(max_seq_len=3)
+        policy = _RecordingSequencePolicy(max_seq_len=3, output_mode="sum")
         wrapper = RepeatCurrentPolicyWrapper(policy)
 
         x = th.tensor([[1.0, 2.0], [3.0, 4.0]])
@@ -43,7 +24,7 @@ class TestRepeatCurrentPolicyWrapper(unittest.TestCase):
         th.testing.assert_close(u, th.tensor([[3.0], [7.0]]))
 
     def test_repeat_current_wrapper_forward_raw_reduces_last_token(self) -> None:
-        policy = _RecordingSequencePolicy(max_seq_len=4)
+        policy = _RecordingSequencePolicy(max_seq_len=4, output_mode="sum")
         wrapper = RepeatCurrentPolicyWrapper(policy)
 
         x = th.tensor([[2.0, 5.0]])
@@ -56,7 +37,7 @@ class TestRepeatCurrentPolicyWrapper(unittest.TestCase):
 
 class TestFromRolloutsPolicyWrapper(unittest.TestCase):
     def test_from_rollouts_wrapper_uses_nearest_history_prefix(self) -> None:
-        policy = _RecordingSequencePolicy(max_seq_len=3)
+        policy = _RecordingSequencePolicy(max_seq_len=3, output_mode="sum")
         rollout_dataset = SequenceStateActionDataset(
             states=th.tensor(
                 [
@@ -86,7 +67,7 @@ class TestFromRolloutsPolicyWrapper(unittest.TestCase):
         th.testing.assert_close(u, th.tensor([[5.0], [23.0]]))
 
     def test_from_rollouts_classmethod_loads_sequence_dataset_file(self) -> None:
-        policy = _RecordingSequencePolicy(max_seq_len=2)
+        policy = _RecordingSequencePolicy(max_seq_len=2, output_mode="sum")
         rollout_dataset = SequenceStateActionDataset(
             states=th.tensor([[[1.0, 2.0], [3.0, 4.0]]]),
             actions=th.tensor([[0.0]]),
@@ -109,7 +90,7 @@ class TestFromRolloutsPolicyWrapper(unittest.TestCase):
         )
 
     def test_from_rollouts_rejects_flat_dataset_file(self) -> None:
-        policy = _RecordingSequencePolicy(max_seq_len=2)
+        policy = _RecordingSequencePolicy(max_seq_len=2, output_mode="sum")
         flat_dataset = StateActionDataset(
             states=th.tensor([[0.0, 1.0], [2.0, 3.0]]),
             actions=th.tensor([[0.0], [1.0]]),

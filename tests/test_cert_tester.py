@@ -3,31 +3,11 @@ import unittest
 import numpy as np
 import torch as th
 import torch.nn as nn
+from shared_utils import _DoubleDynamics, _IdentityLyapunov, _ZeroLyapunov, _ZeroPolicy
 
 from lcil.certification.bisect_certifier import RegionCertificationResult
 from lcil.certification.cert_tester import CertificationResultTester
 from lcil.certification.config import LyapunovCertificationConfig
-
-
-class _ZeroPolicy(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return th.zeros((x.shape[0], 1), dtype=x.dtype, device=x.device)
-
-
-class _IdentityLyapunov(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return x[:, :1]
-
-
-class _ZeroLyapunov(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return th.zeros((x.shape[0], 1), dtype=x.dtype, device=x.device)
-
-
-class _DoubleDynamics(nn.Module):
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        return 2.0 * x
 
 
 class TestCertificationResultTester(unittest.TestCase):

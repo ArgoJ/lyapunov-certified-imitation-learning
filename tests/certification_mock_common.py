@@ -10,6 +10,12 @@ from unittest import mock
 import numpy as np
 import torch as th
 import torch.nn as nn
+from shared_utils import (
+    _IdentityDynamics,
+    _QuadraticLyapunov,
+    _ZeroDynamics,
+    _ZeroPolicy,
+)
 
 
 _ORIG_ABCROWN = sys.modules.get("abcrown")
@@ -207,80 +213,6 @@ def _fake_input_vars(dim: int) -> _FakeInputVars:
 
 def _fake_output_vars(dim: int) -> _FakeOutputVars:
     return _FakeOutputVars(dim)
-
-
-class _ZeroPolicy(nn.Module):
-    def __init__(self, nu: int = 1):
-        super().__init__()
-        self.nu = nu
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return th.zeros((x.shape[0], self.nu), dtype=x.dtype, device=x.device)
-
-
-class _ZeroDynamics(nn.Module):
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        return th.zeros_like(x)
-
-
-class _IdentityDynamics(nn.Module):
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        return x
-
-
-class _ShiftDynamics(nn.Module):
-    def __init__(self, shift: float):
-        super().__init__()
-        self.shift = float(shift)
-
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        return x + self.shift
-
-
-class _QuadraticLyapunov(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return (x * x).sum(dim=1, keepdim=True)
-
-
-class _IdentityLyapunov(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return x[:, :1]
-
-
-class _DirectionalScaleDynamics(nn.Module):
-    def __init__(self, base_scale: float = 0.8, axis_gain: float = 0.4):
-        super().__init__()
-        self.base_scale = float(base_scale)
-        self.axis_gain = float(axis_gain)
-
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        scale = self.base_scale + self.axis_gain * x[:, :1]
-        return scale * x
-
-
-class _NegativeQuadraticLyapunov(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return -(x * x).sum(dim=1, keepdim=True)
-
-
-class _MixedLyapunov(nn.Module):
-    def __init__(self, alpha: float = 0.3, beta: float = 1.5):
-        super().__init__()
-        self.alpha = float(alpha)
-        self.beta = float(beta)
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        r2 = (x * x).sum(dim=1, keepdim=True)
-        return self.beta * r2 - self.alpha * (r2 * r2)
-
-
-class _DescendingLinearLyapunov(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return 2.0 - x[:, :1]
 
 
 class CertificationMockedABCrownTestCase(unittest.TestCase):

@@ -5,14 +5,16 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 
-from certification_mock_common import (
-    BisectCertifier,
-    CertificationMockedABCrownTestCase,
-    LyapunovRegionBounds,
+from shared_utils import (
     _IdentityDynamics,
     _QuadraticLyapunov,
     _ZeroDynamics,
     _ZeroPolicy,
+)
+from certification_mock_common import (
+    BisectCertifier,
+    CertificationMockedABCrownTestCase,
+    LyapunovRegionBounds,
 )
 
 

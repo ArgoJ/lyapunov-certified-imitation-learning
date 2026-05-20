@@ -6,6 +6,13 @@ import torch as th
 import torch.nn as nn
 
 from pathlib import Path
+from shared_utils import (
+    _IdentityDynamics,
+    _QuadraticLyapunov,
+    _RecordingSequencePolicy,
+    _ShiftDynamics,
+    _ZeroPolicy,
+)
 
 from lcil.lyapunov_learning import LyapunovRollout
 from lcil.imitation_learning import SequenceStateActionDataset, StateActionDataset, load_imitation_dataset
@@ -15,39 +22,6 @@ from lcil.imitation_learning.policy_rollout import (
     PolicyRolloutGenerator,
     RandomBoundsSampler,
 )
-
-
-class _ZeroPolicy(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return th.zeros((x.shape[0], 1), dtype=x.dtype, device=x.device)
-
-
-class _IdentitySimulator(nn.Module):
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        return x
-
-
-class _IncrementSimulator(nn.Module):
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        del u
-        return x + 1.0
-
-
-class _RecordingSequencePolicy(nn.Module):
-    def __init__(self, max_seq_len: int) -> None:
-        super().__init__()
-        self.max_seq_len = max_seq_len
-        self.seen_inputs: list[np.ndarray] = []
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        self.seen_inputs.append(x.detach().cpu().numpy().copy())
-        return th.zeros((x.shape[0], 1), dtype=x.dtype, device=x.device)
-
-
-class _QuadraticLyapunov(nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return th.sum(x * x, dim=1, keepdim=True)
 
 
 class TestPolicyRolloutConfig(unittest.TestCase):
@@ -120,7 +94,7 @@ class TestPolicyRolloutConfig(unittest.TestCase):
         )
         generator = PolicyRolloutGenerator(
             policy=_ZeroPolicy(),
-            simulator=_IdentitySimulator(),
+            simulator=_IdentityDynamics(),
             cfg=rollout_cfg,
             sampler=None,
             device="cpu",
@@ -165,7 +139,7 @@ class TestPolicyRolloutConfig(unittest.TestCase):
         policy = _RecordingSequencePolicy(max_seq_len=3)
         generator = PolicyRolloutGenerator(
             policy=policy,
-            simulator=_IncrementSimulator(),
+            simulator=_ShiftDynamics(shift=1.0),
             cfg=rollout_cfg,
             sampler=None,
             device="cpu",
@@ -221,7 +195,7 @@ class TestPolicyRolloutConfig(unittest.TestCase):
         )
         generator = PolicyRolloutGenerator(
             policy=_ZeroPolicy(),
-            simulator=_IdentitySimulator(),
+            simulator=_IdentityDynamics(),
             cfg=rollout_cfg,
             sampler=None,
             device="cpu",

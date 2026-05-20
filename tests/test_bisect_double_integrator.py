@@ -7,6 +7,7 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 from plot_assertions_mixin import PlotAssertionsMixin
+from shared_utils import analytical_quadratic_level_set_measure
 
 from shared_double_integrator import (
     DoubleIntegratorConfig,
@@ -20,6 +21,7 @@ from shared_double_integrator import (
 
 from mpc_datagen.plots import roa
 from lcil.utils.plot import certified_regions_2d, lyapunov_cert_regions
+from lcil.certification.metrics import estimate_level_set_area
 
 
 class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
@@ -85,7 +87,7 @@ class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
             ),
             kappa=0.001,
             rho_min=1e-4,
-            rho_scaling=1.2,
+            rho_scaling=1.1,
             bins_per_dim=(6, 6),
             center_refinement_factor=(0.6, 0.6),
             origin_exclusion=0.0,
@@ -183,7 +185,6 @@ class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
         certification_result,
         stem: str,
         state_labels: list[str],
-        limits: list[tuple[float, float]],
     ) -> None:
         lyap_func = self._to_numpy_lyapunov(
             lyap_model=lyap_model,
@@ -202,12 +203,25 @@ class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
 
     def test_double_integrator_lqr(self) -> None:
         certifier = self._make_certifier()
-        result = certifier.certify(rho_estimate=27.0)
+        result = certifier.certify(rho_estimate=51.0)
+        level_set_estimate = estimate_level_set_area(
+            certifier.lyap_model,
+            rho=float(result.rho),
+            num_states=2,
+            num_directions=2048,
+            device=th.device("cpu"),
+        )
+        lqr_area = analytical_quadratic_level_set_measure(
+            rho=float(result.rho),
+            p_matrix=certifier.lyap_model.p_matrix.detach().cpu().numpy(),
+        )
         base = "double_integrator_bisect_integration_lqr"
         state_labels = ["$x$", "$v$"]
 
         self.assertIsInstance(float(result.rho), float)
         self.assertGreaterEqual(result.rho, certifier.config.rho_min)
+        self.assertFalse(level_set_estimate.truncated)
+        self.assertAlmostEqual(level_set_estimate.measure / lqr_area, 1.0, delta=5e-2)
         self._assert_region_plot_written(
             certification_result=result,
             stem=f"{base}_regions",
@@ -224,7 +238,6 @@ class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
             certification_result=result,
             stem=f"{base}_roa",
             state_labels=state_labels,
-            limits=[tuple(axis_bounds) for axis_bounds in certifier.config.cert_bounds.T],
         )
         self.assertGreaterEqual(result.uncertified_regions.shape[0], 0)
         self.assertGreater(result.certified_sublevel_regions.shape[0], 0)

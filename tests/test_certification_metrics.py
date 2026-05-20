@@ -2,40 +2,18 @@ import unittest
 
 import numpy as np
 import torch as th
+from shared_utils import (
+    _EllipticalLyapunov,
+    _NonFiniteOutsideUnitBallLyapunov,
+    _NonMonotonicRadialLyapunov,
+    _OffsetLyapunov,
+    _QuadraticLyapunov,
+)
 
 from lcil.certification.metrics import (
     _sample_unit_sphere_directions,
     estimate_level_set_area,
 )
-
-
-class _QuadraticLyapunov(th.nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return th.sum(x**2, dim=1, keepdim=True)
-
-class _OffsetLyapunov(th.nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return th.sum(x**2, dim=1, keepdim=True) + 2.0
-
-class _EllipticalLyapunov(th.nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        # V(x, y) = x^2 + 4y^2
-        weights = th.tensor([1.0, 4.0], dtype=th.float32, device=x.device)
-        return th.sum(weights * x**2, dim=1, keepdim=True)
-
-
-class _NonFiniteOutsideUnitBallLyapunov(th.nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        radius = th.linalg.norm(x, dim=1, keepdim=True)
-        values = th.sum(x**2, dim=1, keepdim=True)
-        nan_values = th.full_like(values, float("nan"))
-        return th.where(radius <= 1.0, values, nan_values)
-
-
-class _NonMonotonicRadialLyapunov(th.nn.Module):
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        radius_sq = th.sum(x**2, dim=1, keepdim=True)
-        return radius_sq**2 - radius_sq + 1.0
 
 
 
