@@ -30,7 +30,7 @@ class LevelSetEstimate:
     num_directions: int
     directions: NDArray
     radii: NDArray
-    volume: float
+    measure: float
     unit_sphere_surface_area: float
     max_radius: float
     truncated_mask: NDArray
@@ -65,7 +65,7 @@ def _unit_sphere_surface_area(num_states: int) -> float:
     return 2.0 * pi ** (0.5 * num_states) / gamma(0.5 * num_states)
 
 
-def _sublevel_volume(
+def _sublevel_measure(
     radii: NDArray,
     unit_sphere_surface_area: float,
     num_states: int,
@@ -284,7 +284,7 @@ def _find_level_ray_intersections(
     return curr_r.squeeze(-1).cpu().numpy(), truncated_mask.cpu().numpy()
 
 
-def estimate_level_set_volume(
+def estimate_level_set_measure(
     lyapunov_fn: Callable[[th.Tensor], th.Tensor],
     rho: float,
     *,
@@ -296,7 +296,7 @@ def estimate_level_set_volume(
     max_radius: float = 1e6,
     max_bisection_steps: int = 60,
 ) -> LevelSetEstimate:
-    """Estimate the star-shaped nD volume of ``V(x) <= rho`` from sphere rays.
+    """Estimate the star-shaped nD measure of ``V(x) <= rho`` from sphere rays.
 
     Parameters
     ----------
@@ -352,7 +352,7 @@ def estimate_level_set_volume(
     )
 
     unit_sphere_surface_area = _unit_sphere_surface_area(num_states)
-    measure = _sublevel_volume(radii, unit_sphere_surface_area, num_states)
+    measure = _sublevel_measure(radii, unit_sphere_surface_area, num_states)
 
     estimate = LevelSetEstimate(
         rho=float(rho),
@@ -360,17 +360,17 @@ def estimate_level_set_volume(
         num_directions=int(num_directions),
         directions=directions,
         radii=radii,
-        volume=measure,
+        measure=measure,
         unit_sphere_surface_area=unit_sphere_surface_area,
         max_radius=float(max_radius),
         truncated_mask=truncated_mask,
     )
     __logger__.info(
-        "Estimated star-shaped level-set volume at rho=%.6f in %dD from %d sphere rays: volume=%.6f, truncated_fraction=%.4f.",
+        "Estimated star-shaped level-set measure at rho=%.6f in %dD from %d sphere rays: measure=%.6f, truncated_fraction=%.4f.",
         estimate.rho,
         estimate.num_states,
         estimate.num_directions,
-        estimate.volume,
+        estimate.measure,
         estimate.truncated_fraction,
     )
     return estimate

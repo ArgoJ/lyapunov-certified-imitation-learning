@@ -21,7 +21,7 @@ from shared_double_integrator import (
 
 from mpc_datagen.plots import roa
 from lcil.utils.plot import certified_regions_2d, lyapunov_cert_regions
-from lcil.certification.metrics import estimate_level_set_volume
+from lcil.certification.metrics import estimate_level_set_measure
 
 
 class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
@@ -204,7 +204,7 @@ class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
     def test_double_integrator_lqr(self) -> None:
         certifier = self._make_certifier()
         result = certifier.certify(rho_estimate=50.48)
-        level_set_estimate = estimate_level_set_volume(
+        level_set_estimate = estimate_level_set_measure(
             certifier.lyap_model,
             rho=float(result.rho),
             num_states=2,
@@ -221,7 +221,7 @@ class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
         self.assertIsInstance(float(result.rho), float)
         self.assertGreaterEqual(result.rho, certifier.config.rho_min)
         self.assertFalse(level_set_estimate.truncated)
-        self.assertAlmostEqual(level_set_estimate.volume / lqr_area, 1.0, delta=5e-2)
+        self.assertAlmostEqual(level_set_estimate.measure / lqr_area, 1.0, delta=5e-2)
         self._assert_region_plot_written(
             certification_result=result,
             stem=f"{base}_regions",
