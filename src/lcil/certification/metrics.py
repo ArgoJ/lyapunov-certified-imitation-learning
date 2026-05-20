@@ -181,6 +181,7 @@ def _find_level_ray_intersections(
     low = th.zeros(num_directions, 1, dtype=th.float32, device=device)
     high = th.full((num_directions, 1), initial_radius, dtype=th.float32, device=device)
 
+    # Scaling step
     max_growth_steps = int(np.ceil(np.log(max_radius / initial_radius) / np.log(growth_factor))) + 2
     for _ in range(max_growth_steps):
         if not active_mask.any():
@@ -198,6 +199,8 @@ def _find_level_ray_intersections(
         active_mask[exceeded_indices] = False
 
         not_exceeded_indices = active_indices[~exceeded]
+
+        # Monotonicity check
         if len(not_exceeded_indices) > 0:
             monotonic_points = (
                 high[not_exceeded_indices].detach() * directions_ts[not_exceeded_indices]
@@ -231,6 +234,7 @@ def _find_level_ray_intersections(
     curr_r = 0.5 * (low + high)
     curr_r[~active_roots] = max_radius
 
+    # Bisection step
     for _ in range(max_bisection_steps):
         if not active_roots.any():
             break
@@ -253,6 +257,7 @@ def _find_level_ray_intersections(
         finite_values = values[finite_mask]
         finite_active_indices = active_indices[finite_mask]
 
+        # Monotonicity check
         gradients_all = th.autograd.grad(
             outputs=finite_values,
             inputs=points,
