@@ -224,6 +224,21 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="Frequency of counterexample mining in outer epochs.",
         display_alias="cex_every",
     )
+    cex_fraction_min: float = config_field(
+        default=0.2,
+        help="Minimum fraction of counterexamples in a batch.",
+        display_alias="cex_frac_min",
+    )
+    cex_fraction_max: float = config_field(
+        default=0.5,
+        help="Maximum fraction of counterexamples in a batch.",
+        display_alias="cex_frac_max",
+    )
+    cex_fraction_ema_decay: float = config_field(
+        default=0.8,
+        help="Exponential moving average decay for counterexample fraction.",
+        display_alias="cex_frac_ema_decay",
+    )
 
     # Tolerances
     condition_tolerance: float = config_field(
@@ -263,6 +278,10 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
             raise ValueError("Steps per epoch must be positive.")
         if self.counterexample_every < 0:
             raise ValueError("Counterexample mining interval must be non-negative.")
+        if self.cex_fraction_min < 0.0 or self.cex_fraction_max > 1.0 or self.cex_fraction_min > self.cex_fraction_max:
+            raise ValueError("cex_fraction_min and cex_fraction_max must satisfy 0 <= cex_fraction_min <= cex_fraction_max <= 1.")
+        if self.cex_fraction_ema_decay < 0.0 or self.cex_fraction_ema_decay > 1.0:
+            raise ValueError("cex_fraction_ema_decay must be in [0, 1].")
         if self.rho_min <= 0:
             raise ValueError("Minimum rho estimate must be positive.")
         if self.rho_estimate_quantile <= 0.0 or self.rho_estimate_quantile > 1.0:

@@ -364,7 +364,13 @@ class LyapunovTrainer:
         
         # Initial training pool sampled uniformly from the state space bounds
         initial_x = sample_uniform_box(self.config.initial_sample_size, self.lbx, self.ubx, self.device)
-        state_buffer = DynamicStateBuffer(initial_states=initial_x, max_size=self.config.max_buffer, device=self.device)
+        state_buffer = DynamicStateBuffer(
+            initial_states=initial_x,
+            max_size=self.config.max_buffer,
+            device=self.device,
+            min_cex_fraction=self.config.cex_fraction_min,
+            max_cex_fraction=self.config.cex_fraction_max,
+        )
         boundary_buffer = BoundaryStateBuffer(
             state_dim=self.config.state_dim,
             max_size=int(self.config.rho_boundary_buffer_size),
@@ -375,6 +381,7 @@ class LyapunovTrainer:
 
         mining_interval = max(1, int(self.config.counterexample_every))
         rho_estimate = self.config.rho_min
+        cex_fraction_ema = 0.0
         total_steps = self.config.outer_epochs * self.config.steps_per_epoch
 
         tb_writer = _tb_writer_build(self.config.tb_log_dir)
@@ -446,9 +453,13 @@ class LyapunovTrainer:
                         __logger__.info("No new counterexamples mined at outer iteration %d.", outer_iter)
                     roa_candidates = self._build_roa_candidates()
 
+                    frac_yield = new_cex.shape[0] / self.config.adversarial_samples
+                    cex_fraction_ema = self.config.cex_fraction_ema_decay * cex_fraction_ema + (1 - self.config.cex_fraction_ema_decay) * frac_yield
+                    cex_fraction = self.config.cex_fraction_min + cex_fraction_ema * (self.config.cex_fraction_max - self.config.cex_fraction_min)
+
                 # Inner training loop
                 for _ in range(self.config.steps_per_epoch):
-                    x_batch = state_buffer.sample(self.config.batch_size)
+                    x_batch = state_buffer.sample(self.config.batch_size, cex_fraction=cex_fraction)
                     loss = self.loss_module(
                         x_batch=x_batch,
                         roa_candidates=roa_candidates,

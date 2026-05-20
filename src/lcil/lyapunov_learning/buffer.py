@@ -54,16 +54,27 @@ class DynamicStateBuffer:
         max_size: int,
         device: th.device,
         cex_buffer_size: int | None = None,
+        min_cex_fraction: float = 0.0,
+        max_cex_fraction: float = 1.0,
     ):
+        if initial_states.numel() == 0:
+            raise ValueError("initial_states cannot be empty.")
+        if min_cex_fraction < 0.0 or max_cex_fraction > 1.0 or min_cex_fraction > max_cex_fraction:
+            raise ValueError(
+                "Invalid CEX fraction bounds. Require 0.0 <= min_cex_fraction <= max_cex_fraction <= 1.0. " 
+                f"Got min_cex_fraction={min_cex_fraction}, max_cex_fraction={max_cex_fraction}."
+            )
+        
         self.states = initial_states.to(device)
         self.cexs = th.empty((0, initial_states.shape[1]), dtype=initial_states.dtype, device=device)
         self.max_size = max_size
         self.device = device
+        self.min_cex_fraction = min_cex_fraction
+        self.max_cex_fraction = max_cex_fraction
+
         self.cex_buffer_size = max_size if cex_buffer_size is None else int(cex_buffer_size)
         if self.cex_buffer_size <= 0:
             raise ValueError("cex_buffer_size must be positive.")
-        if self.states.numel() == 0:
-            raise ValueError("initial_states cannot be empty.")
 
     def add(self, new_states: th.Tensor) -> None:
         """Adds new states to the buffer and strictly enforces the maximum size."""
@@ -113,12 +124,12 @@ class DynamicStateBuffer:
         batch_size : int
             Total number of states to return.
         cex_fraction: float
-            Maximum fraction of the batch reserved for recent CEXs.
+            Fraction of the batch reserved for recent CEXs.
         """
         if batch_size <= 0:
             raise ValueError("batch_size must be positive.")
-        if not (0.0 <= cex_fraction <= 1.0):
-            cex_fraction = max(0.0, min(cex_fraction, 1.0))
+        if not (self.min_cex_fraction <= cex_fraction <= self.max_cex_fraction):
+            cex_fraction = max(self.min_cex_fraction, min(cex_fraction, self.max_cex_fraction))
 
         state_count = self.state_count
         cex_count = self.cex_count
