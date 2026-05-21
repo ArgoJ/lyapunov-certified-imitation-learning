@@ -18,6 +18,7 @@ from lcil.utils import GridSearchHelper, lcil_plt, MLP, IntegrationMethod
 from mpc_datagen import MPCDataset
 
 from . import DoubleIntegratorDynamics, default_model_path, load_policy_model
+from .basis import compute_riccati_value_matrix
 
 __logger__ = logging.getLogger("lcil.examples.double_integrator.learn_lyapunov")
 
@@ -111,6 +112,8 @@ def main() -> None:
         __logger__.info("Using policy directly for Lyapunov learning.")
 
     state_bounds = np.vstack([policy_global_config.constraints.lbx, policy_global_config.constraints.ubx])
+    riccati_p = compute_riccati_value_matrix(float(policy_global_config.dt))
+    __logger__.info("Using Riccati value matrix to seed the Lyapunov R factor:\n%s", riccati_p)
 
     sweep: GridSearchHelper[LyapunovTrainingConfig] = GridSearchHelper.from_namespace(
         training_defaults,
@@ -134,6 +137,7 @@ def main() -> None:
             feature_net=lyap_feature,
             state_dim=2,
             eps=1e-3,
+            riccati_p=riccati_p,
         ).to(device)
 
         # ---------------------------------------------------------------------

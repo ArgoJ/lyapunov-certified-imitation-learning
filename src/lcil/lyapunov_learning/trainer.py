@@ -366,7 +366,8 @@ class LyapunovTrainer:
         initial_x = sample_uniform_box(self.config.initial_sample_size, self.lbx, self.ubx, self.device)
         state_buffer = DynamicStateBuffer(
             initial_states=initial_x,
-            max_size=self.config.max_buffer,
+            state_buffer_limit=self.config.state_buffer_limit,
+            cex_buffer_limit=self.config.cex_buffer_limit,
             device=self.device,
             min_cex_fraction=self.config.cex_fraction_min,
             max_cex_fraction=self.config.cex_fraction_max,
@@ -382,6 +383,7 @@ class LyapunovTrainer:
         mining_interval = max(1, int(self.config.counterexample_every))
         rho_estimate = self.config.rho_min
         cex_fraction_ema = 0.0
+        cex_fraction = 0.0
         total_steps = self.config.outer_epochs * self.config.steps_per_epoch
 
         tb_writer = _tb_writer_build(self.config.tb_log_dir)
@@ -392,8 +394,8 @@ class LyapunovTrainer:
             MofNCompleteColumn(),
             TextColumn("loss: {task.fields[loss]:.4f}"),
             TextColumn("ρ: {task.fields[rho]:.4f}"),
-            TextColumn("pool: {task.fields[pool]:.0f}"),
-            TextColumn("cex: {task.fields[cex]:.0f}"),
+            TextColumn("cex_pool: {task.fields[cex_pool]:.0f}"),
+            TextColumn("cex_samples: {task.fields[cex_samples]:.0f}/{task.fields[batch_size]:.0f}"),
             TimeElapsedColumn(),
             TimeRemainingColumn(),
         ) as progress:
@@ -402,8 +404,9 @@ class LyapunovTrainer:
                 total=float(total_steps),
                 loss=float("nan"),
                 rho=float(rho_estimate),
-                pool=float(state_buffer.state_count),
-                cex=float(state_buffer.cex_count),
+                cex_pool=float(0.0),
+                cex_samples=float(0.0),
+                batch_size=float(self.config.batch_size),
             )
             for outer_iter in range(self.config.outer_epochs):
                 last_loss_value = np.nan
@@ -476,8 +479,8 @@ class LyapunovTrainer:
                         advance=1.0,
                         loss=none_to_float(loss.item()),
                         rho=none_to_float(rho_estimate),
-                        pool=none_to_float(state_buffer.state_count),
-                        cex=none_to_float(state_buffer.cex_count),
+                        cex_pool=none_to_float(state_buffer.cex_count),
+                        cex_samples=none_to_float(cex_fraction * self.config.batch_size),
                     )
                     last_loss_value = float(loss.item())
 

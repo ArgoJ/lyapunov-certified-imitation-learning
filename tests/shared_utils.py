@@ -10,7 +10,7 @@ def analytical_quadratic_level_set_measure(
     rho: float,
     p_matrix: ArrayLike,
 ) -> float:
-    """Return the nD measure of the quadratic sublevel set ``x^T P x <= rho``.
+    r"""Return the nD measure of the quadratic sublevel set ``x^T P x <= rho``.
     $$ \text{measure} = \frac{\pi^{n/2}}{\Gamma(n/2 + 1)} \frac{\rho^{n/2}}{\sqrt{\prod_{i=1}^n \lambda_i}} $$
     where $\lambda_i$ are the eigenvalues of $P$.
     

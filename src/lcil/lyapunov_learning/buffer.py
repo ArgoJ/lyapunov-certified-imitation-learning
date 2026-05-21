@@ -51,9 +51,9 @@ class DynamicStateBuffer:
     def __init__(
         self,
         initial_states: th.Tensor,
-        max_size: int,
+        state_buffer_limit: int,
+        cex_buffer_limit: int,
         device: th.device,
-        cex_buffer_size: int | None = None,
         min_cex_fraction: float = 0.0,
         max_cex_fraction: float = 1.0,
     ):
@@ -67,14 +67,12 @@ class DynamicStateBuffer:
         
         self.states = initial_states.to(device)
         self.cexs = th.empty((0, initial_states.shape[1]), dtype=initial_states.dtype, device=device)
-        self.max_size = max_size
+        self.max_size = state_buffer_limit
         self.device = device
         self.min_cex_fraction = min_cex_fraction
         self.max_cex_fraction = max_cex_fraction
 
-        self.cex_buffer_size = max_size if cex_buffer_size is None else int(cex_buffer_size)
-        if self.cex_buffer_size <= 0:
-            raise ValueError("cex_buffer_size must be positive.")
+        self.cex_buffer_size = cex_buffer_limit
 
     def add(self, new_states: th.Tensor) -> None:
         """Adds new states to the buffer and strictly enforces the maximum size."""

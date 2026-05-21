@@ -13,10 +13,8 @@ from mpc_datagen.verification import (
     ROAVerifier,
 )
 
-try:
-    from . import get_batch_ocp_solver
-except ImportError:
-    from acados_ocp import get_batch_ocp_solver
+from . import get_batch_ocp_solver
+from .basis import *
 
 
 def setup_parser() -> argparse.ArgumentParser:
@@ -60,16 +58,6 @@ def setup_parser() -> argparse.ArgumentParser:
 def main():
     parser = setup_parser()
     args = parser.parse_args()
-
-    # Continuous-time double integrator matrices (standard)
-    A_c = np.array([[0, 1],
-                    [0, 0]])
-    B_c = np.array([[0],
-                    [1]])
-
-    # Cost matrices
-    Q = np.diag([15.0, 1.0])
-    R = np.diag([0.1])
 
     iso = datetime.now().strftime('%Y%m%d_%H%M%S').replace(" ", "_").replace(":", "-")
     base_path = Path(args.base_path) / iso

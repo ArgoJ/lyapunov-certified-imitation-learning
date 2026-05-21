@@ -11,11 +11,13 @@ import torch as th
 from numpy.typing import NDArray
 from scipy.stats import norm, qmc
 
+from ..utils.base_config import JsonDataclass
+
 __logger__ = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class LevelSetEstimate:
+class LevelSetEstimate(JsonDataclass):
     """Deterministic star-shaped size estimate for ``V(x) <= rho``.
 
     The estimate is computed from deterministic rays whose directions lie on the
@@ -24,6 +26,9 @@ class LevelSetEstimate:
     measure is therefore a star-shaped approximation around the origin, not the
     exact geometric volume of an arbitrary neural-network sublevel set.
     """
+
+    NP_ARRAY_FIELDS = ("directions", "radii", "truncated_mask")
+    DEFAULT_FILE_NAME = "level_set_estimate.json"
 
     rho: float
     num_states: int

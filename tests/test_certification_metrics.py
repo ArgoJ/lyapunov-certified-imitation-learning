@@ -1,4 +1,5 @@
 import unittest
+from tempfile import TemporaryDirectory
 
 import numpy as np
 import torch as th
@@ -11,6 +12,7 @@ from shared_utils import (
 )
 
 from lcil.certification.metrics import (
+    LevelSetEstimate,
     _sample_unit_sphere_directions,
     estimate_level_set_measure,
 )
@@ -121,6 +123,29 @@ class TestCertificationMetrics(unittest.TestCase):
         # Tolerance slightly higher due to Monte Carlo error in asymmetric 
         # shapes being larger than in perfect circles.
         self.assertAlmostEqual(estimate.measure, expected_area, delta=5e-3)
+
+    def test_level_set_estimate_json_roundtrip(self) -> None:
+        estimate = estimate_level_set_measure(
+            _QuadraticLyapunov(),
+            rho=1.0,
+            num_states=2,
+            num_directions=32,
+        )
+
+        with TemporaryDirectory() as tmp_dir:
+            output_path = estimate.save(tmp_dir)
+            reloaded = LevelSetEstimate.load(tmp_dir)
+
+        self.assertEqual(output_path.name, "level_set_estimate.json")
+        self.assertEqual(reloaded.rho, estimate.rho)
+        self.assertEqual(reloaded.num_states, estimate.num_states)
+        self.assertEqual(reloaded.num_directions, estimate.num_directions)
+        self.assertEqual(reloaded.measure, estimate.measure)
+        self.assertEqual(reloaded.unit_sphere_surface_area, estimate.unit_sphere_surface_area)
+        self.assertEqual(reloaded.max_radius, estimate.max_radius)
+        np.testing.assert_allclose(reloaded.directions, estimate.directions)
+        np.testing.assert_allclose(reloaded.radii, estimate.radii)
+        np.testing.assert_array_equal(reloaded.truncated_mask, estimate.truncated_mask)
 
 
 if __name__ == "__main__":

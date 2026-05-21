@@ -14,6 +14,21 @@ from types import UnionType
 from typing import Any, ClassVar, Literal, Union, Self, get_args, get_origin, get_type_hints
 
 
+def check_positive(value: int | float, name: str) -> None:
+    fvalue = float(value)
+    if fvalue <= 0.0:
+        raise ValueError(f"{name} must be a positive number.")
+    
+def check_non_negative(value: int | float, name: str) -> None:
+    fvalue = float(value)
+    if fvalue < 0.0:
+        raise ValueError(f"{name} must be a non-negative number.")
+
+def check_fraction(value: float, name: str) -> None:
+    fvalue = float(value)
+    if fvalue < 0.0 or fvalue > 1.0:
+        raise ValueError(f"{name} must be in the range [0, 1].")
+
 def _to_json_compatible(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: _to_json_compatible(val) for key, val in value.items()}
@@ -223,7 +238,7 @@ class JsonDataclass:
         return _to_json_compatible(asdict(self))
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> JsonDataclass:
+    def from_dict(cls, data: dict[str, Any]) -> Self:
         """Build config from a dictionary and restore numpy fields."""
         values = dict(data)
 
@@ -270,7 +285,7 @@ class JsonDataclass:
         return output_path
 
     @classmethod
-    def load(cls, path: PathLike[str] | str) -> JsonDataclass:
+    def load(cls, path: PathLike[str] | str) -> Self:
         """Load configuration from JSON file or directory."""
         input_path = cls._resolve_path(path)
         payload = json.loads(input_path.read_text(encoding="utf-8"))

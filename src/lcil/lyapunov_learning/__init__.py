@@ -1,4 +1,4 @@
-from .trainer import LyapunovTrainer
+from .trainer import LyapunovTrainer, LyapunovTrainingResult
 from .config import LyapunovTrainingConfig
 from .rollout import LyapunovRollout
 from .utils import ThresholdMonitor, TrainingAbortedError
@@ -17,6 +17,7 @@ from .counterexample import (
 
 __all__ = [
     "LyapunovTrainer",
+    "LyapunovTrainingResult",
     "LyapunovTrainingConfig",
     "LyapunovRollout",
     "LyapunovNet",

@@ -56,6 +56,28 @@ class SaveableFeatureNet(th.nn.Module):
 
 
 class TestNeuralLyapunovCandidateSerialization(unittest.TestCase):
+    def test_riccati_seed_initializes_pd_matrix(self) -> None:
+        feature_net = SaveableFeatureNet()
+        p_matrix = th.tensor(
+            [
+                [2.0, 0.3, 0.0, 0.0],
+                [0.3, 1.8, 0.2, 0.0],
+                [0.0, 0.2, 1.6, 0.1],
+                [0.0, 0.0, 0.1, 1.4],
+            ],
+            dtype=th.float32,
+        )
+        eps = 1e-3
+
+        model = NeuralLyapunovCandidate(
+            feature_net=feature_net,
+            state_dim=4,
+            eps=eps,
+            riccati_p=p_matrix,
+        )
+
+        self.assertTrue(th.allclose(model._pd_matrix(), p_matrix, atol=1e-5, rtol=1e-5))
+
     def test_save_load_roundtrip_with_state_dict_feature_net(self) -> None:
         feature_net = WrappedFeatureNet(
             feature_net=MLP([5, 8, 1], ["tanh", "identity"]),

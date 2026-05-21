@@ -12,7 +12,7 @@ from lcil.certification import (
     CertificationResultTester,
     LyapunovCertificationConfig,
 )
-from lcil.lyapunov_learning.config import LyapunovTrainingConfig
+from lcil.lyapunov_learning import LyapunovTrainingConfig, LyapunovTrainingResult
 from lcil.utils.base_config import ArgumentParserConfig, config_field
 
 from . import (
@@ -131,7 +131,12 @@ def main() -> None:
     dyn_model = CartpoleDynamics(dt=policy_model.net.global_config.dt).to(device)
     dyn_model.eval()
 
-    rho_estimate = script_config.rho_estimate
+    results_path = lyapunov_dir / "training_results.json"
+    if not results_path.is_file():
+        raise FileNotFoundError(f"Training results file not found at {results_path}. Cannot extract rho estimate. Please provide an initial rho estimate via the --rho_estimate argument or ensure the training results file exists.")
+    training_results = LyapunovTrainingResult.load(results_path)
+    train_rho_estimate = training_results.rho_estimate
+    rho_estimate = script_config.rho_estimate if script_config.rho_estimate is not None else train_rho_estimate
 
     save_dir = (
         Path(script_config.save_dir).resolve()
@@ -167,6 +172,8 @@ def main() -> None:
     tester_results_path = save_dir / "certification_tester_results.json"
     test_results.save(tester_results_path)
     __logger__.info("Saved certification tester results to %s", tester_results_path)
+
+    
 
 if __name__ == "__main__":
     main()

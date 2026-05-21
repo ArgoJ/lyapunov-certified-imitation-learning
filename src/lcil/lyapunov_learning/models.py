@@ -47,15 +47,18 @@ class NeuralLyapunovCandidate(nn.Module):
         state_dim: int,
         eps: float = 1e-3,
         x_star: th.Tensor | None = None,
+        riccati_p: th.Tensor | None = None,
     ):
         super().__init__()
         self.feature_net = feature_net
         self.state_dim = state_dim
         self.eps = float(eps)
-        self.r_factor = nn.Parameter(th.eye(state_dim)) # TODO: maybe preset with lqr
+        self.r_factor = nn.Parameter(th.eye(state_dim))
         if x_star is None:
             x_star = th.zeros(state_dim, dtype=th.float32)
         self.register_buffer("x_star", x_star.reshape(1, state_dim))
+        if riccati_p is not None:
+            self.set_riccati_p(riccati_p)
 
     def _pd_matrix(self) -> th.Tensor:
         eye = th.eye(
@@ -67,6 +70,37 @@ class NeuralLyapunovCandidate(nn.Module):
 
     def set_x_star(self, x_star: th.Tensor) -> None:
         self.x_star.copy_(x_star.reshape(1, -1))
+
+    def set_riccati_p(self, riccati_p: th.Tensor) -> None:
+        p_matrix = th.as_tensor(
+            riccati_p,
+            dtype=self.r_factor.dtype,
+            device=self.r_factor.device,
+        )
+        if p_matrix.shape != (self.state_dim, self.state_dim):
+            raise ValueError(
+                "riccati_p must have shape "
+                f"({self.state_dim}, {self.state_dim}), got {tuple(p_matrix.shape)}."
+            )
+        if not bool(th.isfinite(p_matrix).all()):
+            raise ValueError("riccati_p must contain only finite values.")
+
+        p_sym = 0.5 * (p_matrix + p_matrix.transpose(0, 1))
+        eye = th.eye(self.state_dim, dtype=p_sym.dtype, device=p_sym.device)
+        shifted = p_sym - self.eps * eye
+        eigvals, eigvecs = th.linalg.eigh(shifted)
+        scale = max(1.0, float(th.linalg.norm(p_sym, ord=2).item()))
+        tol = 1e-6 * scale
+        min_eig = float(eigvals.min().item())
+        if min_eig < -tol:
+            raise ValueError(
+                "riccati_p must satisfy P - eps I >= 0 so it can seed R^T R. "
+                f"Minimum eigenvalue after subtracting eps is {min_eig:.6e}."
+            )
+
+        factor = th.diag(th.sqrt(eigvals.clamp_min(0.0))) @ eigvecs.transpose(0, 1)
+        with th.no_grad():
+            self.r_factor.copy_(factor)
 
     def forward(self, x: th.Tensor) -> th.Tensor:
         x_star = self.x_star.to(dtype=x.dtype, device=x.device)

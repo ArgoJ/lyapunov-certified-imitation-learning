@@ -5,7 +5,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from numpy.typing import NDArray
 
-from ..utils.base_config import ArgumentParserConfig, JsonDataclass, config_field
+from ..utils.base_config import (
+    ArgumentParserConfig,
+    JsonDataclass,
+    config_field,
+    check_positive,
+    check_non_negative,
+    check_fraction,
+)
 
 
 @dataclass(frozen=True)
@@ -124,11 +131,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=0.0,
         help="Dropout probability for the policy model."
     )
-    max_buffer: int = config_field(
-        default=10000,
-        help="Maximum size of the training buffer.",
-        display_alias="buff",
-    )
     roa_candidate_size: int = config_field(
         default=1024,
         help="Number of candidate states used in the ROA surrogate loss.",
@@ -239,6 +241,16 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="Exponential moving average decay for counterexample fraction.",
         display_alias="cex_frac_ema_decay",
     )
+    state_buffer_limit: int = config_field(
+        default=10000,
+        help="Maximum size of the training buffer.",
+        display_alias="buff",
+    )
+    cex_buffer_limit: int = config_field(
+        default=10000,
+        help="Maximum size of the counterexample buffer.",
+        display_alias="cex_buff",
+    )
 
     # Tolerances
     condition_tolerance: float = config_field(
@@ -258,42 +270,33 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
             raise ValueError("tb_log_dir must be a string, os.PathLike, or None.")
         if self.tb_log_dir is not None:
             object.__setattr__(self, "tb_log_dir", Path(self.tb_log_dir).resolve())
-        if self.learning_rate <= 0:
-            raise ValueError("Learning rate must be positive.")
-        if self.batch_size <= 0:
-            raise ValueError("Batch size must be positive.")
-        if not (0.0 <= self.dropout <= 1.0):
-            raise ValueError("dropout must be in [0, 1].")
-        if self.formal_positivity_weight < 0.0:
-            raise ValueError("formal_positivity_weight must be non-negative.")
-        if self.condition_margin < 0.0:
-            raise ValueError("condition_margin must be non-negative.")
-        if self.rho_boundary_samples <= 0:
-            raise ValueError("rho_boundary_samples must be positive.")
-        if self.roa_candidate_size <= 0:
-            raise ValueError("ROA candidate size must be positive.")
-        if self.outer_epochs <= 0:
-            raise ValueError("Outer epochs must be positive.")
-        if self.steps_per_epoch <= 0:
-            raise ValueError("Steps per epoch must be positive.")
-        if self.counterexample_every < 0:
-            raise ValueError("Counterexample mining interval must be non-negative.")
+        check_positive(self.learning_rate, "learning_rate")
+        check_positive(self.batch_size, "batch_size")
+        check_fraction(self.dropout, "dropout")
+        check_non_negative(self.formal_positivity_weight, "formal_positivity_weight")
+        check_non_negative(self.condition_margin, "condition_margin")
+        check_positive(self.roa_candidate_size, "roa_candidate_size")
+        check_positive(self.state_dim, "state_dim")
+        check_positive(self.initial_sample_size, "initial_sample_size")
+        check_positive(self.roa_candidate_size, "roa_candidate_size")
+        check_positive(self.outer_epochs, "outer_epochs")
+        check_positive(self.steps_per_epoch, "steps_per_epoch")
+        check_non_negative(self.counterexample_every, "counterexample_every")
         if self.cex_fraction_min < 0.0 or self.cex_fraction_max > 1.0 or self.cex_fraction_min > self.cex_fraction_max:
             raise ValueError("cex_fraction_min and cex_fraction_max must satisfy 0 <= cex_fraction_min <= cex_fraction_max <= 1.")
-        if self.cex_fraction_ema_decay < 0.0 or self.cex_fraction_ema_decay > 1.0:
-            raise ValueError("cex_fraction_ema_decay must be in [0, 1].")
+        check_fraction(self.cex_fraction_ema_decay, "cex_fraction_ema_decay")
+        check_positive(self.state_buffer_limit, "state_buffer_limit")
+        check_positive(self.cex_buffer_limit, "cex_buffer_limit")
         if self.rho_min <= 0:
             raise ValueError("Minimum rho estimate must be positive.")
-        if self.rho_estimate_quantile <= 0.0 or self.rho_estimate_quantile > 1.0:
-            raise ValueError("rho_estimate_quantile must be in the interval (0, 1].")
+        check_fraction(self.rho_estimate_quantile, "rho_estimate_quantile")
         if self.rho_boundary_buffer_size is None:
             object.__setattr__(
                 self,
                 "rho_boundary_buffer_size",
                 max(self.rho_boundary_samples, 4 * self.rho_boundary_samples),
             )
-        elif self.rho_boundary_buffer_size <= 0:
-            raise ValueError("rho_boundary_buffer_size must be positive when provided.")
+        check_positive(self.rho_boundary_buffer_size, "rho_boundary_buffer_size")
         if self.state_bounds.shape[1] != self.state_dim:
             raise ValueError(
                 "state_bounds must match state_dim. "

@@ -10,7 +10,11 @@ import numpy as np
 import torch as th
 from mpc_datagen import MPCDataset
 
-from lcil.certification import CertificationResultTester, LyapunovCertificationConfig
+from lcil.certification import (
+    CertificationResultTester,
+    LyapunovCertificationConfig,
+    estimate_level_set_measure,
+)
 from lcil.imitation_learning.policy_rollout import PolicyRolloutConfig, PolicyRolloutGenerator
 from lcil.lyapunov_learning import LyapunovRollout
 from lcil.certification.bisect_certifier import RegionCertificationResult
@@ -158,6 +162,25 @@ def _save_lyapunov_plot(
     __logger__.info("Saved certification tester Lyapunov plot to %s", plot_path)
 
 
+def _save_level_set_metrics(
+    *,
+    cert_dir: Path,
+    cert_result: RegionCertificationResult,
+    lyapunov_fn: Callable[[th.Tensor], th.Tensor],
+    state_dim: int,
+    device: th.device,
+) -> None:
+    metrics_path = cert_dir / "certification_tester_metrics.json"
+    level_set_estimate = estimate_level_set_measure(
+        lyapunov_fn=lyapunov_fn,
+        rho=float(cert_result.rho),
+        num_states=int(state_dim),
+        device=device,
+    )
+    level_set_estimate.save(metrics_path)
+    __logger__.info("Saved certification tester metrics to %s", metrics_path)
+
+
 def main() -> None:
     script_config = parse_args()
     device = th.device(script_config.device)
@@ -197,6 +220,8 @@ def main() -> None:
         cert_result=cert_result,
         rollout_steps=int(script_config.rollout_steps),
     )
+    test_results.save(results_path)
+    __logger__.info("Saved certification tester results to %s", results_path)
     rollout_dataset = _build_rollout_dataset(
         cert_result=cert_result,
         policy_model=policy_model,
@@ -205,8 +230,13 @@ def main() -> None:
         rollout_steps=int(script_config.rollout_steps),
         device=device,
     )
-    test_results.save(results_path)
-    __logger__.info("Saved certification tester results to %s", results_path)
+    _save_level_set_metrics(
+        cert_dir=cert_dir,
+        cert_result=cert_result,
+        lyapunov_fn=lyap_model,
+        state_dim=int(policy_model.global_config.nx),
+        device=device,
+    )
     _save_lyapunov_plot(
         cert_dir=cert_dir,
         cert_result=cert_result,
