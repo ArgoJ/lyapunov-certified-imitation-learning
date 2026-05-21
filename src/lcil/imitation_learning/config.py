@@ -24,6 +24,26 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
 
     Parameters
     ----------
+    dataset_path : str or os.PathLike or None, optional
+        Path to the source dataset (HDF5). If ``None``, dataset loading is disabled and must be handled manually by the training script.
+    sequence_length : int, optional
+        Length of state sequences fed to the policy model. Must be positive.
+    stride : int, optional
+        Stride between the start indices of consecutive state sequences. Must be positive.
+    target_mode : {"last", "all"}, optional
+        Whether to predict only the last action in the sequence or all actions.
+    val_fraction : float, optional
+        Fraction of the dataset to use for validation. Must be in the range [0, 1].
+    split_seed : int, optional
+        Random seed for dataset splitting.
+    split_strategy : {"random", "trajectory"}, optional
+        Strategy for splitting the dataset.
+    use_references : bool, optional
+        Whether to use reference trajectories.
+    near_duplicate_radius : float, optional
+        Radius for considering near-duplicate states. Must be positive.
+    batch_size : int, optional
+        Training batch size. Must be positive.
     epochs : int, optional
         Number of optimization epochs. Must be positive.
     restore_best_model : bool, optional
@@ -36,6 +56,8 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Adam optimizer learning rate. Must be positive.
     weight_decay : float, optional
         Adam optimizer weight decay coefficient. Must be non-negative.
+    dropout : float, optional
+        Dropout probability for the policy model. Must be in the range [0, 1].
     scheduler_type : {"none", "step", "cosine", "plateau"}, optional
         Learning-rate scheduler variant.
     scheduler_kwargs : Mapping[str, Any] or None, optional

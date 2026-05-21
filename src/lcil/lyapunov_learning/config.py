@@ -39,18 +39,28 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     train_policy_model : bool
         Whether to jointly optimize policy parameters with Lyapunov parameters.
         If False, only the Lyapunov model is updated.
-    tb_log_dir : str | os.PathLike | None
-        TensorBoard logging directory. If ``None``, TensorBoard logging is disabled.
     seed : int | None
         Random seed for reproducibility.
     kappa : float
         Exponential decay factor in the Lyapunov decrease condition.
+    dropout : float
+        Dropout probability for the Lyapunov model. Must be in the range [0, 1].
+    tb_log_dir : str | os.PathLike | None
+        TensorBoard logging directory. If ``None``, TensorBoard logging is disabled.
+
     invariance_weight : float
         Weight of the set-invariance penalty term.
     equilibrium_weight : float
         Weight for keeping V(0) near zero.
     formal_positivity_weight : float
         Weight for the IBP-based positivity penalty over the full training box.
+    roa_weight : float
+        Weight for the ROA surrogate term.
+    l1_weight : float
+        Weight for the parameter l1 regularization.
+    
+    roa_candidate_size : int
+        Number of candidate states used in the ROA surrogate loss.
     rho_growth_gamma : float
         Growth factor for estimating sublevel values from boundary points.
     rho_boundary_samples : int
@@ -69,20 +79,22 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Minimum admissible sublevel value.
     adversarial_samples : int
         Number of PGD seeds for counterexample mining.
-    counterexample_steps : int
-        PGD steps for counterexample search.
     adversarial_step_size : float
         Relative PGD step size for counterexample mining.
+    counterexample_steps : int
+        PGD steps for counterexample search.
     counterexample_every : int
         Frequency of counterexample mining in outer epochs.
-    max_buffer : int
-        Maximum size of the training buffer.
-    roa_candidate_size : int
-        Number of candidate states used in the ROA surrogate loss.
-    roa_weight : float
-        Weight for the ROA surrogate term.
-    l1_weight : float
-        Weight for the parameter l1 regularization.
+    cex_fraction_min : float
+        Minimum fraction of counterexamples in a batch.
+    cex_fraction_max : float
+        Maximum fraction of counterexamples in a batch.
+    cex_fraction_ema_decay : float
+        Exponential moving average decay for the counterexample fraction, used to adaptively adjust the number of counterexamples in each batch.
+    state_buffer_limit : int
+        Maximum size of the training buffer for regular samples.
+    cex_buffer_limit : int
+        Maximum size of the training buffer for counterexamples.
     condition_tolerance : float
         Numerical tolerance for condition satisfaction.
     condition_margin : float
@@ -135,7 +147,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     dropout: float = config_field(
         default=0.0,
-        help="Dropout probability for the policy model.",
+        help="Dropout probability for the Lyapunov model.",
         validators=(fraction_validator,),
     )
     roa_candidate_size: int = config_field(
