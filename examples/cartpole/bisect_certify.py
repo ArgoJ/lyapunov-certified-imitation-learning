@@ -131,7 +131,7 @@ def main() -> None:
     dyn_model = CartpoleDynamics(dt=policy_model.net.global_config.dt).to(device)
     dyn_model.eval()
 
-    results_path = lyapunov_dir / "training_results.json"
+    results_path = lyapunov_dir / "training_result.json"
     if not results_path.is_file():
         raise FileNotFoundError(f"Training results file not found at {results_path}. Cannot extract rho estimate. Please provide an initial rho estimate via the --rho_estimate argument or ensure the training results file exists.")
     training_results = LyapunovTrainingResult.load(results_path)

@@ -6,7 +6,7 @@ import json
 import numpy as np
 
 from argparse import ArgumentParser, BooleanOptionalAction
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import MISSING, asdict, field as dataclass_field, fields, is_dataclass, replace
 from os import PathLike
 from pathlib import Path
@@ -14,20 +14,25 @@ from types import UnionType
 from typing import Any, ClassVar, Literal, Union, Self, get_args, get_origin, get_type_hints
 
 
-def check_positive(value: int | float, name: str) -> None:
+def positive_validator(value: int | float, name: str) -> None:
     fvalue = float(value)
     if fvalue <= 0.0:
         raise ValueError(f"{name} must be a positive number.")
     
-def check_non_negative(value: int | float, name: str) -> None:
+def non_negative_validator(value: int | float, name: str) -> None:
     fvalue = float(value)
     if fvalue < 0.0:
         raise ValueError(f"{name} must be a non-negative number.")
 
-def check_fraction(value: float, name: str) -> None:
+def fraction_validator(value: float, name: str) -> None:
     fvalue = float(value)
     if fvalue < 0.0 or fvalue > 1.0:
         raise ValueError(f"{name} must be in the range [0, 1].")
+
+def run_field_validators(instance: Any) -> None:
+    for field_info in fields(instance):
+        for validator in field_info.metadata.get("validators", ()):
+            validator(getattr(instance, field_info.name), field_info.name)
 
 def _to_json_compatible(value: Any) -> Any:
     if isinstance(value, dict):
@@ -69,6 +74,7 @@ def config_field(
     description: str | None = None,
     display_alias: str | None = None,
     cli: bool = True,
+    validators: Sequence[Callable[[Any, str], None]] | None = None,
     argparse_kwargs: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> Any:
@@ -83,6 +89,9 @@ def config_field(
         metadata["display_alias"] = display_alias
 
     metadata.setdefault("cli", cli)
+
+    if validators is not None:
+        metadata["validators"] = tuple(validators)
 
     if argparse_kwargs is not None:
         merged_argparse_kwargs = dict(metadata.get("argparse", {}))

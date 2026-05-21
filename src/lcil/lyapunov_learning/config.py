@@ -9,9 +9,10 @@ from ..utils.base_config import (
     ArgumentParserConfig,
     JsonDataclass,
     config_field,
-    check_positive,
-    check_non_negative,
-    check_fraction,
+    positive_validator,
+    non_negative_validator,
+    fraction_validator,
+    run_field_validators,
 )
 
 
@@ -88,35 +89,40 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Safety margin enforced on the verifier output during training.
     """
 
-    state_dim: int = config_field(cli=False)
+    state_dim: int = config_field(cli=False, validators=(positive_validator,))
     state_bounds: NDArray = config_field(cli=False)
     initial_sample_size: int = config_field(
         default=1000, 
         help="Number of initial random samples used for training.",
-        display_alias="init_samples"
+        display_alias="init_samples",
+        validators=(positive_validator,),
     )
     batch_size: int = config_field(
         default=512,
         help="Batch size for training iterations.",
+        validators=(positive_validator,),
     )
     outer_epochs: int = config_field(
         default=10,
         help="Number of outer CEGIS epochs.",
-        display_alias="epochs"
+        display_alias="epochs",
+        validators=(positive_validator,),
     )
     steps_per_epoch: int = config_field(
         default=500,
         help="Number of optimization steps per outer epoch.",
-        display_alias="steps/epoch"
+        display_alias="steps/epoch",
+        validators=(positive_validator,),
     )
     learning_rate: float = config_field(
         default=1e-2,
         help="Adam optimizer learning rate.",
         display_alias="lr",
+        validators=(positive_validator,),
     )
     train_policy_model: bool = config_field(
         default=True,
-        help="Whether to jointly optimize policy parameters with the Lyapunov model."
+        help="Whether to jointly optimize policy parameters with the Lyapunov model.",
     )
     seed: int | None = config_field(
         default=None,
@@ -129,12 +135,14 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     dropout: float = config_field(
         default=0.0,
-        help="Dropout probability for the policy model."
+        help="Dropout probability for the policy model.",
+        validators=(fraction_validator,),
     )
     roa_candidate_size: int = config_field(
         default=1024,
         help="Number of candidate states used in the ROA surrogate loss.",
         display_alias="roa_cand",
+        validators=(positive_validator,),
     )
     tb_log_dir: str | os.PathLike | None = config_field(
         default=None,
@@ -146,26 +154,31 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=1.0,
         help="Weight of the set-invariance penalty term.",
         display_alias="invw",
+        validators=(non_negative_validator,),
     )
     equilibrium_weight: float = config_field(
         default=0.01,
         help="Weight for keeping V(0) near zero.",
         display_alias="eqw",
+        validators=(non_negative_validator,),
     )
     formal_positivity_weight: float = config_field(
         default=1.0,
         help="Weight of the positivity penalty over the training box.",
         display_alias="fpw",
+        validators=(non_negative_validator,),
     )
     roa_weight: float = config_field(
         default=0.1,
         help="Weight for the ROA surrogate term.",
         display_alias="roaw",
+        validators=(non_negative_validator,),
     )
     l1_weight: float = config_field(
         default=1e-5,
         help="Weight for parameter L1 regularization.",
         display_alias="l1w",
+        validators=(non_negative_validator,),
     )
 
     # Rho estimation parameters
@@ -173,11 +186,13 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=1.1,
         help="Growth factor used when estimating rho from boundary points.",
         display_alias="\u03C1_fac",
+        validators=(positive_validator,),
     )
     rho_boundary_samples: int = config_field(
         default=512,
         help="Number of boundary points used to estimate rho.",
         display_alias="\u03C1_num",
+        validators=(positive_validator,),
     )
     rho_boundary_buffer_size: int | None = config_field(
         default=None,
@@ -188,21 +203,25 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=15,
         help="Number of projected gradient steps for boundary-value descent.",
         display_alias="\u03C1_steps",
+        validators=(positive_validator,),
     )
     rho_step_size: float = config_field(
         default=0.05,
         help="Relative step size for boundary-value descent.",
         display_alias="\u03C1_step",
+        validators=(positive_validator,),
     )
     rho_estimate_quantile: float = config_field(
         default=0.1,
         help="Quantile used for robust boundary-value aggregation in rho estimation.",
         display_alias="\u03C1_quant",
+        validators=(fraction_validator,),
     )
     rho_min: float = config_field(
         default=1e-6,
         help="Minimum admissible rho value.",
         display_alias="\u03C1_min",
+        validators=(positive_validator,),
     )
 
     # PGD counterexample mining parameters
@@ -210,46 +229,55 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=4096,
         help="Number of PGD seed states for counterexample mining.",
         display_alias="cex_samples",
+        validators=(positive_validator,),
     )
     adversarial_step_size: float = config_field(
         default=0.05,
         help="Relative PGD step size for counterexample mining.",
         display_alias="cex_step",
+        validators=(positive_validator,),
     )
     counterexample_steps: int = config_field(
         default=10,
         help="PGD steps used during counterexample search.",
         display_alias="cex_steps",
+        validators=(positive_validator,),
     )
     counterexample_every: int = config_field(
         default=1,
         help="Frequency of counterexample mining in outer epochs.",
         display_alias="cex_every",
+        validators=(positive_validator,),
     )
     cex_fraction_min: float = config_field(
         default=0.2,
         help="Minimum fraction of counterexamples in a batch.",
         display_alias="cex_frac_min",
+        validators=(fraction_validator,),
     )
     cex_fraction_max: float = config_field(
         default=0.5,
         help="Maximum fraction of counterexamples in a batch.",
         display_alias="cex_frac_max",
+        validators=(fraction_validator,),
     )
     cex_fraction_ema_decay: float = config_field(
         default=0.8,
         help="Exponential moving average decay for counterexample fraction.",
         display_alias="cex_frac_ema_decay",
+        validators=(fraction_validator,),
     )
     state_buffer_limit: int = config_field(
         default=10000,
         help="Maximum size of the training buffer.",
         display_alias="buff",
+        validators=(positive_validator,),
     )
     cex_buffer_limit: int = config_field(
         default=10000,
         help="Maximum size of the counterexample buffer.",
         display_alias="cex_buff",
+        validators=(positive_validator,),
     )
 
     # Tolerances
@@ -262,47 +290,13 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=0.0,
         help="Safety margin enforced on the verifier output during training.",
         display_alias="margin",
+        validators=(non_negative_validator,),
     )
     NP_ARRAY_FIELDS = ("state_bounds",)
 
     def __post_init__(self):
-        if self.tb_log_dir is not None and not isinstance(self.tb_log_dir, (str, os.PathLike)):
-            raise ValueError("tb_log_dir must be a string, os.PathLike, or None.")
-        if self.tb_log_dir is not None:
-            object.__setattr__(self, "tb_log_dir", Path(self.tb_log_dir).resolve())
-        check_positive(self.learning_rate, "learning_rate")
-        check_positive(self.batch_size, "batch_size")
-        check_fraction(self.dropout, "dropout")
-        check_non_negative(self.formal_positivity_weight, "formal_positivity_weight")
-        check_non_negative(self.condition_margin, "condition_margin")
-        check_positive(self.roa_candidate_size, "roa_candidate_size")
-        check_positive(self.state_dim, "state_dim")
-        check_positive(self.initial_sample_size, "initial_sample_size")
-        check_positive(self.roa_candidate_size, "roa_candidate_size")
-        check_positive(self.outer_epochs, "outer_epochs")
-        check_positive(self.steps_per_epoch, "steps_per_epoch")
-        check_non_negative(self.counterexample_every, "counterexample_every")
-        if self.cex_fraction_min < 0.0 or self.cex_fraction_max > 1.0 or self.cex_fraction_min > self.cex_fraction_max:
-            raise ValueError("cex_fraction_min and cex_fraction_max must satisfy 0 <= cex_fraction_min <= cex_fraction_max <= 1.")
-        check_fraction(self.cex_fraction_ema_decay, "cex_fraction_ema_decay")
-        check_positive(self.state_buffer_limit, "state_buffer_limit")
-        check_positive(self.cex_buffer_limit, "cex_buffer_limit")
-        if self.rho_min <= 0:
-            raise ValueError("Minimum rho estimate must be positive.")
-        check_fraction(self.rho_estimate_quantile, "rho_estimate_quantile")
-        if self.rho_boundary_buffer_size is None:
-            object.__setattr__(
-                self,
-                "rho_boundary_buffer_size",
-                max(self.rho_boundary_samples, 4 * self.rho_boundary_samples),
-            )
-        check_positive(self.rho_boundary_buffer_size, "rho_boundary_buffer_size")
-        if self.state_bounds.shape[1] != self.state_dim:
-            raise ValueError(
-                "state_bounds must match state_dim. "
-                f"Expected {self.state_dim}, got {self.state_bounds.shape[1]} (maybe transposed, bound shape: {self.state_bounds.shape})."
-            )
-                
+        run_field_validators(self)
+
         lbx = self.state_bounds[0]
         ubx = self.state_bounds[1]
         if (lbx >= 0).any() or (ubx <= 0).any() or (lbx > ubx).any():
@@ -310,3 +304,30 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
                 "State bounds do not appear to include the origin. " 
                 "Ensure that state_bounds are correctly specified for Lyapunov training."
             )
+
+        if self.tb_log_dir is not None and not isinstance(self.tb_log_dir, (str, os.PathLike)):
+            raise ValueError("tb_log_dir must be a string, os.PathLike, or None.")
+        if self.tb_log_dir is not None:
+            object.__setattr__(self, "tb_log_dir", Path(self.tb_log_dir).resolve())
+
+        # Rho estimation parameters
+        if self.rho_growth_gamma < 1.0:
+            raise ValueError("rho_growth_gamma must be at least 1.0 to ensure valid growth of rho estimates.")
+        if self.rho_boundary_buffer_size is None:
+            object.__setattr__(
+                self,
+                "rho_boundary_buffer_size",
+                max(self.rho_boundary_samples, 4 * self.rho_boundary_samples),
+            )
+        positive_validator(self.rho_boundary_buffer_size, "rho_boundary_buffer_size")
+
+        if self.state_bounds.shape[1] != self.state_dim:
+            raise ValueError(
+                "state_bounds must match state_dim. "
+                f"Expected {self.state_dim}, got {self.state_bounds.shape[1]} (maybe transposed, bound shape: {self.state_bounds.shape})."
+            )
+
+        # CEX mining parameters
+        if self.cex_fraction_min > self.cex_fraction_max:
+            raise ValueError("cex_fraction_min must be less than or equal to cex_fraction_max.")
+

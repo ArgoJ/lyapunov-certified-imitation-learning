@@ -5,7 +5,14 @@ from dataclasses import dataclass
 from numpy.typing import NDArray
 
 from ..lyapunov_learning.config import LyapunovTrainingConfig
-from ..utils.base_config import ArgumentParserConfig, JsonDataclass, config_field
+from ..utils.base_config import (
+    ArgumentParserConfig,
+    JsonDataclass,
+    config_field,
+    positive_validator,
+    non_negative_validator,
+    run_field_validators,
+)
 
 
 @dataclass(frozen=True)
@@ -74,13 +81,13 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         boundary regions directly into complete certification.
     """
 
-    state_dim: int = config_field(cli=False)
+    state_dim: int = config_field(cli=False, validators=(positive_validator,))
     cert_bounds: NDArray = config_field(cli=False)
 
     # Regions
     bins_per_dim: int | Sequence[int] = config_field(
         default=4,
-        help="Initial certification bins per state dimension."
+        help="Initial certification bins per state dimension.",
     )
     center_refinement_factor: float | Sequence[float] = config_field(
         default=1.0,
@@ -95,12 +102,14 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     kappa: float = config_field(
         default=0.05,
         help="Exponential decay factor in the Lyapunov decrease condition.",
-        display_alias="bounds",
+        display_alias="\u03BA",
+        validators=(positive_validator,)
     )
     rho_min: float = config_field(
         default=1e-6,
         help="Minimum admissible rho value.",
         display_alias="\u03C1_min",
+        validators=(positive_validator,)
     )
     cert_method: str = config_field(
         default="alpha-crown",
@@ -111,16 +120,19 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         default=1e-6,
         help="Slack used in the rho-sublevel gate of the verification graph.",
         display_alias="sublevel_tol",
+        validators=(non_negative_validator,)
     )
     condition_tolerance: float = config_field(
         default=1e-6,
         help="Numerical tolerance on the fused verifier output.",
         display_alias="cond_tol",
+        validators=(non_negative_validator,)
     )
     condition_margin: float = config_field(
         default=0.0,
         help="Optional additive safety margin on the decrease term during certification.",
         display_alias="margin",
+        validators=(non_negative_validator,)
     )
 
     # Search and Bisection parameters
@@ -128,26 +140,31 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         default=1.2,
         help="Multiplicative factor used in rho scaling before bisection.",
         display_alias="\u03C1_scale",
+        validators=(positive_validator,)
     )
     bisection_tol: float = config_field(
         default=1e-3,
         help="Tolerance used in rho bisection.",
         display_alias="bisect_tol",
+        validators=(positive_validator,)
     )
     max_scale_steps: int = config_field(
         default=20,
         help="Maximum rho scaling attempts during certification.",
-        display_alias="scale_steps"
+        display_alias="scale_steps",
+        validators=(positive_validator,)
     )
     max_bisection_steps: int = config_field(
         default=40,
         help="Maximum bisection iterations during certification.",
         display_alias="bisect_steps",
+        validators=(positive_validator,)
     )
     max_recursion_depth: int = config_field(
         default=10,
         help="Maximum recursion depth for certification region splitting.",
         display_alias="split_depth",
+        validators=(non_negative_validator,)
     )
     skip_boundary_core_cert: bool = config_field(
         default=False,
@@ -159,15 +176,17 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     # AB-Crown specific
     abcrown_timeout: float | None = config_field(
         default=None,
-        help="Optional per-region ABCrown branch-and-bound timeout in seconds."
+        help="Optional per-region ABCrown branch-and-bound timeout in seconds.",
     )
     abcrown_max_domains: int | None = config_field(
         default=None,
-        help="Optional cap on ABCrown branch-and-bound domains per region."
+        help="Optional cap on ABCrown branch-and-bound domains per region.",
+        display_alias="abcrown_domains",
     )
     batch_size: int = config_field(
         default=512,
-        help="Batch size used during certification."
+        help="Batch size used during certification.",
+        validators=(positive_validator,)
     )
 
     # Others
@@ -179,6 +198,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     NP_ARRAY_FIELDS = ("cert_bounds",)
 
     def __post_init__(self) -> None:
+        run_field_validators(self)
         raw_bins = self.bins_per_dim
         if isinstance(raw_bins, int):
             bins_per_dim = (int(raw_bins),) * self.state_dim
@@ -208,12 +228,6 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
             raise ValueError(
                 f"center_refinement_factor must contain values in (0, 1]. Got: {str(refinement_factors)}"
             )
-        if self.sublevel_tolerance < 0.0:
-            raise ValueError("sublevel_tolerance must be non-negative.")
-        if self.condition_tolerance < 0.0:
-            raise ValueError("condition_tolerance must be non-negative.")
-        if self.condition_margin < 0.0:
-            raise ValueError("condition_margin must be non-negative.")
         if self.abcrown_timeout is not None and self.abcrown_timeout <= 0.0:
             raise ValueError("abcrown_timeout must be positive when provided.")
         if self.abcrown_max_domains is not None and self.abcrown_max_domains <= 0:

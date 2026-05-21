@@ -7,11 +7,12 @@ from pathlib import Path
 
 import torch as th
 
+from mpc_datagen import mdg_plt
 from lcil.certification import (
     BisectCertifier,
     LyapunovCertificationConfig,
 )
-from lcil.lyapunov_learning import LyapunovTrainingConfig
+from lcil.lyapunov_learning import LyapunovTrainingConfig, LyapunovTrainingResult
 from lcil.utils import ArgumentParserConfig, config_field, lcil_plt
 
 from . import (
@@ -32,7 +33,7 @@ _DEFAULT_CERT_BOUND_SCALES = (0.15, 0.15)
 class BisectCertifyScriptConfig(ArgumentParserConfig):
     policy_dir: str = config_field(help="Policy run directory containing model.pt.")
     lyapunov_dir: str = config_field(help="Lyapunov run directory containing lyapunov_model.pt.")
-    rho_estimate: float = config_field(help="Optional initial rho estimate for the bisection search.")
+    rho_estimate: float | None = config_field(default=None, help="Optional initial rho estimate for the bisection search.")
     device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
     test_rollout_steps: int = config_field(default=50, help="Closed-loop rollout steps per region center during empirical result testing.")
     cert_bound_scales: list[float] = config_field(
@@ -48,7 +49,6 @@ def _build_script_defaults() -> BisectCertifyScriptConfig:
     return BisectCertifyScriptConfig(
         policy_dir=str(default_policy_dir),
         lyapunov_dir=str(default_lyapunov_dir),
-        rho_estimate=1.0,
     )
 
 
@@ -113,7 +113,13 @@ def main() -> None:
     ).to(device)
     dyn_model.eval()
 
-    rho_estimate = script_config.rho_estimate
+    results_path = lyapunov_dir / "training_result.json"
+    if not results_path.is_file():
+        raise FileNotFoundError(f"Training results file not found at {results_path}. Cannot extract rho estimate. Please provide an initial rho estimate via the --rho_estimate argument or ensure the training results file exists.")
+    training_results = LyapunovTrainingResult.load(results_path)
+    train_rho_estimate = training_results.rho_estimate
+    rho_estimate = script_config.rho_estimate if script_config.rho_estimate is not None else train_rho_estimate * 0.3 # Start with a smaller initial estimate (certified rho must be smaller than training estimate)
+
 
     save_dir = (
         Path(script_config.save_dir).resolve()
@@ -135,16 +141,25 @@ def main() -> None:
     cert_results = certifier.certify(rho_estimate)
     certifier.save(save_dir)
 
+    bounds = [
+        (float(cert_bounds[0][0]), float(cert_bounds[1][0])),
+        (float(cert_bounds[0][1]), float(cert_bounds[1][1])),
+    ]
     cert_bounds = certification_config.cert_bounds
     plot_path = save_dir / "certification_regions_plot.html"
     lcil_plt.certified_regions_2d(
         certification_result=cert_results,
-        state_indices=[0, 1],
         state_labels=["$x$", "$v$"],
-        bounds=[
-            (float(cert_bounds[0][0]), float(cert_bounds[1][0])),
-            (float(cert_bounds[0][1]), float(cert_bounds[1][1])),
-        ],
+        bounds=bounds,
+        html_path=plot_path,
+    )
+    mdg_plt.roa(
+        lyapunov_func=lambda x: lyap_model(x).detach().cpu().numpy().reshape(-1),
+        c_level=cert_results.rho,
+        nx=2,
+        state_labels=["$x$", "$v$"],
+        limits=bounds,
+        plot_3d=False,
         html_path=plot_path,
     )
     __logger__.info("Saved certification region plot to %s", plot_path)

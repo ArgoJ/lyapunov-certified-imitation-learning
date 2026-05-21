@@ -7,7 +7,15 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from collections.abc import Mapping
 
-from ..utils.base_config import ArgumentParserConfig, JsonDataclass, config_field
+from ..utils.base_config import (
+    ArgumentParserConfig,
+    JsonDataclass,
+    config_field,
+    positive_validator,
+    non_negative_validator,
+    fraction_validator,
+    run_field_validators,
+)
 
 
 @dataclass(frozen=True)
@@ -50,11 +58,13 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     sequence_length: int = config_field(
         default=1,
-        help="Length of state sequences fed to the policy model."
+        help="Length of state sequences fed to the policy model.",
+        validators=(positive_validator,)
     )
     stride: int = config_field(
         default=1,
-        help="Stride between the start indices of consecutive state sequences."
+        help="Stride between the start indices of consecutive state sequences.",
+        validators=(positive_validator,)
     )
     target_mode: Literal["last", "all"] = config_field(
         default="last",
@@ -62,7 +72,8 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     val_fraction: float = config_field(
         default=0.2,
-        help="Fraction of the dataset to use for validation."
+        help="Fraction of the dataset to use for validation.",
+        validators=(fraction_validator,)
     )
     split_seed: int = config_field(
         default=346158,
@@ -78,17 +89,20 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     near_duplicate_radius: float = config_field(
         default=1e-4,
-        help="Radius for considering near-duplicate states."
+        help="Radius for considering near-duplicate states.",
+        validators=(positive_validator,)
     )
 
     # Training
     batch_size: int = config_field(
         default=256,
-        help="Training batch size."
+        help="Training batch size.",
+        validators=(positive_validator,)
     )
     epochs: int = config_field(
         default=10, 
-        help="Number of optimization epochs."
+        help="Number of optimization epochs.",
+        validators=(positive_validator,)
     )
     restore_best_model: bool = config_field(
         default=True,
@@ -98,14 +112,17 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=1e-3,
         help="Adam optimizer learning rate.",
         display_alias="lr",
+        validators=(positive_validator,)
     )
     weight_decay: float = config_field(
         default=0.0,
         help="Adam optimizer weight decay coefficient.",
+        validators=(non_negative_validator,)
     )
     dropout: float = config_field(
         default=0.0,
-        help="Dropout probability for the policy model."
+        help="Dropout probability for the policy model.",
+        validators=(fraction_validator,)
     )
     scheduler_type: Literal["none", "step", "cosine", "plateau"] = config_field(
         default="none",
@@ -129,28 +146,13 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
     NP_ARRAY_FIELDS = ()
 
     def __post_init__(self):
-        if self.sequence_length <= 0:
-            raise ValueError("sequence_length must be positive.")
-        if self.stride <= 0:
-            raise ValueError("stride must be positive.")
+        run_field_validators(self)
         if self.target_mode not in {"last", "all"}:
             raise ValueError(f"Invalid target_mode: {self.target_mode}")
-        if not (0.0 <= self.val_fraction <= 1.0):
-            raise ValueError("val_fraction must be in [0, 1].")
         if self.split_strategy not in {"random", "trajectory"}:
             raise ValueError(f"Invalid split_strategy: {self.split_strategy}")
-
-        if self.epochs <= 0:
-            raise ValueError("epochs must be positive.")
-        if self.learning_rate <= 0:
-            raise ValueError("learning_rate must be positive.")
-        if self.weight_decay < 0:
-            raise ValueError("weight_decay must be non-negative.")
-        if not (0.0 <= self.dropout <= 1.0):
-            raise ValueError("dropout must be in [0, 1].")
         if self.scheduler_type not in {"none", "step", "cosine", "plateau"}:
             raise ValueError(f"Invalid scheduler_type: {self.scheduler_type}")
-
         if self.tb_log_dir is not None and not isinstance(self.tb_log_dir, (str, os.PathLike)):
             raise ValueError("tb_log_dir must be a string, os.PathLike, or None.")
         if self.tb_log_dir is not None:
