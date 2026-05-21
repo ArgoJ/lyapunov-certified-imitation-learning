@@ -36,6 +36,10 @@ class BisectCertifyScriptConfig(ArgumentParserConfig):
     device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
     rho_estimate: float | None = config_field(default=None, help="Optional initial rho estimate for the bisection search.")
     test_rollout_steps: int = config_field(default=50, help="Closed-loop rollout steps per region center during empirical result testing.")
+    test_sample_size: int = config_field(
+        default=256,
+        help="Number of states sampled near the rho-sublevel boundary for empirical testing.",
+    )
     cert_bound_scales: list[float] = config_field(
         default_factory=lambda: list(_DEFAULT_CERT_BOUND_SCALES),
         help="Per-dimension scaling applied to policy state bounds to define certification bounds.",
@@ -166,7 +170,8 @@ def main() -> None:
         device=device,
     )
     test_results = cert_tester.test_result(
-        cert_result=cert_results,
+        rho=float(cert_results.rho),
+        sample_size=int(script_config.test_sample_size),
         rollout_steps=int(script_config.test_rollout_steps),
     )
     tester_results_path = save_dir / "certification_tester_results.json"

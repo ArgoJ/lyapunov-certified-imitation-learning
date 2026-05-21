@@ -3,7 +3,7 @@ from .bisect_certifier import (
     BisectCertifier
 )
 from .adaptive_certifier import AdaptiveCertifier
-from .cert_tester import (
+from .empirical_certification_tester import (
     CertificationCategoryTestResult,
     CertificationTesterResult,
     CertificationResultTester

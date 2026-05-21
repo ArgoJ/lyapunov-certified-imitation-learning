@@ -141,12 +141,16 @@ def main() -> None:
     cert_results = certifier.certify(rho_estimate)
     certifier.save(save_dir)
 
-    cert_bounds = certification_config.cert_bounds.tolist()
+    cert_bounds = certification_config.cert_bounds
+    plot_bounds = [
+        (float(cert_bounds[0, i]), float(cert_bounds[1, i]))
+        for i in range(cert_bounds.shape[1])
+    ]
     plot_path = save_dir / "certification_regions_plot.html"
     lcil_plt.certified_regions_2d(
         certification_result=cert_results,
         state_labels=["$x$", "$v$"],
-        bounds=cert_bounds,
+        bounds=plot_bounds,
         html_path=plot_path,
     )
     mdg_plt.roa(
@@ -154,7 +158,7 @@ def main() -> None:
         c_level=cert_results.rho,
         nx=2,
         state_labels=["$x$", "$v$"],
-        limits=cert_bounds,
+        limits=plot_bounds,
         plot_3d=False,
         html_path=plot_path,
     )

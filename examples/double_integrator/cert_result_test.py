@@ -45,6 +45,10 @@ class RetestCertResultScriptConfig(ArgumentParserConfig):
         default=50,
         help="Closed-loop rollout steps per region center during empirical result testing.",
     )
+    test_sample_size: int = config_field(
+        default=256,
+        help="Number of states sampled near the rho-sublevel boundary for empirical testing.",
+    )
 
 
 def _build_script_defaults() -> RetestCertResultScriptConfig:
@@ -217,7 +221,8 @@ def main() -> None:
         device=device,
     )
     test_results = cert_tester.test_result(
-        cert_result=cert_result,
+        rho=float(cert_result.rho),
+        sample_size=int(script_config.test_sample_size),
         rollout_steps=int(script_config.rollout_steps),
     )
     test_results.save(results_path)
