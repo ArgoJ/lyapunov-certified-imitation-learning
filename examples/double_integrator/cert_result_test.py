@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import torch as th
-from mpc_datagen import MPCDataset
+from mpc_datagen import MPCDataset, mdg_plt
 
 from lcil.certification import (
     CertificationResultTester,
@@ -17,7 +17,7 @@ from lcil.certification import (
 )
 from lcil.imitation_learning.policy_rollout import PolicyRolloutConfig, PolicyRolloutGenerator
 from lcil.lyapunov_learning import LyapunovRollout
-from lcil.certification.bisect_certifier import RegionCertificationResult
+from lcil.certification import RegionCertificationResult, CertificationTesterResult
 from lcil.utils import lcil_plt
 from lcil.utils.base_config import ArgumentParserConfig, config_field
 
@@ -82,40 +82,16 @@ def _build_lyapunov_func(
     return lyapunov_func
 
 
-def _region_center_states(
-    cert_result: RegionCertificationResult,
-    *,
-    state_dim: int,
-) -> np.ndarray:
-    center_groups: list[np.ndarray] = []
-    for regions in (
-        cert_result.certified_sublevel_regions,
-        cert_result.uncertified_regions,
-        cert_result.outside_sublevel_regions,
-    ):
-        regions_np = np.asarray(regions, dtype=np.float32)
-        if regions_np.size == 0:
-            continue
-        center_groups.append(0.5 * (regions_np[:, 0, :] + regions_np[:, 1, :]))
-
-    if len(center_groups) == 0:
-        return np.empty((0, state_dim), dtype=np.float32)
-    return np.concatenate(center_groups, axis=0)
-
-
 def _build_rollout_dataset(
     *,
-    cert_result: RegionCertificationResult,
+    test_results: CertificationTesterResult,
     policy_model,
     dyn_model,
     lyap_model,
     rollout_steps: int,
     device: th.device,
 ) -> MPCDataset | None:
-    initial_states = _region_center_states(
-        cert_result,
-        state_dim=int(policy_model.global_config.nx),
-    )
+    initial_states = test_results.rho_boundary.sampled_states
     if initial_states.shape[0] == 0:
         __logger__.warning("No certification-region centers available for rollout plotting.")
         return None
@@ -143,21 +119,19 @@ def _build_rollout_dataset(
 def _save_lyapunov_plot(
     *,
     cert_dir: Path,
-    cert_result: RegionCertificationResult,
     certification_config: LyapunovCertificationConfig,
     lyapunov_func: Callable[[np.ndarray], np.ndarray],
     rollout_dataset: MPCDataset | None,
 ) -> None:
     cert_bounds = np.asarray(certification_config.cert_bounds, dtype=float)
     plot_path = cert_dir / "certification_tester_lyapunov_plot.html"
-    lcil_plt.lyapunov_cert_regions(
+    mdg_plt.lyapunov(
         lyapunov_func=lyapunov_func,
-        certification_result=cert_result,
         dataset=rollout_dataset,
         state_indices=[0, 1],
         state_labels=["$x$", "$v$"],
         limits=cert_bounds.T.tolist(),
-        plot_3d=True,
+        plot_3d=False,
         html_path=plot_path,
     )
     __logger__.info("Saved certification tester Lyapunov plot to %s", plot_path)
@@ -225,7 +199,7 @@ def main() -> None:
     test_results.save(results_path)
     __logger__.info("Saved certification tester results to %s", results_path)
     rollout_dataset = _build_rollout_dataset(
-        cert_result=cert_result,
+        test_results=test_results,
         policy_model=policy_model,
         dyn_model=dyn_model,
         lyap_model=lyap_model,
@@ -241,7 +215,6 @@ def main() -> None:
     )
     _save_lyapunov_plot(
         cert_dir=cert_dir,
-        cert_result=cert_result,
         certification_config=certification_config,
         lyapunov_func=lyapunov_func,
         rollout_dataset=rollout_dataset,
