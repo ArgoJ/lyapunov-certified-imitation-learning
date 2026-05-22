@@ -18,7 +18,6 @@ from lcil.certification import (
 from lcil.imitation_learning.policy_rollout import PolicyRolloutConfig, PolicyRolloutGenerator
 from lcil.lyapunov_learning import LyapunovRollout
 from lcil.certification import RegionCertificationResult, CertificationTesterResult
-from lcil.utils import lcil_plt
 from lcil.utils.base_config import ArgumentParserConfig, config_field
 
 from . import (
