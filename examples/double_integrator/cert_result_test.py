@@ -120,13 +120,15 @@ def _save_lyapunov_plot(
     cert_dir: Path,
     certification_config: LyapunovCertificationConfig,
     lyapunov_func: Callable[[np.ndarray], np.ndarray],
-    rollout_dataset: MPCDataset | None,
+    roa_level: float | None = None,
+    rollout_dataset: MPCDataset | None = None,
 ) -> None:
     cert_bounds = np.asarray(certification_config.cert_bounds, dtype=float)
     plot_path = cert_dir / "certification_tester_lyapunov_plot.html"
     mdg_plt.lyapunov(
         lyapunov_func=lyapunov_func,
         dataset=rollout_dataset,
+        roa_level=roa_level,
         state_indices=[0, 1],
         state_labels=["$x$", "$v$"],
         limits=cert_bounds.T.tolist(),
@@ -216,6 +218,7 @@ def main() -> None:
         cert_dir=cert_dir,
         certification_config=certification_config,
         lyapunov_func=lyapunov_func,
+        roa_level=float(cert_result.rho),
         rollout_dataset=rollout_dataset,
     )
 

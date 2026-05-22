@@ -153,10 +153,9 @@ def main() -> None:
         bounds=plot_bounds,
         html_path=plot_path,
     )
-    mdg_plt.roa(
+    mdg_plt.lyapunov(
         lyapunov_func=lambda x: lyap_model(x).detach().cpu().numpy().reshape(-1),
-        c_level=cert_results.rho,
-        nx=2,
+        roa_level=cert_results.rho,
         state_labels=["$x$", "$v$"],
         limits=plot_bounds,
         plot_3d=False,

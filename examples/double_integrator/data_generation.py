@@ -111,19 +111,16 @@ def main():
     if terminal_mode == "regional":
         P = info["P"]
         lyap_fun = lambda x: 0.5 * mdg_linalg.weighted_quadratic_norm(x, P)
-        roa_lyap_fun = lambda x: mdg_linalg.weighted_quadratic_norm(x, P)
         roa_cert = ROAVerifier(dataset[0].config)
-        roa_bounds, c_min = roa_cert.roa_bounds()
+        c_min = roa_cert.compute_min_c()
     else:
         lyap_fun = None
-        roa_lyap_fun = None
-        roa_bounds = None
         c_min = None
 
     mdg_plots.all(
         dataset=dataset[:min(150, n_samples)],
-        state_labels=["x", "v"],
-        control_labels=["a"],
+        state_labels=["$x$", "$v$"],
+        control_labels=["$a$"],
         time_bound=T_sim * dt,
         plot_3d=True,
         plot_predictions=False,
@@ -131,9 +128,7 @@ def main():
         use_optimal_v=False,
         lyapunov_func=lyap_fun,
         lyap_use_dataset_v=True,
-        roa_lyapunov_func=roa_lyap_fun,
         c_level=c_min,
-        roa_bounds=roa_bounds,
         base_path=f"{base_path}/double_integrator_{terminal_mode}_N{N}",
     )
 
