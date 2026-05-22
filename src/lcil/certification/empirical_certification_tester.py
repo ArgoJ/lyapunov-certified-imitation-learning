@@ -135,6 +135,27 @@ class CertificationResultTester:
             device=self.device,
         ) * (upper_bounds - lower_bounds)
 
+    def _inside_origin_exclusion_mask(self, states: th.Tensor) -> th.Tensor:
+        """Return a boolean mask for states inside the origin-exclusion box."""
+        exclusion = th.as_tensor(self.config.origin_exclusion, dtype=states.dtype, device=self.device)
+        if exclusion.ndim == 0:
+            exclusion = exclusion.repeat(states.shape[-1])
+        else:
+            exclusion = exclusion.reshape(-1)
+
+        if exclusion.numel() != states.shape[-1]:
+            raise ValueError(
+                f"origin_exclusion dimension {exclusion.numel()} does not match state dimension {states.shape[-1]}."
+            )
+
+        active_dims = exclusion > 0
+        if not bool(active_dims.any().item()):
+            return th.zeros(states.shape[:-1], dtype=th.bool, device=states.device)
+
+        exclusion = exclusion.reshape(*([1] * (states.ndim - 1)), exclusion.numel())
+        active_dims = active_dims.reshape(*([1] * (states.ndim - 1)), active_dims.numel())
+        return ((states.abs() <= exclusion) | (~active_dims)).all(dim=-1)
+
     def _sample_near_rho_within_sublevel(
         self,
         rho: float,
@@ -155,12 +176,14 @@ class CertificationResultTester:
                 candidates = self._sample_uniform_states(candidate_batch_size)
                 candidate_values = self.lyap_model(candidates).reshape(-1)
                 inside_mask = candidate_values <= rho_scalar
+                inside_origin_exclusion = self._inside_origin_exclusion_mask(candidates)
+                valid_mask = inside_mask & (~inside_origin_exclusion)
 
-                if not bool(inside_mask.any()):
+                if not bool(valid_mask.any()):
                     continue
 
-                inside_states = candidates[inside_mask]
-                inside_values = candidate_values[inside_mask]
+                inside_states = candidates[valid_mask]
+                inside_values = candidate_values[valid_mask]
 
                 combined_states = th.cat((kept_states, inside_states), dim=0)
                 combined_values = th.cat((kept_values, inside_values), dim=0)
@@ -179,15 +202,6 @@ class CertificationResultTester:
             )
             return kept_states, kept_values
 
-        rho_gap = rho_scalar - kept_values
-        __logger__.info(
-            "Sampled %d rho-boundary states inside V(x) <= %.6f; rho gap stats min=%.3e, mean=%.3e, max=%.3e.",
-            kept_states.shape[0],
-            rho_scalar,
-            float(rho_gap.min().item()),
-            float(rho_gap.mean().item()),
-            float(rho_gap.max().item()),
-        )
         if kept_states.shape[0] < sample_size:
             __logger__.warning(
                 "Requested %d rho-boundary samples but found only %d inside the sublevel set.",
@@ -196,6 +210,43 @@ class CertificationResultTester:
             )
 
         return kept_states, kept_values
+
+    def _rollout_from_states(self, initial_states: th.Tensor, rollout_steps: int) -> tuple[th.Tensor, th.Tensor]:
+        """Roll out from initial states for a given number of steps.
+
+        Parameters
+        ----------
+        initial_states : th.Tensor
+            The initial states to start the rollout from.
+        rollout_steps : int
+            The number of steps to roll out.
+
+        Returns
+        -------
+        tuple[th.Tensor, th.Tensor]
+            A tuple containing the rollout states and the violations.
+
+        Raises
+        ------
+        ValueError
+            If rollout_steps is not positive.
+        """
+        if rollout_steps <= 0:
+            raise ValueError(f"rollout_steps must be positive, got {rollout_steps}.")
+
+        x_t = initial_states
+        states = th.empty((x_t.shape[0], rollout_steps + 1, x_t.shape[1]), dtype=th.float32, device=self.device)
+        states[:, 0, :] = initial_states
+        violations = th.empty((x_t.shape[0], rollout_steps), dtype=th.float32, device=self.device)
+        with th.no_grad():
+            for step_idx in range(rollout_steps):
+                verifier_output = self.verifier(x_t)
+                hard_violation = self._hard_condition_violation(verifier_output)
+                violations[:, step_idx] = hard_violation.squeeze(-1)
+                x_t = verifier_output[:, 2:]
+                states[:, step_idx + 1, :] = x_t
+
+        return states, violations
 
     def _evaluate_rho(
         self,
@@ -226,29 +277,42 @@ class CertificationResultTester:
                 rollout_states=None,
             )
 
-        sampled_states_np = x_t.detach().cpu().numpy()
-        sampled_values_np = sampled_values.detach().cpu().numpy()
-        violations_over_time = []
-        rollout_states = [sampled_states_np]
-        with th.no_grad():
-            for _ in range(rollout_steps):
-                verifier_output = self.verifier(x_t)
-                hard_violation = self._hard_condition_violation(verifier_output)
-                violations_over_time.append(hard_violation.squeeze(-1).cpu().numpy())
-                x_t = verifier_output[:, 2:]
-                rollout_states.append(x_t.cpu().numpy())
+        rollout_states, violations = self._rollout_from_states(x_t, rollout_steps=rollout_steps)
 
-        violations_np = np.stack(violations_over_time, axis=0)
-        rollout_states_np = np.stack(rollout_states, axis=1)
-        violation_mask = violations_np > tolerance
-        traj_has_violation = violation_mask.any(axis=0)
+        inside_origin_exclusion = self._inside_origin_exclusion_mask(rollout_states)
+        ignored_rollout_state_mask = inside_origin_exclusion
+        ignored_violation_mask = inside_origin_exclusion[:, :-1]
 
-        violation_rate = float(traj_has_violation.mean())
-        max_viol = float(violations_np.max()) if bool(traj_has_violation.any()) else 0.0
+        isinside = rollout_states[ignored_rollout_state_mask]
+        largest_inside_idx = isinside.abs().amax(dim=1).argmax()
+        largest_inside_state = isinside[largest_inside_idx]
+        __logger__.info(
+            "Largest rollout state inside origin exclusion: state=%s, max_abs=%.6e, origin_exclusion=%s",
+            largest_inside_state.detach().cpu().tolist(),
+            float(largest_inside_state.abs().max().item()),
+            self.config.origin_exclusion,
+        )
+
+        rollout_states = rollout_states.clone()
+        violations = violations.clone()
+        rollout_states[ignored_rollout_state_mask] = th.nan
+        violations[ignored_violation_mask] = th.nan
+
+        violation_mask = violations > tolerance
+        valid_traj_mask = (~ignored_violation_mask).any(dim=1)
+        traj_has_violation = violation_mask.any(dim=1) & valid_traj_mask
+
+        num_valid_trajectories = int(valid_traj_mask.sum().item())
+        violation_rate = (
+            float(traj_has_violation.sum().item() / num_valid_trajectories)
+            if num_valid_trajectories > 0
+            else 0.0
+        )
+        max_viol = float(th.nan_to_num(violations, nan=0.0).max().item()) if num_valid_trajectories > 0 else 0.0
 
         __logger__.info(
             "Tested %d rho-boundary samples: violation rate = %.2f%%, max violation = %.2e",
-            sampled_states_np.shape[0],
+            x_t.shape[0],
             violation_rate * 100.0,
             max_viol,
         )
@@ -256,11 +320,11 @@ class CertificationResultTester:
         return CertificationCategoryTestResult(
             violation_rate=violation_rate,
             max_violation=float(np.maximum(max_viol, 0.0)),
-            num_samples=int(sampled_states_np.shape[0]),
-            sampled_states=sampled_states_np,
-            sampled_values=sampled_values_np,
-            violations_per_step=violations_np,
-            rollout_states=rollout_states_np,
+            num_samples=int(x_t.shape[0]),
+            sampled_states=x_t.cpu().numpy(),
+            sampled_values=sampled_values.cpu().numpy(),
+            violations_per_step=violations.cpu().numpy(),
+            rollout_states=rollout_states.cpu().numpy(),
         )
 
     def test_result(

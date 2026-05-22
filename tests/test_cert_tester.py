@@ -61,12 +61,35 @@ class _DeterministicBoundaryTester(CertificationResultTester):
         return self._sampled_states, self._sampled_values
 
 
+class _MappedVerifier(nn.Module):
+    def __init__(self, transitions: dict[float, tuple[float, float]]) -> None:
+        super().__init__()
+        self._transitions = transitions
+
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        outputs = []
+        for value in x.reshape(-1).tolist():
+            violation, x_next = self._transitions[float(value)]
+            outputs.append((violation, 0.0, x_next))
+        return th.as_tensor(outputs, dtype=x.dtype, device=x.device)
+
+
+class _MappedViolationTester(_DeterministicBoundaryTester):
+    def __init__(self, *, transitions: dict[float, tuple[float, float]], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.verifier = _MappedVerifier(transitions).to(self.device).eval()
+
+    def _hard_condition_violation(self, verifier_output: th.Tensor) -> th.Tensor:
+        return verifier_output[:, :1]
+
+
 class TestCertificationResultTester(unittest.TestCase):
     @staticmethod
     def _make_config(
         *,
         bounds: list[list[float]] | None = None,
         kappa: float = 0.1,
+        origin_exclusion: float | tuple[float, ...] = 0.0,
     ) -> LyapunovCertificationConfig:
         cert_bounds = np.array([[0.0], [10.0]], dtype=np.float32) if bounds is None else np.array(bounds, dtype=np.float32)
         return LyapunovCertificationConfig(
@@ -75,6 +98,7 @@ class TestCertificationResultTester(unittest.TestCase):
             kappa=kappa,
             rho_min=1e-6,
             bins_per_dim=1,
+            origin_exclusion=origin_exclusion,
             sublevel_tolerance=1e-6,
             condition_tolerance=1e-6,
         )
@@ -86,6 +110,7 @@ class TestCertificationResultTester(unittest.TestCase):
         *,
         bounds: list[list[float]] | None = None,
         kappa: float = 0.1,
+        origin_exclusion: float | tuple[float, ...] = 0.0,
         policy_model: nn.Module | None = None,
         lyap_model: nn.Module | None = None,
         dyn_model: nn.Module | None = None,
@@ -95,7 +120,7 @@ class TestCertificationResultTester(unittest.TestCase):
             policy_model=_ZeroPolicy() if policy_model is None else policy_model,
             lyap_model=_IdentityLyapunov() if lyap_model is None else lyap_model,
             dyn_model=_DoubleDynamics() if dyn_model is None else dyn_model,
-            config=cls._make_config(bounds=bounds, kappa=kappa),
+            config=cls._make_config(bounds=bounds, kappa=kappa, origin_exclusion=origin_exclusion),
             device=th.device("cpu"),
             **tester_kwargs,
         )
@@ -137,6 +162,52 @@ class TestCertificationResultTester(unittest.TestCase):
         np.testing.assert_allclose(
             sampled_values.cpu().numpy(),
             np.array([0.9, 0.8], dtype=np.float32),
+        )
+
+    def test_inside_origin_exclusion_mask_marks_only_states_in_exclusion_box(self) -> None:
+        tester = self._make_tester(origin_exclusion=0.1)
+
+        mask = tester._inside_origin_exclusion_mask(
+            th.as_tensor([[0.0], [0.05], [0.1], [0.1001], [0.2]], dtype=th.float32)
+        )
+
+        self.assertListEqual(mask.cpu().tolist(), [True, True, True, False, False])
+
+    def test_inside_origin_exclusion_mask_supports_rollout_state_tensor(self) -> None:
+        tester = self._make_tester(origin_exclusion=0.1)
+
+        mask = tester._inside_origin_exclusion_mask(
+            th.as_tensor(
+                [
+                    [[0.2], [0.05], [0.01]],
+                    [[0.2], [0.15], [0.1]],
+                ],
+                dtype=th.float32,
+            )
+        )
+
+        self.assertListEqual(mask.cpu().tolist(), [[False, True, True], [False, False, True]])
+
+    def test_sample_near_rho_excludes_states_inside_origin_exclusion(self) -> None:
+        tester = self._make_tester(
+            _FixedCandidateTester,
+            bounds=[[-1.0], [1.0]],
+            origin_exclusion=0.1,
+            candidate_batches=[np.array([[0.0], [0.05], [0.2], [0.9]], dtype=np.float32)],
+        )
+
+        sampled_states, sampled_values = tester._sample_near_rho_within_sublevel(
+            rho=1.0,
+            sample_size=2,
+        )
+
+        np.testing.assert_allclose(
+            sampled_states.cpu().numpy(),
+            np.array([[0.9], [0.2]], dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            sampled_values.cpu().numpy(),
+            np.array([0.9, 0.2], dtype=np.float32),
         )
 
     def test_evaluate_rho_rolls_out_sampled_boundary_states(self) -> None:
@@ -228,6 +299,79 @@ class TestCertificationResultTester(unittest.TestCase):
         np.testing.assert_allclose(
             result.rollout_states,
             np.array([[[1.5], [3.0], [6.0], [12.0]]], dtype=np.float32),
+        )
+
+    def test_evaluate_rho_computes_violation_stats_per_trajectory(self) -> None:
+        tester = self._make_tester(
+            _MappedViolationTester,
+            sampled_states=np.array([[0.0], [1.0]], dtype=np.float32),
+            sampled_values=np.array([0.0, 1.0], dtype=np.float32),
+            transitions={
+                0.0: (0.0, 10.0),
+                10.0: (2.0, 20.0),
+                20.0: (0.0, 30.0),
+                1.0: (0.0, 11.0),
+                11.0: (0.0, 21.0),
+                21.0: (0.0, 31.0),
+            },
+        )
+
+        result = tester._evaluate_rho(
+            rho=2.0,
+            sample_size=2,
+            tolerance=1e-6,
+            rollout_steps=3,
+        )
+
+        self.assertEqual(result.num_samples, 2)
+        self.assertEqual(result.violation_rate, 0.5)
+        self.assertAlmostEqual(result.max_violation, 2.0, places=6)
+        np.testing.assert_allclose(
+            result.violations_per_step,
+            np.array([[0.0, 2.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32),
+        )
+
+    def test_evaluate_rho_ignores_rollout_states_inside_origin_exclusion(self) -> None:
+        tester = self._make_tester(
+            _MappedViolationTester,
+            origin_exclusion=0.1,
+            sampled_states=np.array([[0.1875], [0.5]], dtype=np.float32),
+            sampled_values=np.array([0.1875, 0.5], dtype=np.float32),
+            transitions={
+                0.1875: (0.0, 0.0625),
+                0.0625: (5.0, 0.03125),
+                0.03125: (6.0, 0.015625),
+                0.5: (0.0, 0.375),
+                0.375: (2.0, 0.25),
+                0.25: (0.0, 0.125),
+            },
+        )
+
+        result = tester._evaluate_rho(
+            rho=1.0,
+            sample_size=2,
+            tolerance=1e-6,
+            rollout_steps=3,
+        )
+
+        self.assertEqual(result.num_samples, 2)
+        self.assertEqual(result.violation_rate, 0.5)
+        self.assertAlmostEqual(result.max_violation, 2.0, places=6)
+        np.testing.assert_allclose(
+            result.violations_per_step,
+            np.array([[0.0, np.nan, np.nan], [0.0, 2.0, 0.0]], dtype=np.float32),
+            equal_nan=True,
+        )
+        np.testing.assert_allclose(
+            result.rollout_states,
+            np.array(
+                [
+                    [[0.1875], [np.nan], [np.nan], [np.nan]],
+                    [[0.5], [0.375], [0.25], [0.125]],
+                ],
+                dtype=np.float32,
+            ),
+            equal_nan=True,
         )
 
     def test_rollout_steps_and_sample_size_must_be_positive(self) -> None:

@@ -156,10 +156,7 @@ def _save_lyapunov_plot(
         dataset=rollout_dataset,
         state_indices=[0, 1],
         state_labels=["$x$", "$v$"],
-        limits=[
-            (float(cert_bounds[0, 0]), float(cert_bounds[1, 0])),
-            (float(cert_bounds[0, 1]), float(cert_bounds[1, 1])),
-        ],
+        limits=cert_bounds.T.tolist(),
         plot_3d=True,
         html_path=plot_path,
     )
