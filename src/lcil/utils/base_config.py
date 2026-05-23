@@ -312,6 +312,7 @@ class ArgumentParserConfig:
         include_fields: set[str] | None = None,
         exclude_fields: set[str] | None = None,
         nargs_fields: set[str] | None = None,
+        suppress_defaults: bool = False,
     ) -> None:
         """Add configuration fields to an argparse.ArgumentParser.
 
@@ -363,7 +364,18 @@ class ArgumentParserConfig:
 
             default_value = getattr(self, field_info.name, MISSING)
             if default_value is not MISSING and "default" not in arg_kwargs:
-                arg_kwargs["default"] = default_value
+                if suppress_defaults:
+                    import argparse
+                    arg_kwargs["default"] = argparse.SUPPRESS
+                    if help_text is not None:
+                        help_text += f" (default: {default_value})"
+                    else:
+                        help_text = f"(default: {default_value})"
+                else:
+                    arg_kwargs["default"] = default_value
+
+            if help_text is not None and "help" not in arg_kwargs:
+                arg_kwargs["help"] = help_text
 
             parser.add_argument(arg_name, **arg_kwargs)
 
