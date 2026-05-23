@@ -122,10 +122,11 @@ def parse_args() -> list[tuple[BisectCertifyScriptConfig, LyapunovCertificationC
     __logger__.info("Parsed command-line arguments: %s", args)
     script_config = script_defaults.from_namespace(args)
 
+    configs = []
     if script_config.certify_all_lyapunov_models:
-        lyapunov_root = Path(script_config.lyapunov_dir)
-        lyap_dirs = _find_all_lyapunov_dirs(lyapunov_root)
-        configs = []
+        policy_root = Path(script_config.policy_dir)
+        lyap_dirs = _find_all_lyapunov_dirs(policy_root)
+        __logger__.info("Found %d lyapunov model directories under %s for certification", len(lyap_dirs), policy_root)
         for lyap_dir in lyap_dirs:
             script_config = replace(
                 script_config,
@@ -135,10 +136,10 @@ def parse_args() -> list[tuple[BisectCertifyScriptConfig, LyapunovCertificationC
             certification_config = dir_certification_defaults.from_namespace(args)
             configs.append((script_config, certification_config))
     else:
-        configs = [(
+        configs.append((
             script_config,
             certification_defaults.from_namespace(args)
-        )]
+        ))
 
     return configs
 
