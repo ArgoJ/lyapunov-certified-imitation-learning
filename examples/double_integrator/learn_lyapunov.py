@@ -127,7 +127,7 @@ def main() -> None:
     for run_idx, run in enumerate(sweep):
         sweep_config = run.config
         __logger__.info("%s", run.progress_message())
-        base_path = run.output_dir
+        base_path = run.output_dir.resolve()
 
         # ---------------------------------------------------------------------
         # 1. Initialize fresh Lyapunov Model
@@ -149,7 +149,7 @@ def main() -> None:
             state_bounds=state_bounds,
             train_policy_model=False,
             seed=sweep_config.seed + run_idx if sweep_config.seed is not None else None,
-            tb_log_dir=base_path / "tb",
+            tb_log_dir=base_path.parent / "tb",
         )
 
         # ---------------------------------------------------------------------
