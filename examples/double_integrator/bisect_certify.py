@@ -33,7 +33,6 @@ _DEFAULT_CERT_BOUND_SCALES = (0.15, 0.15)
 
 @dataclass(frozen=True)
 class BisectCertifyScriptConfig(ArgumentParserConfig):
-    policy_dir: str = config_field(help="Policy run directory containing model.pt.")
     lyapunov_dir: str = config_field(help="Lyapunov run directory containing lyapunov_model.pt.")
     certify_all_lyapunov_models: bool = config_field(default=False, help="Whether to certify all saved lyapunov models in the lyapunov_dir (if False, only the best model is certified).")
     rho_estimate: float | None = config_field(default=None, help="Optional initial rho estimate for the bisection search.")
@@ -46,22 +45,26 @@ class BisectCertifyScriptConfig(ArgumentParserConfig):
     save_dir: str | None = config_field(default=None, help="Optional directory where certification details and tester results are written.")
 
 
-def _find_all_lyapunov_dirs(lyapunov_root: Path) -> list[Path]:
+def _find_all_lyapunov_dirs(path: Path) -> list[Path]:
     """
-    Find all subdirectories in lyapunov_root that contain 'lyapunov_model.pt'.
+    Find all subdirectories in a specific lyapunov_iso run that contain 'lyapunov_model.pt'.
+    If lyapunov_iso is None, the latest lyapunov directory is used.
     """
+    if not path.exists():
+        __logger__.warning(f"Directory {path} not found.")
+        return []
+
     lyap_dirs = []
-    for subdir in lyapunov_root.glob("**/"):
-        if (subdir / "lyapunov_model.pt").is_file():
-            lyap_dirs.append(subdir)
+    for model_file in path.rglob("lyapunov_model.pt"):
+        lyap_dirs.append(model_file.parent)
+        
     return lyap_dirs
 
 
 def _build_script_defaults() -> BisectCertifyScriptConfig | list[BisectCertifyScriptConfig]:
-    default_policy_dir = discover_latest_policy_dir(_DEFAULT_RESULTS_ROOT)
-    default_lyapunov_dir = discover_latest_lyapunov_dir(default_policy_dir)
+    default_lyapunov_dir = discover_latest_lyapunov_dir()
+    __logger__.info(f"Discovered latest lyapunov directory at {default_lyapunov_dir} for default script configuration.")
     return BisectCertifyScriptConfig(
-        policy_dir=str(default_policy_dir),
         lyapunov_dir=str(default_lyapunov_dir),
     )
 
@@ -124,9 +127,9 @@ def parse_args() -> list[tuple[BisectCertifyScriptConfig, LyapunovCertificationC
 
     configs = []
     if script_config.certify_all_lyapunov_models:
-        policy_root = Path(script_config.policy_dir)
-        lyap_dirs = _find_all_lyapunov_dirs(policy_root)
-        __logger__.info("Found %d lyapunov model directories under %s for certification", len(lyap_dirs), policy_root)
+        search_dir = Path(script_config.lyapunov_dir).parent.parent
+        lyap_dirs = _find_all_lyapunov_dirs(search_dir)
+        __logger__.info("Found %d lyapunov model directories under %s for certification", len(lyap_dirs), search_dir)
         for lyap_dir in lyap_dirs:
             script_config = replace(
                 script_config,
@@ -148,12 +151,9 @@ def main() -> None:
     configs = parse_args()
     for script_config, certification_config in configs:
         device = th.device(script_config.device)
-
-        policy_dir = Path(script_config.policy_dir).resolve()
         lyapunov_dir = Path(script_config.lyapunov_dir).resolve()
-
-        policy_model = load_policy_model(policy_dir, device)
-        lyap_model = load_lyapunov_model(lyapunov_dir, device)
+        policy_model = load_policy_model(lyapunov_dir, device, model_name="policy_model.pt")
+        lyap_model = load_lyapunov_model(lyapunov_dir, device, model_name="lyapunov_model.pt")
 
         dyn_model = DoubleIntegratorDynamics(
             dt=policy_model.global_config.dt,

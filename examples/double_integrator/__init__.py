@@ -18,8 +18,7 @@ from ..example_utils import (
     discover_latest_lyapunov_dir as _discover_latest_lyapunov_dir,
     discover_latest_policy_dir as _discover_latest_policy_dir,
     discover_latest_policy_and_lyapunov_dirs as _discover_latest_policy_and_lyapunov_dirs,
-    load_lyapunov_model as _load_lyapunov_model,
-    load_policy_model as _load_policy_model,
+    GenericModelLoader as _GenericModelLoader,
 )
 
 _RESULTS_ROOT = Path(__file__).resolve().parents[2] / "results" / "double_integrator"
@@ -61,14 +60,17 @@ def load_policy_model(
     path: Path | str | None,
     device: th.device | str,
     model_cls: type[PolicyModelT] | None = None,
+    model_name: str = "model.pt",
 ) -> PolicyModelT | nn.Module:
-    checkpoint_path = _load_policy_model._resolve_checkpoint_path(path, results_root=_RESULTS_ROOT)
+    model_loader = _GenericModelLoader(model_name)
+    checkpoint_path = model_loader._resolve_checkpoint_path(path, results_root=_RESULTS_ROOT)
     resolved_model_cls = _resolve_policy_model_cls(checkpoint_path) if model_cls is None else model_cls
-    return _load_policy_model[resolved_model_cls](checkpoint_path, device, _RESULTS_ROOT)
+    return model_loader[resolved_model_cls](checkpoint_path, device, _RESULTS_ROOT)
 
 
-def load_lyapunov_model(path, device):
-    return _load_lyapunov_model[NeuralLyapunovCandidate](path, device, _RESULTS_ROOT)
+def load_lyapunov_model(path, device, model_name: str = "lyapunov_model.pt") -> NeuralLyapunovCandidate:
+    model_loader = _GenericModelLoader(model_name)
+    return model_loader[NeuralLyapunovCandidate](path, device, _RESULTS_ROOT)
 
 
 def default_model_path(results_root: Path | str | None = None):

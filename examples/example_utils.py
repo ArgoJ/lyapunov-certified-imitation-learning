@@ -258,10 +258,6 @@ class GenericModelLoader:
         return load_with_model_cls
 
 
-load_policy_model = GenericModelLoader("model.pt")
-load_lyapunov_model = GenericModelLoader("lyapunov_model.pt")
-
-
 def default_model_path(results_root: Path | str | None = None) -> str:
     resolved_results_root = Path(results_root) if results_root is not None else _RESULTS_ROOT
     return str(discover_model_dir(resolved_results_root, "model.pt") / "model.pt")
