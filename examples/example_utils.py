@@ -40,7 +40,7 @@ def resolve_root(
     return require_dir(default_root, name="Default results root directory")
 
 
-def discover_model_dir(results_root: Path, checkpoint_name: str, n: int = -1) -> Path:
+def discover_model_dir(results_root: Path, checkpoint_name: str, n: int = -1, sorting_idx: int = 0) -> Path:
     """Discover the directory containing the nth latest checkpoint with the given name under the results root.
 
     Parameters
@@ -63,10 +63,10 @@ def discover_model_dir(results_root: Path, checkpoint_name: str, n: int = -1) ->
         If no checkpoint with the given name is found.
     """
     resolved_results_root = resolve_root(results_root)
-    candidates = sorted(checkpoint.parent for checkpoint in resolved_results_root.rglob(checkpoint_name))
+    candidates = sorted(resolved_results_root.rglob(checkpoint_name), key=lambda x: x.parents[sorting_idx].name)
     if not candidates:
         raise FileNotFoundError(f"No checkpoint '{checkpoint_name}' found under '{resolved_results_root}'.")
-    return candidates[n]
+    return candidates[n].parent
 
 
 def discover_latest_policy_dir(results_root: Path | str | None = None) -> Path:
@@ -82,7 +82,7 @@ def discover_latest_policy_dir(results_root: Path | str | None = None) -> Path:
     Path
         Directory containing the nth latest policy checkpoint.
     """
-    return discover_model_dir(results_root, "model.pt", n=-1)
+    return discover_model_dir(results_root, "model.pt", n=-1, sorting_idx=0)
 
 
 def discover_latest_lyapunov_dir(policy_dir: Path | str) -> Path:
@@ -100,7 +100,7 @@ def discover_latest_lyapunov_dir(policy_dir: Path | str) -> Path:
     """
     resolved_policy_dir = require_dir(policy_dir, name="Policy run directory")
     lyapunov_root = require_dir(resolved_policy_dir / "lyapunov", name="Lyapunov root directory")
-    return discover_model_dir(lyapunov_root, "lyapunov_model.pt", n=-1)
+    return discover_model_dir(lyapunov_root, "lyapunov_model.pt", n=-1, sorting_idx=1)
 
 
 def discover_latest_policy_and_lyapunov_dirs(results_root: Path | str | None = None, max_search: int = 100) -> tuple[Path, Path]:
