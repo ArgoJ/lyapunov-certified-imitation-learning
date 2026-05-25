@@ -1,19 +1,20 @@
 import torch as th
 import torch.nn as nn
 import logging
+import re
 
 from pathlib import Path
 from typing import Callable, TypeVar
+from numpy.typing import NDArray
+
+from .constants import *
 
 
 __logger__ = logging.getLogger("lcil.examples.example_utils")
 
 
 ModelT = TypeVar("ModelT", bound=nn.Module)
-
-
-_RESULTS_ROOT = Path(__file__).resolve().parents[1] / "results"
-
+ISO_PATTERN = re.compile(r"^\d{8}_\d{6}$")
 
 
 def require_file(path: Path | str, *, name: str) -> Path:
@@ -32,7 +33,7 @@ def require_dir(path: Path | str, *, name: str) -> Path:
 
 def resolve_root(
     root_path: Path | str | None,
-    default_root: Path = _RESULTS_ROOT,
+    default_root: Path = RESULTS_ROOT,
 ) -> Path:
     if root_path is not None:
         resolved_root = Path(root_path)
@@ -63,18 +64,31 @@ def discover_model_dir(results_root: Path, checkpoint_name: str, n: int = -1, so
         If no checkpoint with the given name is found.
     """
     resolved_results_root = resolve_root(results_root)
-    candidates = sorted(resolved_results_root.rglob(checkpoint_name), key=lambda x: x.parents[sorting_idx].name)
+
+    candidates: list[Path] = []
+    for path in resolved_results_root.rglob(checkpoint_name):
+        sort_key_folder = path.parents[sorting_idx].name
+        
+        # check if is timestampt folder
+        if ISO_PATTERN.match(sort_key_folder):
+            candidates.append(path)
+            
     if not candidates:
-        raise FileNotFoundError(f"No checkpoint '{checkpoint_name}' found under '{resolved_results_root}'.")
+        raise FileNotFoundError(
+            f"No checkpoint '{checkpoint_name}' found in valid ISO directories under '{resolved_results_root}'."
+        )
+        
+    candidates = sorted(candidates, key=lambda x: x.parents[sorting_idx].name)
+    
     return candidates[n].parent
 
 
-def discover_latest_policy_dir(results_root: Path | str | None = None) -> Path:
+def discover_latest_policy_dir(dir: Path | str | None = None) -> Path:
     """Discover the directory containing the nth latest policy checkpoint.
 
     Parameters
     ----------
-    results_root : Path | str | None, optional
+    dir : Path | str | None, optional
         Root directory under which to search for policy checkpoints, by default None
 
     Returns
@@ -82,15 +96,17 @@ def discover_latest_policy_dir(results_root: Path | str | None = None) -> Path:
     Path
         Directory containing the nth latest policy checkpoint.
     """
-    return discover_model_dir(results_root, "model.pt", n=-1, sorting_idx=0)
+    return discover_model_dir(dir, POLICY_MODEL_FILENAME, n=-1, sorting_idx=0)
 
 
-def discover_latest_lyapunov_dir(policy_dir: Path | str) -> Path:
+def discover_latest_lyapunov_dir(dir: Path | str | None = None) -> Path:
     """Discover the directory containing the nth latest Lyapunov checkpoint.
 
     Parameters
     ----------
-    policy_dir : Path | str
+    dir : Path | str | None, optional
+        Root directory under which to search for Lyapunov checkpoints, by default None
+
         Directory containing the policy checkpoints.
 
     Returns
@@ -98,9 +114,15 @@ def discover_latest_lyapunov_dir(policy_dir: Path | str) -> Path:
     Path
         Directory containing the nth latest Lyapunov checkpoint.
     """
-    resolved_policy_dir = require_dir(policy_dir, name="Policy run directory")
-    lyapunov_root = require_dir(resolved_policy_dir / "lyapunov", name="Lyapunov root directory")
-    return discover_model_dir(lyapunov_root, "lyapunov_model.pt", n=-1, sorting_idx=1)
+    if dir is not None:
+        dir = require_dir(dir, name="Directory to search for Lyapunov checkpoint")
+        if LYAPUNOV_DIRNAME in dir.parts :
+            __logger__.warning(f"Provided directory '{dir}' already contains '{LYAPUNOV_DIRNAME}' in its path. Searching for Lyapunov checkpoint directly under the provided directory.")
+            return discover_model_dir(dir, LYAPUNOV_MODEL_FILENAME, n=-1, sorting_idx=1)
+    
+    # latest policy path must be found
+    policy_dir = discover_latest_policy_dir(dir)
+    return discover_model_dir(policy_dir / LYAPUNOV_DIRNAME, LYAPUNOV_MODEL_FILENAME, n=-1, sorting_idx=1)
 
 
 def discover_latest_policy_and_lyapunov_dirs(results_root: Path | str | None = None, max_search: int = 100) -> tuple[Path, Path]:
@@ -108,7 +130,7 @@ def discover_latest_policy_and_lyapunov_dirs(results_root: Path | str | None = N
 
     Parameters
     ----------
-    results_root : Path | str | None, optional
+    dir : Path | str | None, optional
         Root directory under which to search for policy and Lyapunov checkpoints, by default None
     max_search : int, optional
         Maximum number of recent policy checkpoints to search through, by default 100
@@ -125,8 +147,8 @@ def discover_latest_policy_and_lyapunov_dirs(results_root: Path | str | None = N
     """
     for n in range(1, max_search + 1):
         try:
-            policy_dir = discover_model_dir(results_root, "model.pt", n=-n)
-            lyapunov_dir = discover_model_dir(policy_dir / "lyapunov", "lyapunov_model.pt", n=-1)
+            policy_dir = discover_model_dir(results_root, POLICY_MODEL_FILENAME, n=-n)
+            lyapunov_dir = discover_model_dir(policy_dir / LYAPUNOV_DIRNAME, LYAPUNOV_MODEL_FILENAME, n=-1)
             return policy_dir, lyapunov_dir
         except FileNotFoundError:
             pass
@@ -169,21 +191,19 @@ def discover_latest_dataset_path(results_root: Path | str, dataset_pattern: str 
     return candidates[-1]
 
 
-def discover_latest_cert_result_path(
-    results_root: Path | str,
-    result_name: str = "certification_details.npz",
-) -> Path:
-    resolved_results_root = Path(results_root)
-    candidates = sorted(
+def discover_latest_cert_lyapunov_path(lyapunov_root: Path | str | None = None) -> Path:
+    resolved_lyapunov_root = require_dir(lyapunov_root, name="Directory to search for certification result")
+    candidates = [
         result_path
-        for result_path in resolved_results_root.rglob(result_name)
+        for result_path in resolved_lyapunov_root.rglob(CERTIFICATION_DETAILS_FILENAME)
         if result_path.is_file()
-    )
+    ]
+    candidates = sorted(candidates, key=lambda x: x.stat().st_mtime)
     if not candidates:
         raise FileNotFoundError(
-            f"No certification result '{result_name}' found under '{resolved_results_root}'."
+            f"No certification result '{CERTIFICATION_DETAILS_FILENAME}' found under '{resolved_lyapunov_root}'."
         )
-    return candidates[-1]
+    return candidates[-1].parent.parent
 
 
 def resolve_dataset_path(
@@ -259,13 +279,13 @@ class GenericModelLoader:
 
 
 def default_model_path(results_root: Path | str | None = None) -> str:
-    resolved_results_root = Path(results_root) if results_root is not None else _RESULTS_ROOT
-    return str(discover_model_dir(resolved_results_root, "model.pt") / "model.pt")
+    resolved_results_root = Path(results_root) if results_root is not None else RESULTS_ROOT
+    return str(discover_model_dir(resolved_results_root, POLICY_MODEL_FILENAME) / POLICY_MODEL_FILENAME)
 
 
 def default_lyapunov_model_path(results_root: Path | str | None = None) -> str:
-    resolved_results_root = Path(results_root) if results_root is not None else _RESULTS_ROOT
-    return str(discover_model_dir(resolved_results_root, "lyapunov_model.pt") / "lyapunov_model.pt")
+    resolved_results_root = Path(results_root) if results_root is not None else RESULTS_ROOT
+    return str(discover_model_dir(resolved_results_root, LYAPUNOV_MODEL_FILENAME) / LYAPUNOV_MODEL_FILENAME)
 
 
 def default_dataset_path(results_root: Path | str, dataset_pattern: str = "*.hdf5") -> str:
@@ -274,6 +294,31 @@ def default_dataset_path(results_root: Path | str, dataset_pattern: str = "*.hdf
 
 def default_cert_result_path(
     results_root: Path | str,
-    result_name: str = "certification_details.npz",
+    result_name: str = CERTIFICATION_DETAILS_FILENAME,
 ) -> str:
-    return str(discover_latest_cert_result_path(results_root, result_name))
+    return str(discover_latest_cert_lyapunov_path(results_root, result_name))
+
+
+def build_lyapunov_func(
+    lyap_model,
+    device: th.device,
+) -> Callable[[NDArray], NDArray]:
+    def lyapunov_func(states: NDArray) -> NDArray:
+        x = th.as_tensor(states, dtype=th.float32, device=device)
+        with th.no_grad():
+            values = lyap_model(x)
+        return values.detach().cpu().numpy().reshape(-1)
+
+    return lyapunov_func
+
+
+def find_all_lyapunov_dirs(path: Path) -> list[Path]:
+    if not path.exists():
+        __logger__.warning(f"Directory {path} not found.")
+        return []
+
+    lyap_dirs = []
+    for model_file in path.rglob(LYAPUNOV_MODEL_FILENAME):
+        lyap_dirs.append(model_file.parent)
+        
+    return lyap_dirs

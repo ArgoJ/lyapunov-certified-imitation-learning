@@ -351,7 +351,8 @@ def estimate_level_set_measure(
 
     directions = _sample_unit_sphere_directions(num_states, num_directions)
     base_point = th.zeros((1, num_states), dtype=th.float32, device=device)
-    base_value = float(lyapunov_fn(base_point)[0])
+    with th.no_grad():
+        base_value = float(lyapunov_fn(base_point)[0].detach().item())
 
     if base_value > rho:
         raise ValueError(

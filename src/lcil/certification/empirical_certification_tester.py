@@ -39,7 +39,7 @@ class CertificationCategoryTestResult(JsonDataclass):
 class CertificationTesterResult(JsonDataclass):
     """Container for empirical rho-boundary rollout checks."""
 
-    DEFAULT_FILE_NAME = "CertificationTesterResult.json"
+    DEFAULT_FILE_NAME = "certification_tester_results.json"
 
     rho_boundary: CertificationCategoryTestResult
     sample_size: int
@@ -284,14 +284,20 @@ class CertificationResultTester:
         ignored_violation_mask = inside_origin_exclusion[:, :-1]
 
         isinside = rollout_states[ignored_rollout_state_mask]
-        largest_inside_idx = isinside.abs().amax(dim=1).argmax()
-        largest_inside_state = isinside[largest_inside_idx]
-        __logger__.info(
-            "Largest rollout state inside origin exclusion: state=%s, max_abs=%.6e, origin_exclusion=%s",
-            largest_inside_state.detach().cpu().tolist(),
-            float(largest_inside_state.abs().max().item()),
-            self.config.origin_exclusion,
-        )
+        if isinside.numel() > 0:
+            largest_inside_idx = isinside.abs().amax(dim=1).argmax()
+            largest_inside_state = isinside[largest_inside_idx]
+            __logger__.info(
+                "Largest rollout state inside origin exclusion: state=%s, max_abs=%.6e, origin_exclusion=%s",
+                largest_inside_state.detach().cpu().tolist(),
+                float(largest_inside_state.abs().max().item()),
+                self.config.origin_exclusion,
+            )
+        else:
+            __logger__.info(
+                "No rollout states entered the origin exclusion region (origin_exclusion=%s).",
+                self.config.origin_exclusion,
+            )
 
         rollout_states = rollout_states.clone()
         violations = violations.clone()

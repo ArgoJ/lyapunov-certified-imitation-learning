@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -24,8 +24,13 @@ from . import (
     DoubleIntegratorDynamics,
     load_lyapunov_model,
     load_policy_model,
+    build_lyapunov_func,
+    find_all_lyapunov_dirs,
+    discover_latest_cert_lyapunov_path,
+    require_file,
+    require_dir,
 )
-from ..example_utils import discover_latest_cert_result_path, require_file, require_dir
+from ..constants import *
 
 __logger__ = logging.getLogger("lcil.examples.double_integrator.cert_result_test")
 
@@ -34,8 +39,12 @@ _DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[2] / "results" / "doubl
 
 @dataclass(frozen=True)
 class RetestCertResultScriptConfig(ArgumentParserConfig):
-    cert_result_path: str | None = config_field(
-        help="Optional path to certification_details.npz. Defaults to the latest saved certification result under results/double_integrator.",
+    lyapunov_dir: str | None = config_field(
+        help="Defaults to the latest saved result under results/double_integrator.",
+    )
+    apply_all_lyapunov_dirs: bool = config_field(
+        default=False,
+        help="Whether to apply the tester to all lyapunov models found under the parent directory of the specified lyapunov_dir (if False, only the specified lyapunov_dir is tested)."
     )
     device: str = config_field(
         default="cpu", 
@@ -51,34 +60,39 @@ class RetestCertResultScriptConfig(ArgumentParserConfig):
 
 
 def _build_script_defaults() -> RetestCertResultScriptConfig:
-    default_cert_result_path = discover_latest_cert_result_path(_DEFAULT_RESULTS_ROOT)
+    default_lyapunov_dir = discover_latest_cert_lyapunov_path()
+    __logger__.info(f"Discovered latest lyapunov directory at {default_lyapunov_dir} for default script configuration.")
     return RetestCertResultScriptConfig(
-        cert_result_path=str(default_cert_result_path),
+        lyapunov_dir=str(default_lyapunov_dir),
     )
 
 
-def parse_args() -> RetestCertResultScriptConfig:
+def parse_args() -> list[RetestCertResultScriptConfig]:
     script_defaults = _build_script_defaults()
     parser = argparse.ArgumentParser(
         description="Load a saved certification result and rerun empirical center-rollout testing.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    script_defaults.add_to_argparse(parser)
+    script_defaults.add_to_argparse(parser, suppress_defaults=True)
     args = parser.parse_args()
-    return script_defaults.from_namespace(args)
+    __logger__.info("Parsed command-line arguments: %s", args)
+    script_config = script_defaults.from_namespace(args)
 
+    configs = []
+    if script_config.apply_all_lyapunov_dirs:
+        search_dir = Path(script_config.lyapunov_dir).parent.parent
+        lyap_dirs = find_all_lyapunov_dirs(search_dir)
+        __logger__.info("Found %d lyapunov model directories under %s for certification", len(lyap_dirs), search_dir)
+        for lyap_dir in lyap_dirs:
+            script_config = replace(
+                script_config,
+                lyapunov_dir=str(lyap_dir)
+            )
+            configs.append(script_config)
+    else:
+        configs.append(script_config)
 
-def _build_lyapunov_func(
-    lyap_model,
-    device: th.device,
-) -> Callable[[np.ndarray], np.ndarray]:
-    def lyapunov_func(states: np.ndarray) -> np.ndarray:
-        x = th.as_tensor(states, dtype=th.float32, device=device)
-        with th.no_grad():
-            values = lyap_model(x)
-        return values.detach().cpu().numpy().reshape(-1)
-
-    return lyapunov_func
+    return configs
 
 
 def _build_rollout_dataset(
@@ -91,8 +105,11 @@ def _build_rollout_dataset(
     device: th.device,
 ) -> MPCDataset | None:
     initial_states = test_results.rho_boundary.sampled_states
+    if initial_states is None:
+        __logger__.warning("No rho-boundary samples available for rollout plotting.")
+        return None
     if initial_states.shape[0] == 0:
-        __logger__.warning("No certification-region centers available for rollout plotting.")
+        __logger__.warning("No rho-boundary samples available for rollout plotting.")
         return None
 
     rollout_config = PolicyRolloutConfig.from_mpc_config(
@@ -146,7 +163,7 @@ def _save_level_set_metrics(
     state_dim: int,
     device: th.device,
 ) -> None:
-    metrics_path = cert_dir / "certification_tester_metrics.json"
+    metrics_path = cert_dir / LEVEL_SET_FILENAME
     level_set_estimate = estimate_level_set_measure(
         lyapunov_fn=lyapunov_fn,
         rho=float(cert_result.rho),
@@ -158,69 +175,87 @@ def _save_level_set_metrics(
 
 
 def main() -> None:
-    script_config = parse_args()
-    device = th.device(script_config.device)
+    script_configs = parse_args()
+    for script_config in script_configs:
+        device = th.device(script_config.device)
 
-    cert_result_path = require_file(Path(script_config.cert_result_path), name="Certification result")
-    cert_dir = cert_result_path.parent
-    lyapunov_dir = require_dir(cert_dir.parent, name="Lyapunov run directory")
-    certification_config_path = require_file(cert_dir / "certification_config.json", name="Certification config")
-    lyapunov_path = require_file(lyapunov_dir / "lyapunov_model.pt", name="Lyapunov checkpoint")
-    policy_path = require_file(lyapunov_dir / "policy_model.pt", name="Policy checkpoint")
-    results_path = cert_dir / "certification_tester_results.json"
+        lyapunov_dir = Path(script_config.lyapunov_dir).resolve()
 
-    certification_config = LyapunovCertificationConfig.load(certification_config_path)
-    cert_result = RegionCertificationResult.load(cert_result_path)
+        lyapunov_path = require_file(lyapunov_dir / LYAPUNOV_MODEL_FILENAME, name="Lyapunov checkpoint")
+        policy_path = require_file(lyapunov_dir / POLICY_MODEL_FILENAME, name="Policy checkpoint")
 
-    policy_model = load_policy_model(policy_path, device)
-    lyap_model = load_lyapunov_model(lyapunov_path, device)
-    lyapunov_func = _build_lyapunov_func(lyap_model, device)
+        try:
+            cert_path = require_dir(lyapunov_dir / CERTIFICATION_DIRNAME, name="Certification directory")
+            certification_config_path = require_file(cert_path / CERTIFICATION_CONFIG_FILENAME, name="Certification config")
+            cert_result_path = require_file(cert_path / CERTIFICATION_DETAILS_FILENAME, name="Certification result details")
+        except FileNotFoundError as e:
+            __logger__.error("Skipping due to missing file:\n%s", e)
+            continue
 
-    dyn_model = DoubleIntegratorDynamics(
-        dt=policy_model.global_config.dt,
-        abcrown_compatible_ops=True,
-    ).to(device)
-    dyn_model.eval()
+        certification_config = LyapunovCertificationConfig.load(certification_config_path)
+        cert_result = RegionCertificationResult.load(cert_result_path)
+        if not cert_result.global_success:
+            __logger__.warning(
+                "Certification result at rho=%.6f is not globally proven "
+                "(partial_success=%s, certified_sublevel=%d, uncertified=%d, outside_sublevel=%d). "
+                "The empirical tester will still sample the whole V(x) <= rho sublevel set, "
+                "so violations may come from uncertified regions.",
+                float(cert_result.rho),
+                cert_result.partial_success,
+                len(cert_result.certified_sublevel_regions),
+                len(cert_result.uncertified_regions),
+                len(cert_result.outside_sublevel_regions),
+            )
 
-    __logger__.info("Loaded certification result from %s", cert_result_path)
-    __logger__.info("Loaded certification config from %s", certification_config_path)
+        policy_model = load_policy_model(policy_path, device)
+        lyap_model = load_lyapunov_model(lyapunov_path, device)
+        lyapunov_func = build_lyapunov_func(lyap_model, device)
 
-    cert_tester = CertificationResultTester(
-        policy_model=policy_model,
-        lyap_model=lyap_model,
-        dyn_model=dyn_model,
-        config=certification_config,
-        device=device,
-    )
-    test_results = cert_tester.test_result(
-        rho=float(cert_result.rho),
-        sample_size=int(script_config.test_sample_size),
-        rollout_steps=int(script_config.rollout_steps),
-    )
-    test_results.save(results_path)
-    __logger__.info("Saved certification tester results to %s", results_path)
-    rollout_dataset = _build_rollout_dataset(
-        test_results=test_results,
-        policy_model=policy_model,
-        dyn_model=dyn_model,
-        lyap_model=lyap_model,
-        rollout_steps=int(script_config.rollout_steps),
-        device=device,
-    )
-    _save_level_set_metrics(
-        cert_dir=cert_dir,
-        cert_result=cert_result,
-        lyapunov_fn=lyap_model,
-        state_dim=int(policy_model.global_config.nx),
-        device=device,
-    )
-    _save_lyapunov_plot(
-        cert_dir=cert_dir,
-        certification_config=certification_config,
-        lyapunov_func=lyapunov_func,
-        roa_level=float(cert_result.rho),
-        rollout_dataset=rollout_dataset,
-    )
+        dyn_model = DoubleIntegratorDynamics(
+            dt=policy_model.global_config.dt,
+            abcrown_compatible_ops=True,
+        ).to(device)
+        dyn_model.eval()
+
+        __logger__.info("Loaded certification result from %s", cert_result_path)
+        __logger__.info("Loaded certification config from %s", certification_config_path)
+
+        cert_tester = CertificationResultTester(
+            policy_model=policy_model,
+            lyap_model=lyap_model,
+            dyn_model=dyn_model,
+            config=certification_config,
+            device=device,
+        )
+        test_results = cert_tester.test_result(
+            rho=float(cert_result.rho),
+            sample_size=int(script_config.test_sample_size),
+            rollout_steps=int(script_config.rollout_steps),
+        )
+        test_results.save(cert_path)
+        __logger__.info("Saved certification tester results to %s", cert_path)
+        rollout_dataset = _build_rollout_dataset(
+            test_results=test_results,
+            policy_model=policy_model,
+            dyn_model=dyn_model,
+            lyap_model=lyap_model,
+            rollout_steps=int(script_config.rollout_steps),
+            device=device,
+        )
+        _save_level_set_metrics(
+            cert_dir=cert_path,
+            cert_result=cert_result,
+            lyapunov_fn=lyap_model,
+            state_dim=int(policy_model.global_config.nx),
+            device=device,
+        )
+        _save_lyapunov_plot(
+            cert_dir=cert_path,
+            certification_config=certification_config,
+            lyapunov_func=lyapunov_func,
+            roa_level=float(cert_result.rho),
+            rollout_dataset=rollout_dataset,
+        )
 
 
 if __name__ == "__main__":

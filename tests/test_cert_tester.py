@@ -374,6 +374,37 @@ class TestCertificationResultTester(unittest.TestCase):
             equal_nan=True,
         )
 
+    def test_evaluate_rho_handles_empty_origin_exclusion_hits(self) -> None:
+        tester = self._make_tester(
+            _MappedViolationTester,
+            origin_exclusion=0.1,
+            sampled_states=np.array([[0.5]], dtype=np.float32),
+            sampled_values=np.array([0.5], dtype=np.float32),
+            transitions={
+                0.5: (0.0, 0.4),
+                0.4: (0.0, 0.3),
+            },
+        )
+
+        result = tester._evaluate_rho(
+            rho=1.0,
+            sample_size=1,
+            tolerance=1e-6,
+            rollout_steps=2,
+        )
+
+        self.assertEqual(result.num_samples, 1)
+        self.assertEqual(result.violation_rate, 0.0)
+        self.assertAlmostEqual(result.max_violation, 0.0, places=6)
+        np.testing.assert_allclose(
+            result.violations_per_step,
+            np.array([[0.0, 0.0]], dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            result.rollout_states,
+            np.array([[[0.5], [0.4], [0.3]]], dtype=np.float32),
+        )
+
     def test_rollout_steps_and_sample_size_must_be_positive(self) -> None:
         tester = self._make_tester(
             _DeterministicBoundaryTester,

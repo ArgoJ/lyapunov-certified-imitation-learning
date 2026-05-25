@@ -4,8 +4,6 @@ import argparse
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
-from numpy.typing import NDArray
-from typing import Callable
 
 import torch as th
 
@@ -20,14 +18,14 @@ from lcil.utils import ArgumentParserConfig, config_field, lcil_plt
 from . import (
     DoubleIntegratorDynamics,
     discover_latest_lyapunov_dir,
-    discover_latest_policy_dir,
+    build_lyapunov_func,
     load_lyapunov_model,
     load_policy_model,
+    find_all_lyapunov_dirs,
 )
 
 __logger__ = logging.getLogger("lcil.examples.double_integrator.certify")
 
-_DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[2] / "results" / "double_integrator"
 _DEFAULT_CERT_BOUND_SCALES = (0.15, 0.15)
 
 
@@ -43,22 +41,6 @@ class BisectCertifyScriptConfig(ArgumentParserConfig):
         help="Per-dimension scaling applied to policy state bounds to define certification bounds.",
     )
     save_dir: str | None = config_field(default=None, help="Optional directory where certification details and tester results are written.")
-
-
-def _find_all_lyapunov_dirs(path: Path) -> list[Path]:
-    """
-    Find all subdirectories in a specific lyapunov_iso run that contain 'lyapunov_model.pt'.
-    If lyapunov_iso is None, the latest lyapunov directory is used.
-    """
-    if not path.exists():
-        __logger__.warning(f"Directory {path} not found.")
-        return []
-
-    lyap_dirs = []
-    for model_file in path.rglob("lyapunov_model.pt"):
-        lyap_dirs.append(model_file.parent)
-        
-    return lyap_dirs
 
 
 def _build_script_defaults() -> BisectCertifyScriptConfig | list[BisectCertifyScriptConfig]:
@@ -104,19 +86,6 @@ def _build_parser(
     return parser
 
 
-def _build_lyapunov_func(
-    lyap_model,
-    device: th.device,
-) -> Callable[[NDArray], NDArray]:
-    def lyapunov_func(states: NDArray) -> NDArray:
-        x = th.as_tensor(states, dtype=th.float32, device=device)
-        with th.no_grad():
-            values = lyap_model(x)
-        return values.detach().cpu().numpy().reshape(-1)
-
-    return lyapunov_func
-
-
 def parse_args() -> list[tuple[BisectCertifyScriptConfig, LyapunovCertificationConfig]]:
     script_defaults = _build_script_defaults()
     certification_defaults = _build_certification_defaults(Path(script_defaults.lyapunov_dir))
@@ -128,7 +97,7 @@ def parse_args() -> list[tuple[BisectCertifyScriptConfig, LyapunovCertificationC
     configs = []
     if script_config.certify_all_lyapunov_models:
         search_dir = Path(script_config.lyapunov_dir).parent.parent
-        lyap_dirs = _find_all_lyapunov_dirs(search_dir)
+        lyap_dirs = find_all_lyapunov_dirs(search_dir)
         __logger__.info("Found %d lyapunov model directories under %s for certification", len(lyap_dirs), search_dir)
         for lyap_dir in lyap_dirs:
             script_config = replace(
@@ -201,7 +170,7 @@ def main() -> None:
             html_path=plot_path,
         )
         mdg_plt.lyapunov(
-            lyapunov_func=_build_lyapunov_func(lyap_model, device),
+            lyapunov_func=build_lyapunov_func(lyap_model, device),
             roa_level=cert_results.rho,
             state_labels=["$x$", "$v$"],
             num_states=2,
