@@ -10,6 +10,7 @@ from lcil.utils import EarlyStopping, IntegrationMethod
 from lcil.imitation_learning import *
 
 from . import DoubleIntegratorDynamics, default_dataset_path, resolve_dataset_path
+from ..constants import RESULTS_ROOT
 
 
 def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Namespace:
@@ -28,7 +29,7 @@ def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Names
 
 
 def main() -> None:
-    base_path = Path("results/double_integrator")
+    base_path = RESULTS_ROOT / "double_integrator"
     iso = datetime.now().strftime('%Y%m%d_%H%M%S').replace(" ", "_").replace(":", "-")
 
     training_defaults = ImitationTrainingConfig(

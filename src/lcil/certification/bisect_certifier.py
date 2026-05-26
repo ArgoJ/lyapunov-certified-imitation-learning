@@ -25,6 +25,7 @@ from .region_manager import RegionManager
 from .abcrown_region_certifier import CompleteABCrownCertifier, CoreABCrownCertifier
 from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds, LyapunovRegionBounds
 from ..utils.helpers import none_to_float
+from ..utils.constants import *
 
 __logger__ = logging.getLogger(__name__)
 
@@ -874,11 +875,11 @@ class BisectCertifier:
         save_path = Path(save_folder).resolve()
         save_path.mkdir(parents=True, exist_ok=True)
 
-        details_path = save_path / "certification_details.npz"
+        details_path = save_path / CERTIFICATION_DETAILS_FILENAME
         if self.details is not None:
             self.details.save(details_path)
 
-        config_path = save_path / "certification_config.json"
+        config_path = save_path / CERTIFICATION_CONFIG_FILENAME
         self.config.save(config_path)
 
         __logger__.info("Saved certification details to %s", save_path)

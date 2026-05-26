@@ -174,9 +174,8 @@ def main() -> None:
         sample_size=int(script_config.test_sample_size),
         rollout_steps=int(script_config.test_rollout_steps),
     )
-    tester_results_path = save_dir / "certification_tester_results.json"
-    test_results.save(tester_results_path)
-    __logger__.info("Saved certification tester results to %s", tester_results_path)
+    test_results.save(save_dir)
+    __logger__.info("Saved certification tester results to %s", save_dir)
 
     
 

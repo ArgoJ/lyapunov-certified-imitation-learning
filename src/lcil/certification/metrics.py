@@ -12,6 +12,7 @@ from numpy.typing import NDArray
 from scipy.stats import norm, qmc
 
 from ..utils.base_config import JsonDataclass
+from ..utils.constants import *
 
 __logger__ = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class LevelSetEstimate(JsonDataclass):
     """
 
     NP_ARRAY_FIELDS = ("directions", "radii", "truncated_mask")
-    DEFAULT_FILE_NAME = "level_set_estimate.json"
+    DEFAULT_FILE_NAME = LEVEL_SET_FILENAME
 
     rho: float
     num_states: int

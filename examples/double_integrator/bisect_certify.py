@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import torch as th
+import gc
+
 from dataclasses import dataclass, replace
 from pathlib import Path
-
-import torch as th
 
 from mpc_datagen import mdg_plt
 from lcil.certification import (
@@ -55,7 +56,7 @@ def _build_script_defaults() -> BisectCertifyScriptConfig | list[BisectCertifySc
 def _build_certification_defaults(
     lyapunov_dir: Path,
 ) -> LyapunovCertificationConfig:
-    training_config = LyapunovTrainingConfig.load(lyapunov_dir / "training_config.json")
+    training_config = LyapunovTrainingConfig.load(lyapunov_dir)
     return LyapunovCertificationConfig.from_training_config(
         training_config,
         cert_bounds=training_config.state_bounds, # TODO: apply percentage of these bounds
@@ -131,7 +132,7 @@ def main() -> None:
         ).to(device)
         dyn_model.eval()
 
-        results_path = lyapunov_dir / "training_result.json"
+        results_path = lyapunov_dir / TRAINING_RESULTS_FILENAME
         if not results_path.is_file():
             raise FileNotFoundError(f"Training results file not found at {results_path}. Cannot extract rho estimate. Please provide an initial rho estimate via the --rho_estimate argument or ensure the training results file exists.")
         training_results = LyapunovTrainingResult.load(results_path)
@@ -179,6 +180,15 @@ def main() -> None:
             html_path=save_dir / "certification_lyapunov_plot.html",
         )
         __logger__.info("Saved certification lyapunov and region plot to %s", save_dir)
+
+        del policy_model
+        del lyap_model
+        del dyn_model
+        del certifier
+        del cert_results
+        gc.collect()
+        if device.type == "cuda":
+            th.cuda.empty_cache()
 
 if __name__ == "__main__":
     main()

@@ -16,6 +16,7 @@ from ..utils.base_config import (
     fraction_validator,
     run_field_validators,
 )
+from ..utils.constants import *
 
 
 @dataclass(frozen=True)
@@ -166,6 +167,7 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
     val_dataset_path: str | os.PathLike | None = field(init=False, default=None, metadata={"cli": False})
     
     NP_ARRAY_FIELDS = ()
+    DEFAULT_FILE_NAME = TRAINING_CONFIG_FILENAME
 
     def __post_init__(self):
         run_field_validators(self)

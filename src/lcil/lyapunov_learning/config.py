@@ -14,6 +14,7 @@ from ..utils.base_config import (
     fraction_validator,
     run_field_validators,
 )
+from ..utils.constants import *
 
 
 @dataclass(frozen=True)
@@ -305,6 +306,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         validators=(non_negative_validator,),
     )
     NP_ARRAY_FIELDS = ("state_bounds",)
+    DEFAULT_FILE_NAME = TRAINING_CONFIG_FILENAME
 
     def __post_init__(self):
         run_field_validators(self)

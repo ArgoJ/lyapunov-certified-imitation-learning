@@ -36,6 +36,7 @@ from .utils import ThresholdMonitor
 from ..utils.base_config import JsonDataclass
 from ..utils.base_models import save_model_checkpoint
 from ..utils.helpers import none_to_float
+from ..utils.constants import *
 
 __logger__ = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ class LyapunovTrainingResult(JsonDataclass):
     lyap_model_path: os.PathLike | None = None
     policy_model_path: os.PathLike | None = None
 
-    DEFAULT_FILE_NAME = "training_result.json"
+    DEFAULT_FILE_NAME = TRAINING_RESULTS_FILENAME
 
     @property
     def completed(self) -> bool:
@@ -65,6 +66,7 @@ class LyapunovTrainingCurriculumStage(JsonDataclass):
     result: LyapunovTrainingResult
 
     NP_ARRAY_FIELDS = ("state_bounds", "scale")
+    DEFAULT_FILE_NAME = TRAINING_CURRICULUM_STAGE_FILENAME
 
 
 @dataclass
@@ -73,7 +75,7 @@ class LyapunovTrainingCurriculumResult(JsonDataclass):
     aborted_result: LyapunovTrainingResult | None = None
     aborted_stage_index: int | None = None
 
-    DEFAULT_FILE_NAME = "training_curriculum_result.json"
+    DEFAULT_FILE_NAME = TRAINING_CURRICULUM_RESULT_FILENAME
 
     @property
     def aborted(self) -> bool:
@@ -601,19 +603,19 @@ class LyapunovTrainer:
         save_folder.mkdir(parents=True, exist_ok=True)
 
         # Config saving
-        config_path = save_folder / "training_config.json"
+        config_path = save_folder / TRAINING_CONFIG_FILENAME
         self.config.save(config_path)
 
         # Models saving 
-        lyap_model_path = save_folder / f"lyapunov_model.pt"
-        policy_model_path = save_folder / f"policy_model.pt"
+        lyap_model_path = save_folder / LYAPUNOV_MODEL_FILENAME
+        policy_model_path = save_folder / POLICY_MODEL_FILENAME
 
         save_model_checkpoint(self.lyap_model, lyap_model_path)
         save_model_checkpoint(self.policy_model, policy_model_path)
 
         # Metric saving
         if self.metrics is not None:
-            metrics_path = save_folder / "training_metrics.npz"
+            metrics_path = save_folder / TRAINING_METRICS_FILENAME
             self.metrics.save(metrics_path)
 
         # Optional: Update the results object with the paths if it exists

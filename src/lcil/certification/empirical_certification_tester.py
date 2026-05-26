@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 from .config import LyapunovCertificationConfig
 from .models import LyapunovCoreVerifier
 from ..utils.base_config import JsonDataclass
+from ..utils.constants import *
 
 __logger__ = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class CertificationCategoryTestResult(JsonDataclass):
 class CertificationTesterResult(JsonDataclass):
     """Container for empirical rho-boundary rollout checks."""
 
-    DEFAULT_FILE_NAME = "certification_tester_results.json"
+    DEFAULT_FILE_NAME = CERTIFICATION_TESTER_RESULTS_FILENAME
 
     rho_boundary: CertificationCategoryTestResult
     sample_size: int

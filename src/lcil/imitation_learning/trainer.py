@@ -10,8 +10,7 @@ import torch.nn as nn
 from dataclasses import dataclass
 from pathlib import Path
 from numpy.typing import NDArray
-from typing import Any, Literal
-from collections.abc import Mapping
+from typing import Any
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from rich.progress import (
@@ -28,6 +27,7 @@ from .config import ImitationTrainingConfig
 from .dataset import save_state_action_dataset_subset
 from ..utils.early_stopping import EarlyStopping
 from ..utils.helpers import none_to_float
+from ..utils.constants import *
 
 __logger__ = logging.getLogger(__name__)
 
@@ -424,7 +424,7 @@ class PolicyTrainer:
             val_dataset_path = None
         
         # Config saving
-        config_path = save_folder / "training_config.json"
+        config_path = save_folder / TRAINING_CONFIG_FILENAME
         self.training_config.register_datasets(
             train_path=train_dataset_path if train_saved else None,
             val_path=val_dataset_path if val_saved else None,
@@ -432,14 +432,14 @@ class PolicyTrainer:
         self.training_config.save(config_path)
 
         # Policy model saving
-        model_path = save_folder / "model.pt"
+        model_path = save_folder / POLICY_MODEL_FILENAME
         self.model.save(
             model_path,
             global_config=global_config,
         )
 
         # Metrics
-        metrics_path = save_folder / "training_metrics.npz"
+        metrics_path = save_folder / TRAINING_METRICS_FILENAME
         self.metrics.save(metrics_path)
         
         __logger__.info(f"Saved training results to {metrics_path.parent}")

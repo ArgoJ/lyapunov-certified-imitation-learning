@@ -13,6 +13,7 @@ from ..utils.base_config import (
     non_negative_validator,
     run_field_validators,
 )
+from ..utils.constants import *
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     )
 
     NP_ARRAY_FIELDS = ("cert_bounds",)
+    DEFAULT_FILE_NAME = CERTIFICATION_CONFIG_FILENAME
 
     def __post_init__(self) -> None:
         run_field_validators(self)
