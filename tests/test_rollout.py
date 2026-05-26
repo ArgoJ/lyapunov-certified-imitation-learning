@@ -14,13 +14,13 @@ from shared_utils import (
     _ZeroPolicy,
 )
 
-from lcil.lyapunov_learning import LyapunovRollout
 from lcil.imitation_learning import SequenceStateActionDataset, StateActionDataset, load_imitation_dataset
-from lcil.imitation_learning.policy_rollout import (
+from lcil.rollouts import (
     FeasibleSetSampler,
     PolicyRolloutConfig,
     PolicyRolloutGenerator,
     RandomBoundsSampler,
+    LyapunovRollout,
 )
 
 

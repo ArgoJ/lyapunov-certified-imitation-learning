@@ -5,8 +5,8 @@ from torch import nn
 from numpy.typing import NDArray
 from mpc_datagen import MPCDataset
 
-from ..imitation_learning.policy_rollout import PolicyRolloutConfig, PolicyRolloutGenerator, StateSampler
-from ..lyapunov_learning.rollout import LyapunovRollout
+from .policy_rollout import PolicyRolloutConfig, PolicyRolloutGenerator, StateSampler
+from .lyapunov_rollout import LyapunovRollout
 
 __logger__ = logging.getLogger(__name__)
 

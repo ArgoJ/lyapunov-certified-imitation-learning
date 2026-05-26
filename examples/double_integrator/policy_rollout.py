@@ -9,7 +9,7 @@ from scipy.linalg import solve_discrete_are
 from mpc_datagen import mdg_plt, StabilityVerifier, VerificationRender, mdg_linalg, MPCDataset
 from lcil.utils import IntegrationMethod
 from lcil.imitation_learning import load_imitation_dataset
-from lcil.imitation_learning.policy_rollout import (
+from lcil.rollouts import (
     PolicyRolloutGenerator,
     PolicyRolloutConfig,
     FeasibleSetSampler,
@@ -90,7 +90,7 @@ def main() -> None:
 
     base_folder = model_path.parent
     output_path = base_folder / POLICY_ROLLOUT_FILENAME
-    plot_path = base_folder / POLICY_ROLLOUT_FILENAME.replace(".hdf5", ".html")
+    plot_path = output_path.with_suffix(".html")
     solved_dataset.save(path=output_path, save_ocp_trajs=False)
 
     veri_stats = StabilityVerifier.verify(solved_dataset)

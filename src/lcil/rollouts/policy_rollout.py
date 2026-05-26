@@ -11,7 +11,7 @@ from rich.progress import track
 
 from mpc_datagen import MPCConfig, MPCData, MPCDataset, MPCMeta, MPCTrajectory
 
-from .dataset import SequenceStateActionDataset, StateActionDataset
+from ..imitation_learning.dataset import SequenceStateActionDataset, StateActionDataset
 
 __logger__ = logging.getLogger(__name__)
 

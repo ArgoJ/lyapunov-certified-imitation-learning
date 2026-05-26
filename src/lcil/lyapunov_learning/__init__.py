@@ -1,6 +1,5 @@
 from .trainer import LyapunovTrainer, LyapunovTrainingResult
 from .config import LyapunovTrainingConfig
-from .rollout import LyapunovRollout
 from .utils import ThresholdMonitor, TrainingAbortedError
 from .models import (
     LyapunovNet,
@@ -19,7 +18,6 @@ __all__ = [
     "LyapunovTrainer",
     "LyapunovTrainingResult",
     "LyapunovTrainingConfig",
-    "LyapunovRollout",
     "LyapunovNet",
     "NeuralLyapunovCandidate",
     "QuadraticLyapunovCandidate",
