@@ -17,8 +17,13 @@ from lcil.lyapunov_learning import (
 from lcil.utils import GridSearchHelper, lcil_plt, MLP, IntegrationMethod
 from mpc_datagen import MPCDataset
 
-from . import DoubleIntegratorDynamics, default_model_path, load_policy_model
-from .basis import compute_riccati_value_matrix
+from . import (
+    DoubleIntegratorDynamics,
+    default_model_path,
+    load_policy_model,
+    compute_riccati_value_matrix,
+)
+from ..constants import *
 
 __logger__ = logging.getLogger("lcil.examples.double_integrator.learn_lyapunov")
 
@@ -79,7 +84,7 @@ def main() -> None:
     policy_sequence_length = int(getattr(policy_model, "max_seq_len", 1))
     uses_sequence_policy = policy_sequence_length > 1
 
-    sweep_output_root = policy_path.parent / "lyapunov"
+    sweep_output_root = policy_path.parent / LYAPUNOV_DIRNAME
     
     dyn_model = DoubleIntegratorDynamics(
         dt=policy_global_config.dt,
@@ -87,7 +92,7 @@ def main() -> None:
     ).to(device)
     dyn_model.eval()
     
-    rollout_dataset_path = policy_path.parent / "policy_rollouts.hdf5"
+    rollout_dataset_path = policy_path.parent / POLICY_ROLLOUT_FILENAME
     rollout_dataset = None
     if rollout_dataset_path.exists():
         rollout_dataset = MPCDataset.load(rollout_dataset_path)
@@ -189,7 +194,7 @@ def main() -> None:
                 state_indices=[0, 1],
                 state_labels=["$x$", "$v$"],
                 plot_3d=False,
-                html_path=base_path / "lyapunov_plot.html",
+                html_path=base_path / LYAPUNOV_ROLLOUT_FILENAME.replace(".hdf5", ".html"),
             )
 
     __logger__.info(f"\nGrid search complete. All results saved to: {sweep.sweep_base_path}")

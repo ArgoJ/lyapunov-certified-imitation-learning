@@ -8,7 +8,8 @@ from lcil.imitation_learning import MLPPolicy, TransformerPolicy
 from lcil.lyapunov_learning import NeuralLyapunovCandidate
 
 from .acados_ocp import get_batch_ocp_solver, get_model, get_ocp, get_ocp_solver
-from .double_integrator_dyn import DoubleIntegratorDynamics
+from .double_integrator_dyn import DoubleIntegratorDynamics#
+from .basis import *
 from ..example_utils import (
     build_lyapunov_func,
     find_all_lyapunov_dirs,

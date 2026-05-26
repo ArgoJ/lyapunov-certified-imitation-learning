@@ -13,8 +13,7 @@ from mpc_datagen.verification import (
     ROAVerifier,
 )
 
-from . import get_batch_ocp_solver
-from .basis import *
+from . import get_batch_ocp_solver, A_c, B_c, Q, R
 
 
 def setup_parser() -> argparse.ArgumentParser:

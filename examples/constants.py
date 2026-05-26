@@ -1,9 +1,11 @@
 from pathlib import Path
 
 POLICY_MODEL_FILENAME = "policy_model.pt"
+POLICY_ROLLOUT_FILENAME = "policy_rollouts.hdf5"
 
 LYAPUNOV_MODEL_FILENAME = "lyapunov_model.pt"
 LYAPUNOV_DIRNAME = "lyapunov"
+LYAPUNOV_ROLLOUT_FILENAME = "lyapunov_rollout.hdf5"
 
 CERTIFICATION_DIRNAME = "certification"
 CERTIFICATION_CONFIG_FILENAME = "certification_config.json"

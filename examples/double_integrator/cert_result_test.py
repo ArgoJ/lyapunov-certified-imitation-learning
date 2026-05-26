@@ -15,10 +15,8 @@ from lcil.certification import (
     LyapunovCertificationConfig,
     estimate_level_set_measure,
 )
-from lcil.imitation_learning.policy_rollout import PolicyRolloutConfig, PolicyRolloutGenerator
-from lcil.lyapunov_learning import LyapunovRollout
-from lcil.certification import RegionCertificationResult, CertificationTesterResult
-from lcil.utils.base_config import ArgumentParserConfig, config_field
+from lcil.certification import RegionCertificationResult
+from lcil.utils import ArgumentParserConfig, config_field, build_rollout_dataset
 
 from . import (
     DoubleIntegratorDynamics,
@@ -33,8 +31,6 @@ from . import (
 from ..constants import *
 
 __logger__ = logging.getLogger("lcil.examples.double_integrator.cert_result_test")
-
-_DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[2] / "results" / "double_integrator"
 
 
 @dataclass(frozen=True)
@@ -93,43 +89,6 @@ def parse_args() -> list[RetestCertResultScriptConfig]:
         configs.append(script_config)
 
     return configs
-
-
-def _build_rollout_dataset(
-    *,
-    test_results: CertificationTesterResult,
-    policy_model,
-    dyn_model,
-    lyap_model,
-    rollout_steps: int,
-    device: th.device,
-) -> MPCDataset | None:
-    initial_states = test_results.rho_boundary.sampled_states
-    if initial_states is None:
-        __logger__.warning("No rho-boundary samples available for rollout plotting.")
-        return None
-    if initial_states.shape[0] == 0:
-        __logger__.warning("No rho-boundary samples available for rollout plotting.")
-        return None
-
-    rollout_config = PolicyRolloutConfig.from_mpc_config(
-        policy_model.global_config,
-        t_sim=int(rollout_steps),
-    )
-    policy_rollout_generator = PolicyRolloutGenerator(
-        policy=policy_model,
-        simulator=dyn_model,
-        cfg=rollout_config,
-        sampler=None,
-        device=device,
-    )
-    rollout_dataset = policy_rollout_generator.generate_from_states(initial_states)
-    LyapunovRollout(
-        mpc_dataset=rollout_dataset,
-        lyap_model=lyap_model,
-        device=device,
-    ).rollout()
-    return rollout_dataset
 
 
 def _save_lyapunov_plot(
@@ -234,8 +193,8 @@ def main() -> None:
         )
         test_results.save(cert_path)
         __logger__.info("Saved certification tester results to %s", cert_path)
-        rollout_dataset = _build_rollout_dataset(
-            test_results=test_results,
+        rollout_dataset = build_rollout_dataset(
+            initial_states=test_results.rho_boundary.sampled_states,
             policy_model=policy_model,
             dyn_model=dyn_model,
             lyap_model=lyap_model,

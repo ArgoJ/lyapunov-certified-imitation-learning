@@ -15,14 +15,13 @@ from . import (
     discover_latest_lyapunov_dir,
     discover_latest_policy_dir,
     load_lyapunov_model,
+    require_dir,
+    require_file,
 )
-from ..example_utils import require_dir, require_file
+from ..constants import *
 
 __logger__ = logging.getLogger("lcil.examples.double_integrator.lyapunov_rollout")
 
-_DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[2] / "results" / "double_integrator"
-_SOURCE_ROLLOUT_FILE_NAME = "policy_rollouts.hdf5"
-_OUTPUT_ROLLOUT_FILE_NAME = "lyapunov_rollout.hdf5"
 
 
 @dataclass(frozen=True)
@@ -32,7 +31,7 @@ class LyapunovRolloutScriptConfig(ArgumentParserConfig):
 
 
 def _build_script_defaults() -> LyapunovRolloutScriptConfig:
-    default_policy_dir = discover_latest_policy_dir(_DEFAULT_RESULTS_ROOT)
+    default_policy_dir = discover_latest_policy_dir()
     default_lyapunov_dir = discover_latest_lyapunov_dir(default_policy_dir)
     return LyapunovRolloutScriptConfig(
         lyapunov_dir=str(default_lyapunov_dir),
@@ -52,12 +51,12 @@ def parse_args() -> LyapunovRolloutScriptConfig:
 
 def _infer_source_rollout_path(lyapunov_dir: Path) -> Path:
     for candidate_dir in [lyapunov_dir, *lyapunov_dir.parents]:
-        rollout_path = candidate_dir / _SOURCE_ROLLOUT_FILE_NAME
+        rollout_path = candidate_dir / POLICY_ROLLOUT_FILENAME
         if rollout_path.is_file():
             return rollout_path.resolve()
 
     raise FileNotFoundError(
-        f"Could not find '{_SOURCE_ROLLOUT_FILE_NAME}' in '{lyapunov_dir}' or any parent directory."
+        f"Could not find '{POLICY_ROLLOUT_FILENAME}' in '{lyapunov_dir}' or any parent directory."
     )
 
 
@@ -66,9 +65,9 @@ def main() -> None:
     device = th.device(script_config.device)
 
     lyapunov_dir = require_dir(script_config.lyapunov_dir, name="Lyapunov run directory")
-    lyapunov_path = require_file(lyapunov_dir / "lyapunov_model.pt", name="Lyapunov checkpoint")
+    lyapunov_path = require_file(lyapunov_dir / LYAPUNOV_MODEL_FILENAME, name="Lyapunov checkpoint")
     source_rollout_path = _infer_source_rollout_path(lyapunov_dir)
-    output_path = lyapunov_dir / _OUTPUT_ROLLOUT_FILE_NAME
+    output_path = lyapunov_dir / LYAPUNOV_ROLLOUT_FILENAME
 
     lyap_model = load_lyapunov_model(lyapunov_path, device)
     rollout_dataset = MPCDataset.load(source_rollout_path)

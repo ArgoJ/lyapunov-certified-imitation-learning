@@ -23,8 +23,9 @@ from . import (
     load_policy_model,
     find_all_lyapunov_dirs,
 )
+from ..constants import *
 
-__logger__ = logging.getLogger("lcil.examples.double_integrator.certify")
+__logger__ = logging.getLogger("lcil.examples.double_integrator.bisect_certify")
 
 _DEFAULT_CERT_BOUND_SCALES = (0.15, 0.15)
 
@@ -121,8 +122,8 @@ def main() -> None:
     for script_config, certification_config in configs:
         device = th.device(script_config.device)
         lyapunov_dir = Path(script_config.lyapunov_dir).resolve()
-        policy_model = load_policy_model(lyapunov_dir, device, model_name="policy_model.pt")
-        lyap_model = load_lyapunov_model(lyapunov_dir, device, model_name="lyapunov_model.pt")
+        policy_model = load_policy_model(lyapunov_dir, device, model_name=POLICY_MODEL_FILENAME)
+        lyap_model = load_lyapunov_model(lyapunov_dir, device, model_name=LYAPUNOV_MODEL_FILENAME)
 
         dyn_model = DoubleIntegratorDynamics(
             dt=policy_model.global_config.dt,
@@ -140,7 +141,7 @@ def main() -> None:
         save_dir = (
             Path(script_config.save_dir).resolve()
             if script_config.save_dir is not None
-            else (lyapunov_dir / "bisect_certification").resolve()
+            else (lyapunov_dir / CERTIFICATION_DIRNAME).resolve()
         )
         save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -162,12 +163,11 @@ def main() -> None:
             (float(cert_bounds[0, i]), float(cert_bounds[1, i]))
             for i in range(cert_bounds.shape[1])
         ]
-        plot_path = save_dir / "certification_regions_plot.html"
         lcil_plt.certified_regions_2d(
             certification_result=cert_results,
             state_labels=["$x$", "$v$"],
             bounds=plot_bounds,
-            html_path=plot_path,
+            html_path=save_dir / "certification_regions_plot.html",
         )
         mdg_plt.lyapunov(
             lyapunov_func=build_lyapunov_func(lyap_model, device),
@@ -176,9 +176,9 @@ def main() -> None:
             num_states=2,
             limits=plot_bounds,
             plot_3d=False,
-            html_path=plot_path,
+            html_path=save_dir / "certification_lyapunov_plot.html",
         )
-        __logger__.info("Saved certification region plot to %s", plot_path)
+        __logger__.info("Saved certification lyapunov and region plot to %s", save_dir)
 
 if __name__ == "__main__":
     main()

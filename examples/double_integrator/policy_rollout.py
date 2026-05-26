@@ -15,26 +15,15 @@ from lcil.imitation_learning.policy_rollout import (
     FeasibleSetSampler,
 )
 
-try:
-    from . import DoubleIntegratorDynamics, default_model_path, load_policy_model
-except ImportError:
-    repo_root = Path(__file__).resolve().parents[2]
-    if str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
-    from examples.double_integrator import DoubleIntegratorDynamics, default_model_path, load_policy_model
+from . import (
+    DoubleIntegratorDynamics,
+    default_model_path,
+    load_policy_model,
+    compute_riccati_value_matrix,
+)
+from ..constants import *
 
-__logger__ = logging.getLogger("lcil.examples.double_integrator.rollout")
-
-
-def _compute_mpc_quadratic_p(dt: float) -> np.ndarray:
-    """Compute the DARE Lyapunov matrix used by the MPC terminal ingredients."""
-    A=np.array([[0.0, 1.0], [0.0, 0.0]])
-    B=np.array([[0.0], [1.0]])
-
-    a_d, b_d = mdg_linalg.lin_c2d_rk4(A, B, dt, num_steps=1)
-    q = np.diag([15.0, 1.0])
-    r = np.diag([0.1])
-    return solve_discrete_are(a_d, b_d, q, r)
+__logger__ = logging.getLogger("lcil.examples.double_integrator.policy_rollout")
 
 
 def _set_quadratic_vn(dataset: MPCDataset, P: np.ndarray) -> None:
@@ -95,13 +84,13 @@ def main() -> None:
     )
     solved_dataset = policy_rollout_generator.generate(n_samples)
 
-    p_matrix = _compute_mpc_quadratic_p(cfg.dt)
+    p_matrix = compute_riccati_value_matrix(cfg.dt)
     _set_quadratic_vn(solved_dataset, p_matrix)
     solved_dataset.validate()
-    
+
     base_folder = model_path.parent
-    output_path = base_folder / "policy_rollouts.hdf5"
-    plot_path = base_folder / "policy_rollouts.html"
+    output_path = base_folder / POLICY_ROLLOUT_FILENAME
+    plot_path = base_folder / POLICY_ROLLOUT_FILENAME.replace(".hdf5", ".html")
     solved_dataset.save(path=output_path, save_ocp_trajs=False)
 
     veri_stats = StabilityVerifier.verify(solved_dataset)
