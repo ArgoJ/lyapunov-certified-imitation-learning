@@ -10,9 +10,8 @@ from mpc_datagen import mdg_plt, StabilityVerifier, VerificationRender, mdg_lina
 from lcil.utils import IntegrationMethod
 from lcil.imitation_learning import load_imitation_dataset
 from lcil.rollouts import (
-    PolicyRolloutGenerator,
-    PolicyRolloutConfig,
     FeasibleSetSampler,
+    build_policy_rollout_dataset,
 )
 
 from . import (
@@ -69,22 +68,23 @@ def main() -> None:
             "Policy model does not have a validation dataset path. "
             "FeasibleSetSampler will not be able to sample from the dataset for rollouts."
         )
+    dt = net.global_config.dt
 
-    cfg = PolicyRolloutConfig.from_mpc_config(net.global_config, t_sim=40.0)
     simulator = DoubleIntegratorDynamics(
-        dt=cfg.dt,
+        dt=dt,
         method=IntegrationMethod.CLASSICAL_RK4
     ).to(device)
-    policy_rollout_generator = PolicyRolloutGenerator(
-        policy=net,
-        simulator=simulator,
-        cfg=cfg,
-        sampler=sampler,
-        device=device,
-    )
-    solved_dataset = policy_rollout_generator.generate(n_samples)
 
-    p_matrix = compute_riccati_value_matrix(cfg.dt)
+    solved_dataset = build_policy_rollout_dataset(
+        policy_model=net,
+        dyn_model=simulator,
+        rollout_steps=40.0,
+        device=device,
+        sampler=sampler,
+        n_samples=n_samples,
+    )
+
+    p_matrix = compute_riccati_value_matrix(dt)
     _set_quadratic_vn(solved_dataset, p_matrix)
     solved_dataset.validate()
 

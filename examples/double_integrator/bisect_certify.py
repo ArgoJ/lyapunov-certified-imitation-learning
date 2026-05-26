@@ -97,7 +97,7 @@ def parse_args() -> list[tuple[BisectCertifyScriptConfig, LyapunovCertificationC
 
     configs = []
     if script_config.certify_all_lyapunov_models:
-        search_dir = Path(script_config.lyapunov_dir).parent.parent
+        search_dir = Path(script_config.lyapunov_dir).parent
         lyap_dirs = find_all_lyapunov_dirs(search_dir)
         __logger__.info("Found %d lyapunov model directories under %s for certification", len(lyap_dirs), search_dir)
         for lyap_dir in lyap_dirs:

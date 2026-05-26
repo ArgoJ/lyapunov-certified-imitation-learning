@@ -6,7 +6,7 @@ from .policy_rollout import (
     RandomBoundsSampler
 )
 from .lyapunov_rollout import LyapunovRollout
-from .rollout import build_rollout_dataset
+from .rollout import build_rollout_dataset, build_policy_rollout_dataset
 
 __all__ = [
     "PolicyRolloutConfig",
@@ -16,4 +16,5 @@ __all__ = [
     "RandomBoundsSampler",
     "LyapunovRollout",
     "build_rollout_dataset",
+    "build_policy_rollout_dataset",
 ]

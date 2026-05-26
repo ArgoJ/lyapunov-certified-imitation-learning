@@ -14,8 +14,7 @@ from ..utils.base_config import ArgumentParserConfig
 ConfigT = TypeVar("ConfigT")
 NamespaceConfigT = TypeVar("NamespaceConfigT", bound=ArgumentParserConfig)
 
-_SANITIZE_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
-
+_SANITIZE_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
 
 
 def _sanitize_segment(value: str) -> str:

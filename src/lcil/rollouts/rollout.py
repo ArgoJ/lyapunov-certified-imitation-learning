@@ -11,6 +11,38 @@ from .lyapunov_rollout import LyapunovRollout
 __logger__ = logging.getLogger(__name__)
 
 
+def build_policy_rollout_dataset(
+    policy_model: nn.Module,
+    dyn_model: nn.Module,
+    rollout_steps: int,
+    device: th.device,
+    initial_states: NDArray | None = None,
+    sampler: StateSampler | None = None,
+    n_samples: int | None = None,
+) -> MPCDataset | None: 
+    rollout_config = PolicyRolloutConfig.from_mpc_config(
+        policy_model.global_config,
+        t_sim=int(rollout_steps),
+    )
+
+    policy_rollout_generator = PolicyRolloutGenerator(
+            policy=policy_model,
+            simulator=dyn_model,
+            cfg=rollout_config,
+            sampler=sampler,
+            device=device,
+        )
+
+    if initial_states is not None:
+        return policy_rollout_generator.generate_from_states(initial_states)
+
+    if sampler is not None and n_samples is not None:
+        return policy_rollout_generator.generate(n_samples)
+
+    __logger__.warning("No initial states or sampler and number of samples provided for rollout dataset generation.")
+    return None
+
+
 def build_rollout_dataset(
     policy_model: nn.Module,
     dyn_model: nn.Module,
@@ -49,25 +81,17 @@ def build_rollout_dataset(
     MPCDataset | None
         The generated rollout dataset, or None if no initial states or sampler and number of samples are provided.
     """
-    rollout_config = PolicyRolloutConfig.from_mpc_config(
-        policy_model.global_config,
-        t_sim=int(rollout_steps),
+    rollout_dataset = build_policy_rollout_dataset(
+        policy_model=policy_model,
+        dyn_model=dyn_model,
+        rollout_steps=rollout_steps,
+        device=device,
+        initial_states=initial_states,
+        sampler=sampler,
+        n_samples=n_samples,
     )
 
-    policy_rollout_generator = PolicyRolloutGenerator(
-            policy=policy_model,
-            simulator=dyn_model,
-            cfg=rollout_config,
-            sampler=sampler,
-            device=device,
-        )
-
-    if initial_states is not None:
-        rollout_dataset = policy_rollout_generator.generate_from_states(initial_states)
-    elif sampler is not None and n_samples is not None:
-        rollout_dataset = policy_rollout_generator.generate(n_samples)
-    else:
-        __logger__.warning("No initial states or sampler and number of samples provided for rollout dataset generation.")
+    if rollout_dataset is None:
         return None
 
     LyapunovRollout(
