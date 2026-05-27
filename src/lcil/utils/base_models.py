@@ -14,11 +14,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 
-def build_generator(seed: int | None) -> th.Generator | None:
+def build_generator(seed: int | None, device: th.device) -> th.Generator | None:
     """Create a reproducible generator when a seed is provided."""
     if seed is None:
         return None
-    generator = th.Generator()
+    generator = th.Generator(device=device)
     generator.manual_seed(int(seed))
     return generator
 

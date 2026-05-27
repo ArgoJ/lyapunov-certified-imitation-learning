@@ -240,7 +240,7 @@ class LyapunovTrainer:
     ) -> None:
         self.config = config
         self.device = th.device(device)
-        self.torch_gen = build_generator(self.config.seed)
+        self.torch_gen = build_generator(self.config.seed, self.device)
 
         self.policy_model = policy_model.to(self.device)
         self.lyap_model = lyap_model.to(self.device)
@@ -344,10 +344,10 @@ class LyapunovTrainer:
             objective=lambda x: self.loss_module.mining_objective(
                 x_batch=x,
                 rho_estimate=rho_estimate,
-                generator=self.torch_gen,
             ),
             config=self.config,
             device=self.device,
+            generator=self.torch_gen,
         )
 
     def _build_roa_candidates(self) -> th.Tensor:

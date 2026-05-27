@@ -902,6 +902,7 @@ def create_train_and_val_dataloader(
     num_workers: int = 0,
     pin_memory: bool = False,
     dtype: th.dtype = th.float32,
+    device: th.device | None = None,
 ) -> tuple[DataLoader[tuple[th.Tensor, th.Tensor]], DataLoader[tuple[th.Tensor, th.Tensor]]]:
     """
     Create train and validation DataLoaders for imitation learning from an ``MPCDataset``.
@@ -921,6 +922,8 @@ def create_train_and_val_dataloader(
         Enable pinned host memory for faster host-to-device transfer.
     dtype : torch.dtype, optional
         Tensor dtype for states/actions emitted by the dataset.
+    device : torch.device or None, optional
+        Optional device to move dataset tensors to. If None, tensors are kept on CPU.
 
     Returns
     -------
@@ -942,7 +945,7 @@ def create_train_and_val_dataloader(
     if not (0.0 < val_fraction < 1.0):
         raise ValueError("val_fraction must be in (0., 1.).")
 
-    generator = build_generator(seed)
+    generator = build_generator(seed, device=device or "cpu")
 
     if sequence_length <= 1:
         if training_config.split_strategy != "random":

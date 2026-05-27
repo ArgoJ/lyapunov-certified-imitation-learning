@@ -197,6 +197,7 @@ class TransformerPolicy(nn.Module):
         u_min: float | list[float] | th.Tensor | None = None,
         u_max: float | list[float] | th.Tensor | None = None,
         seed: int | None = None,
+        device: th.device | str = "cpu",
     ) -> None:
         """
         Initialize the transformer policy.
@@ -266,6 +267,7 @@ class TransformerPolicy(nn.Module):
         self.max_seq_len = int(max_seq_len)
         self.causal = bool(causal)
         self.output_mode = output_mode
+        self.device = th.device(device)
 
         encoder_layer = CertifiableTransformerEncoderLayer(
             d_model=self.d_model,
@@ -298,7 +300,7 @@ class TransformerPolicy(nn.Module):
 
     def _init_weights(self) -> None:
         """Apply lightweight initialization for learnable projections and norms."""
-        gen = build_generator(self.seed)
+        gen = build_generator(self.seed, self.device)
         nn.init.normal_(self.positional_encoding, mean=0.0, std=0.02, generator=gen)
 
         for module in self.modules():
