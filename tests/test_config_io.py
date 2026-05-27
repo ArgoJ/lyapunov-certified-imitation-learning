@@ -118,7 +118,7 @@ class TestConfigRoundtrip(unittest.TestCase):
             stride=2,
             target_mode="all",
             val_fraction=0.15,
-            split_seed=123,
+            seed=123,
             split_strategy="trajectory",
             use_references=False,
             near_duplicate_radius=5e-4,

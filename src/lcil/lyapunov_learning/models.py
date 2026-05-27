@@ -3,38 +3,9 @@ import torch.nn as nn
 from pathlib import Path
 from typing import Any
 
-from ..utils.base_models import ICNN, MLP, load_feature_net, save_feature_net
+from ..utils.base_models import load_feature_net, save_feature_net
 
 
-class LyapunovNet(nn.Module):
-    """Lyapunov function approximator using ICNN or MLP.
-
-    Parameters
-    ----------
-    layer_dims : list[int]
-        Layer sizes including input and output dimensions.
-    activations : list[str]
-        Activation names for each layer transition.
-    use_icnn : bool
-        Whether to use an ICNN (convex) or a plain MLP.
-    """
-
-    def __init__(
-        self,
-        layer_dims: list[int],
-        activations: list[str],
-        use_icnn: bool = True,
-    ):
-        super().__init__()
-        if use_icnn:
-            self.net = ICNN(layer_dims, activations)
-        else:
-            self.net = MLP(layer_dims, activations)
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return self.net(x)
-
-# TODO: Change names to be control confirm
 class NeuralLyapunovCandidate(nn.Module):
     """Lyapunov candidate from Eq. (9) in the paper.
 
@@ -57,6 +28,7 @@ class NeuralLyapunovCandidate(nn.Module):
         if x_star is None:
             x_star = th.zeros(state_dim, dtype=th.float32)
         self.register_buffer("x_star", x_star.reshape(1, state_dim))
+
         if riccati_p is not None:
             self.set_riccati_p(riccati_p)
 

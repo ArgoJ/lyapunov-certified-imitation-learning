@@ -11,6 +11,7 @@ from ..utils.base_models import (
     MLP,
     CertifiableTransformerEncoder,
     CertifiableTransformerEncoderLayer,
+    build_generator
 )
 
 __logger__ = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ class MLPPolicy(nn.Module):
         normalization: Literal["none", "layer_norm"] = "none",
         u_min: float | list[float] | th.Tensor | None = None,
         u_max: float | list[float] | th.Tensor | None = None,
+        seed: int | None = None,
     ) -> None:
         """
         Initialize the MLP policy.
@@ -58,6 +60,7 @@ class MLPPolicy(nn.Module):
             activations=activations,
             dropout=self.dropout,
             normalization=self.normalization,
+            seed=seed,
         )
 
         output_dim = layer_sizes[-1]
@@ -193,6 +196,7 @@ class TransformerPolicy(nn.Module):
         output_mode: Literal["last", "per_step"] = "last",
         u_min: float | list[float] | th.Tensor | None = None,
         u_max: float | list[float] | th.Tensor | None = None,
+        seed: int | None = None,
     ) -> None:
         """
         Initialize the transformer policy.
@@ -290,14 +294,16 @@ class TransformerPolicy(nn.Module):
         self.register_buffer("_u_max", u_max_tensor)
 
         self.global_config: MPCConfig | dict[str, Any] | None = None
+        self.seed: int | None = seed
 
     def _init_weights(self) -> None:
         """Apply lightweight initialization for learnable projections and norms."""
-        nn.init.normal_(self.positional_encoding, mean=0.0, std=0.02)
+        gen = build_generator(self.seed)
+        nn.init.normal_(self.positional_encoding, mean=0.0, std=0.02, generator=gen)
 
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
+                nn.init.xavier_uniform_(module.weight, generator=gen)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
             elif isinstance(module, nn.LayerNorm):

@@ -43,9 +43,10 @@ def sample_uniform_box(
     lb: th.Tensor,
     ub: th.Tensor,
     device: th.device,
+    generator: th.Generator | None = None,
 ) -> th.Tensor:
     """Sample uniformly from the asymmetric box B = {x | lb <= x <= ub}."""
-    u = th.rand(sample_size, lb.numel(), device=device)
+    u = th.rand(sample_size, lb.numel(), device=device, generator=generator)
     return u * (ub - lb) + lb
 
 
@@ -54,15 +55,16 @@ def sample_boundary_points(
     lb: th.Tensor,
     ub: th.Tensor,
     device: th.device,
+    generator: th.Generator | None = None,
 ) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
     """Sample points on the boundary ∂B of the asymmetric box."""
-    points = sample_uniform_box(sample_size, lb, ub, device)
+    points = sample_uniform_box(sample_size, lb, ub, device, generator)
     
     # Randomly select a face dimension for each point to lie on.
-    face_dims = th.randint(0, lb.numel(), (sample_size,), device=device)
+    face_dims = th.randint(0, lb.numel(), (sample_size,), device=device, generator=generator)
     
     # 50/50 Chance: ub or lb
-    is_ub = th.rand(sample_size, device=device) >= 0.5
+    is_ub = th.rand(sample_size, device=device, generator=generator) >= 0.5
     batch_idx = th.arange(sample_size, device=device)
     points[batch_idx, face_dims] = th.where(is_ub, ub[face_dims], lb[face_dims])
     
@@ -140,6 +142,7 @@ def estimate_rho_from_boundary_diagnostics(
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),
     boundary_buffer: BoundaryStateBuffer | None = None,
+    generator: th.Generator | None = None,
 ) -> BoundaryRhoDiagnostics:
     """Estimate rho and expose boundary-term diagnostics for logging."""
     bounds = _bounds_tensor(config.state_bounds, device)
@@ -149,6 +152,7 @@ def estimate_rho_from_boundary_diagnostics(
         lb=lbx,
         ub=ubx,
         device=device,
+        generator=generator,
     )
     refs = th.zeros_like(boundary_x)  # TODO placeholder for reference state if needed in the future
 
@@ -214,25 +218,11 @@ def estimate_rho_from_boundary_diagnostics(
     )
 
 
-def estimate_rho_from_boundary(
-    lyap_model: nn.Module,
-    config: LyapunovTrainingConfig,
-    device: th.device = th.device("cpu"),
-    boundary_buffer: BoundaryStateBuffer | None = None,
-) -> float:
-    """Estimate rho from a low quantile of optimized boundary Lyapunov values."""
-    return estimate_rho_from_boundary_diagnostics(
-        lyap_model=lyap_model,
-        config=config,
-        device=device,
-        boundary_buffer=boundary_buffer,
-    ).rho
-
-
 def find_counter_examples(
     objective: Callable[[th.Tensor], th.Tensor] | nn.Module,
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),
+    generator: th.Generator | None = None,
 ) -> th.Tensor:
     """Find rho-gated training counterexamples via PGD on a minimization objective.
 
@@ -243,7 +233,7 @@ def find_counter_examples(
     bounds = _bounds_tensor(config.state_bounds, device)
     lbx, ubx = bounds[0], bounds[1]
 
-    adv_states = sample_uniform_box(config.adversarial_samples, lbx, ubx, device)
+    adv_states = sample_uniform_box(config.adversarial_samples, lbx, ubx, device, generator)
     step = config.adversarial_step_size * (ubx - lbx).unsqueeze(0)
 
     for _ in range(config.counterexample_steps):

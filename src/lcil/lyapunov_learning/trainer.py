@@ -34,7 +34,7 @@ from .counterexample import (
 )
 from .utils import ThresholdMonitor
 from ..utils.base_config import JsonDataclass
-from ..utils.base_models import save_model_checkpoint
+from ..utils.base_models import save_model_checkpoint, build_generator
 from ..utils.helpers import none_to_float
 from ..utils.constants import *
 
@@ -240,9 +240,7 @@ class LyapunovTrainer:
     ) -> None:
         self.config = config
         self.device = th.device(device)
-        if self.config.seed is not None:
-            th.manual_seed(self.config.seed)
-            np.random.seed(self.config.seed)
+        self.torch_gen = build_generator(self.config.seed)
 
         self.policy_model = policy_model.to(self.device)
         self.lyap_model = lyap_model.to(self.device)
@@ -346,6 +344,7 @@ class LyapunovTrainer:
             objective=lambda x: self.loss_module.mining_objective(
                 x_batch=x,
                 rho_estimate=rho_estimate,
+                generator=self.torch_gen,
             ),
             config=self.config,
             device=self.device,
@@ -353,9 +352,19 @@ class LyapunovTrainer:
 
     def _build_roa_candidates(self) -> th.Tensor:
         """Create diverse candidate states near the boundary of the asymmetric B."""
-        directions = th.randn(self.config.roa_candidate_size, self.config.state_dim, device=self.device)
+        directions = th.randn(
+            self.config.roa_candidate_size,
+            self.config.state_dim,
+            device=self.device,
+            generator=self.torch_gen,
+        )
         directions = directions / directions.norm(dim=1, keepdim=True).clamp(min=1e-8)
-        radii = th.rand(self.config.roa_candidate_size, 1, device=self.device) * 0.4 + 0.6
+        radii = th.rand(
+            self.config.roa_candidate_size,
+            1,
+            device=self.device,
+            generator=self.torch_gen
+        ) * 0.4 + 0.6
         z_candidates = directions * radii  # between 0.6 and 1.0 in random directions
         half_width = 0.5 * (self.ubx - self.lbx)
         return z_candidates * half_width + self.center
@@ -419,6 +428,7 @@ class LyapunovTrainer:
                     config=self.config,
                     device=self.device,
                     boundary_buffer=boundary_buffer,
+                    generator=self.torch_gen,
                 )
                 rho_estimate = rho_diagnostics.rho # TODO: Consider smoothing or just constant
                 if self.rho_monitor is not None and self.rho_monitor.update(rho_estimate):

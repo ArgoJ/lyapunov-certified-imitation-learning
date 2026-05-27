@@ -22,6 +22,7 @@ from . import (
     default_model_path,
     load_policy_model,
     compute_riccati_value_matrix,
+    build_lyapunov_func,
 )
 from ..constants import *
 
@@ -137,7 +138,14 @@ def main() -> None:
         # ---------------------------------------------------------------------
         # 1. Initialize fresh Lyapunov Model
         # ---------------------------------------------------------------------
-        lyap_feature = MLP([2, 32, 32, 1], ["relu", "relu", "identity"]).to(device)
+        seed = sweep_config.seed + run_idx if sweep_config.seed is not None else None
+        lyap_feature = MLP(
+            [2, 32, 32, 1],
+            ["relu", "relu", "identity"],
+            dropout=0.0,
+            normalization='layer_norm',
+            seed=seed,
+        ).to(device)
         lyap_model = NeuralLyapunovCandidate(
             feature_net=lyap_feature,
             state_dim=2,
@@ -153,7 +161,7 @@ def main() -> None:
             state_dim=policy_global_config.nx,
             state_bounds=state_bounds,
             train_policy_model=False,
-            seed=sweep_config.seed + run_idx if sweep_config.seed is not None else None,
+            seed=seed,
             tb_log_dir=base_path.parent / "tb",
         )
 
@@ -182,11 +190,7 @@ def main() -> None:
         # 4. Plot & Save
         # ---------------------------------------------------------------------
         if rollout_dataset is not None:
-            def lyapunov_func(states: np.ndarray) -> np.ndarray:
-                x = th.as_tensor(states, dtype=th.float32, device=device)
-                with th.no_grad():
-                    v = lyap_model(x)
-                return v.detach().cpu().numpy().reshape(-1)
+            lyapunov_func = build_lyapunov_func(lyap_model, device)
 
             lcil_plt.lyapunov(
                 lyapunov_func=lyapunov_func,
@@ -194,7 +198,7 @@ def main() -> None:
                 state_indices=[0, 1],
                 state_labels=["$x$", "$v$"],
                 plot_3d=False,
-                html_path=base_path / LYAPUNOV_ROLLOUT_FILENAME.replace(".hdf5", ".html"),
+                html_path=(base_path / LYAPUNOV_ROLLOUT_FILENAME).with_suffix(".html"),
             )
 
     __logger__.info(f"\nGrid search complete. All results saved to: {sweep.sweep_base_path}")

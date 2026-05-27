@@ -2,14 +2,13 @@ from .trainer import LyapunovTrainer, LyapunovTrainingResult
 from .config import LyapunovTrainingConfig
 from .utils import ThresholdMonitor, TrainingAbortedError
 from .models import (
-    LyapunovNet,
     NeuralLyapunovCandidate,
     QuadraticLyapunovCandidate,
 )
 from .loss import LyapunovTrainingLoss
 from .policy_wrapper import PolicyWrapper, RepeatCurrentPolicyWrapper, FromRolloutsPolicyWrapper
 from .counterexample import (
-    estimate_rho_from_boundary,
+    estimate_rho_from_boundary_diagnostics,
     find_counter_examples,
     sample_uniform_box,
 )
@@ -18,14 +17,13 @@ __all__ = [
     "LyapunovTrainer",
     "LyapunovTrainingResult",
     "LyapunovTrainingConfig",
-    "LyapunovNet",
     "NeuralLyapunovCandidate",
     "QuadraticLyapunovCandidate",
     "LyapunovTrainingLoss",
     "PolicyWrapper",
     "RepeatCurrentPolicyWrapper",
     "FromRolloutsPolicyWrapper",
-    "estimate_rho_from_boundary",
+    "estimate_rho_from_boundary_diagnostics",
     "find_counter_examples",
     "sample_uniform_box",
     "ThresholdMonitor",

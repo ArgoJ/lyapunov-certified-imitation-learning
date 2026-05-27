@@ -14,6 +14,15 @@ from pathlib import Path
 from typing import Any, Literal
 
 
+def build_generator(seed: int | None) -> th.Generator | None:
+    """Create a reproducible generator when a seed is provided."""
+    if seed is None:
+        return None
+    generator = th.Generator()
+    generator.manual_seed(int(seed))
+    return generator
+
+
 def _get_activation(name: str) -> nn.Module:
     name = name.strip().lower()
     match name:
@@ -539,6 +548,7 @@ class MLP(nn.Module):
         activations: list[str],
         dropout: float = 0.0,
         normalization: Literal["none", "layer_norm"] = "none",
+        seed: int | None = None,
     ):
         super(MLP, self).__init__()
 
@@ -556,10 +566,18 @@ class MLP(nn.Module):
         self.dropout = float(dropout)
         self.normalization = normalization_name
 
+        if seed is None:
+            self.net = self._build_layers()
+        else:
+            with th.random.fork_rng():
+                th.manual_seed(seed)
+                self.net = self._build_layers()
+
+    def _build_layers(self) -> nn.Sequential:
         layers: list[nn.Module] = []
-        num_transitions = len(layer_dims) - 1
+        num_transitions = len(self.layer_dims) - 1
         for idx, (in_dim, out_dim, act_name) in enumerate(zip(
-            layer_dims[:-1], layer_dims[1:], activations
+            self.layer_dims[:-1], self.layer_dims[1:], self.activations
         )):
             is_output_layer = idx == num_transitions - 1
 
@@ -573,7 +591,7 @@ class MLP(nn.Module):
             if not is_output_layer and self.dropout > 0.0:
                 layers.append(nn.Dropout(p=self.dropout))
 
-        self.net = nn.Sequential(*layers)
+        return nn.Sequential(*layers)
         
     def forward(self, x: th.Tensor) -> th.Tensor:
         return self.net(x)
@@ -594,7 +612,8 @@ class ResNet(nn.Module):
     def __init__(
         self, 
         layer_dims: list[int],
-        activations: list[str]
+        activations: list[str],
+        seed: int | None = None,
     ):
         super(ResNet, self).__init__()
 
@@ -604,9 +623,17 @@ class ResNet(nn.Module):
         self.layer_dims = list(layer_dims)
         self.activations = list(activations)
 
+        if seed is None:
+            self.net = self._build_layers()
+        else:
+            with th.random.fork_rng():
+                th.manual_seed(seed)
+                self.net = self._build_layers()
+
+    def _build_layers(self) -> nn.Sequential:
         layers: list[nn.Module] = []
         for in_dim, out_dim, act_name in zip(
-            layer_dims[:-1], layer_dims[1:], activations
+            self.layer_dims[:-1], self.layer_dims[1:], self.activations
         ):
             if in_dim == out_dim:
                 layers.append(ResidualBlock(in_dim, act_name))
@@ -616,7 +643,7 @@ class ResNet(nn.Module):
                 if not isinstance(activation, nn.Identity):
                     layers.append(activation)
 
-        self.net = nn.Sequential(*layers)
+        return nn.Sequential(*layers)
         
     def forward(self, x: th.Tensor) -> th.Tensor:
         return self.net(x)
@@ -637,7 +664,8 @@ class ICNN(nn.Module):
     def __init__(
         self, 
         layer_dims: list[int],
-        activations: list[str]
+        activations: list[str],
+        seed: int | None = None,
     ):
         super(ICNN, self).__init__()
 
@@ -648,16 +676,25 @@ class ICNN(nn.Module):
         self.layer_dims = layer_dims
         self.activations = activations
 
-        self.W_x = nn.ModuleList()
-        self.W_z = nn.ModuleList()
-        for idx in range(len(layer_dims) - 1):
-            in_dim = layer_dims[0]
-            out_dim = layer_dims[idx + 1]
-            self.W_x.append(nn.Linear(in_dim, out_dim, bias=True))
+        if seed is None:
+            self.W_x, self.W_z = self._build_layers()
+        else:
+            with th.random.fork_rng():
+                th.manual_seed(seed)
+                self.W_x, self.W_z = self._build_layers()
+
+    def _build_layers(self) -> tuple[nn.ModuleList, nn.ModuleList]:
+        W_x = nn.ModuleList()
+        W_z = nn.ModuleList()
+        for idx in range(len(self.layer_dims) - 1):
+            in_dim = self.layer_dims[0]
+            out_dim = self.layer_dims[idx + 1]
+            W_x.append(nn.Linear(in_dim, out_dim, bias=True))
             if idx > 0:
-                prev_dim = layer_dims[idx]
-                self.W_z.append(PositiveLinear(prev_dim, out_dim, bias=False))
-        
+                prev_dim = self.layer_dims[idx]
+                W_z.append(PositiveLinear(prev_dim, out_dim, bias=False))
+        return W_x, W_z
+
     def forward(self, x: th.Tensor) -> th.Tensor:
         z = None
         for idx, act_name in enumerate(self.activations):
@@ -709,6 +746,7 @@ class CertifiableTransformerEncoderLayer(nn.Module):
         batch_first: bool = True,
         norm_first: bool = False,
         bias: bool = True,
+        seed: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -738,6 +776,14 @@ class CertifiableTransformerEncoderLayer(nn.Module):
         else:
             raise TypeError("activation must be a string or nn.Module instance.")
 
+        if seed is None:
+            self._build_layers(bias, layer_norm_eps)
+        else:
+            with th.random.fork_rng():
+                th.manual_seed(seed)
+                self._build_layers(bias, layer_norm_eps)
+
+    def _build_layers(self, bias: bool, layer_norm_eps: float) -> None:
         self.q_proj = nn.Linear(self.d_model, self.d_model, bias=bias)
         self.k_proj = nn.Linear(self.d_model, self.d_model, bias=bias)
         self.v_proj = nn.Linear(self.d_model, self.d_model, bias=bias)

@@ -14,6 +14,7 @@ from rich.progress import track
 from mpc_datagen import MPCDataset, MPCMeta, MPCTrajectory
 
 from .config import ImitationTrainingConfig
+from ..utils.base_models import build_generator
 
 __logger__ = logging.getLogger(__name__)
 
@@ -58,15 +59,6 @@ def _resolve_mpc_dataset(mpc_dataset: MPCDataset | os.PathLike) -> MPCDataset:
         "mpc_dataset must be an MPCDataset or path-like object "
         f"(str, pathlib.Path, os.PathLike), got {type(mpc_dataset).__name__}."
     )
-
-
-def _build_split_generator(split_seed: int | None) -> th.Generator | None:
-    """Create a reproducible split generator when a seed is provided."""
-    if split_seed is None:
-        return None
-    generator = th.Generator()
-    generator.manual_seed(int(split_seed))
-    return generator
 
 
 def _materialize_subset_dataset(
@@ -942,7 +934,7 @@ def create_train_and_val_dataloader(
         ValueError if no samples are available in the dataset or if the split configuration is invalid.
     """
     val_fraction = float(training_config.val_fraction)
-    split_seed = int(training_config.split_seed)
+    seed = int(training_config.seed)
     use_references = bool(training_config.use_references)
     batch_size = int(training_config.batch_size)
     sequence_length = int(training_config.sequence_length)
@@ -950,7 +942,7 @@ def create_train_and_val_dataloader(
     if not (0.0 < val_fraction < 1.0):
         raise ValueError("val_fraction must be in (0., 1.).")
 
-    generator = _build_split_generator(split_seed)
+    generator = build_generator(seed)
 
     if sequence_length <= 1:
         if training_config.split_strategy != "random":
