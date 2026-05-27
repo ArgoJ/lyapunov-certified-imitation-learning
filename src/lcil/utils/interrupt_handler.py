@@ -25,13 +25,13 @@ class GracefulInterruptHandler:
         self.aborted = False
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type, exc_val, exc_tb):        
         if exc_type is KeyboardInterrupt:
             current_time = time.time()
-            
+
             # double press Ctrl+C 
-            if (current_time - GracefulInterruptHandler._last_interrupt_time) < self.delta:
-                self.logger.warning("Script ends now! (Double Ctrl+C detected)")
+            if self.delta <= 0 or (current_time - GracefulInterruptHandler._last_interrupt_time) < self.delta:
+                self.logger.warning("Script ends now!")
                 sys.exit(1)
             
             else:
