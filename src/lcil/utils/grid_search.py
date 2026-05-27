@@ -14,12 +14,12 @@ from ..utils.base_config import ArgumentParserConfig
 ConfigT = TypeVar("ConfigT")
 NamespaceConfigT = TypeVar("NamespaceConfigT", bound=ArgumentParserConfig)
 
-_SANITIZE_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
+_SANITIZE_PATTERN = re.compile(r"[^\w-]+")
 
 
 def _sanitize_segment(value: str) -> str:
 	sanitized = _SANITIZE_PATTERN.sub("-", value).strip("-_")
-	return sanitized or "value"
+	return sanitized or "unknown"
 
 
 def _is_scalar_value(value: Any) -> bool:
