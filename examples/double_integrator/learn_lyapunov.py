@@ -141,9 +141,9 @@ def main() -> None:
         seed = sweep_config.seed + run_idx if sweep_config.seed is not None else None
         lyap_feature = MLP(
             [2, 32, 32, 1],
-            ["relu", "relu", "identity"],
-            dropout=0.0,
-            normalization='layer_norm',
+            ["tanh", "tanh", "identity"],
+            dropout=sweep_config.dropout,
+            # normalization='layer_norm',
             seed=seed,
         ).to(device)
         lyap_model = NeuralLyapunovCandidate(

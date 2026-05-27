@@ -33,9 +33,13 @@ from .counterexample import (
     sample_uniform_box,
 )
 from .utils import ThresholdMonitor
-from ..utils.base_config import JsonDataclass
-from ..utils.base_models import save_model_checkpoint, build_generator
-from ..utils.helpers import none_to_float
+from ..utils import (
+    JsonDataclass,
+    GracefulInterruptHandler,
+    save_model_checkpoint,
+    build_generator,
+    none_to_float,
+)
 from ..utils.constants import *
 
 __logger__ = logging.getLogger(__name__)
@@ -400,120 +404,133 @@ class LyapunovTrainer:
 
         tb_writer = _tb_writer_build(self.config.tb_log_dir)
         start_time = time.time()
-        with Progress(
-            TextColumn("[bold]{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TextColumn("loss: {task.fields[loss]:.4f}"),
-            TextColumn("ρ: {task.fields[rho]:.4f}"),
-            TextColumn("cex_pool: {task.fields[cex_pool]:.0f}"),
-            TextColumn("cex_samples: {task.fields[cex_samples]:.0f}/{task.fields[batch_size]:.0f}"),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-        ) as progress:
-            task = progress.add_task(
-                "Lyapunov Training Iterations",
-                total=float(total_steps),
-                loss=float("nan"),
-                rho=float(rho_estimate),
-                cex_pool=float(0.0),
-                cex_samples=float(0.0),
-                batch_size=float(self.config.batch_size),
-            )
-            for outer_iter in range(self.config.outer_epochs):
-                last_loss_value = np.nan
-                
-                # Estimate current Region of Attraction
-                rho_diagnostics = estimate_rho_from_boundary_diagnostics(
-                    lyap_model=self.lyap_model,
-                    config=self.config,
-                    device=self.device,
-                    boundary_buffer=boundary_buffer,
-                    generator=self.torch_gen,
-                )
-                rho_estimate = rho_diagnostics.rho # TODO: Consider smoothing or just constant
-                if self.rho_monitor is not None and self.rho_monitor.update(rho_estimate):
-                    train_time = time.time() - start_time
-                    abort_reason = (
-                        "Lyapunov training aborted after "
-                        f"{self.rho_monitor.consecutive_low} consecutive rho estimates "
-                        f"below {self.rho_monitor.threshold:.3f}."
-                    )
-                    self.results = LyapunovTrainingResult(
-                        rho_estimate=rho_estimate,
-                        num_mined_counterexamples=state_buffer.cex_count,
-                        train_time=train_time,
-                        aborted=True,
-                        abort_reason=abort_reason,
-                    )
-                    self.metrics = metrics
-                    _tb_writer_close(tb_writer)
-                    __logger__.info(
-                        "Aborting Lyapunov training after %d consecutive rho estimates below %.3f.",
-                        self.rho_monitor.consecutive_low,
-                        self.rho_monitor.threshold,
-                    )
-                    return self.results
 
-                # Mine counterexamples (CEGIS)
-                if (outer_iter + 1) % mining_interval == 0:
-                    new_cex = self._mine_new_counterexamples(rho_estimate=rho_estimate)
-                    state_buffer.register_cex(
-                        new_cex,
-                        objective=lambda x: self.loss_module.mining_objective(
-                            x_batch=x,
+        with GracefulInterruptHandler(logger=__logger__) as interrupt_handler:
+            with Progress(
+                TextColumn("[bold]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TextColumn("loss: {task.fields[loss]:.4f}"),
+                TextColumn("ρ: {task.fields[rho]:.4f}"),
+                TextColumn("cex_pool: {task.fields[cex_pool]:.0f}"),
+                TextColumn("cex_samples: {task.fields[cex_samples]:.0f}/{task.fields[batch_size]:.0f}"),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+            ) as progress:
+                task = progress.add_task(
+                    "Lyapunov Training Iterations",
+                    total=float(total_steps),
+                    loss=float("nan"),
+                    rho=float(rho_estimate),
+                    cex_pool=float(0.0),
+                    cex_samples=float(0.0),
+                    batch_size=float(self.config.batch_size),
+                )
+                for outer_iter in range(self.config.outer_epochs):
+                    last_loss_value = np.nan
+                    
+                    # Estimate current Region of Attraction
+                    rho_diagnostics = estimate_rho_from_boundary_diagnostics(
+                        lyap_model=self.lyap_model,
+                        config=self.config,
+                        device=self.device,
+                        boundary_buffer=boundary_buffer,
+                        generator=self.torch_gen,
+                    )
+                    rho_estimate = rho_diagnostics.rho # TODO: Consider smoothing or just constant
+                    if self.rho_monitor is not None and self.rho_monitor.update(rho_estimate):
+                        train_time = time.time() - start_time
+                        abort_reason = (
+                            "Lyapunov training aborted after "
+                            f"{self.rho_monitor.consecutive_low} consecutive rho estimates "
+                            f"below {self.rho_monitor.threshold:.3f}."
+                        )
+                        self.results = LyapunovTrainingResult(
                             rho_estimate=rho_estimate,
-                        ),
+                            num_mined_counterexamples=state_buffer.cex_count,
+                            train_time=train_time,
+                            aborted=True,
+                            abort_reason=abort_reason,
+                        )
+                        self.metrics = metrics
+                        _tb_writer_close(tb_writer)
+                        __logger__.info(
+                            "Aborting Lyapunov training after %d consecutive rho estimates below %.3f.",
+                            self.rho_monitor.consecutive_low,
+                            self.rho_monitor.threshold,
+                        )
+                        return self.results
+
+                    # Mine counterexamples (CEGIS)
+                    if (outer_iter + 1) % mining_interval == 0:
+                        new_cex = self._mine_new_counterexamples(rho_estimate=rho_estimate)
+                        state_buffer.register_cex(
+                            new_cex,
+                            objective=lambda x: self.loss_module.mining_objective(
+                                x_batch=x,
+                                rho_estimate=rho_estimate,
+                            ),
+                        )
+                        if new_cex.numel() == 0:
+                            __logger__.info("No new counterexamples mined at outer iteration %d.", outer_iter)
+                        roa_candidates = self._build_roa_candidates()
+
+                        frac_yield = new_cex.shape[0] / self.config.adversarial_samples
+                        cex_fraction_ema = self.config.cex_fraction_ema_decay * cex_fraction_ema + (1 - self.config.cex_fraction_ema_decay) * frac_yield
+                        cex_fraction = self.config.cex_fraction_min + cex_fraction_ema * (self.config.cex_fraction_max - self.config.cex_fraction_min)
+
+                    # Inner training loop
+                    for _ in range(self.config.steps_per_epoch):
+                        x_batch = state_buffer.sample(self.config.batch_size, cex_fraction=cex_fraction)
+                        loss = self.loss_module(
+                            x_batch=x_batch,
+                            roa_candidates=roa_candidates,
+                            rho_estimate=rho_estimate,
+                        )
+
+                        self.optimizer.zero_grad()
+                        loss.backward()
+                        self.optimizer.step()
+
+                        # Update Progress Bar
+                        progress.update(
+                            task,
+                            advance=1.0,
+                            loss=none_to_float(loss.item()),
+                            rho=none_to_float(rho_estimate),
+                            cex_pool=none_to_float(state_buffer.cex_count),
+                            cex_samples=none_to_float(cex_fraction * self.config.batch_size),
+                        )
+                        last_loss_value = float(loss.item())
+
+                    metrics.fill_outer(
+                        outer_iter=outer_iter,
+                        loss_value=last_loss_value,
+                        state_buffer=state_buffer,
+                        num_mined_counterexamples=state_buffer.cex_count,
+                        rho_diagnostics=rho_diagnostics,
                     )
-                    if new_cex.numel() == 0:
-                        __logger__.info("No new counterexamples mined at outer iteration %d.", outer_iter)
-                    roa_candidates = self._build_roa_candidates()
-
-                    frac_yield = new_cex.shape[0] / self.config.adversarial_samples
-                    cex_fraction_ema = self.config.cex_fraction_ema_decay * cex_fraction_ema + (1 - self.config.cex_fraction_ema_decay) * frac_yield
-                    cex_fraction = self.config.cex_fraction_min + cex_fraction_ema * (self.config.cex_fraction_max - self.config.cex_fraction_min)
-
-                # Inner training loop
-                for _ in range(self.config.steps_per_epoch):
-                    x_batch = state_buffer.sample(self.config.batch_size, cex_fraction=cex_fraction)
-                    loss = self.loss_module(
-                        x_batch=x_batch,
-                        roa_candidates=roa_candidates,
-                        rho_estimate=rho_estimate,
-                    )
-
-                    self.optimizer.zero_grad()
-                    loss.backward()
-                    self.optimizer.step()
-
-                    # Update Progress Bar
-                    progress.update(
-                        task,
-                        advance=1.0,
-                        loss=none_to_float(loss.item()),
-                        rho=none_to_float(rho_estimate),
-                        cex_pool=none_to_float(state_buffer.cex_count),
-                        cex_samples=none_to_float(cex_fraction * self.config.batch_size),
-                    )
-                    last_loss_value = float(loss.item())
-
-                metrics.fill_outer(
-                    outer_iter=outer_iter,
-                    loss_value=last_loss_value,
-                    state_buffer=state_buffer,
-                    num_mined_counterexamples=state_buffer.cex_count,
-                    rho_diagnostics=rho_diagnostics,
-                )
-                _tb_writer_add_metrics(tb_writer, metrics)
+                    _tb_writer_add_metrics(tb_writer, metrics)
 
         train_time = time.time() - start_time
         __logger__.debug("Lyapunov training finished in %.2fs", train_time)
 
-        self.results = LyapunovTrainingResult(
-            rho_estimate=rho_estimate,
-            num_mined_counterexamples=state_buffer.cex_count,
-            train_time=train_time,
-        )
+        if interrupt_handler.aborted:
+            self.results = LyapunovTrainingResult(
+                rho_estimate=rho_estimate,
+                num_mined_counterexamples=state_buffer.cex_count,
+                train_time=train_time,
+                aborted=True,
+                abort_reason="Lyapunov training interrupted by user.",
+            )
+            __logger__.info("Lyapunov training interrupted by user after %d outer iterations.", metrics.outer_iterations_completed)
+        else:
+            self.results = LyapunovTrainingResult(
+                rho_estimate=rho_estimate,
+                num_mined_counterexamples=state_buffer.cex_count,
+                train_time=train_time,
+            )
+
         self.metrics = metrics
         _tb_writer_close(tb_writer)
         return self.results

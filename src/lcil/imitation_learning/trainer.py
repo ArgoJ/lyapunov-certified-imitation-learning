@@ -25,8 +25,11 @@ from rich.progress import (
 
 from .config import ImitationTrainingConfig
 from .dataset import save_state_action_dataset_subset
-from ..utils.early_stopping import EarlyStopping
-from ..utils.helpers import none_to_float
+from ..utils import (
+    EarlyStopping,
+    GracefulInterruptHandler,
+    none_to_float,
+)
 from ..utils.constants import *
 
 __logger__ = logging.getLogger(__name__)
@@ -337,48 +340,52 @@ class PolicyTrainer:
         metrics = PolicyTrainingMetrics.from_num_epochs(epochs)
         bar_step = self._get_bar_step()
 
-        with Progress(
-            TextColumn("[bold]{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TextColumn("train: {task.fields[train_loss]:.3f}"),
-            TextColumn("val: {task.fields[val_loss]:.3f}"),
-            TextColumn("lr: {task.fields[lr]:.1e}"),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-        ) as progress:
-            task = progress.add_task(
-                "Train Policy",
-                total=float(epochs),
-                train_loss=float("nan"),
-                val_loss=float("nan"),
-                lr=float("nan"),
-            )
-            for epoch in range(epochs):
-                train_avg_loss = self._train_epoch(progress, task, bar_step)
-                val_avg_loss = self._validate_epoch(progress, task, bar_step)
-
-                # Update metrics
-                current_lr = float(self.optimizer.param_groups[0]["lr"])
-                metrics.update(epoch, train_avg_loss, val_avg_loss, current_lr)
-                monitored_metric = val_avg_loss if val_avg_loss is not None else train_avg_loss
-                self._scheduller_step(monitored_metric)
-                _tb_writer_add_metrics(tb_writer, metrics)
-
-                # Early stopping
-                if self._early_stopping_break(monitored_metric):
-                    __logger__.info(
-                        f"Early stopping at epoch {epoch + 1:d} (loss {monitored_metric:.6f}).",
-                    )
-                    break
-
-                # Update bar
-                progress.update(
-                    task,
-                    train_loss=none_to_float(train_avg_loss),
-                    val_loss=none_to_float(val_avg_loss),
-                    lr=none_to_float(current_lr),
+        with GracefulInterruptHandler(logger=__logger__) as interrupt_handler:
+            with Progress(
+                TextColumn("[bold]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TextColumn("train: {task.fields[train_loss]:.3f}"),
+                TextColumn("val: {task.fields[val_loss]:.3f}"),
+                TextColumn("lr: {task.fields[lr]:.1e}"),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+            ) as progress:
+                task = progress.add_task(
+                    "Train Policy",
+                    total=float(epochs),
+                    train_loss=float("nan"),
+                    val_loss=float("nan"),
+                    lr=float("nan"),
                 )
+                for epoch in range(epochs):
+                    train_avg_loss = self._train_epoch(progress, task, bar_step)
+                    val_avg_loss = self._validate_epoch(progress, task, bar_step)
+
+                    # Update metrics
+                    current_lr = float(self.optimizer.param_groups[0]["lr"])
+                    metrics.update(epoch, train_avg_loss, val_avg_loss, current_lr)
+                    monitored_metric = val_avg_loss if val_avg_loss is not None else train_avg_loss
+                    self._scheduller_step(monitored_metric)
+                    _tb_writer_add_metrics(tb_writer, metrics)
+
+                    # Early stopping
+                    if self._early_stopping_break(monitored_metric):
+                        __logger__.info(
+                            f"Early stopping at epoch {epoch + 1:d} (loss {monitored_metric:.6f}).",
+                        )
+                        break
+
+                    # Update bar
+                    progress.update(
+                        task,
+                        train_loss=none_to_float(train_avg_loss),
+                        val_loss=none_to_float(val_avg_loss),
+                        lr=none_to_float(current_lr),
+                    )
+        
+        if interrupt_handler.aborted:
+            progress.stop()
                 
         self.metrics = metrics
         _tb_writer_close(tb_writer)

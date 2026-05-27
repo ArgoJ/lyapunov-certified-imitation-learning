@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch as th
-from mpc_datagen import MPCDataset
+from mpc_datagen import MPCDataset, mdg_plt
 
-from lcil.lyapunov_learning import LyapunovRollout
+from lcil.rollouts import LyapunovRollout
 from lcil.utils.base_config import ArgumentParserConfig, config_field
 
 from . import (
@@ -17,6 +17,8 @@ from . import (
     load_lyapunov_model,
     require_dir,
     require_file,
+    find_all_lyapunov_dirs,
+    build_lyapunov_func,
 )
 from ..constants import *
 
@@ -65,23 +67,37 @@ def main() -> None:
     device = th.device(script_config.device)
 
     lyapunov_dir = require_dir(script_config.lyapunov_dir, name="Lyapunov run directory")
-    lyapunov_path = require_file(lyapunov_dir / LYAPUNOV_MODEL_FILENAME, name="Lyapunov checkpoint")
     source_rollout_path = _infer_source_rollout_path(lyapunov_dir)
-    output_path = lyapunov_dir / LYAPUNOV_ROLLOUT_FILENAME
-
-    lyap_model = load_lyapunov_model(lyapunov_path, device)
     rollout_dataset = MPCDataset.load(source_rollout_path)
-
     __logger__.info("Loaded source rollout dataset from %s", source_rollout_path)
-    __logger__.info("Loaded Lyapunov model from %s", lyapunov_path)
 
-    lyapunov_rollout = LyapunovRollout(
-        mpc_dataset=rollout_dataset,
-        lyap_model=lyap_model,
-        device=device,
-    )
-    saved_path = lyapunov_rollout.rollout(output_path=output_path)
-    __logger__.info("Saved Lyapunov rollout dataset to %s", saved_path)
+    lyapunov_dirs = find_all_lyapunov_dirs(lyapunov_dir.parent)
+    if len(lyapunov_dirs) == 0:
+        raise ValueError(f"No Lyapunov run directories found in {script_config.lyapunov_dir}")
+    
+    __logger__.info("Found %d Lyapunov run directories under %s for rollout generation", len(lyapunov_dirs), lyapunov_dir.parent)
+    for lyapunov_dir in lyapunov_dirs:
+        lyapunov_path = require_file(lyapunov_dir / LYAPUNOV_MODEL_FILENAME, name="Lyapunov checkpoint")
+        output_path = lyapunov_dir / LYAPUNOV_ROLLOUT_FILENAME
+
+        lyap_model = load_lyapunov_model(lyapunov_path, device)
+
+        lyapunov_rollout = LyapunovRollout(
+            mpc_dataset=rollout_dataset,
+            lyap_model=lyap_model,
+            device=device,
+        )
+        saved_path = lyapunov_rollout.rollout(output_path=output_path)
+        __logger__.info("Saved Lyapunov rollout dataset to %s", saved_path)
+
+        mdg_plt.lyapunov(
+            lyapunov_func=build_lyapunov_func(lyap_model, device),
+            dataset=rollout_dataset,
+            state_labels=["$x$", "$v$"],
+            plot_3d=False,
+            html_path=(lyapunov_dir / LYAPUNOV_ROLLOUT_FILENAME).with_suffix(".html"),
+            use_dataset_v=True,
+        )
 
 
 if __name__ == "__main__":
