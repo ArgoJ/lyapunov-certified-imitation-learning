@@ -56,6 +56,7 @@ class DynamicStateBuffer:
         device: th.device,
         min_cex_fraction: float = 0.0,
         max_cex_fraction: float = 1.0,
+        generator: th.Generator | None = None,
     ):
         if initial_states.numel() == 0:
             raise ValueError("initial_states cannot be empty.")
@@ -67,12 +68,12 @@ class DynamicStateBuffer:
         
         self.states = initial_states.to(device)
         self.cexs = th.empty((0, initial_states.shape[1]), dtype=initial_states.dtype, device=device)
-        self.max_size = state_buffer_limit
+        self.state_buffer_limit = state_buffer_limit
+        self.cex_buffer_limit = cex_buffer_limit
         self.device = device
         self.min_cex_fraction = min_cex_fraction
         self.max_cex_fraction = max_cex_fraction
-
-        self.cex_buffer_size = cex_buffer_limit
+        self.generator = generator
 
     def add(self, new_states: th.Tensor) -> None:
         """Adds new states to the buffer and strictly enforces the maximum size."""
@@ -81,9 +82,13 @@ class DynamicStateBuffer:
 
         self.states = th.cat((self.states, new_states), dim=0).to(self.device)
 
-        if self.states.shape[0] > self.max_size:
+        if self.states.shape[0] > self.state_buffer_limit:
             # Randomly sub-sample to respect the max_buffer limit
-            keep_idx = th.randperm(self.states.shape[0], device=self.device)[:self.max_size]
+            keep_idx = th.randperm(
+                self.states.shape[0],
+                device=self.device,
+                generator=self.generator,
+            )[:self.state_buffer_limit]
             self.states = self.states[keep_idx]
 
     def register_cex(
@@ -101,14 +106,14 @@ class DynamicStateBuffer:
             return
 
         combined_cexs = th.cat((new_cexs.to(self.device), self.cexs), dim=0)
-        if combined_cexs.shape[0] > self.cex_buffer_size:
+        if combined_cexs.shape[0] > self.cex_buffer_limit:
             if objective is not None:
                 with th.no_grad():
                     violation = -objective(combined_cexs).flatten()
                     _, keep_idx = th.sort(violation, descending=True)
-                combined_cexs = combined_cexs[keep_idx[: self.cex_buffer_size]]
+                combined_cexs = combined_cexs[keep_idx[: self.cex_buffer_limit]]
             else:
-                combined_cexs = combined_cexs[: self.cex_buffer_size]
+                combined_cexs = combined_cexs[: self.cex_buffer_limit]
 
         self.cexs = combined_cexs
 
@@ -133,17 +138,35 @@ class DynamicStateBuffer:
         cex_count = self.cex_count
 
         if cex_count == 0:
-            batch_idx = th.randint(low=0, high=state_count, size=(batch_size,), device=self.device)
+            batch_idx = th.randint(
+                low=0,
+                high=state_count,
+                size=(batch_size,),
+                device=self.device,
+                generator=self.generator
+            )
             return self.states[batch_idx]
 
         max_inject = int(batch_size * cex_fraction)
         n_inject = min(cex_count, max_inject)
 
-        cex_idx = th.randint(low=0, high=cex_count, size=(n_inject,), device=self.device)
+        cex_idx = th.randint(
+            low=0,
+            high=cex_count,
+            size=(n_inject,),
+            device=self.device,
+            generator=self.generator
+        )
         injected_cexs = self.cexs[cex_idx]
 
         n_regular = batch_size - n_inject
-        reg_idx = th.randint(low=0, high=state_count, size=(n_regular,), device=self.device)
+        reg_idx = th.randint(
+            low=0,
+            high=state_count,
+            size=(n_regular,),
+            device=self.device,
+            generator=self.generator
+        )
         regular_states = self.states[reg_idx]
 
         return th.cat((injected_cexs, regular_states), dim=0)

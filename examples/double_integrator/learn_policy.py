@@ -72,7 +72,7 @@ def main() -> None:
 
     loss_fn = ReferenceWeightedDynamicsAwareLoss(
         reference_loss=ReferenceWeightedMSELoss(
-            reference=[dataset_cfg.cost.yref[-dataset_cfg.nu:]],
+            reference=dataset_cfg.cost.yref[-dataset_cfg.nu:],
             alpha=1.0,
             max_weight=5.0,
             min_weight=4.0),

@@ -382,6 +382,7 @@ class LyapunovTrainer:
             device=self.device,
             min_cex_fraction=self.config.cex_fraction_min,
             max_cex_fraction=self.config.cex_fraction_max,
+            generator=self.torch_gen,
         )
         boundary_buffer = BoundaryStateBuffer(
             state_dim=self.config.state_dim,

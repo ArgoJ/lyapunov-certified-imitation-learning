@@ -98,8 +98,8 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="Fraction of the dataset to use for validation.",
         validators=(fraction_validator,)
     )
-    seed: int = config_field(
-        default=346158,
+    seed: int | None = config_field(
+        default=None,
         help="Random seed for dataset splitting."
     )
     split_strategy: Literal["random", "trajectory"] = config_field(
