@@ -1,10 +1,13 @@
 import torch as th
 import torch.nn as nn
+import logging
+
 from pathlib import Path
 from typing import Any
 
 from ..utils.base_models import load_feature_net, save_feature_net
 
+__logger__ = logging.getLogger(__name__)
 
 class NeuralLyapunovCandidate(nn.Module):
     """Lyapunov candidate from Eq. (9) in the paper.
@@ -31,6 +34,8 @@ class NeuralLyapunovCandidate(nn.Module):
 
         if riccati_p is not None:
             self.set_riccati_p(riccati_p)
+            __logger__.info(
+                "Using Riccati value matrix to seed the Lyapunov R factor:\n%s", riccati_p)
 
     def _pd_matrix(self) -> th.Tensor:
         eye = th.eye(

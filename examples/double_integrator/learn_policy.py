@@ -56,7 +56,7 @@ def main() -> None:
         [dataset_cfg.nx, 32, 32, dataset_cfg.nu],
         ["relu", "relu", "identity"],
         dropout=training_cfg.dropout,
-        normalization="layer_norm",
+        normalization="none",
         u_min=dataset_cfg.constraints.lbu,
         u_max=dataset_cfg.constraints.ubu,
     )

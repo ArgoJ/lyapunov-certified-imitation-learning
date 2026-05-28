@@ -3,7 +3,7 @@ import torch as th
 import numpy as np
 import logging
 
-from dataclasses import replace
+from dataclasses import replace, dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -14,37 +14,62 @@ from lcil.lyapunov_learning import (
     ThresholdMonitor,
     FromRolloutsPolicyWrapper,
 )
-from lcil.utils import GridSearchHelper, lcil_plt, MLP, IntegrationMethod
+from lcil.utils import GridSearchHelper, lcil_plt, MLP, IntegrationMethod, config_field, ArgumentParserConfig
 from mpc_datagen import MPCDataset
 
 from . import (
     DoubleIntegratorDynamics,
-    default_model_path,
     load_policy_model,
     compute_riccati_value_matrix,
     build_lyapunov_func,
+    discover_latest_policy_dir,
 )
 from ..constants import *
 
 __logger__ = logging.getLogger("lcil.examples.double_integrator.learn_lyapunov")
 
 
-def parse_cli_args(
-    training_defaults: LyapunovTrainingConfig,
-) -> argparse.Namespace:
+
+@dataclass(frozen=True)
+class LyapunovLearningScriptConfig(ArgumentParserConfig):
+    policy_dir: str = config_field(help=f"Policy run directory containing {POLICY_MODEL_FILENAME}.")
+    device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
+    activation: str = config_field(default="relu", help="Activation function for Lyapunov feature net.")
+    hidden_size: int = config_field(default=32, help="Number of neurons in each hidden layer of the Lyapunov feature net.")
+    layers: int = config_field(default=2, help="Number of hidden layers in the Lyapunov feature net.")
+
+def _build_script_defaults() -> LyapunovLearningScriptConfig:
+    default_policy_dir = discover_latest_policy_dir()
+    return LyapunovLearningScriptConfig(
+        policy_dir=str(default_policy_dir),
+    )
+
+def _build_training_defaults() -> LyapunovTrainingConfig:
+    return LyapunovTrainingConfig(
+        state_dim=2,
+        state_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]], dtype=float),
+        initial_sample_size=1000,
+        batch_size=512,
+        outer_epochs=100,
+        steps_per_epoch=5,
+        counterexample_every=10,
+        train_policy_model=False,
+        seed=5912354,
+    )
+
+
+def parse_cli_args() -> tuple[
+    LyapunovLearningScriptConfig, 
+    GridSearchHelper[LyapunovTrainingConfig]
+]:
     """Parse command-line arguments for Lyapunov learning with a fixed policy."""
     parser = argparse.ArgumentParser(
         description="Train and certify a Lyapunov candidate for a fixed double-integrator policy.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument(
-        "--policy-path",
-        type=str,
-        default=default_model_path(),
-        help="Path to the trained fixed policy model checkpoint.",
-    )
-    parser.add_argument("--device", type=str, default="cpu", help="Torch device string.")
-
+    script_defaults = _build_script_defaults()
+    script_defaults.add_to_argparse(parser)
+    training_defaults = _build_training_defaults()
     training_defaults.add_to_argparse(
         parser,
         nargs_fields={
@@ -59,33 +84,27 @@ def parse_cli_args(
         }
     )
     
-    
-    return parser.parse_args()
+    args = parser.parse_args()
+    script_config = script_defaults.from_namespace(args)
+    sweep: GridSearchHelper[LyapunovTrainingConfig] = GridSearchHelper.from_namespace(
+        training_defaults,
+        args,
+        output_root=Path(script_config.policy_dir) / LYAPUNOV_DIRNAME,
+        sweep_id=datetime.now().strftime("%Y%m%d_%H%M%S"),
+    )
+    return script_config, sweep
 
 
 def main() -> None:
-    training_defaults = LyapunovTrainingConfig(
-        state_dim=2,
-        state_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]], dtype=float),
-        initial_sample_size=1000,
-        batch_size=512,
-        outer_epochs=100,
-        steps_per_epoch=5,
-        counterexample_every=10,
-        train_policy_model=False,
-        seed=5912354,
-    )
-    args = parse_cli_args(training_defaults)
-    device = th.device(args.device)
+    script_config, sweep = parse_cli_args()
+    device = th.device(script_config.device)
 
     # Load policy and dynamics once (they don't change across runs)
-    policy_path = Path(args.policy_path)
+    policy_path = Path(script_config.policy_dir) / POLICY_MODEL_FILENAME
     policy_model = load_policy_model(policy_path, device)
     policy_global_config = policy_model.global_config
     policy_sequence_length = int(getattr(policy_model, "max_seq_len", 1))
     uses_sequence_policy = policy_sequence_length > 1
-
-    sweep_output_root = policy_path.parent / LYAPUNOV_DIRNAME
     
     dyn_model = DoubleIntegratorDynamics(
         dt=policy_global_config.dt,
@@ -119,17 +138,8 @@ def main() -> None:
 
     state_bounds = np.vstack([policy_global_config.constraints.lbx, policy_global_config.constraints.ubx])
     riccati_p = compute_riccati_value_matrix(float(policy_global_config.dt))
-    __logger__.info("Using Riccati value matrix to seed the Lyapunov R factor:\n%s", riccati_p)
-
-    sweep: GridSearchHelper[LyapunovTrainingConfig] = GridSearchHelper.from_namespace(
-        training_defaults,
-        args,
-        output_root=sweep_output_root,
-        sweep_id=datetime.now().strftime("%Y%m%d_%H%M%S"),
-    )
 
     __logger__.info(f"Starting grid search over {len(sweep)} configurations...")
-
     for run_idx, run in enumerate(sweep):
         sweep_config = run.config
         __logger__.info("%s", run.progress_message())
@@ -140,15 +150,15 @@ def main() -> None:
         # ---------------------------------------------------------------------
         seed = sweep_config.seed + run_idx if sweep_config.seed is not None else None
         lyap_feature = MLP(
-            [2, 32, 32, 1],
-            ["tanh", "tanh", "identity"],
+            [policy_global_config.nx] + [script_config.hidden_size] * script_config.layers + [1],
+            [script_config.activation] * script_config.layers + ["identity"],
             dropout=sweep_config.dropout,
-            # normalization='layer_norm',
+            normalization='none',
             seed=seed,
         ).to(device)
         lyap_model = NeuralLyapunovCandidate(
             feature_net=lyap_feature,
-            state_dim=2,
+            state_dim=policy_global_config.nx,
             eps=1e-3,
             riccati_p=riccati_p,
         ).to(device)
