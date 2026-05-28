@@ -160,6 +160,14 @@ def _resolve_configs(*configs: Sequence[ConfigT] | ConfigT) -> list[tuple[Config
 
 
 def _collect_display_aliases(config: Any) -> dict[str, str]:
+    if isinstance(config, (tuple, list)):
+        aliases = {}
+        for index, item in enumerate(config):
+            sub_aliases = _collect_display_aliases(item)
+            for sub_name, sub_alias in sub_aliases.items():
+                aliases[f"{index}.{sub_name}"] = sub_alias
+        return aliases
+
     if not is_dataclass(config):
         return {}
 
@@ -281,15 +289,15 @@ class GridSearchHelper(Generic[ConfigT]):
         field_aliases: Mapping[str, str] | None = None,
         extra_name_parts: Mapping[str, Any] | None = None,
     ) -> None:
-        self._original_configs = _resolve_configs(*configs)
-        if not self._original_configs:
+        self._configs = _resolve_configs(*configs)
+        if not self._configs:
             raise ValueError("Grid search requires at least one configuration.")
 
         self.sweep_id = sweep_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         self.sweep_base_path = Path(output_root) / self.sweep_id
         self.sweep_base_path.mkdir(parents=True, exist_ok=True)
 
-        default_aliases = _collect_display_aliases(self._original_configs[0])
+        default_aliases = _collect_display_aliases(self._configs[0])
         self.field_aliases = {
             **default_aliases,
             **dict(field_aliases or {}),
@@ -298,7 +306,7 @@ class GridSearchHelper(Generic[ConfigT]):
 
         if run_name_fields is None:
             run_name_fields = infer_varying_fields(
-                self._original_configs,
+                self._configs,
                 exclude_fields=exclude_fields,
             )
         self.run_name_fields = tuple(run_name_fields)
@@ -306,9 +314,8 @@ class GridSearchHelper(Generic[ConfigT]):
     @classmethod
     def from_namespace(
         cls,
-        config_defaults: NamespaceConfigT,
         args: Any,
-        *,
+        *config_defaults: NamespaceConfigT,
         output_root: str | Path,
         prefix: str = "",
         sweep_id: str | None = None,
@@ -318,9 +325,12 @@ class GridSearchHelper(Generic[ConfigT]):
         extra_name_parts: Mapping[str, Any] | None = None,
     ) -> GridSearchHelper[NamespaceConfigT]:
         """Build a grid-search helper directly from parsed CLI arguments."""
-        configs = config_defaults.iter_from_namespace(args, prefix=prefix)
+        config_axes = [
+            config_defaults.iter_from_namespace(args, prefix=prefix) 
+            for config_defaults in config_defaults
+        ]
         return cls(
-            configs,
+            *config_axes,
             output_root=output_root,
             sweep_id=sweep_id,
             run_name_fields=run_name_fields,
@@ -330,7 +340,7 @@ class GridSearchHelper(Generic[ConfigT]):
         )
 
     def __len__(self) -> int:
-        return len(self._original_configs)
+        return len(self._configs)
 
     def __iter__(self) -> Iterator[GridSearchRun[ConfigT]]:
         return self.iter_runs()
@@ -338,13 +348,13 @@ class GridSearchHelper(Generic[ConfigT]):
     @property
     def configs(self) -> tuple[ConfigT, ...]:
         """Return all concrete configs in sweep order."""
-        return self._original_configs
+        return self._configs
 
     def iter_runs(self) -> Iterator[GridSearchRun[ConfigT]]:
         """Yield concrete runs with names, descriptions, and output folders."""
         used_names: set[str] = set()
 
-        for index, config in enumerate(self._original_configs):
+        for index, config in enumerate(self._configs):
             base_name = build_grid_search_run_name(
                 config,
                 include_fields=self.run_name_fields,
@@ -361,7 +371,7 @@ class GridSearchHelper(Generic[ConfigT]):
 
             yield GridSearchRun(
                 index=index,
-                total=len(self._original_configs),
+                total=len(self._configs),
                 config=config,
                 run_name=run_name,
                 output_dir=output_dir,
