@@ -1,6 +1,7 @@
 import argparse
 import torch as th
 import sys
+import logging
 
 from pathlib import Path
 from datetime import datetime
@@ -17,6 +18,9 @@ from lcil.utils import (
 from lcil.imitation_learning import *
 
 from . import DoubleIntegratorDynamics, default_dataset_path, resolve_dataset_path, DOUBLE_INTEGRATOR_RESULTS_DIR
+
+__logger__ = logging.getLogger("lcil.examples.double_integrator.learn_policy")
+
 
 
 @dataclass(frozen=True)
@@ -74,7 +78,7 @@ def main() -> None:
     device = th.device(first_script_config.device)
     dataset_path = resolve_dataset_path(first_train_config.dataset_path)
 
-    print(f"Starting grid search over {len(sweep)} configurations...")
+    __logger__.info(f"Starting grid search over {len(sweep)} configurations...")
 
     # ---------------------------------------------------------------------
     # Load Dataset, Dataloader and create Loss
@@ -113,7 +117,7 @@ def main() -> None:
     # ---------------------------------------------------------------------
     for run in sweep:
         script_config, train_config = run.config
-        print(run.progress_message())
+        __logger__.info(run.progress_message())
         
         base_path = run.output_dir.resolve()
         
@@ -147,7 +151,7 @@ def main() -> None:
             global_config=dataset_cfg
         )
 
-    print(f"\nGrid search complete. Models saved to: {sweep.sweep_base_path}")
+    __logger__.info(f"\nGrid search complete. Models saved to: {sweep.sweep_base_path}")
 
 
 if __name__ == "__main__":
