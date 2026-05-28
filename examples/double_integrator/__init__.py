@@ -30,7 +30,7 @@ from ..example_utils import (
     GenericModelLoader as _GenericModelLoader,
 )
 
-DOUBLE_INTEGRATOR_RESULTS_DIR = RESULTS_ROOT / "double_integrator"
+DOUBLE_INTEGRATOR_RESULTS_DIR = RESULTS_DIR / "double_integrator"
 DATA_DIR = DOUBLE_INTEGRATOR_RESULTS_DIR / "data"
 
 PolicyModelT = TypeVar("PolicyModelT", bound=nn.Module)

@@ -33,7 +33,7 @@ def require_dir(path: Path | str, *, name: str) -> Path:
 
 def resolve_root(
     root_path: Path | str | None,
-    default_root: Path = RESULTS_ROOT,
+    default_root: Path = RESULTS_DIR,
 ) -> Path:
     if root_path is not None:
         resolved_root = Path(root_path)
@@ -279,12 +279,12 @@ class GenericModelLoader:
 
 
 def default_model_path(results_root: Path | str | None = None) -> str:
-    resolved_results_root = Path(results_root) if results_root is not None else RESULTS_ROOT
+    resolved_results_root = Path(results_root) if results_root is not None else RESULTS_DIR
     return str(discover_model_dir(resolved_results_root, POLICY_MODEL_FILENAME) / POLICY_MODEL_FILENAME)
 
 
 def default_lyapunov_model_path(results_root: Path | str | None = None) -> str:
-    resolved_results_root = Path(results_root) if results_root is not None else RESULTS_ROOT
+    resolved_results_root = Path(results_root) if results_root is not None else RESULTS_DIR
     return str(discover_model_dir(resolved_results_root, LYAPUNOV_MODEL_FILENAME) / LYAPUNOV_MODEL_FILENAME)
 
 

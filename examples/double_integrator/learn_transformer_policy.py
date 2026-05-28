@@ -8,8 +8,8 @@ from mpc_datagen import MPCDataset
 from lcil.utils import EarlyStopping, IntegrationMethod
 from lcil.imitation_learning import *
 
-from . import DoubleIntegratorDynamics, default_dataset_path, resolve_dataset_path
-from ..constants import RESULTS_ROOT
+from . import DoubleIntegratorDynamics, default_dataset_path, resolve_dataset_path, DOUBLE_INTEGRATOR_RESULTS_DIR
+
 
 __logger__ = logging.getLogger("lcil.examples.double_integrator.learn_transformer_policy")
 
@@ -30,7 +30,6 @@ def parse_cli_args(training_defaults: ImitationTrainingConfig) -> argparse.Names
 
 
 def main() -> None:
-    base_path = RESULTS_ROOT / "double_integrator"
     iso = datetime.now().strftime('%Y%m%d_%H%M%S').replace(" ", "_").replace(":", "-")
 
     training_defaults = ImitationTrainingConfig(
@@ -42,7 +41,7 @@ def main() -> None:
         learning_rate=5e-4,
         scheduler_type="plateau",
         scheduler_kwargs={"mode": "min", "factor": 0.5, "patience": 5},
-        tb_log_dir=(base_path / "tb" / iso),
+        tb_log_dir=(DOUBLE_INTEGRATOR_RESULTS_DIR / "tb" / iso),
     )
     args = parse_cli_args(training_defaults)
     training_cfg = training_defaults.from_namespace(args)
@@ -104,7 +103,7 @@ def main() -> None:
     )
     trainer.train()
     trainer.save(
-        save_folder=base_path / iso, 
+        save_folder=DOUBLE_INTEGRATOR_RESULTS_DIR / iso, 
         global_config=source_dataset.global_config
     )
 
