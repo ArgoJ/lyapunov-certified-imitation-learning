@@ -41,7 +41,7 @@ def resolve_root(
     return require_dir(default_root, name="Default results root directory")
 
 
-def discover_model_dir(results_root: Path, checkpoint_name: str, n: int = -1, sorting_idx: int = 0) -> Path:
+def discover_model_dir(results_root: Path, checkpoint_name: str, n: int = -1, sorting_idx: int | slice = 0) -> Path:
     """Discover the directory containing the nth latest checkpoint with the given name under the results root.
 
     Parameters
@@ -52,6 +52,8 @@ def discover_model_dir(results_root: Path, checkpoint_name: str, n: int = -1, so
         Name of the checkpoint file to search for.
     n : int, optional
         Index of the checkpoint to return, by default -1 (latest checkpoint).
+    sorting_idx : int | slice, optional
+        Index or slice of the parent directory name to use for sorting, by default 0
 
     Returns
     -------
@@ -65,22 +67,40 @@ def discover_model_dir(results_root: Path, checkpoint_name: str, n: int = -1, so
     """
     resolved_results_root = resolve_root(results_root)
 
-    candidates: list[Path] = []
+    candidates: list[tuple[Path, str]] = []
     for path in resolved_results_root.rglob(checkpoint_name):
-        sort_key_folder = path.parents[sorting_idx].name
-        
-        # check if is timestampt folder
-        if ISO_PATTERN.match(sort_key_folder):
-            candidates.append(path)
+        if isinstance(sorting_idx, slice):
+            parents_to_check = path.parents[sorting_idx]
+        else:
+            try:
+                parents_to_check = [path.parents[sorting_idx]]
+            except IndexError:
+                continue
+
+        found_iso_name = None
+        for parent in parents_to_check:
+            if ISO_PATTERN.match(parent.name):
+                found_iso_name = parent.name
+                break
+
+            if parent == resolved_results_root or resolved_results_root not in parent.parents:
+                break
+
+        if found_iso_name is None:
+            if isinstance(sorting_idx, slice):
+                 found_iso_name = path.parents[sorting_idx.start or 0].name
+            else:
+                 found_iso_name = path.parents[sorting_idx].name
+
+        candidates.append((path, found_iso_name))
             
     if not candidates:
         raise FileNotFoundError(
-            f"No checkpoint '{checkpoint_name}' found in valid ISO directories under '{resolved_results_root}'."
+            f"No checkpoint '{checkpoint_name}' found under '{resolved_results_root}'."
         )
         
-    candidates = sorted(candidates, key=lambda x: x.parents[sorting_idx].name)
-    
-    return candidates[n].parent
+    candidates = sorted(candidates, key=lambda x: x[1])
+    return candidates[n][0].parent
 
 
 def discover_latest_policy_dir(dir: Path | str | None = None) -> Path:
@@ -96,7 +116,7 @@ def discover_latest_policy_dir(dir: Path | str | None = None) -> Path:
     Path
         Directory containing the nth latest policy checkpoint.
     """
-    return discover_model_dir(dir, POLICY_MODEL_FILENAME, n=-1, sorting_idx=0)
+    return discover_model_dir(dir, POLICY_MODEL_FILENAME, n=-1, sorting_idx=slice(0, 2))
 
 
 def discover_latest_lyapunov_dir(dir: Path | str | None = None) -> Path:
@@ -116,13 +136,13 @@ def discover_latest_lyapunov_dir(dir: Path | str | None = None) -> Path:
     """
     if dir is not None:
         dir = require_dir(dir, name="Directory to search for Lyapunov checkpoint")
-        if LYAPUNOV_DIRNAME in dir.parts :
+        if LYAPUNOV_DIRNAME in dir.parts:
             __logger__.warning(f"Provided directory '{dir}' already contains '{LYAPUNOV_DIRNAME}' in its path. Searching for Lyapunov checkpoint directly under the provided directory.")
-            return discover_model_dir(dir, LYAPUNOV_MODEL_FILENAME, n=-1)
+            return discover_model_dir(dir, LYAPUNOV_MODEL_FILENAME, n=-1, sorting_idx=slice(0, 2))
     
     # latest policy path must be found
     policy_dir = discover_latest_policy_dir(dir)
-    return discover_model_dir(policy_dir / LYAPUNOV_DIRNAME, LYAPUNOV_MODEL_FILENAME, n=-1)
+    return discover_model_dir(policy_dir / LYAPUNOV_DIRNAME, LYAPUNOV_MODEL_FILENAME, n=-1, sorting_idx=slice(0, 2))
 
 
 def discover_latest_policy_and_lyapunov_dirs(results_root: Path | str | None = None, max_search: int = 100) -> tuple[Path, Path]:

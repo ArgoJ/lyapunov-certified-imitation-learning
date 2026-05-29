@@ -157,6 +157,10 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="roa_cand",
         validators=(positive_validator,),
     )
+    detach_relative_denominator: bool = config_field(
+        default=True,
+        help="Whether to detach V(x) in the denominator of the relative decrease violation.",
+    )
     tb_log_dir: str | os.PathLike | None = config_field(
         default=None,
         help="TensorBoard logging directory."
@@ -191,6 +195,12 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=1e-5,
         help="Weight for parameter L1 regularization.",
         display_alias="l1w",
+        validators=(non_negative_validator,),
+    )
+    scale_weight: float = config_field(
+        default=0.1,
+        help="Weight for the Lyapunov scale anchor loss, which encourages the Lyapunov function values to be close to a specified anchor value for better numerical conditioning.",
+        display_alias="scalew",
         validators=(non_negative_validator,),
     )
 
@@ -234,6 +244,12 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=1e-6,
         help="Minimum admissible rho value.",
         display_alias="\u03C1_min",
+        validators=(positive_validator,),
+    )
+    rho_scale_anchor: float = config_field(
+        default=100.0,
+        help="Anchor value for the Lyapunov scale loss, which encourages the Lyapunov function values to be close to this anchor for better numerical conditioning.",
+        display_alias="\u03C1_anchor",
         validators=(positive_validator,),
     )
 
@@ -298,12 +314,19 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=1e-6,
         help="Numerical tolerance for Lyapunov condition satisfaction.",
         display_alias="cond_tol",
+        validators=(positive_validator,),
     )
     condition_margin: float = config_field(
         default=0.0,
         help="Safety margin enforced on the verifier output during training.",
         display_alias="margin",
         validators=(non_negative_validator,),
+    )
+    relative_condition_eps: float = config_field(
+        default=1e-4,
+        help="Numerical epsilon used in relative condition normalization.",
+        display_alias="rel_eps",
+        validators=(positive_validator,),
     )
     NP_ARRAY_FIELDS = ("state_bounds",)
     DEFAULT_FILE_NAME = TRAINING_CONFIG_FILENAME
