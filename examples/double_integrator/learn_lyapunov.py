@@ -80,10 +80,8 @@ def parse_cli_args() -> GridSearchHelper[tuple[LyapunovLearningScriptConfig, Lya
         nargs_fields={
             "learning_rate",
             "kappa",
-            "invariance_weight",
+            "*weight",
             "rho_growth_gamma",
-            "roa_weight",
-            "l1_weight",
             "rho_estimate_quantile",
             "condition_margin",
         }

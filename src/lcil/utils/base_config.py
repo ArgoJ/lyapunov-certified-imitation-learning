@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import itertools
+import logging
 import json
 import numpy as np
 
@@ -11,7 +12,9 @@ from dataclasses import MISSING, asdict, field as dataclass_field, fields, is_da
 from os import PathLike
 from pathlib import Path
 from types import UnionType
-from typing import Any, ClassVar, Literal, Union, Self, get_args, get_origin, get_type_hints
+from typing import Any, ClassVar, Literal, Union, Self, get_args, get_origin, get_type_hints, Sequence
+
+__logger__ = logging.getLogger(__name__)
 
 
 def positive_validator(value: int | float, name: str) -> None:
@@ -230,6 +233,43 @@ def _namespace_dest(prefix: str, field_name: str) -> str:
     return f"{prefix}{field_name}".replace("-", "_")
 
 
+def extend_fields(arg_fields: set[str] | None, _fields: Sequence[Any]) -> set[str]:
+    expanded_args_fields: set[str] = set()
+    
+    if arg_fields is not None:
+        for entry in arg_fields:
+            # *substring*
+            if entry.startswith("*") and entry.endswith("*") and len(entry) > 2:
+                substring = entry[1:-1]
+                for field_info in _fields:
+                    if substring in field_info.name:
+                        expanded_args_fields.add(field_info.name)
+            
+            # *suffix
+            elif entry.startswith("*") and len(entry) > 1:
+                suffix = entry[1:]
+                for field_info in _fields:
+                    if field_info.name.endswith(suffix):
+                        expanded_args_fields.add(field_info.name)
+            
+            # prefix*
+            elif entry.endswith("*") and len(entry) > 1:
+                prefix = entry[:-1]
+                for field_info in _fields:
+                    if field_info.name.startswith(prefix):
+                        expanded_args_fields.add(field_info.name)
+            
+            # exact match
+            elif any(field_info.name == entry for field_info in _fields):
+                expanded_args_fields.add(entry)
+            
+            # no match
+            else:
+                __logger__.warning(f"Argument field '{entry}' does not match any config fields")
+    
+    return expanded_args_fields
+
+
 class JsonDataclass:
     """Reusable JSON I/O mixin for dataclass-based config objects.
 
@@ -329,8 +369,21 @@ class ArgumentParserConfig:
         nargs_fields : set[str] | None, optional
             Scalar fields that should be registered with ``nargs='+'`` so they
             can drive grid/sweep expansion through ``iter_from_namespace``.
+
+        Notes
+        -----
+        All fields can be used with a * pre- or/and suffix to match multiple fields based on substring or prefix/suffix patterns.
+        For example, *learning_rate would match all fields ending with learning_rate, and weight*
         """
         type_hints = _safe_get_type_hints(type(self))
+
+        dataclass_fields = fields(self)
+        if include_fields is not None:
+            include_fields = extend_fields(include_fields, dataclass_fields)
+        if exclude_fields is not None:
+            exclude_fields = extend_fields(exclude_fields, dataclass_fields)
+        if nargs_fields is not None:
+            nargs_fields = extend_fields(nargs_fields, dataclass_fields)
 
         for field_info in fields(self):
             if include_fields is not None and field_info.name not in include_fields:
