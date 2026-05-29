@@ -274,20 +274,30 @@ class LyapunovTrainingLoss(nn.Module):
         x_batch: th.Tensor,
         rho_estimate: float,
     ) -> th.Tensor:
-        """Return the external-style PGD objective for rho-gated counterexample mining.
-
-        The returned objective is negative exactly on violating states inside the
-        current rho-sublevel set, zero on safe states within the set, and
-        positive outside the sublevel set.
-        """
+        """Return the mining objective value for a batch of states, used for prioritization in the replay buffer."""
         v_batch, x_next, v_next = self._closed_loop_values(x_batch)
         condition_violation = self.condition_loss.condition_violation(
             v_curr=v_batch,
             v_next=v_next,
             x_next=x_next,
         )
+        eps = 1e-4 
+        relative_violation = condition_violation / (v_batch + eps)
         rho_gap = self.condition_loss.rho_gap(v_curr=v_batch, rho_estimate=rho_estimate)
-        return -th.minimum(rho_gap, condition_violation)
+        return -th.minimum(rho_gap, relative_violation)
+    
+    def buffer_sorting_objective(self, x_batch: th.Tensor) -> th.Tensor:
+        """Return the pure relative violation score for sorting in the buffer."""
+        v_batch, x_next, v_next = self._closed_loop_values(x_batch)
+        condition_violation = self.condition_loss.condition_violation(
+            v_curr=v_batch,
+            v_next=v_next,
+            x_next=x_next,
+        )
+        
+        eps = 1e-4 
+        relative_violation = condition_violation / (v_batch + eps)
+        return -relative_violation
 
     def forward(
         self,

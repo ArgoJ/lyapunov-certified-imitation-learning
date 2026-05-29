@@ -94,7 +94,6 @@ def parse_cli_args() -> GridSearchHelper[tuple[LyapunovLearningScriptConfig, Lya
         args,
         script_defaults,
         training_defaults,
-        output_root=Path(script_defaults.policy_dir) / LYAPUNOV_DIRNAME,
         sweep_id=datetime.now().strftime("%Y%m%d_%H%M%S"),
     )
     return sweep
@@ -147,7 +146,11 @@ def main() -> None:
 
     init_script_config = sweep.configs[0][0]
     device = th.device(init_script_config.device)
+
     init_policy_dir = init_script_config.policy_dir
+    actual_output_root = Path(init_policy_dir) / LYAPUNOV_DIRNAME
+    sweep.set_output_root(actual_output_root)
+
     policy_model, rollout_dataset = load_policy_and_dataset(init_policy_dir, device)
     policy_global_config = policy_model.global_config
     state_bounds = np.vstack([policy_global_config.constraints.lbx, policy_global_config.constraints.ubx])
@@ -158,9 +161,10 @@ def main() -> None:
         script_config, train_config = run.config
         __logger__.info("%s", run.progress_message())
 
-        if script_config.policy_dir != init_policy_dir:
-            __logger__.info(f"Loading policy model from {script_config.policy_dir} for this run...")
-            policy_model, rollout_dataset = load_policy_and_dataset(script_config.policy_dir, device)
+        policy_dir = script_config.policy_dir
+        if policy_dir != init_policy_dir:
+            __logger__.info(f"Loading policy model from {policy_dir} for this run...")
+            policy_model, rollout_dataset = load_policy_and_dataset(policy_dir, device)
             policy_global_config = policy_model.global_config
             state_bounds = np.vstack([policy_global_config.constraints.lbx, policy_global_config.constraints.ubx])
             riccati_p = compute_riccati_value_matrix(float(policy_global_config.dt))

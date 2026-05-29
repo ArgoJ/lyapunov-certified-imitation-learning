@@ -118,11 +118,11 @@ def discover_latest_lyapunov_dir(dir: Path | str | None = None) -> Path:
         dir = require_dir(dir, name="Directory to search for Lyapunov checkpoint")
         if LYAPUNOV_DIRNAME in dir.parts :
             __logger__.warning(f"Provided directory '{dir}' already contains '{LYAPUNOV_DIRNAME}' in its path. Searching for Lyapunov checkpoint directly under the provided directory.")
-            return discover_model_dir(dir, LYAPUNOV_MODEL_FILENAME, n=-1, sorting_idx=1)
+            return discover_model_dir(dir, LYAPUNOV_MODEL_FILENAME, n=-1)
     
     # latest policy path must be found
     policy_dir = discover_latest_policy_dir(dir)
-    return discover_model_dir(policy_dir / LYAPUNOV_DIRNAME, LYAPUNOV_MODEL_FILENAME, n=-1, sorting_idx=1)
+    return discover_model_dir(policy_dir / LYAPUNOV_DIRNAME, LYAPUNOV_MODEL_FILENAME, n=-1)
 
 
 def discover_latest_policy_and_lyapunov_dirs(results_root: Path | str | None = None, max_search: int = 100) -> tuple[Path, Path]:

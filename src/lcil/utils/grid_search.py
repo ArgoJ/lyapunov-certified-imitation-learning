@@ -282,7 +282,7 @@ class GridSearchHelper(Generic[ConfigT]):
     def __init__(
         self,
         *configs: Sequence[ConfigT] | ConfigT,
-        output_root: str | Path,
+        output_root: str | Path | None = None,
         sweep_id: str | None = None,
         run_name_fields: Sequence[str] | None = None,
         exclude_fields: Sequence[str] | None = None,
@@ -294,8 +294,9 @@ class GridSearchHelper(Generic[ConfigT]):
             raise ValueError("Grid search requires at least one configuration.")
 
         self.sweep_id = sweep_id or datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.sweep_base_path = Path(output_root) / self.sweep_id
-        self.sweep_base_path.mkdir(parents=True, exist_ok=True)
+        self.sweep_base_path: Path | None = None
+        if output_root is not None:
+            self.set_output_root(output_root)
 
         default_aliases = _collect_display_aliases(self._configs[0])
         self.field_aliases = {
@@ -311,12 +312,17 @@ class GridSearchHelper(Generic[ConfigT]):
             )
         self.run_name_fields = tuple(run_name_fields)
 
+    def set_output_root(self, output_root: str | Path) -> None:
+        """Dynamically update the output root for this sweep (e.g. to move from a temp dir to a final location)."""
+        self.sweep_base_path = Path(output_root) / self.sweep_id
+        self.sweep_base_path.mkdir(parents=True, exist_ok=True)
+
     @classmethod
     def from_namespace(
         cls,
         args: Any,
         *config_defaults: NamespaceConfigT,
-        output_root: str | Path,
+        output_root: str | Path | None = None,
         prefix: str = "",
         sweep_id: str | None = None,
         run_name_fields: Sequence[str] | None = None,
@@ -352,8 +358,10 @@ class GridSearchHelper(Generic[ConfigT]):
 
     def iter_runs(self) -> Iterator[GridSearchRun[ConfigT]]:
         """Yield concrete runs with names, descriptions, and output folders."""
-        used_names: set[str] = set()
+        if self.sweep_base_path is None:
+            raise ValueError("Output root is not set. Call set_output_root() before iterating runs.")
 
+        used_names: set[str] = set()
         for index, config in enumerate(self._configs):
             base_name = build_grid_search_run_name(
                 config,

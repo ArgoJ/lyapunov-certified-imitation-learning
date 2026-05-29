@@ -6,7 +6,7 @@ from typing import Callable, Sequence
 import torch as th
 import torch.nn as nn
 
-from .buffer import BoundaryStateBuffer
+from .buffer import BoundaryStateBuffer, DynamicStateBuffer
 from .config import LyapunovTrainingConfig
 
 
@@ -142,6 +142,7 @@ def estimate_rho_from_boundary_diagnostics(
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),
     boundary_buffer: BoundaryStateBuffer | None = None,
+    cex_buffer: DynamicStateBuffer | None = None,
     generator: th.Generator | None = None,
 ) -> BoundaryRhoDiagnostics:
     """Estimate rho and expose boundary-term diagnostics for logging."""
@@ -154,14 +155,11 @@ def estimate_rho_from_boundary_diagnostics(
         device=device,
         generator=generator,
     )
-    refs = th.zeros_like(boundary_x)  # TODO placeholder for reference state if needed in the future
 
     step = config.rho_step_size * (ubx - lbx).unsqueeze(0)
     for _ in range(config.rho_descent_steps):
         boundary_x.requires_grad_(True)
-
-        e = boundary_x - refs
-        boundary_values = lyap_model(e)
+        boundary_values = lyap_model(boundary_x)
         grad = th.autograd.grad(
             boundary_values.mean(),
             boundary_x,
@@ -203,7 +201,15 @@ def estimate_rho_from_boundary_diagnostics(
             quantile=float(config.rho_estimate_quantile),
         )
 
-    rho = max(config.rho_min, config.rho_growth_gamma * boundary_quantile)
+    rho_boundary = max(config.rho_min, config.rho_growth_gamma * boundary_quantile)
+
+    rho_cex = float("inf")
+    if cex_buffer is not None and cex_buffer.cex_count > 0:
+        with th.no_grad():
+            v_cexs = lyap_model(cex_buffer.cexs)
+            rho_cex = float(v_cexs.min().item()) * 0.99 
+            
+    rho = min(rho_boundary, rho_cex)
     return BoundaryRhoDiagnostics(
         rho=float(rho),
         boundary_quantile=boundary_quantile,

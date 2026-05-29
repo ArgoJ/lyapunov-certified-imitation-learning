@@ -57,6 +57,7 @@ class DynamicStateBuffer:
         min_cex_fraction: float = 0.0,
         max_cex_fraction: float = 1.0,
         generator: th.Generator | None = None,
+        filter_eps: float = 0.05,
     ):
         if initial_states.numel() == 0:
             raise ValueError("initial_states cannot be empty.")
@@ -74,6 +75,33 @@ class DynamicStateBuffer:
         self.min_cex_fraction = min_cex_fraction
         self.max_cex_fraction = max_cex_fraction
         self.generator = generator
+        self.filter_eps = filter_eps
+
+    def _apply_spatial_diversity_filter(
+        self,
+        states: th.Tensor,
+        violations: th.Tensor,
+    ) -> tuple[th.Tensor, th.Tensor]:
+
+        if states.shape[0] <= 1:
+            return states, violations
+
+        sorted_indices = th.argsort(violations, descending=True)
+        sorted_states = states[sorted_indices]
+        sorted_violations = violations[sorted_indices]
+
+        distances = th.cdist(sorted_states, sorted_states)
+
+        close_mask = distances < self.filter_eps
+        close_mask = th.triu(close_mask, diagonal=1)
+
+        suppress_mask = close_mask.any(dim=0)
+        keep_mask = ~suppress_mask
+
+        return (
+            sorted_states[keep_mask],
+            sorted_violations[keep_mask]
+        )
 
     def add(self, new_states: th.Tensor) -> None:
         """Adds new states to the buffer and strictly enforces the maximum size."""
@@ -94,28 +122,22 @@ class DynamicStateBuffer:
     def register_cex(
         self,
         new_cexs: th.Tensor,
-        objective: Callable[[th.Tensor], th.Tensor] | None = None,
+        objective: Callable[[th.Tensor], th.Tensor],
     ) -> None:
-        """
-        Registers new counterexamples and retains the strongest violations.
-
-        This mirrors the external training buffer semantics where adversarial
-        states are ranked by violation severity instead of being kept by age.
-        """
+        """Registers new counterexamples and retains the strongest filtered violations."""
         if new_cexs.numel() == 0:
             return
 
         combined_cexs = th.cat((new_cexs.to(self.device), self.cexs), dim=0)
-        if combined_cexs.shape[0] > self.cex_buffer_limit:
-            if objective is not None:
-                with th.no_grad():
-                    violation = -objective(combined_cexs).flatten()
-                    _, keep_idx = th.sort(violation, descending=True)
-                combined_cexs = combined_cexs[keep_idx[: self.cex_buffer_limit]]
-            else:
-                combined_cexs = combined_cexs[: self.cex_buffer_limit]
 
-        self.cexs = combined_cexs
+        with th.no_grad():
+            violation_scores = -objective(combined_cexs).flatten()
+
+        filtered_cexs, filtered_scores = self._apply_spatial_diversity_filter(
+            states=combined_cexs,
+            violations=violation_scores,
+        )
+        self.cexs = filtered_cexs[: self.cex_buffer_limit]
 
     def sample(self, batch_size: int, cex_fraction: float = 0.25) -> th.Tensor:
         """

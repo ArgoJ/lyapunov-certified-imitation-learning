@@ -466,10 +466,7 @@ class LyapunovTrainer:
                         new_cex = self._mine_new_counterexamples(rho_estimate=rho_estimate)
                         state_buffer.register_cex(
                             new_cex,
-                            objective=lambda x: self.loss_module.mining_objective(
-                                x_batch=x,
-                                rho_estimate=rho_estimate,
-                            ),
+                            objective=self.loss_module.buffer_sorting_objective,
                         )
                         if new_cex.numel() == 0:
                             __logger__.info("No new counterexamples mined at outer iteration %d.", outer_iter)

@@ -40,7 +40,7 @@ def parse_cli_args() -> argparse.Namespace:
     )
     parser.add_argument("--n-samples", type=int, default=500, help="Number of rollout initial states.")
     parser.add_argument(
-        "--model-path",
+        "--policy-dir",
         type=str,
         default=default_model_path(),
         help="Path to a trained policy checkpoint.",
@@ -52,12 +52,12 @@ def parse_cli_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_cli_args()
     device = args.device
-    model_path = Path(args.model_path)
+    policy_dir = Path(args.policy_dir)
     n_samples = args.n_samples
 
-    net = load_policy_model(model_path, device)
+    net = load_policy_model(policy_dir / POLICY_MODEL_FILENAME, device)
 
-    val_dataset_path = model_path.parent / "val_dataset.pt"
+    val_dataset_path = policy_dir / "val_dataset.pt"
     __logger__.info(f"dataset path: {val_dataset_path}")
     if val_dataset_path.exists():
         dataset = load_imitation_dataset(val_dataset_path)
@@ -88,8 +88,7 @@ def main() -> None:
     _set_quadratic_vn(solved_dataset, p_matrix)
     solved_dataset.validate()
 
-    base_folder = model_path.parent
-    output_path = base_folder / POLICY_ROLLOUT_FILENAME
+    output_path = policy_dir / POLICY_ROLLOUT_FILENAME
     plot_path = output_path.with_suffix(".html")
     solved_dataset.save(path=output_path, save_ocp_trajs=False)
 
