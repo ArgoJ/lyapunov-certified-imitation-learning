@@ -38,7 +38,7 @@ class TestGridSearchHelper(unittest.TestCase):
     def test_initialization_and_cartesian_product(self) -> None:
         helper = GridSearchHelper(self.models, self.trains, output_root=self.test_dir)
         self.assertEqual(len(helper), 4)
-        self.assertTrue(helper.sweep_base_path.exists())
+        self.assertTrue(helper._sweep_base_path.exists())
 
 
     def test_infer_varying_fields(self) -> None:

@@ -4,13 +4,16 @@ import numpy as np
 import logging
 import plotly.graph_objects as go
 
+from pathlib import Path
 from numpy.typing import NDArray
-from typing import Callable, TYPE_CHECKING
+from typing import Callable, TYPE_CHECKING, Sequence
 
 from mpc_datagen.mpc_data import MPCDataset
 from mpc_datagen.plots import (
-    lyapunov, 
+    PairPlotResult,
+    lyapunov,
     _save_pair_figures,
+    _resolve_num_states,
     _resolve_indices,
     _resolve_labels,
     _state_index_pairs,
@@ -252,6 +255,37 @@ def _partition_annotation(cert_regs: NDArray, uncert_regs: NDArray, ctex_regs: N
     )
 
 
+def _create_origin_exclusion_region(
+    origin_exclusion: float | Sequence[float],
+    idx_x: int,
+    idx_y: int,
+    num_states: int,
+) -> NDArray:
+    """Create a single 2D bounding box representing the origin exclusion."""
+    # 1. Normalisiere die Input-Werte
+    if isinstance(origin_exclusion, (int, float)):
+        ex_x = float(origin_exclusion)
+        ex_y = float(origin_exclusion)
+    elif isinstance(origin_exclusion, Sequence):
+        if len(origin_exclusion) != num_states:
+            raise ValueError("Sequence length must match num_states.")
+        ex_x = float(origin_exclusion[idx_x])
+        ex_y = float(origin_exclusion[idx_y])
+    else:
+        raise ValueError("origin_exclusion must be a float or a sequence of floats.")
+
+    if ex_x <= 0.0 and ex_y <= 0.0:
+        return np.empty((0, 2, 2), dtype=np.float64)
+
+    box = np.array([
+        [
+            [-ex_x, -ex_y], # Lower bounds [lb_x, lb_y]
+            [ ex_x,  ex_y]  # Upper bounds [ub_x, ub_y]
+        ]
+    ], dtype=np.float64)
+    return box
+
+
 def _build_X_Y(regions: NDArray) -> tuple[NDArray, NDArray]:
     lbs = regions[:, 0, :]
     ubs = regions[:, 1, :]
@@ -265,7 +299,7 @@ def _add_regions(
     regions: NDArray | None,
     fig: go.Figure,
     color: str,
-    name: str,
+    name: str | None = None,
     z_level: float | None = None,
     dash: str = "solid",
     fill: bool = False,
@@ -291,7 +325,7 @@ def _add_regions(
                 line=dict(color=color, width=4, dash=dash),
                 opacity=alpha,
                 name=name,
-                showlegend=True,
+                showlegend=name is not None,
             )
         )
     else:
@@ -305,7 +339,7 @@ def _add_regions(
                 opacity=alpha if alpha is not None else (0.3 if fill else None),
                 line=dict(color=color, width=2, dash=dash),
                 name=name,
-                showlegend=True,
+                showlegend=name is not None,
             )
         )
 
@@ -319,8 +353,8 @@ def lyapunov_cert_regions(
     limits: list = None,
     resolution: int = 100,
     plot_3d: bool = False,
-    html_path: str = None,
-):
+    html_path: Path | str = None,
+) -> list[PairPlotResult] | None:
     """Plot Lyapunov landscape, trajectories, and optional certified regions in 2D/3D.
     If more than two state indices are provided, one figure per 2D state pair
     is generated.
@@ -346,7 +380,7 @@ def lyapunov_cert_regions(
         Grid resolution for the Lyapunov function contour plot.
     plot_3d : bool, optional
         If True, plot a 3D surface and 3D trajectories. Default is False.
-    html_path : str, optional
+    html_path : Path | str, optional
         If provided, saves the plot to the specified HTML file.
     """
     cert_regs_np = _regions_to_np(certification_result.certified_sublevel_regions)
@@ -412,7 +446,7 @@ def lyapunov_cert_regions(
 
     z_overlay = 0.0 if plot_3d else None
 
-    figures: dict[tuple[int, int], go.Figure] = {}
+    figures: list[PairPlotResult] = {}
     for pair in pair_indices:
         fig_pair = lyapunov(
             lyapunov_func=lyapunov_func,
@@ -425,11 +459,10 @@ def lyapunov_cert_regions(
             use_dataset_v=has_dataset,
         )
 
-        if isinstance(fig_pair, dict):
-            fig = fig_pair[pair]
-        else:
-            fig = fig_pair
-
+        if fig_pair is NotImplementedError:
+            raise ValueError("Expected lyapunov to return figures.")
+        
+        fig = fig_pair[0].figure
         cert_pair, uncert_pair, ctex_pair = regions_by_pair[pair]
         _add_regions(
             cert_pair,
@@ -473,15 +506,95 @@ def lyapunov_cert_regions(
                 borderwidth=1,
                 text=_partition_annotation(cert_pair, uncert_pair, ctex_pair),
             )
-        figures[pair] = fig
+        figures.append(fig)
 
     if html_path is not None:
-        _save_pair_figures(figures, html_path, labels_full, kind="Lyapunov")
+        _save_pair_figures(figures, html_path, kind="Lyapunov")
         return None
 
-    if len(figures) == 1:
-        return next(iter(figures.values()))
     return figures
+
+
+def lyapunov_with_exclusion(
+    lyapunov_func: Callable[[NDArray], NDArray],
+    dataset: MPCDataset | None = None,
+    roa_level: float | None = None,
+    origin_exclusion: float | None = None,
+    state_indices: list[int] | None = None,
+    state_labels: list[str] | None = None,
+    num_states: int | None = None,
+    limits: list = None,
+    resolution: int = 100,
+    plot_3d: bool = False,
+    html_path: Path | str | None = None,
+):
+    """Plot Lyapunov landscape, trajectories, and optional certified regions in 2D/3D.
+    If more than two state indices are provided, one figure per 2D state pair
+    is generated.
+
+    Parameters
+    ----------
+    lyapunov_func : Callable[[NDArray], NDArray]
+        A function that takes a state vector and returns the Lyapunov value.
+    dataset : MPCDataset, optional
+        The dataset containing trajectories to plot. If None, only the
+        Lyapunov landscape and optional regions are shown. Default is None.
+    state_indices : list[int], optional
+        State indices to consider. If None, all states are used and all pairwise
+        combinations are plotted.
+    state_labels : list[str], optional
+        Labels for the plotted state dimensions. Defaults to ["State i", "State j"].
+    limits : list of tuples, optional
+        ((min_x, max_x), (min_y, max_y)). If None, inferred from data with padding.
+    resolution : int, optional
+        Grid resolution for the Lyapunov function contour plot.
+    plot_3d : bool, optional
+        If True, plot a 3D surface and 3D trajectories. Default is False.
+    html_path : Path | str, optional
+        If provided, saves the plot to the specified HTML file.
+    """
+    z_overlay = 0.0 if plot_3d else None
+
+    results = lyapunov(
+        lyapunov_func=lyapunov_func,
+        dataset=dataset,
+        roa_level=roa_level,
+        state_indices=state_indices,
+        state_labels=state_labels,
+        num_states=num_states,
+        limits=limits,
+        resolution=resolution,
+        plot_3d=plot_3d,
+        html_path=None,
+    )
+
+    num_states = _resolve_num_states(num_states, dataset, state_labels, state_indices)
+
+    for result in results:
+        if origin_exclusion is not None:
+            exclusion_box = _create_origin_exclusion_region(
+                origin_exclusion, 
+                idx_x=result.idx_x, 
+                idx_y=result.idx_y, 
+                num_states=num_states
+            )
+            
+            if exclusion_box.shape[0] > 0:
+                _add_regions(
+                    exclusion_box,
+                    result.figure,
+                    color="#FFD700",
+                    z_level=z_overlay,
+                    fill=True,
+                    alpha=0.4,
+                    dash="dot"
+                )
+
+    if html_path is not None:
+        _save_pair_figures(results, html_path, kind="Lyapunov")
+        return None
+
+    return results
 
 
 def certified_regions_2d(
@@ -489,7 +602,7 @@ def certified_regions_2d(
     state_indices: list[int] | None = None,
     state_labels: list[str] | None = None,
     bounds: list[tuple[float, float]] | None = None,
-    html_path: str | None = None,
+    html_path: Path | str | None = None,
 ):
     """Plot certified, failed and outside-sublevel regions as 2D overlays.
 
@@ -508,7 +621,7 @@ def certified_regions_2d(
         Labels for all state dimensions.
     bounds : list of tuples, optional
         ((min_x, max_x), (min_y, max_y)). If provided, applied to every pair.
-    html_path : str, optional
+    html_path : Path | str, optional
         If provided, saves the plot to the specified HTML file.
     """
     cert_regs_np = _regions_to_np(certification_result.certified_sublevel_regions)
@@ -543,8 +656,9 @@ def certified_regions_2d(
 
     pair_indices = _state_index_pairs(state_indices)
 
-    figures: dict[tuple[int, int], go.Figure] = {}
+    figures: list[PairPlotResult] = []
     for pair in pair_indices:
+        labels_pair = (labels_full[pair[0]], labels_full[pair[1]])
         cert_pair, uncert_pair, ctex_pair = _collapse_projected_regions(
             cert_regs_np,
             uncert_regs_np,
@@ -594,10 +708,10 @@ def certified_regions_2d(
 
         fig.update_layout(
             title=_to_latex(
-                f"Certification Partition ({labels_full[pair[0]]} vs {labels_full[pair[1]]})"
+                f"Certification Partition ({labels_pair[0]} vs {labels_pair[1]})"
             ),
-            xaxis_title=_to_latex(labels_full[pair[0]]),
-            yaxis_title=_to_latex(labels_full[pair[1]]),
+            xaxis_title=_to_latex(labels_pair[0]),
+            yaxis_title=_to_latex(labels_pair[1]),
             xaxis=dict(range=[pair_bounds[0][0], pair_bounds[0][1]]),
             yaxis=dict(range=[pair_bounds[1][0], pair_bounds[1][1]]),
         )
@@ -615,7 +729,13 @@ def certified_regions_2d(
             borderwidth=1,
             text=_to_latex(_partition_annotation(cert_pair, uncert_pair, ctex_pair)),
         )
-        figures[pair] = fig
+        figures.append(PairPlotResult(
+            idx_x=pair[0],
+            idx_y=pair[1],
+            label_x=labels_pair[0],
+            label_y=labels_pair[1],
+            figure=fig,
+        ))
 
     if len(figures) == 0:
         __logger__.warning("No projectable regions found for selected state indices.")
@@ -625,6 +745,4 @@ def certified_regions_2d(
         _save_pair_figures(figures, html_path, labels_full, kind="Certified region")
         return
 
-    if len(figures) == 1:
-        return next(iter(figures.values()))
     return figures

@@ -16,7 +16,8 @@ from lcil.certification import (
     estimate_level_set_measure,
 )
 from lcil.certification import RegionCertificationResult
-from lcil.utils import ArgumentParserConfig, config_field, build_rollout_dataset
+from lcil.utils import ArgumentParserConfig, config_field, lcil_plt, add_entry
+from lcil.rollouts import build_rollout_dataset
 
 from . import (
     DoubleIntegratorDynamics,
@@ -101,17 +102,17 @@ def _save_lyapunov_plot(
 ) -> None:
     cert_bounds = np.asarray(certification_config.cert_bounds, dtype=float)
     plot_path = cert_dir / "certification_tester_lyapunov_plot.html"
-    mdg_plt.lyapunov(
+    lcil_plt.lyapunov_with_exclusion(
         lyapunov_func=lyapunov_func,
         dataset=rollout_dataset,
         roa_level=roa_level,
+        origin_exclusion=certification_config.origin_exclusion,
         state_indices=[0, 1],
         state_labels=["$x$", "$v$"],
         limits=cert_bounds.T.tolist(),
         plot_3d=False,
         html_path=plot_path,
     )
-    __logger__.info("Saved certification tester Lyapunov plot to %s", plot_path)
 
 
 def _save_level_set_metrics(
@@ -130,7 +131,12 @@ def _save_level_set_metrics(
         device=device,
     )
     level_set_estimate.save(metrics_path)
-    __logger__.info("Saved certification tester metrics to %s", metrics_path)
+
+    add_entry(
+        f"{cert_dir.parent.name}, {level_set_estimate.measure:.6f}",
+        output_root=cert_dir.parents[1],
+        summary_name="level_set_estimates.csv",
+    )
 
 
 def main() -> None:
@@ -153,6 +159,7 @@ def main() -> None:
 
         certification_config = LyapunovCertificationConfig.load(certification_config_path)
         cert_result = RegionCertificationResult.load(cert_result_path)
+        
         if not cert_result.global_success:
             __logger__.warning(
                 "Certification result at rho=%.6f is not globally proven "
@@ -176,9 +183,6 @@ def main() -> None:
         ).to(device)
         dyn_model.eval()
 
-        __logger__.info("Loaded certification result from %s", cert_result_path)
-        __logger__.info("Loaded certification config from %s", certification_config_path)
-
         cert_tester = CertificationResultTester(
             policy_model=policy_model,
             lyap_model=lyap_model,
@@ -192,7 +196,11 @@ def main() -> None:
             rollout_steps=int(script_config.rollout_steps),
         )
         test_results.save(cert_path)
-        __logger__.info("Saved certification tester results to %s", cert_path)
+
+        if test_results.rho_boundary.max_violation > 0:
+            __logger__.warning("Skipping rollout dataset generation and metric/plot saving for this result.")
+            continue
+
         rollout_dataset = build_rollout_dataset(
             initial_states=test_results.rho_boundary.sampled_states,
             policy_model=policy_model,

@@ -19,4 +19,4 @@ from .base_models import (
     build_generator,
 )
 from .early_stopping import EarlyStopping
-from .helpers import none_to_float, shoelace
+from .helpers import none_to_float, add_entry

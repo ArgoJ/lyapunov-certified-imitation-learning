@@ -413,7 +413,7 @@ class TestGridSearchHelper(unittest.TestCase):
 
         self.assertEqual(len(helper), 4)
         self.assertEqual(helper.run_name_fields, ("learning_rate", "kappa"))
-        self.assertEqual(helper.sweep_base_path.name, "20260425_120000")
+        self.assertEqual(helper._sweep_base_path.name, "20260425_120000")
         self.assertEqual(runs[0].run_name, "lr_0.001__kappa_0.1__lyap_eps_0.1__curr_0.3-0.6-1")
         self.assertEqual(runs[0].description, "lr: 0.001, kappa: 0.1, lyap_eps: 0.1, curr: [0.3, 0.6, 1]")
         self.assertEqual(runs[-1].progress_message(), "[4/4] lr: 0.0005, kappa: 0.2, lyap_eps: 0.1, curr: [0.3, 0.6, 1]")

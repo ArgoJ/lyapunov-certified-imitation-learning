@@ -173,7 +173,7 @@ class MLPPolicy(nn.Module):
         model.load_state_dict(state_dict, strict=strict)
         model.global_config = global_cfg
 
-        __logger__.info(f"Loaded {cls.__name__} from {checkpoint_path}")
+        __logger__.debug(f"Loaded {cls.__name__} from {checkpoint_path}")
         return model
 
 

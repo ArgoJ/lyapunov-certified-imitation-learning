@@ -12,6 +12,7 @@ from typing import Any, Generic, TypeVar
 
 
 from ..utils.base_config import ArgumentParserConfig
+from ..utils.helpers import add_entry
 
 ConfigT = TypeVar("ConfigT")
 NamespaceConfigT = TypeVar("NamespaceConfigT", bound=ArgumentParserConfig)
@@ -288,13 +289,14 @@ class GridSearchHelper(Generic[ConfigT]):
         exclude_fields: Sequence[str] | None = None,
         field_aliases: Mapping[str, str] | None = None,
         extra_name_parts: Mapping[str, Any] | None = None,
+        summary_name: str | None = None,
     ) -> None:
         self._configs = _resolve_configs(*configs)
         if not self._configs:
             raise ValueError("Grid search requires at least one configuration.")
 
         self.sweep_id = sweep_id or datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.sweep_base_path: Path | None = None
+        self._sweep_base_path: Path | None = None
         if output_root is not None:
             self.set_output_root(output_root)
 
@@ -311,11 +313,28 @@ class GridSearchHelper(Generic[ConfigT]):
                 exclude_fields=exclude_fields,
             )
         self.run_name_fields = tuple(run_name_fields)
+        self.summary_name = summary_name or "summary.txt"
+
+    @property
+    def configs(self) -> tuple[ConfigT, ...]:
+        """Return all concrete configs in sweep order."""
+        return self._configs
+
+    @property
+    def output_root(self) -> Path:
+        """Return the current output root for this sweep, or raise if not set."""
+        if self._sweep_base_path is None:
+            raise ValueError("Output root is not set. Call set_output_root() to initialize it.")
+        return self._sweep_base_path
 
     def set_output_root(self, output_root: str | Path) -> None:
         """Dynamically update the output root for this sweep (e.g. to move from a temp dir to a final location)."""
-        self.sweep_base_path = Path(output_root) / self.sweep_id
-        self.sweep_base_path.mkdir(parents=True, exist_ok=True)
+        self._sweep_base_path = Path(output_root) / self.sweep_id
+        self._sweep_base_path.mkdir(parents=True, exist_ok=True)
+
+    def add_summary_entry(self, entry: str) -> None:
+        """Appends a string to a summary file in the sweep base directory."""
+        add_entry(entry, self.output_root, self.summary_name)
 
     @classmethod
     def from_namespace(
@@ -329,6 +348,7 @@ class GridSearchHelper(Generic[ConfigT]):
         exclude_fields: Sequence[str] | None = None,
         field_aliases: Mapping[str, str] | None = None,
         extra_name_parts: Mapping[str, Any] | None = None,
+        summary_name: str | None = None,
     ) -> GridSearchHelper[NamespaceConfigT]:
         """Build a grid-search helper directly from parsed CLI arguments."""
         config_axes = [
@@ -343,6 +363,7 @@ class GridSearchHelper(Generic[ConfigT]):
             exclude_fields=exclude_fields,
             field_aliases=field_aliases,
             extra_name_parts=extra_name_parts,
+            summary_name=summary_name,
         )
 
     def __len__(self) -> int:
@@ -351,16 +372,8 @@ class GridSearchHelper(Generic[ConfigT]):
     def __iter__(self) -> Iterator[GridSearchRun[ConfigT]]:
         return self.iter_runs()
 
-    @property
-    def configs(self) -> tuple[ConfigT, ...]:
-        """Return all concrete configs in sweep order."""
-        return self._configs
-
     def iter_runs(self) -> Iterator[GridSearchRun[ConfigT]]:
         """Yield concrete runs with names, descriptions, and output folders."""
-        if self.sweep_base_path is None:
-            raise ValueError("Output root is not set. Call set_output_root() before iterating runs.")
-
         used_names: set[str] = set()
         for index, config in enumerate(self._configs):
             base_name = build_grid_search_run_name(
@@ -374,7 +387,7 @@ class GridSearchHelper(Generic[ConfigT]):
                 run_name = f"{run_name}__run_{index + 1:03d}"
             used_names.add(run_name)
 
-            output_dir = self.sweep_base_path / run_name
+            output_dir = self.output_root / run_name
             output_dir.mkdir(parents=True, exist_ok=True)
 
             yield GridSearchRun(

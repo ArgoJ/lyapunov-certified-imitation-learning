@@ -247,7 +247,7 @@ def main() -> None:
                 html_path=base_path / "lyapunov_plot.html",
             )
 
-    __logger__.info(f"\nGrid search complete. All results saved to: {sweep.sweep_base_path}")
+    __logger__.info(f"\nGrid search complete. All results saved to: {sweep._sweep_base_path}")
 
 
 if __name__ == "__main__":

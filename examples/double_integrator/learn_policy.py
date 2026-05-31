@@ -132,7 +132,7 @@ def main() -> None:
 
         current_train_cfg = replace(
             train_config,
-            tb_log_dir=sweep.sweep_base_path.parent.parent / "tb" / sweep.sweep_id / run.run_name
+            tb_log_dir=sweep._sweep_base_path.parent.parent / "tb" / sweep.sweep_id / run.run_name
         )
 
         trainer = PolicyTrainer(
@@ -151,7 +151,7 @@ def main() -> None:
             global_config=dataset_cfg
         )
 
-    __logger__.info(f"\nGrid search complete. Models saved to: {sweep.sweep_base_path}")
+    __logger__.info(f"\nGrid search complete. Models saved to: {sweep._sweep_base_path}")
 
 
 if __name__ == "__main__":

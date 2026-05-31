@@ -288,14 +288,14 @@ class CertificationResultTester:
         if isinside.numel() > 0:
             largest_inside_idx = isinside.abs().amax(dim=1).argmax()
             largest_inside_state = isinside[largest_inside_idx]
-            __logger__.info(
+            __logger__.debug(
                 "Largest rollout state inside origin exclusion: state=%s, max_abs=%.6e, origin_exclusion=%s",
                 largest_inside_state.detach().cpu().tolist(),
                 float(largest_inside_state.abs().max().item()),
                 self.config.origin_exclusion,
             )
         else:
-            __logger__.info(
+            __logger__.debug(
                 "No rollout states entered the origin exclusion region (origin_exclusion=%s).",
                 self.config.origin_exclusion,
             )
@@ -317,12 +317,14 @@ class CertificationResultTester:
         )
         max_viol = float(th.nan_to_num(violations, nan=0.0).max().item()) if num_valid_trajectories > 0 else 0.0
 
-        __logger__.info(
-            "Tested %d rho-boundary samples: violation rate = %.2f%%, max violation = %.2e",
-            x_t.shape[0],
-            violation_rate * 100.0,
-            max_viol,
-        )
+        if violation_rate > 0.0:
+            __logger__.info(
+                "Certification result tester found %.2f%% violations among %d sampled states near the rho-sublevel boundary. "
+                "Max violation was %.2e.",
+                violation_rate * 100.0,
+                x_t.shape[0],
+                max_viol,
+            )
 
         return CertificationCategoryTestResult(
             violation_rate=violation_rate,
