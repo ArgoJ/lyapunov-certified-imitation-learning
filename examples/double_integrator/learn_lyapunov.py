@@ -201,7 +201,7 @@ def main() -> None:
             state_bounds=state_bounds,
             train_policy_model=False,
             seed=seed,
-            tb_log_dir=base_path.parent / "tb",
+            tb_log_dir=base_path.parent / "tb" / run.run_name,
         )
 
         # ---------------------------------------------------------------------

@@ -9,9 +9,12 @@ from ..utils.base_config import (
     ArgumentParserConfig,
     JsonDataclass,
     config_field,
+    optional_validator,
     positive_validator,
     non_negative_validator,
     fraction_validator,
+    growth_rate_validator,
+    pathlike_validator,
     run_field_validators,
 )
 from ..utils.constants import *
@@ -133,13 +136,16 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="lr",
         validators=(positive_validator,),
     )
-    train_policy_model: bool = config_field(
-        default=True,
-        help="Whether to jointly optimize policy parameters with the Lyapunov model.",
+    policy_training_start_epoch: int | None = config_field(
+        default=None,
+        help="Outer epoch at which to start jointly optimizing policy parameters. If None, the policy is never updated.",
+        display_alias="policy_start",
+        validators=(optional_validator(positive_validator),)
     )
     seed: int | None = config_field(
         default=None,
-        help="Random seed for reproducibility."
+        help="Random seed for reproducibility.",
+        validators=(optional_validator(positive_validator),)
     )
     kappa: float = config_field(
         default=0.05,
@@ -163,7 +169,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     tb_log_dir: str | os.PathLike | None = config_field(
         default=None,
-        help="TensorBoard logging directory."
+        help="TensorBoard logging directory.",
+        validators=(optional_validator(pathlike_validator),)
     )
 
     # Weights
@@ -209,7 +216,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=1.1,
         help="Growth factor used when estimating rho from boundary points.",
         display_alias="\u03C1_fac",
-        validators=(positive_validator,),
+        validators=(growth_rate_validator,),
     )
     rho_boundary_samples: int = config_field(
         default=512,
@@ -221,6 +228,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=None,
         help="Optional cache size for retaining low-value boundary points.",
         display_alias="\u03C1_buff",
+        validators=(optional_validator(positive_validator),)
     )
     rho_descent_steps: int = config_field(
         default=15,
@@ -342,21 +350,16 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
                 "Ensure that state_bounds are correctly specified for Lyapunov training."
             )
 
-        if self.tb_log_dir is not None and not isinstance(self.tb_log_dir, (str, os.PathLike)):
-            raise ValueError("tb_log_dir must be a string, os.PathLike, or None.")
         if self.tb_log_dir is not None:
             object.__setattr__(self, "tb_log_dir", Path(self.tb_log_dir).resolve())
 
         # Rho estimation parameters
-        if self.rho_growth_gamma < 1.0:
-            raise ValueError("rho_growth_gamma must be at least 1.0 to ensure valid growth of rho estimates.")
         if self.rho_boundary_buffer_size is None:
             object.__setattr__(
                 self,
                 "rho_boundary_buffer_size",
                 max(self.rho_boundary_samples, 4 * self.rho_boundary_samples),
             )
-        positive_validator(self.rho_boundary_buffer_size, "rho_boundary_buffer_size")
 
         if self.state_bounds.shape[1] != self.state_dim:
             raise ValueError(

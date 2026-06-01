@@ -188,6 +188,34 @@ class TestCertificationResultTester(unittest.TestCase):
 
         self.assertListEqual(mask.cpu().tolist(), [[False, True, True], [False, False, True]])
 
+    def test_inside_origin_exclusion_mask_supports_per_dimension_sequence(self) -> None:
+        config = LyapunovCertificationConfig(
+            state_dim=2,
+            cert_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]], dtype=np.float32),
+            kappa=0.1,
+            rho_min=1e-6,
+            bins_per_dim=1,
+            origin_exclusion=(0.1, 0.2),
+            sublevel_tolerance=1e-6,
+            condition_tolerance=1e-6,
+        )
+        tester = CertificationResultTester(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_ZeroLyapunov(),
+            dyn_model=_DoubleDynamics(),
+            config=config,
+            device=th.device("cpu"),
+        )
+
+        mask = tester._inside_origin_exclusion_mask(
+            th.as_tensor(
+                [[0.05, 0.15], [0.05, 0.25], [0.15, 0.15], [0.15, 0.25]],
+                dtype=th.float32,
+            )
+        )
+
+        self.assertListEqual(mask.cpu().tolist(), [True, False, False, False])
+
     def test_sample_near_rho_excludes_states_inside_origin_exclusion(self) -> None:
         tester = self._make_tester(
             _FixedCandidateTester,

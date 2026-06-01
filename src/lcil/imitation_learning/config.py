@@ -11,9 +11,12 @@ from ..utils.base_config import (
     ArgumentParserConfig,
     JsonDataclass,
     config_field,
+    optional_validator,
     positive_validator,
     non_negative_validator,
     fraction_validator,
+    literal_validator,
+    pathlike_validator,
     run_field_validators,
 )
 from ..utils.constants import *
@@ -77,7 +80,8 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
     # Dataset
     dataset_path: str | os.PathLike | None = config_field(
         default=None,
-        help="Path to the source dataset (HDF5)."
+        help="Path to the source dataset (HDF5).",
+        validators=(optional_validator(pathlike_validator),)
     )
     sequence_length: int = config_field(
         default=1,
@@ -91,7 +95,8 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     target_mode: Literal["last", "all"] = config_field(
         default="last",
-        help="Whether to predict only the last action in the sequence or all actions."
+        help="Whether to predict only the last action in the sequence or all actions.",
+        validators=(literal_validator({"last", "all"}),)
     )
     val_fraction: float = config_field(
         default=0.2,
@@ -100,11 +105,13 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     seed: int | None = config_field(
         default=None,
-        help="Random seed for dataset splitting."
+        help="Random seed for dataset splitting.",
+        validators=(optional_validator(positive_validator),)
     )
     split_strategy: Literal["random", "trajectory"] = config_field(
         default="random",
-        help="Strategy for splitting the dataset."
+        help="Strategy for splitting the dataset.",
+        validators=(literal_validator({"random", "trajectory"}),)
     )
     use_references: bool = config_field(
         default=False,
@@ -151,6 +158,7 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default="none",
         help="Learning-rate scheduler variant.",
         display_alias="scheduler",
+        validators=(literal_validator({"none", "step", "cosine", "plateau"}),)
     )
     scheduler_kwargs: Mapping[str, Any] | None = config_field(
         default=None,
@@ -160,7 +168,8 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
     # Others
     tb_log_dir: str | os.PathLike | None = config_field(
         default=None,
-        help="TensorBoard logging directory."
+        help="TensorBoard logging directory.",
+        validators=(optional_validator(pathlike_validator),)
     )
 
     train_dataset_path: str | os.PathLike | None = field(init=False, default=None, metadata={"cli": False})
@@ -171,14 +180,6 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
 
     def __post_init__(self):
         run_field_validators(self)
-        if self.target_mode not in {"last", "all"}:
-            raise ValueError(f"Invalid target_mode: {self.target_mode}")
-        if self.split_strategy not in {"random", "trajectory"}:
-            raise ValueError(f"Invalid split_strategy: {self.split_strategy}")
-        if self.scheduler_type not in {"none", "step", "cosine", "plateau"}:
-            raise ValueError(f"Invalid scheduler_type: {self.scheduler_type}")
-        if self.tb_log_dir is not None and not isinstance(self.tb_log_dir, (str, os.PathLike)):
-            raise ValueError("tb_log_dir must be a string, os.PathLike, or None.")
         if self.tb_log_dir is not None:
             object.__setattr__(self, "tb_log_dir", Path(self.tb_log_dir).resolve())
         

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any, Callable, TypeVar
 from collections.abc import Sequence
 from dataclasses import dataclass
 from numpy.typing import NDArray
@@ -9,11 +10,36 @@ from ..utils.base_config import (
     ArgumentParserConfig,
     JsonDataclass,
     config_field,
+    fraction_validator,
+    optional_validator,
     positive_validator,
     non_negative_validator,
+    growth_rate_validator,
+    pathlike_validator,
     run_field_validators,
+    sequence_validator,
 )
 from ..utils.constants import *
+
+
+T = TypeVar("T")
+
+
+def _normalize_scalar_or_sequence(
+    value: Any,
+    *,
+    state_dim: int,
+    name: str,
+    caster: Callable[[Any], T],
+) -> T | tuple[T, ...]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        normalized = tuple(caster(item) for item in value)
+        if len(normalized) != state_dim:
+            raise ValueError(f"{name} must be scalar or match state_dim.")
+        return normalized
+
+    scalar = caster(value)
+    return (scalar,) * state_dim
 
 
 @dataclass(frozen=True)
@@ -89,14 +115,20 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     bins_per_dim: int | Sequence[int] = config_field(
         default=4,
         help="Initial certification bins per state dimension.",
+        validators=(sequence_validator(positive_validator),),
     )
     center_refinement_factor: float | Sequence[float] = config_field(
         default=1.0,
-        help="Optional geometric refinement factor for bins near the origin."
+        help="Optional geometric refinement factor for bins near the origin.",
+        validators=(
+            sequence_validator(positive_validator),
+            sequence_validator(fraction_validator),
+        ),
     )
     origin_exclusion: float | Sequence[float] = config_field(
         default=0.0,
-        help="Radius around the origin to skip during certification."
+        help="Radius around the origin to skip during certification.",
+        validators=(sequence_validator(non_negative_validator),),
     )
 
     # Certification parameters
@@ -141,7 +173,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         default=1.2,
         help="Multiplicative factor used in rho scaling before bisection.",
         display_alias="\u03C1_scale",
-        validators=(positive_validator,)
+        validators=(growth_rate_validator,)
     )
     bisection_tol: float = config_field(
         default=1e-3,
@@ -178,11 +210,13 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     abcrown_timeout: float | None = config_field(
         default=None,
         help="Optional per-region ABCrown branch-and-bound timeout in seconds.",
+        validators=(optional_validator(positive_validator),)
     )
     abcrown_max_domains: int | None = config_field(
         default=None,
         help="Optional cap on ABCrown branch-and-bound domains per region.",
         display_alias="abcrown_domains",
+        validators=(optional_validator(positive_validator),),
     )
     batch_size: int = config_field(
         default=512,
@@ -201,61 +235,30 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
 
     def __post_init__(self) -> None:
         run_field_validators(self)
-        raw_bins = self.bins_per_dim
-        if isinstance(raw_bins, int):
-            bins_per_dim = (int(raw_bins),) * self.state_dim
-        elif isinstance(raw_bins, Sequence):
-            bins_per_dim = tuple(int(bins) for bins in raw_bins)
-            if len(bins_per_dim) != self.state_dim:
-                raise ValueError("bins_per_dim must be scalar or match state_dim.")
-        else:
-            raise ValueError("bins_per_dim must be scalar or match state_dim.")
-        if any(bins <= 0 for bins in bins_per_dim):
-            raise ValueError("bins_per_dim must contain only positive integers.")
-
-        raw_refinement = self.center_refinement_factor
-        if isinstance(raw_refinement, (int, float)):
-            refinement_factors = (float(raw_refinement),) * self.state_dim
-        elif isinstance(raw_refinement, Sequence):
-            refinement_factors = tuple(float(factor) for factor in raw_refinement)
-            if len(refinement_factors) != self.state_dim:
-                raise ValueError(
-                    "center_refinement_factor must be scalar or match state_dim."
-                )
-        else:
-            raise ValueError(
-                "center_refinement_factor must be scalar or match state_dim."
-            )
-        if any((factor <= 0.0 or factor > 1.0) for factor in refinement_factors):
-            raise ValueError(
-                f"center_refinement_factor must contain values in (0, 1]. Got: {str(refinement_factors)}"
-            )
-        if self.abcrown_timeout is not None and self.abcrown_timeout <= 0.0:
-            raise ValueError("abcrown_timeout must be positive when provided.")
-        if self.abcrown_max_domains is not None and self.abcrown_max_domains <= 0:
-            raise ValueError("abcrown_max_domains must be positive when provided.")
-
-        raw_origin_exclusion = self.origin_exclusion
-        normalized_origin_exclusion = raw_origin_exclusion
-        if isinstance(raw_origin_exclusion, Sequence) and not isinstance(raw_origin_exclusion, (str, bytes)):
-            origin_values = tuple(float(value) for value in raw_origin_exclusion)
-            if any(value < 0.0 for value in origin_values):
-                raise ValueError("origin_exclusion must be non-negative.")
-            if len(origin_values) == 1:
-                normalized_origin_exclusion = origin_values[0]
-            elif len(origin_values) == self.state_dim:
-                normalized_origin_exclusion = origin_values
-            else:
-                raise ValueError("origin_exclusion must be scalar or match state_dim.")
-        elif not isinstance(raw_origin_exclusion, (int, float)):
-            raise ValueError("origin_exclusion must be scalar or match state_dim.")
+        bins_per_dim = _normalize_scalar_or_sequence(
+            self.bins_per_dim,
+            state_dim=self.state_dim,
+            name="bins_per_dim",
+            caster=int,
+        )
+        refinement_factors = _normalize_scalar_or_sequence(
+            self.center_refinement_factor,
+            state_dim=self.state_dim,
+            name="center_refinement_factor",
+            caster=float,
+        )
+        normalized_origin_exclusion = _normalize_scalar_or_sequence(
+            self.origin_exclusion,
+            state_dim=self.state_dim,
+            name="origin_exclusion",
+            caster=float,
+        )
 
         # object.__setattr__, because of frozen=True
         object.__setattr__(self, "bins_per_dim", bins_per_dim)
         object.__setattr__(self, "center_refinement_factor", refinement_factors)
         object.__setattr__(self, "origin_exclusion", normalized_origin_exclusion)
         object.__setattr__(self, "cert_method", self.cert_method.strip().lower())
-        object.__setattr__(self, "rho_scaling", max(self.rho_scaling, 1.01))
 
     @staticmethod
     def from_training_config(

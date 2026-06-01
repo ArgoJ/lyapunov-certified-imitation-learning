@@ -12,7 +12,7 @@ from dataclasses import MISSING, asdict, field as dataclass_field, fields, is_da
 from os import PathLike
 from pathlib import Path
 from types import UnionType
-from typing import Any, ClassVar, Literal, Union, Self, get_args, get_origin, get_type_hints, Sequence
+from typing import Any, ClassVar, Literal, Union, Self, get_args, get_origin, get_type_hints
 
 __logger__ = logging.getLogger(__name__)
 
@@ -31,6 +31,45 @@ def fraction_validator(value: float, name: str) -> None:
     fvalue = float(value)
     if fvalue < 0.0 or fvalue > 1.0:
         raise ValueError(f"{name} must be in the range [0, 1].")
+
+def growth_rate_validator(value: float, name: str) -> None:
+    fvalue = float(value)
+    if fvalue <= 1.0:
+        raise ValueError(f"{name} must be greater than 1.")
+
+def pathlike_validator(value: str | PathLike, name: str) -> None:
+    try:
+        Path(value)
+    except Exception as e:
+        raise ValueError(f"{name} must be a valid file system path.") from e
+
+def literal_validator(allowed_values: Sequence[Any]) -> Callable[[Any, str], None]:
+    def validator(value: Any, name: str) -> None:
+        if value not in allowed_values:
+            raise ValueError(f"{name} must be one of {allowed_values}, got {value}.")
+    return validator
+
+def optional_validator(base_validator: Callable[[Any, str], None]) -> Callable[[Any, str], None]:
+    def wrapper(value: Any, name: str) -> None:
+        if value is not None:
+            base_validator(value, name)
+            
+    return wrapper
+
+
+def sequence_validator(
+    base_validator: Callable[[Any, str], None],
+) -> Callable[[Any, str], None]:
+    """Apply a scalar validator element-wise to scalar-or-sequence config values."""
+
+    def wrapper(value: Any, name: str) -> None:
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            for index, item in enumerate(value):
+                base_validator(item, f"{name}[{index}]")
+            return
+        base_validator(value, name)
+
+    return wrapper
 
 def run_field_validators(instance: Any) -> None:
     for field_info in fields(instance):

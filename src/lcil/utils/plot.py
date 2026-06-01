@@ -519,7 +519,7 @@ def lyapunov_with_exclusion(
     lyapunov_func: Callable[[NDArray], NDArray],
     dataset: MPCDataset | None = None,
     roa_level: float | None = None,
-    origin_exclusion: float | None = None,
+    origin_exclusion: float | Sequence[float] | None = None,
     state_indices: list[int] | None = None,
     state_labels: list[str] | None = None,
     num_states: int | None = None,

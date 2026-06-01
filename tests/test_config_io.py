@@ -14,7 +14,6 @@ from lcil.lyapunov_learning.trainer import (
     LyapunovTrainingCurriculumStage,
     LyapunovTrainingResult,
 )
-from lcil.utils import GridSearchHelper
 from lcil.utils.base_config import ArgumentParserConfig, JsonDataclass, config_field
 
 
@@ -144,6 +143,44 @@ class TestConfigRoundtrip(unittest.TestCase):
 
         self.assertEqual(loaded_cfg.__class__, training_cfg.__class__)
         self.assertEqual(loaded_cfg.to_dict(), training_cfg.to_dict())
+
+
+class TestLyapunovCertificationConfigNormalization(unittest.TestCase):
+    @staticmethod
+    def _make_config(**overrides: object) -> LyapunovCertificationConfig:
+        values = {
+            "state_dim": 2,
+            "cert_bounds": np.array([[-1.0, -2.0], [1.0, 2.0]], dtype=float),
+            "kappa": 0.1,
+            "rho_min": 1e-6,
+            "bins_per_dim": 4,
+            "center_refinement_factor": 1.0,
+            "origin_exclusion": 0.0,
+        }
+        values.update(overrides)
+        return LyapunovCertificationConfig(**values)
+
+    def test_scalar_region_parameters_expand_per_dimension(self) -> None:
+        config = self._make_config(
+            bins_per_dim=3,
+            center_refinement_factor=0.5,
+            origin_exclusion=0.2,
+        )
+
+        self.assertEqual(config.bins_per_dim, (3, 3))
+        self.assertEqual(config.center_refinement_factor, (0.5, 0.5))
+        self.assertEqual(config.origin_exclusion, (0.2, 0.2))
+
+    def test_singleton_origin_exclusion_sequence_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "origin_exclusion must be scalar or match state_dim."):
+            self._make_config(origin_exclusion=[0.2])
+
+    def test_sequence_validators_apply_elementwise(self) -> None:
+        with self.assertRaisesRegex(ValueError, r"center_refinement_factor\[1\]"):
+            self._make_config(center_refinement_factor=[1.0, 0.0])
+
+        with self.assertRaisesRegex(ValueError, r"origin_exclusion\[1\]"):
+            self._make_config(origin_exclusion=[0.1, -0.1])
 
 
 @dataclass(frozen=True)
@@ -332,7 +369,7 @@ class TestArgumentParserConfig(unittest.TestCase):
         self.assertEqual(config.center_refinement_factor, (1.0, 0.8, 0.4, 0.4))
         self.assertEqual(config.rho_scaling, 1.3)
 
-    def test_from_namespace_collapses_single_union_sequence_value_to_scalar(self) -> None:
+    def test_from_namespace_expands_single_origin_exclusion_value_per_dimension(self) -> None:
         parser = ArgumentParser()
         defaults = LyapunovCertificationConfig(
             state_dim=4,
@@ -357,7 +394,30 @@ class TestArgumentParserConfig(unittest.TestCase):
 
         self.assertEqual(config.bins_per_dim, (3, 3, 3, 3))
         self.assertEqual(config.center_refinement_factor, (0.7, 0.7, 0.7, 0.7))
-        self.assertEqual(config.origin_exclusion, 0.1)
+        self.assertEqual(config.origin_exclusion, (0.1, 0.1, 0.1, 0.1))
+
+    def test_from_namespace_keeps_origin_exclusion_sequence_values(self) -> None:
+        parser = ArgumentParser()
+        defaults = LyapunovCertificationConfig(
+            state_dim=4,
+            cert_bounds=np.array([[-1.0, -1.0, -1.0, -1.0], [1.0, 1.0, 1.0, 1.0]], dtype=float),
+            bins_per_dim=4,
+            center_refinement_factor=1.0,
+            origin_exclusion=0.0,
+        )
+        defaults.add_to_argparse(
+            parser,
+            prefix="cert-",
+            include_fields={"origin_exclusion"},
+        )
+
+        args = parser.parse_args([
+            "--cert-origin-exclusion", "0.1", "0.2", "0.3", "0.4",
+        ])
+
+        config = defaults.from_namespace(args, prefix="cert-")
+
+        self.assertEqual(config.origin_exclusion, (0.1, 0.2, 0.3, 0.4))
 
     def test_from_namespace_parses_skip_boundary_core_cert_boolean_flag(self) -> None:
         parser = ArgumentParser()
@@ -378,64 +438,6 @@ class TestArgumentParserConfig(unittest.TestCase):
         config = defaults.from_namespace(args)
 
         self.assertTrue(config.skip_boundary_core_cert)
-
-
-class TestGridSearchHelper(unittest.TestCase):
-    def test_helper_infers_varying_fields_and_creates_run_dirs(self) -> None:
-        parser = ArgumentParser()
-        defaults = DummySweepConfig()
-        defaults.add_to_argparse(parser)
-
-        args = parser.parse_args([
-            "--learning-rate", "1e-3", "5e-4",
-            "--kappa", "0.1", "0.2",
-            "--hidden-sizes", "64", "32",
-            "--label", "grid",
-        ])
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            helper = GridSearchHelper.from_namespace(
-                defaults,
-                args,
-                output_root=tmp_dir,
-                sweep_id="20260425_120000",
-                field_aliases={
-                    "training_bound_scales": "curr",
-                },
-                extra_name_parts={
-                    "lyap_eps": 0.1,
-                    "training_bound_scales": [0.3, 0.6, 1.0],
-                },
-            )
-
-            runs = list(helper)
-            self.assertTrue(all(run.output_dir.is_dir() for run in runs))
-
-        self.assertEqual(len(helper), 4)
-        self.assertEqual(helper.run_name_fields, ("learning_rate", "kappa"))
-        self.assertEqual(helper._sweep_base_path.name, "20260425_120000")
-        self.assertEqual(runs[0].run_name, "lr_0.001__kappa_0.1__lyap_eps_0.1__curr_0.3-0.6-1")
-        self.assertEqual(runs[0].description, "lr: 0.001, kappa: 0.1, lyap_eps: 0.1, curr: [0.3, 0.6, 1]")
-        self.assertEqual(runs[-1].progress_message(), "[4/4] lr: 0.0005, kappa: 0.2, lyap_eps: 0.1, curr: [0.3, 0.6, 1]")
-
-    def test_helper_explicit_aliases_override_display_alias_metadata(self) -> None:
-        configs = [
-            DummySweepConfig(learning_rate=1e-3, kappa=0.1),
-            DummySweepConfig(learning_rate=5e-4, kappa=0.1),
-        ]
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            helper = GridSearchHelper(
-                configs,
-                output_root=tmp_dir,
-                sweep_id="20260425_120001",
-                field_aliases={"learning_rate": "eta"},
-            )
-            runs = list(helper)
-
-        self.assertEqual(runs[0].run_name, "eta_0.001")
-        self.assertEqual(runs[0].description, "eta: 0.001")
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

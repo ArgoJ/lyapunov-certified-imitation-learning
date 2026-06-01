@@ -202,19 +202,20 @@ class LyapunovTrainingMetrics:
 
 
 def _tb_writer_add_metrics(tb_writer: SummaryWriter, metrics: LyapunovTrainingMetrics) -> None:
+    lyap_str = "Lyapunov/"
     if tb_writer is not None:
         outer_iter = metrics.outer_iterations_completed - 1
-        tb_writer.add_scalar("Lyapunov/Loss", metrics.loss[outer_iter], outer_iter)
-        tb_writer.add_scalar("Lyapunov/Rho", metrics.rho_estimate[outer_iter], outer_iter)
-        tb_writer.add_scalar("Lyapunov/RhoBoundaryQuantile", metrics.rho_boundary_quantile[outer_iter], outer_iter)
-        tb_writer.add_scalar("Lyapunov/RhoBoundaryMean", metrics.rho_boundary_mean[outer_iter], outer_iter)
-        tb_writer.add_scalar("Lyapunov/RhoFeatureTermQuantile", metrics.rho_feature_term_quantile[outer_iter], outer_iter)
-        tb_writer.add_scalar("Lyapunov/RhoLinearTermQuantile", metrics.rho_linear_term_quantile[outer_iter], outer_iter)
-        tb_writer.add_scalar("Lyapunov/RhoFeatureTermMeanShare", metrics.rho_feature_term_mean_share[outer_iter], outer_iter)
-        tb_writer.add_scalar("Lyapunov/RhoLinearTermMeanShare", metrics.rho_linear_term_mean_share[outer_iter], outer_iter)
-        tb_writer.add_scalar("Lyapunov/RFactorFroNorm", metrics.r_factor_fro_norm[outer_iter], outer_iter)
+        tb_writer.add_scalar(lyap_str + "Loss", metrics.loss[outer_iter], outer_iter)
+        tb_writer.add_scalar(lyap_str + "Rho", metrics.rho_estimate[outer_iter], outer_iter)
+        tb_writer.add_scalar(lyap_str + "RhoBoundaryQuantile", metrics.rho_boundary_quantile[outer_iter], outer_iter)
+        tb_writer.add_scalar(lyap_str + "RhoBoundaryMean", metrics.rho_boundary_mean[outer_iter], outer_iter)
+        tb_writer.add_scalar(lyap_str + "RhoFeatureTermQuantile", metrics.rho_feature_term_quantile[outer_iter], outer_iter)
+        tb_writer.add_scalar(lyap_str + "RhoLinearTermQuantile", metrics.rho_linear_term_quantile[outer_iter], outer_iter)
+        tb_writer.add_scalar(lyap_str + "RhoFeatureTermMeanShare", metrics.rho_feature_term_mean_share[outer_iter], outer_iter)
+        tb_writer.add_scalar(lyap_str + "RhoLinearTermMeanShare", metrics.rho_linear_term_mean_share[outer_iter], outer_iter)
+        tb_writer.add_scalar(lyap_str + "RFactorFroNorm", metrics.r_factor_fro_norm[outer_iter], outer_iter)
         tb_writer.add_scalar(
-            "Lyapunov/NumMinedCounterexamples",
+            lyap_str + "NumMinedCounterexamples",
             metrics.num_mined_counterexamples[outer_iter],
             outer_iter,
         )
@@ -249,7 +250,9 @@ class LyapunovTrainer:
         self.policy_model = policy_model.to(self.device)
         self.lyap_model = lyap_model.to(self.device)
         self.dyn_model = dyn_model.to(self.device)
-        self._set_train_modes()
+
+        self._curr_policy_train_status = self._compare_train_policy_epoch(0)
+        self._set_train_modes(train_policy=self._curr_policy_train_status)
 
         self.optimizer = th.optim.Adam(
             self._get_train_params(), 
@@ -315,7 +318,13 @@ class LyapunovTrainer:
 
         return scaled_bounds
 
-    def _set_train_modes(self) -> None:
+    def _compare_train_policy_epoch(self, epoch: int) -> bool:
+        """Determine whether to train the policy model in the current epoch or higher."""
+        if self.config.policy_training_start_epoch is None:
+            return False
+        return epoch >= self.config.policy_training_start_epoch
+
+    def _set_train_modes(self, train_policy: bool) -> None:
         for param in self.lyap_model.parameters():
             param.requires_grad_(True)
         self.lyap_model.train()
@@ -324,7 +333,7 @@ class LyapunovTrainer:
             param.requires_grad_(False)
         self.dyn_model.eval()
 
-        if not self.config.train_policy_model:
+        if not train_policy:
             for param in self.policy_model.parameters():
                 param.requires_grad_(False)
             self.policy_model.eval()
@@ -413,7 +422,7 @@ class LyapunovTrainer:
                 TextColumn("loss: {task.fields[loss]:.4f}"),
                 TextColumn("ρ: {task.fields[rho]:.4f}"),
                 TextColumn("cex_pool: {task.fields[cex_pool]:.0f}"),
-                TextColumn("cex_samples: {task.fields[cex_samples]:.0f}/{task.fields[batch_size]:.0f}"),
+                TextColumn("cex_samples/batch: {task.fields[cex_samples]:.0f}/{task.fields[batch_size]:.0f}"),
                 TimeElapsedColumn(),
                 TimeRemainingColumn(),
             ) as progress:
@@ -427,6 +436,12 @@ class LyapunovTrainer:
                     batch_size=float(self.config.batch_size),
                 )
                 for outer_iter in range(self.config.outer_epochs):
+                    start_policy_training = self._compare_train_policy_epoch(outer_iter)
+                    if start_policy_training and not self._curr_policy_train_status:
+                        __logger__.info("Starting policy training at outer iteration %d.", outer_iter)
+                        self._curr_policy_train_status = True
+                        self._set_train_modes(train_policy=True)
+
                     last_loss_value = np.nan
                     
                     # Estimate current Region of Attraction
