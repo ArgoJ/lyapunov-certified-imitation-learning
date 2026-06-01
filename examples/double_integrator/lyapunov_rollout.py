@@ -98,6 +98,11 @@ def main() -> None:
             html_path=(lyapunov_dir / LYAPUNOV_ROLLOUT_FILENAME).with_suffix(".html"),
             use_dataset_v=True,
         )
+        mdg_plt.cost_descent(
+            dataset=rollout_dataset,
+            html_path=lyapunov_dir / "cost_descent.html",
+            use_optimal_v=True,
+        )
 
 
 if __name__ == "__main__":

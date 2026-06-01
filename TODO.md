@@ -3,7 +3,7 @@
 - run without splitting
 - ~~build rollout for lyapunov~~
 
-- make lyapunov descent plot for learned lyapunov
+- ~~make lyapunov descent plot for learned lyapunov~~
 - ~~use Shoelace formula to estimate state based roa~~
 
 - ~~reproduce working run~~
