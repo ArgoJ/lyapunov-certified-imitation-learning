@@ -20,8 +20,6 @@ from ..constants import *
 
 from ..example_utils import (
     default_dataset_path as _default_dataset_path,
-    default_lyapunov_model_path as _default_lyapunov_model_path,
-    default_model_path as _default_model_path,
     resolve_dataset_path as _resolve_dataset_path,
     discover_latest_lyapunov_dir as _discover_latest_lyapunov_dir,
     discover_latest_policy_dir as _discover_latest_policy_dir,
@@ -41,7 +39,7 @@ def discover_latest_policy_dir(results_root: Path | str | None = None):
 
 
 def discover_latest_lyapunov_dir(policy_dir: Path | str | None = None):
-    resolved_policy_dir = discover_latest_policy_dir() if policy_dir is None else policy_dir
+    resolved_policy_dir = policy_dir or discover_latest_policy_dir()
     return _discover_latest_lyapunov_dir(resolved_policy_dir)
 
 
@@ -85,14 +83,6 @@ def load_policy_model(
 def load_lyapunov_model(path, device, model_name: str = LYAPUNOV_MODEL_FILENAME) -> NeuralLyapunovCandidate:
     model_loader = _GenericModelLoader(model_name)
     return model_loader[NeuralLyapunovCandidate](path, device, DOUBLE_INTEGRATOR_RESULTS_DIR)
-
-
-def default_model_path(results_root: Path | str | None = None):
-    return _default_model_path(results_root or DOUBLE_INTEGRATOR_RESULTS_DIR)
-
-
-def default_lyapunov_model_path(results_root: Path | str | None = None):
-    return _default_lyapunov_model_path(results_root or DOUBLE_INTEGRATOR_RESULTS_DIR)
 
 
 def default_dataset_path(data_root: Path | str | None = None):

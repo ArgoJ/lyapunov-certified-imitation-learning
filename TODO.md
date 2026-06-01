@@ -9,3 +9,5 @@
 - ~~reproduce working run~~
 - ~~cex sampling change (distance to rho bonudary)~~
 - lyapunov training - add policy training at specified epoch 
+
+- regularization of lyapunov adjusted policy based to original learned policy  

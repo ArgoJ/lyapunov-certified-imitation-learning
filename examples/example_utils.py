@@ -69,6 +69,7 @@ def discover_model_dir(results_root: Path, checkpoint_name: str, n: int = -1, so
 
     candidates: list[tuple[Path, str]] = []
     for path in resolved_results_root.rglob(checkpoint_name):
+        __logger__.info("searching for model %s in %s", checkpoint_name, path)
         if isinstance(sorting_idx, slice):
             parents_to_check = path.parents[sorting_idx]
         else:
@@ -296,16 +297,6 @@ class GenericModelLoader:
             return self(model_cls, model_dir, device, results_root=results_root)
 
         return load_with_model_cls
-
-
-def default_model_path(results_root: Path | str | None = None) -> str:
-    resolved_results_root = Path(results_root) if results_root is not None else RESULTS_DIR
-    return str(discover_model_dir(resolved_results_root, POLICY_MODEL_FILENAME) / POLICY_MODEL_FILENAME)
-
-
-def default_lyapunov_model_path(results_root: Path | str | None = None) -> str:
-    resolved_results_root = Path(results_root) if results_root is not None else RESULTS_DIR
-    return str(discover_model_dir(resolved_results_root, LYAPUNOV_MODEL_FILENAME) / LYAPUNOV_MODEL_FILENAME)
 
 
 def default_dataset_path(results_root: Path | str, dataset_pattern: str = "*.hdf5") -> str:

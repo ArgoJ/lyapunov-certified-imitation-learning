@@ -251,6 +251,7 @@ class LyapunovTrainer:
         self.lyap_model = lyap_model.to(self.device)
         self.dyn_model = dyn_model.to(self.device)
 
+        self._policy_start_epoch = self.config.outer_epochs - self.config.policy_epochs if self.config.policy_epochs is not None else float("inf")
         self._curr_policy_train_status = self._compare_train_policy_epoch(0)
         self._set_train_modes(train_policy=self._curr_policy_train_status)
 
@@ -320,9 +321,7 @@ class LyapunovTrainer:
 
     def _compare_train_policy_epoch(self, epoch: int) -> bool:
         """Determine whether to train the policy model in the current epoch or higher."""
-        if self.config.policy_training_start_epoch is None:
-            return False
-        return epoch >= self.config.policy_training_start_epoch
+        return epoch >= self._policy_start_epoch
 
     def _set_train_modes(self, train_policy: bool) -> None:
         for param in self.lyap_model.parameters():

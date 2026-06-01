@@ -16,7 +16,7 @@ from lcil.rollouts import (
 
 from . import (
     DoubleIntegratorDynamics,
-    default_model_path,
+    discover_latest_policy_dir,
     load_policy_model,
     compute_riccati_value_matrix,
 )
@@ -42,7 +42,7 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument(
         "--policy-dir",
         type=str,
-        default=default_model_path(),
+        default=discover_latest_policy_dir(),
         help="Path to a trained policy checkpoint.",
     )
     parser.add_argument("--device", type=str, default="cpu", help="Torch device string (e.g. cpu, cuda).")

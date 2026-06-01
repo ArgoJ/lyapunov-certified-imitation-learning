@@ -54,7 +54,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         outer_epochs=100,
         steps_per_epoch=5,
         counterexample_every=10,
-        train_policy_model=False,
+        policy_epochs=10,
         seed=5912354,
     )
 
@@ -199,7 +199,6 @@ def main() -> None:
             train_config,
             state_dim=policy_global_config.nx,
             state_bounds=state_bounds,
-            train_policy_model=False,
             seed=seed,
             tb_log_dir=base_path.parent / "tb" / run.run_name,
         )

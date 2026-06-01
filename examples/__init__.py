@@ -6,8 +6,6 @@ from .example_utils import (
     discover_latest_policy_dir,
     discover_latest_policy_and_lyapunov_dirs,
     discover_model_dir,
-    default_model_path,
-    default_lyapunov_model_path,
     default_cert_result_path,
     GenericModelLoader,
 )

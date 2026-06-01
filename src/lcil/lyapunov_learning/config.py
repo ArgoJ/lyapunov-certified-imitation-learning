@@ -40,9 +40,9 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Number of optimization steps per epoch.
     learning_rate : float
         Adam optimizer learning rate.
-    train_policy_model : bool
-        Whether to jointly optimize policy parameters with Lyapunov parameters.
-        If False, only the Lyapunov model is updated.
+    policy_train_start_epoch : int | None
+        Epoch at which to start jointly optimizing policy parameters with Lyapunov parameters.
+        If ``None``, only the Lyapunov model is updated.
     seed : int | None
         Random seed for reproducibility.
     kappa : float
@@ -136,10 +136,10 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="lr",
         validators=(positive_validator,),
     )
-    policy_training_start_epoch: int | None = config_field(
+    policy_epochs: int | None = config_field(
         default=None,
-        help="Outer epoch at which to start jointly optimizing policy parameters. If None, the policy is never updated.",
-        display_alias="policy_start",
+        help="Number of final outer epochs jointly optimizing policy and lyapunov parameters, starting at outer_epochs - policy_epochs. If None, the policy is never updated.",
+        display_alias="policy_epochs",
         validators=(optional_validator(positive_validator),)
     )
     seed: int | None = config_field(
