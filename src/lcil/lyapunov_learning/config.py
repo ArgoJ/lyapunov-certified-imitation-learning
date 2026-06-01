@@ -210,6 +210,12 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="scalew",
         validators=(non_negative_validator,),
     )
+    policy_regularization_weight: float = config_field(
+        default=0.0,
+        help="Weight for the policy regularization loss, which helps keep the policy close to the initial reference policy.",
+        display_alias="policy_reg_w",
+        validators=(non_negative_validator,),
+    )
 
     # Rho estimation parameters
     rho_growth_gamma: float = config_field(

@@ -41,7 +41,21 @@ def resolve_root(
     return require_dir(default_root, name="Default results root directory")
 
 
-def discover_model_dir(results_root: Path, checkpoint_name: str, n: int = -1, sorting_idx: int | slice = 0) -> Path:
+def _path_is_within_named_dir(path: Path, root: Path, dir_name: str) -> bool:
+    try:
+        relative_parts = path.relative_to(root).parts[:-1]
+    except ValueError:
+        relative_parts = path.parts[:-1]
+    return dir_name in relative_parts
+
+
+def discover_model_dir(
+    results_root: Path,
+    checkpoint_name: str,
+    n: int = -1,
+    sorting_idx: int | slice = 0,
+    excluded_dir_names: tuple[str, ...] = (),
+) -> Path:
     """Discover the directory containing the nth latest checkpoint with the given name under the results root.
 
     Parameters
@@ -54,6 +68,9 @@ def discover_model_dir(results_root: Path, checkpoint_name: str, n: int = -1, so
         Index of the checkpoint to return, by default -1 (latest checkpoint).
     sorting_idx : int | slice, optional
         Index or slice of the parent directory name to use for sorting, by default 0
+    excluded_dir_names : tuple[str, ...], optional
+        Directory names that, when present anywhere between ``results_root`` and
+        the checkpoint file, cause that candidate to be ignored.
 
     Returns
     -------
@@ -69,7 +86,9 @@ def discover_model_dir(results_root: Path, checkpoint_name: str, n: int = -1, so
 
     candidates: list[tuple[Path, str]] = []
     for path in resolved_results_root.rglob(checkpoint_name):
-        __logger__.info("searching for model %s in %s", checkpoint_name, path)
+        if any(_path_is_within_named_dir(path, resolved_results_root, dir_name) for dir_name in excluded_dir_names):
+            continue
+        # __logger__.info("searching for model %s in %s", checkpoint_name, path)
         if isinstance(sorting_idx, slice):
             parents_to_check = path.parents[sorting_idx]
         else:
@@ -117,7 +136,13 @@ def discover_latest_policy_dir(dir: Path | str | None = None) -> Path:
     Path
         Directory containing the nth latest policy checkpoint.
     """
-    return discover_model_dir(dir, POLICY_MODEL_FILENAME, n=-1, sorting_idx=slice(0, 2))
+    return discover_model_dir(
+        dir,
+        POLICY_MODEL_FILENAME,
+        n=-1,
+        sorting_idx=slice(0, 2),
+        excluded_dir_names=(LYAPUNOV_DIRNAME,),
+    )
 
 
 def discover_latest_lyapunov_dir(dir: Path | str | None = None) -> Path:

@@ -22,9 +22,25 @@ from lcil.lyapunov_learning.counterexample import (
     estimate_rho_from_boundary_diagnostics,
     find_counter_examples,
 )
-from lcil.lyapunov_learning.loss import FormalPositivityLoss, LyapunovTrainingLoss
+from lcil.lyapunov_learning.loss import FormalPositivityLoss, LyapunovTrainingLoss, PolicyRegularizationLoss
 from lcil.lyapunov_learning.trainer import LyapunovTrainer, LyapunovTrainingResult
 from lcil.lyapunov_learning.utils import ThresholdMonitor
+
+
+class _SingleWeightPolicy(nn.Module):
+    def __init__(self, weight: float = 1.0) -> None:
+        super().__init__()
+        self.linear = nn.Linear(1, 1, bias=False)
+        with th.no_grad():
+            self.linear.weight.fill_(weight)
+
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        return self.linear(x)
+
+
+class _ControlAffineDynamics(nn.Module):
+    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+        return x + u
 
 
 class TestLyapunovCounterexamples(unittest.TestCase):
@@ -148,6 +164,57 @@ class TestLyapunovCounterexamples(unittest.TestCase):
 
         self.assertGreater(gated_cex.shape[0], 0)
         self.assertTrue(th.all(gated_values <= rho_estimate + 1e-6).item())
+
+    def test_policy_regularization_tracks_initial_policy_outputs(self) -> None:
+        policy = _SingleWeightPolicy(weight=1.0)
+        regularization_loss = PolicyRegularizationLoss(policy, device="cpu")
+        x = th.tensor([[2.0]], dtype=th.float32)
+
+        self.assertAlmostEqual(float(regularization_loss(x).item()), 0.0, places=6)
+
+        with th.no_grad():
+            policy.linear.weight.fill_(3.0)
+
+        self.assertGreater(float(regularization_loss(x).item()), 0.0)
+
+    def test_enable_policy_training_rebuilds_optimizer_and_preserves_state(self) -> None:
+        config = LyapunovTrainingConfig(
+            state_dim=1,
+            state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
+            initial_sample_size=4,
+            batch_size=2,
+            outer_epochs=2,
+            steps_per_epoch=1,
+            counterexample_every=100,
+            policy_epochs=1,
+        )
+        trainer = LyapunovTrainer(
+            policy_model=_SingleWeightPolicy(weight=1.0),
+            lyap_model=_TrainableQuadraticLyapunov(),
+            dyn_model=_ControlAffineDynamics(),
+            config=config,
+        )
+
+        policy_param = next(trainer.policy_model.parameters())
+        lyap_param = next(trainer.lyap_model.parameters())
+        optimizer_params = trainer.optimizer.param_groups[0]["params"]
+
+        self.assertFalse(policy_param.requires_grad)
+        self.assertFalse(any(param is policy_param for param in optimizer_params))
+
+        trainer.optimizer.zero_grad()
+        lyap_param.sum().backward()
+        trainer.optimizer.step()
+
+        old_state = trainer.optimizer.state[lyap_param]
+        self.assertIn("exp_avg", old_state)
+
+        trainer._enable_policy_training()
+
+        self.assertTrue(policy_param.requires_grad)
+        self.assertTrue(any(param is policy_param for param in trainer.optimizer.param_groups[0]["params"]))
+        self.assertIn(lyap_param, trainer.optimizer.state)
+        self.assertTrue(th.allclose(trainer.optimizer.state[lyap_param]["exp_avg"], old_state["exp_avg"]))
 
     def test_dynamic_state_buffer_keeps_most_violating_counterexamples(self) -> None:
         initial_states = th.zeros((4, 1), dtype=th.float32)

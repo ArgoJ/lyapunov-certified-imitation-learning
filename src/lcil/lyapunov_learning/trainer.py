@@ -255,10 +255,7 @@ class LyapunovTrainer:
         self._curr_policy_train_status = self._compare_train_policy_epoch(0)
         self._set_train_modes(train_policy=self._curr_policy_train_status)
 
-        self.optimizer = th.optim.Adam(
-            self._get_train_params(), 
-            self.config.learning_rate
-        )
+        self.optimizer = self._build_optimizer()
         self.loss_module = LyapunovTrainingLoss(
             policy_model=self.policy_model,
             lyap_model=self.lyap_model,
@@ -350,6 +347,37 @@ class LyapunovTrainer:
             if param.requires_grad
         )
 
+    def _build_optimizer(self) -> th.optim.Adam:
+        return th.optim.Adam(self._get_train_params(), self.config.learning_rate)
+
+    @staticmethod
+    def _clone_optimizer_state_value(value):
+        if isinstance(value, th.Tensor):
+            return value.detach().clone()
+        return value
+
+    def _rebuild_optimizer(self) -> None:
+        old_optimizer = getattr(self, "optimizer", None)
+        new_optimizer = self._build_optimizer()
+
+        if old_optimizer is not None:
+            for group in new_optimizer.param_groups:
+                for param in group["params"]:
+                    old_state = old_optimizer.state.get(param)
+                    if old_state is None:
+                        continue
+                    new_optimizer.state[param] = {
+                        key: self._clone_optimizer_state_value(value)
+                        for key, value in old_state.items()
+                    }
+
+        self.optimizer = new_optimizer
+
+    def _enable_policy_training(self) -> None:
+        self._curr_policy_train_status = True
+        self._set_train_modes(train_policy=True)
+        self._rebuild_optimizer()
+
     def _mine_new_counterexamples(self, rho_estimate: float) -> th.Tensor:
         """Mine rho-gated counterexamples using the external training semantics."""
         return find_counter_examples(
@@ -438,8 +466,7 @@ class LyapunovTrainer:
                     start_policy_training = self._compare_train_policy_epoch(outer_iter)
                     if start_policy_training and not self._curr_policy_train_status:
                         __logger__.info("Starting policy training at outer iteration %d.", outer_iter)
-                        self._curr_policy_train_status = True
-                        self._set_train_modes(train_policy=True)
+                        self._enable_policy_training()
 
                     last_loss_value = np.nan
                     
@@ -498,6 +525,7 @@ class LyapunovTrainer:
                             x_batch=x_batch,
                             roa_candidates=roa_candidates,
                             rho_estimate=rho_estimate,
+                            active_policy_regularization=self._curr_policy_train_status,
                         )
 
                         self.optimizer.zero_grad()
