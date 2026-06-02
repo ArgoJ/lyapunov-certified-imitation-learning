@@ -742,7 +742,7 @@ def certified_regions_2d(
         return
 
     if html_path is not None:
-        _save_pair_figures(figures, html_path, labels_full, kind="Certified region")
+        _save_pair_figures(figures, html_path, kind="Certified region")
         return
 
     return figures
