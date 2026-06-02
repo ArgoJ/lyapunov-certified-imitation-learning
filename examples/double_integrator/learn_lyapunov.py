@@ -54,7 +54,6 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         outer_epochs=100,
         steps_per_epoch=5,
         counterexample_every=10,
-        policy_epochs=10,
         seed=5912354,
     )
 

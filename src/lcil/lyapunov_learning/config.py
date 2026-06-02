@@ -211,7 +211,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         validators=(non_negative_validator,),
     )
     policy_regularization_weight: float = config_field(
-        default=0.0,
+        default=0.1,
         help="Weight for the policy regularization loss, which helps keep the policy close to the initial reference policy.",
         display_alias="policy_reg_w",
         validators=(non_negative_validator,),

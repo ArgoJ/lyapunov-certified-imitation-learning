@@ -8,6 +8,7 @@ import torch as th
 import torch.nn as nn
 
 from collections.abc import Sequence
+from typing import Literal
 from numpy.typing import NDArray
 from pathlib import Path
 from dataclasses import dataclass, replace
@@ -25,6 +26,7 @@ from .config import LyapunovTrainingConfig
 from .buffer import BoundaryStateBuffer, DynamicStateBuffer
 from .loss import (
     LyapunovTrainingLoss,
+    LyapunovTrainingLossParts,
 )
 from .counterexample import (
     BoundaryRhoDiagnostics,
@@ -129,41 +131,112 @@ class LyapunovTrainingMetrics:
     r_factor_fro_norm: NDArray
     buffer_size: NDArray
     num_mined_counterexamples: NDArray
+    inner_loss: NDArray
+    inner_condition_raw: NDArray
+    inner_roa_raw: NDArray
+    inner_l1_raw: NDArray
+    inner_equilibrium_raw: NDArray
+    inner_formal_positivity_raw: NDArray
+    inner_scale_raw: NDArray
+    inner_policy_regularization_raw: NDArray
+    inner_condition: NDArray
+    inner_roa: NDArray
+    inner_l1: NDArray
+    inner_equilibrium: NDArray
+    inner_formal_positivity: NDArray
+    inner_scale: NDArray
+    inner_policy_regularization: NDArray
+    steps_per_epoch: int
     outer_iterations_completed: int = 0
+    inner_iterations_completed: int = 0
 
     @classmethod
-    def from_num_outer_epochs(cls, num_outer_epochs: int) -> LyapunovTrainingMetrics:
+    def from_num_steps(
+        cls,
+        num_outer_epochs: int,
+        steps_per_epoch: int,
+    ) -> LyapunovTrainingMetrics:
         """Create NaN-initialized metric arrays for a fixed outer-epoch budget."""
         if num_outer_epochs <= 0:
             raise ValueError("num_outer_epochs must be positive.")
+        if steps_per_epoch <= 0:
+            raise ValueError("steps_per_epoch must be positive.")
 
-        nan_array = np.full((num_outer_epochs,), np.nan, dtype=np.float64)
+        outer_nan_array = np.full((num_outer_epochs,), np.nan, dtype=np.float64)
+        inner_nan_array = np.full((num_outer_epochs * steps_per_epoch,), np.nan, dtype=np.float64)
         return cls(
-            loss=nan_array.copy(),
-            rho_estimate=nan_array.copy(),
-            rho_boundary_quantile=nan_array.copy(),
-            rho_boundary_mean=nan_array.copy(),
-            rho_feature_term_quantile=nan_array.copy(),
-            rho_linear_term_quantile=nan_array.copy(),
-            rho_feature_term_mean=nan_array.copy(),
-            rho_linear_term_mean=nan_array.copy(),
-            rho_feature_term_mean_share=nan_array.copy(),
-            rho_linear_term_mean_share=nan_array.copy(),
-            r_factor_fro_norm=nan_array.copy(),
-            buffer_size=nan_array.copy(),
-            num_mined_counterexamples=nan_array.copy(),
+            loss=outer_nan_array.copy(),
+            rho_estimate=outer_nan_array.copy(),
+            rho_boundary_quantile=outer_nan_array.copy(),
+            rho_boundary_mean=outer_nan_array.copy(),
+            rho_feature_term_quantile=outer_nan_array.copy(),
+            rho_linear_term_quantile=outer_nan_array.copy(),
+            rho_feature_term_mean=outer_nan_array.copy(),
+            rho_linear_term_mean=outer_nan_array.copy(),
+            rho_feature_term_mean_share=outer_nan_array.copy(),
+            rho_linear_term_mean_share=outer_nan_array.copy(),
+            r_factor_fro_norm=outer_nan_array.copy(),
+            buffer_size=outer_nan_array.copy(),
+            num_mined_counterexamples=outer_nan_array.copy(),
+            inner_loss=inner_nan_array.copy(),
+            inner_condition_raw=inner_nan_array.copy(),
+            inner_roa_raw=inner_nan_array.copy(),
+            inner_l1_raw=inner_nan_array.copy(),
+            inner_equilibrium_raw=inner_nan_array.copy(),
+            inner_formal_positivity_raw=inner_nan_array.copy(),
+            inner_scale_raw=inner_nan_array.copy(),
+            inner_policy_regularization_raw=inner_nan_array.copy(),
+            inner_condition=inner_nan_array.copy(),
+            inner_roa=inner_nan_array.copy(),
+            inner_l1=inner_nan_array.copy(),
+            inner_equilibrium=inner_nan_array.copy(),
+            inner_formal_positivity=inner_nan_array.copy(),
+            inner_scale=inner_nan_array.copy(),
+            inner_policy_regularization=inner_nan_array.copy(),
+            steps_per_epoch=steps_per_epoch,
             outer_iterations_completed=0,
+            inner_iterations_completed=0,
         )
+
+    def inner_tb_step(self, inner_iter: int) -> int:
+        return inner_iter
+
+    def outer_tb_step(self, outer_iter: int) -> int:
+        return (outer_iter + 1) * self.steps_per_epoch - 1
+
+    def fill_inner(
+        self,
+        inner_iter: int,
+        loss_parts: LyapunovTrainingLossParts,
+    ) -> None:
+        self.inner_loss[inner_iter] = float(loss_parts.total.item())
+        self.inner_condition_raw[inner_iter] = float(loss_parts.condition_raw.item())
+        self.inner_roa_raw[inner_iter] = float(loss_parts.roa_raw.item())
+        self.inner_l1_raw[inner_iter] = float(loss_parts.l1_raw.item())
+        self.inner_equilibrium_raw[inner_iter] = float(loss_parts.equilibrium_raw.item())
+        self.inner_formal_positivity_raw[inner_iter] = float(loss_parts.formal_positivity_raw.item())
+        self.inner_scale_raw[inner_iter] = float(loss_parts.scale_raw.item())
+        self.inner_policy_regularization_raw[inner_iter] = float(loss_parts.policy_regularization_raw.item())
+
+        self.inner_condition[inner_iter] = float(loss_parts.condition.item())
+        self.inner_roa[inner_iter] = float(loss_parts.roa.item())
+        self.inner_l1[inner_iter] = float(loss_parts.l1.item())
+        self.inner_equilibrium[inner_iter] = float(loss_parts.equilibrium.item())
+        self.inner_formal_positivity[inner_iter] = float(loss_parts.formal_positivity.item())
+        self.inner_scale[inner_iter] = float(loss_parts.scale.item())
+        self.inner_policy_regularization[inner_iter] = float(loss_parts.policy_regularization.item())
+        self.inner_iterations_completed = inner_iter + 1
 
     def fill_outer(
         self,
         outer_iter: int,
         loss_value: float,
-        state_buffer: list,
+        state_buffer: DynamicStateBuffer,
         num_mined_counterexamples: int,
         rho_diagnostics: BoundaryRhoDiagnostics,
-    ):
+    ) -> None:
         self.loss[outer_iter] = loss_value
+
         self.buffer_size[outer_iter] = float(state_buffer.state_count)
         self.num_mined_counterexamples[outer_iter] = float(num_mined_counterexamples)
         self.outer_iterations_completed = outer_iter + 1
@@ -197,27 +270,83 @@ class LyapunovTrainingMetrics:
             r_factor_fro_norm=self.r_factor_fro_norm,
             buffer_size=self.buffer_size,
             num_mined_counterexamples=self.num_mined_counterexamples,
+            inner_loss=self.inner_loss,
+            inner_condition_raw=self.inner_condition_raw,
+            inner_roa_raw=self.inner_roa_raw,
+            inner_l1_raw=self.inner_l1_raw,
+            inner_equilibrium_raw=self.inner_equilibrium_raw,
+            inner_formal_positivity_raw=self.inner_formal_positivity_raw,
+            inner_scale_raw=self.inner_scale_raw,
+            inner_policy_regularization_raw=self.inner_policy_regularization_raw,
+            inner_condition=self.inner_condition,
+            inner_roa=self.inner_roa,
+            inner_l1=self.inner_l1,
+            inner_equilibrium=self.inner_equilibrium,
+            inner_formal_positivity=self.inner_formal_positivity,
+            inner_scale=self.inner_scale,
+            inner_policy_regularization=self.inner_policy_regularization,
+            steps_per_epoch=np.asarray(self.steps_per_epoch, dtype=np.int64),
             outer_iterations_completed=np.asarray(self.outer_iterations_completed, dtype=np.int64),
+            inner_iterations_completed=np.asarray(self.inner_iterations_completed, dtype=np.int64),
         )
 
 
-def _tb_writer_add_metrics(tb_writer: SummaryWriter, metrics: LyapunovTrainingMetrics) -> None:
-    lyap_str = "Lyapunov/"
-    if tb_writer is not None:
+def _tb_writer_add_metrics(
+    tb_writer: SummaryWriter | None,
+    metrics: LyapunovTrainingMetrics,
+    metric_scope: Literal["inner", "outer"],
+) -> None:
+    inner_raw_loss_str = "IRLoss/"
+    inner_weighted_loss_str = "IWLoss/"
+
+    rho_str = "Rho/"
+    if tb_writer is not None and metric_scope == "outer":
         outer_iter = metrics.outer_iterations_completed - 1
-        tb_writer.add_scalar(lyap_str + "Loss", metrics.loss[outer_iter], outer_iter)
-        tb_writer.add_scalar(lyap_str + "Rho", metrics.rho_estimate[outer_iter], outer_iter)
-        tb_writer.add_scalar(lyap_str + "RhoBoundaryQuantile", metrics.rho_boundary_quantile[outer_iter], outer_iter)
-        tb_writer.add_scalar(lyap_str + "RhoBoundaryMean", metrics.rho_boundary_mean[outer_iter], outer_iter)
-        tb_writer.add_scalar(lyap_str + "RhoFeatureTermQuantile", metrics.rho_feature_term_quantile[outer_iter], outer_iter)
-        tb_writer.add_scalar(lyap_str + "RhoLinearTermQuantile", metrics.rho_linear_term_quantile[outer_iter], outer_iter)
-        tb_writer.add_scalar(lyap_str + "RhoFeatureTermMeanShare", metrics.rho_feature_term_mean_share[outer_iter], outer_iter)
-        tb_writer.add_scalar(lyap_str + "RhoLinearTermMeanShare", metrics.rho_linear_term_mean_share[outer_iter], outer_iter)
-        tb_writer.add_scalar(lyap_str + "RFactorFroNorm", metrics.r_factor_fro_norm[outer_iter], outer_iter)
+        tb_step = metrics.outer_tb_step(outer_iter)
+        tb_writer.add_scalar("LossTotal", metrics.loss[outer_iter], tb_step)
+        tb_writer.add_scalar(rho_str + "Estimate", metrics.rho_estimate[outer_iter], tb_step)
+        tb_writer.add_scalar(rho_str + "BoundaryQuantile", metrics.rho_boundary_quantile[outer_iter], tb_step)
+        tb_writer.add_scalar(rho_str + "BoundaryMean", metrics.rho_boundary_mean[outer_iter], tb_step)
+        tb_writer.add_scalar(rho_str + "FeatureTermQuantile", metrics.rho_feature_term_quantile[outer_iter], tb_step)
+        tb_writer.add_scalar(rho_str + "LinearTermQuantile", metrics.rho_linear_term_quantile[outer_iter], tb_step)
+        tb_writer.add_scalar(rho_str + "FeatureTermMeanShare", metrics.rho_feature_term_mean_share[outer_iter], tb_step)
+        tb_writer.add_scalar(rho_str + "LinearTermMeanShare", metrics.rho_linear_term_mean_share[outer_iter], tb_step)
+        tb_writer.add_scalar(rho_str + "RFactorFroNorm", metrics.r_factor_fro_norm[outer_iter], tb_step)
         tb_writer.add_scalar(
-            lyap_str + "NumMinedCounterexamples",
+            "NumMinedCounterexamples",
             metrics.num_mined_counterexamples[outer_iter],
-            outer_iter,
+            tb_step,
+        )
+    
+    if tb_writer is not None and metric_scope == "inner":
+        inner_iter = metrics.inner_iterations_completed - 1
+        tb_step = metrics.inner_tb_step(inner_iter)
+        tb_writer.add_scalar(inner_raw_loss_str + "Total", metrics.inner_loss[inner_iter], tb_step)
+        tb_writer.add_scalar(inner_raw_loss_str + "Condition", metrics.inner_condition_raw[inner_iter], tb_step)
+        tb_writer.add_scalar(inner_raw_loss_str + "Roa", metrics.inner_roa_raw[inner_iter], tb_step)
+        tb_writer.add_scalar(inner_raw_loss_str + "L1", metrics.inner_l1_raw[inner_iter], tb_step)
+        tb_writer.add_scalar(inner_raw_loss_str + "Equilibrium", metrics.inner_equilibrium_raw[inner_iter], tb_step)
+        tb_writer.add_scalar(inner_raw_loss_str + "FormalPositivity", metrics.inner_formal_positivity_raw[inner_iter], tb_step)
+        tb_writer.add_scalar(inner_raw_loss_str + "Scale", metrics.inner_scale_raw[inner_iter], tb_step)
+        tb_writer.add_scalar(
+            inner_raw_loss_str + "PolicyRegularization",
+            metrics.inner_policy_regularization_raw[inner_iter],
+            tb_step,
+        )
+        tb_writer.add_scalar(inner_weighted_loss_str + "Condition", metrics.inner_condition[inner_iter], tb_step)
+        tb_writer.add_scalar(inner_weighted_loss_str + "Roa", metrics.inner_roa[inner_iter], tb_step)
+        tb_writer.add_scalar(inner_weighted_loss_str + "L1", metrics.inner_l1[inner_iter], tb_step)
+        tb_writer.add_scalar(inner_weighted_loss_str + "Equilibrium", metrics.inner_equilibrium[inner_iter], tb_step)
+        tb_writer.add_scalar(
+            inner_weighted_loss_str + "FormalPositivity",
+            metrics.inner_formal_positivity[inner_iter],
+            tb_step,
+        )
+        tb_writer.add_scalar(inner_weighted_loss_str + "Scale", metrics.inner_scale[inner_iter], tb_step)
+        tb_writer.add_scalar(
+            inner_weighted_loss_str + "PolicyRegularization",
+            metrics.inner_policy_regularization[inner_iter],
+            tb_step,
         )
 
 def _tb_writer_close(tb_writer: SummaryWriter | None) -> None:
@@ -252,8 +381,8 @@ class LyapunovTrainer:
         self.dyn_model = dyn_model.to(self.device)
 
         self._policy_start_epoch = self.config.outer_epochs - self.config.policy_epochs if self.config.policy_epochs is not None else float("inf")
-        self._curr_policy_train_status = self._compare_train_policy_epoch(0)
-        self._set_train_modes(train_policy=self._curr_policy_train_status)
+        self._curr_policy_train_status = False
+        self._set_train_modes()
 
         self.optimizer = self._build_optimizer()
         self.loss_module = LyapunovTrainingLoss(
@@ -316,11 +445,7 @@ class LyapunovTrainer:
 
         return scaled_bounds
 
-    def _compare_train_policy_epoch(self, epoch: int) -> bool:
-        """Determine whether to train the policy model in the current epoch or higher."""
-        return epoch >= self._policy_start_epoch
-
-    def _set_train_modes(self, train_policy: bool) -> None:
+    def _set_train_modes(self) -> None:
         for param in self.lyap_model.parameters():
             param.requires_grad_(True)
         self.lyap_model.train()
@@ -328,15 +453,12 @@ class LyapunovTrainer:
         for param in self.dyn_model.parameters():
             param.requires_grad_(False)
         self.dyn_model.eval()
-
-        if not train_policy:
-            for param in self.policy_model.parameters():
-                param.requires_grad_(False)
-            self.policy_model.eval()
-        else:
-            for param in self.policy_model.parameters():
-                param.requires_grad_(True)
-            self.policy_model.train()
+        self._set_policy_train_mode(train_mode=False)
+        
+    def _set_policy_train_mode(self, train_mode: bool) -> None:
+        for param in self.policy_model.parameters():
+            param.requires_grad_(train_mode)
+        self.policy_model.train(train_mode)
 
     def _get_train_params(self) -> tuple[nn.Parameter, ...]:
         """Utility to gather trainable parameters based on the config."""
@@ -350,33 +472,10 @@ class LyapunovTrainer:
     def _build_optimizer(self) -> th.optim.Adam:
         return th.optim.Adam(self._get_train_params(), self.config.learning_rate)
 
-    @staticmethod
-    def _clone_optimizer_state_value(value):
-        if isinstance(value, th.Tensor):
-            return value.detach().clone()
-        return value
-
-    def _rebuild_optimizer(self) -> None:
-        old_optimizer = getattr(self, "optimizer", None)
-        new_optimizer = self._build_optimizer()
-
-        if old_optimizer is not None:
-            for group in new_optimizer.param_groups:
-                for param in group["params"]:
-                    old_state = old_optimizer.state.get(param)
-                    if old_state is None:
-                        continue
-                    new_optimizer.state[param] = {
-                        key: self._clone_optimizer_state_value(value)
-                        for key, value in old_state.items()
-                    }
-
-        self.optimizer = new_optimizer
-
     def _enable_policy_training(self) -> None:
         self._curr_policy_train_status = True
-        self._set_train_modes(train_policy=True)
-        self._rebuild_optimizer()
+        self._set_policy_train_mode(train_mode=True)
+        self.optimizer.add_param_group({"params": self.policy_model.parameters()})
 
     def _mine_new_counterexamples(self, rho_estimate: float) -> th.Tensor:
         """Mine rho-gated counterexamples using the external training semantics."""
@@ -411,7 +510,10 @@ class LyapunovTrainer:
 
     def train(self) -> LyapunovTrainingResult:
         """Execute the CEGIS-style training loop."""
-        metrics = LyapunovTrainingMetrics.from_num_outer_epochs(self.config.outer_epochs)
+        metrics = LyapunovTrainingMetrics.from_num_steps(
+            num_outer_epochs=self.config.outer_epochs,
+            steps_per_epoch=self.config.steps_per_epoch,
+        )
         
         # Initial training pool sampled uniformly from the state space bounds
         initial_x = sample_uniform_box(self.config.initial_sample_size, self.lbx, self.ubx, self.device)
@@ -463,7 +565,7 @@ class LyapunovTrainer:
                     batch_size=float(self.config.batch_size),
                 )
                 for outer_iter in range(self.config.outer_epochs):
-                    start_policy_training = self._compare_train_policy_epoch(outer_iter)
+                    start_policy_training = (outer_iter >= self._policy_start_epoch)
                     if start_policy_training and not self._curr_policy_train_status:
                         __logger__.info("Starting policy training at outer iteration %d.", outer_iter)
                         self._enable_policy_training()
@@ -519,7 +621,7 @@ class LyapunovTrainer:
                         cex_fraction = self.config.cex_fraction_min + cex_fraction_ema * (self.config.cex_fraction_max - self.config.cex_fraction_min)
 
                     # Inner training loop
-                    for _ in range(self.config.steps_per_epoch):
+                    for inner_step in range(self.config.steps_per_epoch):
                         x_batch = state_buffer.sample(self.config.batch_size, cex_fraction=cex_fraction)
                         loss = self.loss_module(
                             x_batch=x_batch,
@@ -527,6 +629,17 @@ class LyapunovTrainer:
                             rho_estimate=rho_estimate,
                             active_policy_regularization=self._curr_policy_train_status,
                         )
+
+                        loss_parts = self.loss_module.last_loss_parts
+                        if loss_parts is None:
+                            raise RuntimeError("Lyapunov loss parts were not computed during the forward pass.")
+
+                        global_inner_iter = outer_iter * self.config.steps_per_epoch + inner_step
+                        metrics.fill_inner(
+                            inner_iter=global_inner_iter,
+                            loss_parts=loss_parts,
+                        )
+                        _tb_writer_add_metrics(tb_writer, metrics, metric_scope="inner")
 
                         self.optimizer.zero_grad()
                         loss.backward()
@@ -550,7 +663,7 @@ class LyapunovTrainer:
                         num_mined_counterexamples=state_buffer.cex_count,
                         rho_diagnostics=rho_diagnostics,
                     )
-                    _tb_writer_add_metrics(tb_writer, metrics)
+                    _tb_writer_add_metrics(tb_writer, metrics, metric_scope="outer")
 
         train_time = time.time() - start_time
         __logger__.debug("Lyapunov training finished in %.2fs", train_time)

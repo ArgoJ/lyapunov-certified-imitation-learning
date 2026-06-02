@@ -5,9 +5,70 @@ import torch as th
 import torch.nn as nn
 
 from copy import deepcopy
+from dataclasses import dataclass
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
 from .config import LyapunovTrainingConfig
+
+
+
+@dataclass
+class LyapunovTrainingLossParts:
+    """Container for the individual loss components of the Lyapunov training objective."""
+    condition_raw: th.Tensor
+    roa_raw: th.Tensor
+    l1_raw: th.Tensor
+    equilibrium_raw: th.Tensor
+    formal_positivity_raw: th.Tensor
+    scale_raw: th.Tensor
+    policy_regularization_raw: th.Tensor
+
+    roa_weight: float
+    l1_weight: float
+    equilibrium_weight: float
+    formal_positivity_weight: float
+    scale_weight: float
+    policy_regularization_weight: float
+
+    @property
+    def condition(self) -> th.Tensor:
+        return self.condition_raw
+
+    @property
+    def roa(self) -> th.Tensor:
+        return self.roa_weight * self.roa_raw
+
+    @property
+    def l1(self) -> th.Tensor:
+        return self.l1_weight * self.l1_raw
+
+    @property
+    def equilibrium(self) -> th.Tensor:
+        return self.equilibrium_weight * self.equilibrium_raw
+
+    @property
+    def formal_positivity(self) -> th.Tensor:
+        return self.formal_positivity_weight * self.formal_positivity_raw
+
+    @property
+    def scale(self) -> th.Tensor:
+        return self.scale_weight * self.scale_raw
+
+    @property
+    def policy_regularization(self) -> th.Tensor:
+        return self.policy_regularization_weight * self.policy_regularization_raw
+
+    @property
+    def total(self) -> th.Tensor:
+        return (
+            self.condition
+            + self.roa
+            + self.l1
+            + self.equilibrium
+            + self.formal_positivity
+            + self.scale
+            + self.policy_regularization
+        )
 
 
 class LyapunovScaleAnchorLoss(nn.Module):
@@ -307,39 +368,6 @@ class PolicyRegularizationLoss(nn.Module):
         return th.nn.functional.mse_loss(out, orig_out)
 
 
-class TotalLyapunovLoss(nn.Module):
-    """Combine the individual Lyapunov training losses into one scalar objective."""
-
-    def __init__(self, config: LyapunovTrainingConfig) -> None:
-        super().__init__()
-        self.roa_weight = float(config.roa_weight)
-        self.l1_weight = float(config.l1_weight)
-        self.equilibrium_weight = float(config.equilibrium_weight)
-        self.formal_positivity_weight = float(config.formal_positivity_weight)
-        self.scale_weight = float(config.scale_weight)
-        self.policy_reg_weight = float(config.policy_regularization_weight)
-
-    def forward(
-        self,
-        condition_loss: th.Tensor,
-        roa_loss: th.Tensor,
-        l1_loss: th.Tensor,
-        equilibrium_loss_value: th.Tensor,
-        formal_positivity_loss_value: th.Tensor,
-        scale_loss_value: th.Tensor,
-        policy_regularization_loss_value: th.Tensor,
-    ) -> th.Tensor:
-        return (
-            condition_loss
-            + self.roa_weight * roa_loss
-            + self.l1_weight * l1_loss
-            + self.equilibrium_weight * equilibrium_loss_value
-            + self.formal_positivity_weight * formal_positivity_loss_value
-            + self.scale_weight * scale_loss_value
-            + self.policy_reg_weight * policy_regularization_loss_value
-        )
-
-
 class LyapunovTrainingLoss(nn.Module):
     """Full Lyapunov training objective with embedded models and sub-losses."""
 
@@ -374,7 +402,7 @@ class LyapunovTrainingLoss(nn.Module):
         self.l1_loss = ParameterL1Loss(lyap_model, policy_model, device=self.device)
         self.scale_loss = LyapunovScaleAnchorLoss(target_value=config.rho_scale_anchor)
         self.policy_regularization_loss = PolicyRegularizationLoss(policy_model, device=device)
-        self.total_loss = TotalLyapunovLoss(config)
+        self.last_loss_parts: LyapunovTrainingLossParts | None = None
 
     def _closed_loop_values(
         self,
@@ -422,6 +450,53 @@ class LyapunovTrainingLoss(nn.Module):
             x_next=x_next,
         )
         return -relative_violation
+    
+    def compute_loss_parts(
+        self,
+        x_batch: th.Tensor,
+        roa_candidates: th.Tensor,
+        rho_estimate: float,
+        active_policy_regularization: bool = False,
+    ) -> LyapunovTrainingLossParts:
+        """Compute the individual loss components without combining them into a total loss."""
+
+        v_batch, x_next, v_next = self._closed_loop_values(x_batch)
+        condition_loss_value = self.condition_loss(
+            v_curr=v_batch,
+            v_next=v_next,
+            x_next=x_next,
+            rho_estimate=rho_estimate,
+        )
+
+        v_candidates = self.lyap_model(roa_candidates)
+        roa_loss_value = self.roa_loss(v_candidates=v_candidates, rho_estimate=rho_estimate)
+        origin_loss_value = self.equilibrium_loss()
+        formal_positivity_loss_value = self.positivity_loss()
+        l1_loss_value = self.l1_loss()
+        scale_loss_value = self.scale_loss(v_candidates)
+        zero = th.zeros((), dtype=v_batch.dtype, device=v_batch.device)
+        policy_regularization_loss_value = (
+            self.policy_regularization_loss(x_batch)
+            if active_policy_regularization else zero
+        )
+
+        parts = LyapunovTrainingLossParts(
+            condition_raw=condition_loss_value,
+            roa_raw=roa_loss_value,
+            l1_raw=l1_loss_value,
+            equilibrium_raw=origin_loss_value,
+            formal_positivity_raw=formal_positivity_loss_value,
+            scale_raw=scale_loss_value,
+            policy_regularization_raw=policy_regularization_loss_value,
+            roa_weight=self.config.roa_weight,
+            l1_weight=self.config.l1_weight,
+            equilibrium_weight=self.config.equilibrium_weight,
+            formal_positivity_weight=self.config.formal_positivity_weight,
+            scale_weight=self.config.scale_weight,
+            policy_regularization_weight=self.config.policy_regularization_weight,
+        )
+        self.last_loss_parts = parts
+        return parts
 
     def forward(
         self,
@@ -430,32 +505,12 @@ class LyapunovTrainingLoss(nn.Module):
         rho_estimate: float,
         active_policy_regularization: bool = False,
     ) -> th.Tensor:
-        v_batch, x_next, v_next = self._closed_loop_values(x_batch)
-
-        loss_condition = self.condition_loss(
-            v_curr=v_batch,
-            v_next=v_next,
-            x_next=x_next,
+        parts = self.compute_loss_parts(
+            x_batch=x_batch,
+            roa_candidates=roa_candidates,
             rho_estimate=rho_estimate,
+            active_policy_regularization=active_policy_regularization,
         )
-
-        v_candidates = self.lyap_model(roa_candidates)
-        loss_roa = self.roa_loss(v_candidates=v_candidates, rho_estimate=rho_estimate)
-        loss_origin = self.equilibrium_loss()
-        loss_formal_positivity = self.positivity_loss()
-        loss_l1 = self.l1_loss()
-        loss_scale = self.scale_loss(v_candidates)
-        loss_policy_regularization = self.policy_regularization_loss(x_batch) \
-            if active_policy_regularization else 0.0
-        
-        return self.total_loss(
-            condition_loss=loss_condition,
-            roa_loss=loss_roa,
-            l1_loss=loss_l1,
-            equilibrium_loss_value=loss_origin,
-            formal_positivity_loss_value=loss_formal_positivity,
-            scale_loss_value=loss_scale,
-            policy_regularization_loss_value=loss_policy_regularization,
-        )
+        return parts.total
 
 
