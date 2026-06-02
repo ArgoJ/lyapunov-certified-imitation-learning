@@ -331,15 +331,21 @@ class ParameterL1Loss(nn.Module):
         super().__init__()
         self.device = th.device(device)
         self.models = models
+        self._train_params: tuple[nn.Parameter, ...] = ()
+        self.refresh_train_params()
     
-    def get_train_params(self) -> tuple[nn.Parameter, ...]:
-        """Return the currently trainable parameters of the training objective."""
-        return tuple(
+    def refresh_train_params(self) -> None:
+        """Refresh the cached set of currently trainable parameters."""
+        self._train_params = tuple(
             param
             for model in self.models
             for param in model.parameters()
             if param.requires_grad
         )
+
+    def get_train_params(self) -> tuple[nn.Parameter, ...]:
+        """Return the cached trainable parameters of the training objective."""
+        return self._train_params
 
     def forward(self) -> th.Tensor:
         trainable_params = self.get_train_params()
@@ -363,7 +369,8 @@ class PolicyRegularizationLoss(nn.Module):
         self.init_policy.eval()
 
     def forward(self, x: th.Tensor) -> th.Tensor:
-        orig_out = self.init_policy(x)
+        with th.no_grad():
+            orig_out = self.init_policy(x)
         out = self.policy(x) 
         return th.nn.functional.mse_loss(out, orig_out)
 
@@ -401,8 +408,13 @@ class LyapunovTrainingLoss(nn.Module):
         )
         self.l1_loss = ParameterL1Loss(lyap_model, policy_model, device=self.device)
         self.scale_loss = LyapunovScaleAnchorLoss(target_value=config.rho_scale_anchor)
-        self.policy_regularization_loss = PolicyRegularizationLoss(policy_model, device=device)
+        self.policy_regularization_loss = None
+        if self.config.policy_regularization_weight > 0.0:
+            self.policy_regularization_loss = PolicyRegularizationLoss(policy_model, device=device)
         self.last_loss_parts: LyapunovTrainingLossParts | None = None
+
+    def refresh_trainable_parameters(self) -> None:
+        self.l1_loss.refresh_train_params()
 
     def _closed_loop_values(
         self,
@@ -472,12 +484,12 @@ class LyapunovTrainingLoss(nn.Module):
         roa_loss_value = self.roa_loss(v_candidates=v_candidates, rho_estimate=rho_estimate)
         origin_loss_value = self.equilibrium_loss()
         formal_positivity_loss_value = self.positivity_loss()
-        l1_loss_value = self.l1_loss()
-        scale_loss_value = self.scale_loss(v_candidates)
         zero = th.zeros((), dtype=v_batch.dtype, device=v_batch.device)
+        l1_loss_value = self.l1_loss() if self.config.l1_weight > 0.0 else zero
+        scale_loss_value = self.scale_loss(v_candidates)
         policy_regularization_loss_value = (
             self.policy_regularization_loss(x_batch)
-            if active_policy_regularization else zero
+            if active_policy_regularization and self.policy_regularization_loss is not None else zero
         )
 
         parts = LyapunovTrainingLossParts(

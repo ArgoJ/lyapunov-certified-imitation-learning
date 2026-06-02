@@ -35,7 +35,7 @@ _DEFAULT_CERT_BOUND_SCALES = (0.15, 0.15)
 class BisectCertifyScriptConfig(ArgumentParserConfig):
     lyapunov_dir: str = config_field(help="Lyapunov run directory containing lyapunov_model.pt.")
     certify_all_lyapunov_models: bool = config_field(default=False, help="Whether to certify all saved lyapunov models in the lyapunov_dir (if False, only the best model is certified).")
-    rho_estimate: float | None = config_field(default=None, help="Optional initial rho estimate for the bisection search.")
+    rho_multiplicator: float = config_field(default=0.4, help="Optional multiplicative factor for the initial rho estimate in the bisection search.")
     device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
     test_rollout_steps: int = config_field(default=50, help="Closed-loop rollout steps per region center during empirical result testing.")
     cert_bound_scales: list[float] = config_field(
@@ -133,11 +133,8 @@ def main() -> None:
         dyn_model.eval()
 
         results_path = lyapunov_dir / TRAINING_RESULTS_FILENAME
-        if not results_path.is_file():
-            raise FileNotFoundError(f"Training results file not found at {results_path}. Cannot extract rho estimate. Please provide an initial rho estimate via the --rho_estimate argument or ensure the training results file exists.")
         training_results = LyapunovTrainingResult.load(results_path)
-        train_rho_estimate = training_results.rho_estimate
-        rho_estimate = script_config.rho_estimate if script_config.rho_estimate is not None else train_rho_estimate * 0.1
+        rho_estimate = training_results.rho_estimate * script_config.rho_multiplicator
 
         save_dir = (
             Path(script_config.save_dir).resolve()
