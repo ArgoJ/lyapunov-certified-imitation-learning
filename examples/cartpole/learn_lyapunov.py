@@ -1,101 +1,66 @@
 import argparse
 import json
-import torch as th
-import numpy as np
 import logging
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
-from numpy.typing import NDArray
 
+import numpy as np
+import torch as th
+
+from mpc_datagen import MPCDataset
 from lcil.lyapunov_learning import (
+    LyapunovTrainer,
     LyapunovTrainingConfig,
     NeuralLyapunovCandidate,
-    LyapunovTrainer,
     ThresholdMonitor,
 )
-from lcil.certification import LyapunovCertificationConfig
-from lcil.utils import GridSearchHelper, lcil_plt, MLP
-from lcil.imitation_learning import MLPPolicy
-from mpc_datagen import MPCDataset
+from lcil.utils import ArgumentParserConfig, GridSearchHelper, MLP, config_field, lcil_plt
 
 from . import (
-    CartpoleDynamics,
     CartpoleAngleWrapper,
+    CartpoleDynamics,
+    compute_riccati_value_matrix,
+    discover_latest_policy_dir,
+    load_policy_model,
 )
+from ..constants import LYAPUNOV_DIRNAME, LYAPUNOV_ROLLOUT_FILENAME, POLICY_MODEL_FILENAME, POLICY_ROLLOUT_FILENAME
+from ..example_utils import build_lyapunov_func
 
 __logger__ = logging.getLogger("lcil.examples.cartpole.learn_lyapunov")
 
+_DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[2] / "results" / "cartpole"
+_DEFAULT_TRAIN_BOUND_FACTORS = (0.5, 0.4, 0.15, 0.4)
 
-def parse_cli_args(
-    training_defaults: LyapunovTrainingConfig,
-    certification_defaults: LyapunovCertificationConfig,
-) -> argparse.Namespace:
-    """Parse command-line arguments for Lyapunov learning with a fixed policy."""
-    parser = argparse.ArgumentParser(
-        description="Train and certify a Lyapunov candidate for a fixed inverted pendulum on cart policy.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+
+@dataclass(frozen=True)
+class LyapunovLearningScriptConfig(ArgumentParserConfig):
+    policy_dir: str = config_field(help=f"Policy run directory containing {POLICY_MODEL_FILENAME}.")
+    device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
+    activation: str = config_field(default="tanh", help="Activation function for the Lyapunov feature net.", display_alias="act")
+    hidden_size: int = config_field(default=32, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
+    layers: int = config_field(default=3, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
+    lyap_eps: float = config_field(default=0.1, help="Positive-definite baseline epsilon for the Lyapunov candidate.", display_alias="eps")
+    train_bound_factors: list[float] = config_field(
+        default_factory=lambda: list(_DEFAULT_TRAIN_BOUND_FACTORS),
+        help="Per-dimension scaling applied to policy state bounds before Lyapunov training.",
     )
-    parser.add_argument(
-        "--policy-path", type=str, default="results/inverted_pendulum_on_cart/20260318_114317/model.pt",
-        help="Path to the trained fixed policy model checkpoint.")
-    
-    # Model Parameters
-    parser.add_argument("--device", type=str, default="cpu", help="Torch device string.")
-    parser.add_argument("--num_neurons", type=int, default=32, help="Number of neurons per hidden layer.")
-    parser.add_argument(
-        "--lyap-eps", type=float, default=0.1,
-        help="Epsilon used in NeuralLyapunovCandidate for positive-definite baseline term.")
-    parser.add_argument(
-        "--training-bound-scales",
-        nargs='+',
-        type=float,
-        default=[1.0],
+    curriculum_scales: list[float] = config_field(
+        default_factory=lambda: [1.0],
         help=(
             "Curriculum scales applied to the final training bounds. "
-            "Example: --training-bound-scales 0.3 0.6 1.0 trains first on 30%%, then 60%%, then 100%% of the configured training box."
+            "Example: --curriculum-scales 0.3 0.6 1.0 trains first on 30%, then 60%, then 100% of the configured training box."
         ),
     )
 
-    # Training Parameters
-    training_defaults.add_to_argparse(
-        parser,
-        nargs_fields={
-            "learning_rate",
-            "kappa",
-            "invariance_weight",
-            "rho_growth_gamma",
-            "roa_weight",
-            "l1_weight",
-            "rho_estimate_quantile",
-            "condition_margin",
-        }
-    )
-    
-    # Certification Parameters
-    certification_defaults.add_to_argparse(
-        parser,
-        prefix="cert-",
-        nargs_fields={
-            "max_recursion_depth",
-        },
-    )
-    parser.add_argument(
-        "--test-rollout-steps",
-        type=int,
-        default=50,
-        help="Closed-loop rollout steps for empirical certification-result testing.",
-    )
-    parser.add_argument(
-        "--skip-certification",
-        action="store_true",
-        help="Skip certification/testing/plotting and run training only.",
-    )
-    return parser.parse_args()
+
+def _build_script_defaults() -> LyapunovLearningScriptConfig:
+    default_policy_dir = discover_latest_policy_dir(_DEFAULT_RESULTS_ROOT)
+    return LyapunovLearningScriptConfig(policy_dir=str(default_policy_dir))
 
 
-def main() -> None:
-    training_defaults = LyapunovTrainingConfig(
+def _build_training_defaults() -> LyapunovTrainingConfig:
+    return LyapunovTrainingConfig(
         state_dim=4,
         state_bounds=np.array([[-1.0, -1.0, -1.0, -1.0], [1.0, 1.0, 1.0, 1.0]], dtype=float),
         initial_sample_size=500,
@@ -109,110 +74,149 @@ def main() -> None:
         adversarial_step_size=0.05,
         condition_margin=0.0,
     )
-    args = parse_cli_args(training_defaults)
-    device = th.device(args.device)
 
-    # Load policy and dynamics once (they don't change across runs)
-    policy_path = Path(args.policy_path)
-    feature_net = MLPPolicy.load(
-        path=policy_path,
-        map_location=device,
+
+def parse_cli_args() -> GridSearchHelper[tuple[LyapunovLearningScriptConfig, LyapunovTrainingConfig]]:
+    parser = argparse.ArgumentParser(
+        description="Train a Lyapunov candidate for a fixed cartpole policy.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    policy_model = CartpoleAngleWrapper(feature_net=feature_net).to(device)
-    policy_model.eval()
+    script_defaults = _build_script_defaults()
+    script_defaults.add_to_argparse(
+        parser,
+        nargs_fields={"activation", "hidden_size", "layers", "lyap_eps"},
+    )
 
-    lyap_path = policy_path.parent / "lyapunov"
-    
-    dyn_model = CartpoleDynamics(dt=feature_net.global_config.dt).to(device)
-    dyn_model.eval()
-    
-    rollout_dataset_path = policy_path.parent / "policy_rollouts.hdf5"
-    rollout_dataset = None
-    if rollout_dataset_path.exists():
-        rollout_dataset = MPCDataset.load(rollout_dataset_path)
-
-    state_bounds = np.vstack([feature_net.global_config.constraints.lbx, feature_net.global_config.constraints.ubx])
-
-    training_bounds_percentage = np.array([0.5, 0.4, 0.15, 0.4])
-    cert_percentage = np.array([0.4, 0.3, 0.1, 0.3])
-    cert_percentage = np.array([0.15, 0.15, 0.05, 0.15]) # Temp
-    
-    training_bounds = state_bounds * training_bounds_percentage[:, None].T
-    cert_bounds = state_bounds * cert_percentage[:, None].T
-    curriculum_scales = [float(scale) for scale in args.training_bound_scales]
-    __logger__.info(f"State bounds:\n{state_bounds}")
-    __logger__.info(f"Using training bounds:\n{training_bounds}")
-    __logger__.info(f"Using certification bounds:\n{cert_bounds}")
-    __logger__.info(f"Using training bound scales: {curriculum_scales}")
-
-    sweep: GridSearchHelper[LyapunovTrainingConfig] = GridSearchHelper.from_namespace(
-        training_defaults,
-        args,
-        output_root=lyap_path,
-        field_aliases={
-            "training_bound_scales": "curr",
-        },
-        extra_name_parts={
-            "training_bound_scales": curriculum_scales,
+    training_defaults = _build_training_defaults()
+    training_defaults.add_to_argparse(
+        parser,
+        nargs_fields={
+            "learning_rate",
+            "kappa",
+            "invariance_weight",
+            "rho_growth_gamma",
+            "roa_weight",
+            "l1_weight",
+            "rho_estimate_quantile",
+            "condition_margin",
         },
     )
 
-    __logger__.info(f"Starting grid search over {len(sweep)} configurations...")
+    args = parser.parse_args()
+    return GridSearchHelper.from_namespace(args, script_defaults, training_defaults)
 
+
+def _load_policy_and_rollout_dataset(
+    policy_dir: Path,
+    device: th.device,
+) -> tuple[CartpoleAngleWrapper, MPCDataset | None]:
+    policy_model = load_policy_model(policy_dir, device)
+    rollout_dataset_path = policy_dir / POLICY_ROLLOUT_FILENAME
+    rollout_dataset = MPCDataset.load(rollout_dataset_path) if rollout_dataset_path.exists() else None
+    return policy_model, rollout_dataset
+
+
+def _scale_state_bounds(state_bounds: np.ndarray, factors: list[float], *, field_name: str) -> np.ndarray:
+    factor_array = np.asarray(factors, dtype=float)
+    if factor_array.shape != (state_bounds.shape[1],):
+        raise ValueError(
+            f"{field_name} must contain exactly {state_bounds.shape[1]} entries, got {factor_array.shape[0]}."
+        )
+    return np.asarray(state_bounds, dtype=float) * factor_array.reshape(1, -1)
+
+
+def main() -> None:
+    sweep = parse_cli_args()
+
+    init_script_config, _ = sweep.configs[0]
+    device = th.device(init_script_config.device)
+    init_policy_dir = Path(init_script_config.policy_dir).resolve()
+    actual_output_root = init_policy_dir / LYAPUNOV_DIRNAME
+    sweep.set_output_root(actual_output_root)
+
+    policy_model, rollout_dataset = _load_policy_and_rollout_dataset(init_policy_dir, device)
+    policy_global_config = policy_model.net.global_config
+    state_bounds = np.vstack([
+        policy_global_config.constraints.lbx,
+        policy_global_config.constraints.ubx,
+    ])
+    riccati_p = compute_riccati_value_matrix(float(policy_global_config.dt))
+
+    __logger__.info("Starting grid search over %d configurations...", len(sweep))
     for run_idx, run in enumerate(sweep):
-        sweep_config = run.config
-        __logger__.info(f"\n{run.progress_message()}, train_policy: {sweep_config.train_policy_model}")
-        base_path = run.output_dir
+        script_config, train_config = run.config
+        __logger__.info("%s", run.progress_message())
 
-        # ---------------------------------------------------------------------
-        # 1. Initialize fresh Lyapunov Model (so it trains from scratch)
-        # ---------------------------------------------------------------------
-        lyap_feature = MLP([5, 32, 32, 32, 1], ["tanh", "tanh", "tanh", "identity"]).to(device)  # TODO: relu and smaller model
-        lyap_wrapper = CartpoleAngleWrapper(feature_net=lyap_feature)
+        current_policy_dir = Path(script_config.policy_dir).resolve()
+        if current_policy_dir != init_policy_dir:
+            __logger__.info("Loading policy model from %s for this run...", current_policy_dir)
+            policy_model, rollout_dataset = _load_policy_and_rollout_dataset(current_policy_dir, device)
+            policy_global_config = policy_model.net.global_config
+            state_bounds = np.vstack([
+                policy_global_config.constraints.lbx,
+                policy_global_config.constraints.ubx,
+            ])
+            riccati_p = compute_riccati_value_matrix(float(policy_global_config.dt))
+
+        training_bounds = _scale_state_bounds(
+            state_bounds,
+            script_config.train_bound_factors,
+            field_name="train_bound_factors",
+        )
+        curriculum_scales = [float(scale) for scale in script_config.curriculum_scales]
+        __logger__.info("Using training bounds:\n%s", training_bounds)
+        __logger__.info("Using curriculum scales: %s", curriculum_scales)
+
+        base_path = run.output_dir.resolve()
+        dyn_model = CartpoleDynamics(dt=policy_global_config.dt).to(device)
+        dyn_model.eval()
+
+        seed = train_config.seed + run_idx if train_config.seed is not None else None
+        lyap_feature = MLP(
+            [5] + [script_config.hidden_size] * script_config.layers + [1],
+            [script_config.activation] * script_config.layers + ["identity"],
+            dropout=train_config.dropout,
+            normalization="none",
+            seed=seed,
+        ).to(device)
         lyap_model = NeuralLyapunovCandidate(
-            feature_net=lyap_wrapper,
-            state_dim=4,
-            eps=args.lyap_eps,
+            feature_net=CartpoleAngleWrapper(feature_net=lyap_feature),
+            state_dim=policy_global_config.nx,
+            eps=script_config.lyap_eps,
+            riccati_p=riccati_p,
         ).to(device)
 
-        # ---------------------------------------------------------------------
-        # 2. Setup Configs with current grid parameters
-        # ---------------------------------------------------------------------
         training_config = replace(
-            sweep_config,
-            state_dim=feature_net.global_config.nx,
+            train_config,
+            state_dim=policy_global_config.nx,
             state_bounds=training_bounds,
-            seed=sweep_config.seed + run_idx if sweep_config.seed is not None else None,
-            tb_log_dir=lyap_path / "tb" / sweep.sweep_id / run.run_name,
+            seed=seed,
+            tb_log_dir=actual_output_root / "tb" / sweep.sweep_id / run.run_name,
         )
 
-        # ---------------------------------------------------------------------
-        # 3. Train
-        # ---------------------------------------------------------------------
         trainer = LyapunovTrainer(
             policy_model=policy_model,
             lyap_model=lyap_model,
             dyn_model=dyn_model,
             config=training_config,
-            rho_monitor=ThresholdMonitor(
-                threshold=1.0,
-                patience=5,
-            ),
+            rho_monitor=ThresholdMonitor(threshold=1.0, patience=5),
             device=device,
         )
-        
+
         curriculum_result = trainer.train_with_scaled_bounds(curriculum_scales)
         train_results = curriculum_result.final_result
         if train_results is None:
-            __logger__.info(f"Skipping run {run.run_name}: curriculum produced no training result")
+            __logger__.warning("Skipping run %s: curriculum produced no training result", run.run_name)
             continue
-        if train_results.aborted:
-            __logger__.info(f"Skipping run {run.run_name}: {train_results.abort_reason}")
-            continue
+
         trainer.save(base_path)
+        if train_results.aborted:
+            __logger__.warning("Skipping run %s: %s", run.run_name, train_results.abort_reason)
+            continue
 
         curriculum_summary = {
-            "training_bound_scales": curriculum_scales,
+            "curriculum_scales": curriculum_scales,
+            "train_bound_factors": list(script_config.train_bound_factors),
             "stages": [
                 {
                     "stage_index": stage.stage_index,
@@ -228,26 +232,17 @@ def main() -> None:
         with (base_path / "curriculum_summary.json").open("w", encoding="utf-8") as summary_file:
             json.dump(curriculum_summary, summary_file, indent=2)
 
-        # ---------------------------------------------------------------------
-        # 4. Plot & Save
-        # ---------------------------------------------------------------------
-        state_labels = [r"$x$", r"$v$", r"$\theta$", r"$\dot{\theta}$"]
         if rollout_dataset is not None:
-            def lyapunov_func(states: NDArray) -> NDArray:
-                x = th.as_tensor(states, dtype=th.float32, device=device)
-                with th.no_grad():
-                    v = lyap_model(x)
-                return v.detach().cpu().numpy().reshape(-1)
-
+            lyapunov_func = build_lyapunov_func(lyap_model, device)
             lcil_plt.lyapunov(
                 lyapunov_func=lyapunov_func,
                 dataset=rollout_dataset[:100],
-                state_indices=[i for i in range(4)],
-                state_labels=state_labels,
-                html_path=base_path / "lyapunov_plot.html",
+                state_indices=[0, 1, 2, 3],
+                state_labels=[r"$x$", r"$v$", r"$\theta$", r"$\dot{\theta}$"],
+                html_path=(base_path / LYAPUNOV_ROLLOUT_FILENAME).with_suffix(".html"),
             )
 
-    __logger__.info(f"\nGrid search complete. All results saved to: {sweep._sweep_base_path}")
+    __logger__.info("Grid search complete. All results saved to: %s", sweep.output_root)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import torch as th
+import numpy as np
 
 from lcil.certification import (
     BisectCertifier,
@@ -13,6 +14,7 @@ from lcil.certification import (
     LyapunovCertificationConfig,
 )
 from lcil.lyapunov_learning import LyapunovTrainingConfig, LyapunovTrainingResult
+from lcil.utils import GridSearchHelper
 from lcil.utils.base_config import ArgumentParserConfig, config_field
 
 from . import (
@@ -22,6 +24,7 @@ from . import (
     load_lyapunov_model,
     load_policy_model,
 )
+from ..constants import TRAINING_RESULTS_FILENAME
 
 __logger__ = logging.getLogger("lcil.examples.cartpole.certify")
 
@@ -31,7 +34,7 @@ _DEFAULT_CERT_BOUND_SCALES = (0.15, 0.15, 0.05, 0.15)
 
 @dataclass(frozen=True)
 class BisectCertifyScriptConfig(ArgumentParserConfig):
-    policy_dir: str = config_field(help="Policy run directory containing model.pt.")
+    policy_dir: str = config_field(help="Policy run directory containing policy_model.pt.")
     lyapunov_dir: str = config_field(help="Lyapunov run directory containing lyapunov_model.pt.")
     device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
     rho_estimate: float | None = config_field(default=None, help="Optional initial rho estimate for the bisection search.")
@@ -58,11 +61,13 @@ def _build_script_defaults() -> BisectCertifyScriptConfig:
 
 def _build_certification_defaults(
     lyapunov_dir: Path,
+    cert_bound_scales: list[float],
 ) -> LyapunovCertificationConfig:
     training_config = LyapunovTrainingConfig.load(lyapunov_dir / "training_config.json")
+    cert_bounds = _scale_cert_bounds(training_config.state_bounds, cert_bound_scales)
     return LyapunovCertificationConfig.from_training_config(
         training_config,
-        cert_bounds=training_config.state_bounds, # TODO: apply percentage of these bounds
+        cert_bounds=cert_bounds,
         bins_per_dim=2,
         center_refinement_factor=1.0,
         origin_exclusion=0.0,
@@ -86,11 +91,39 @@ def _build_parser(
     certification_defaults.add_to_argparse(
         parser,
         exclude_fields={"state_dim", "cert_bounds"},
+        suppress_defaults=True,
     )
     return parser
 
 
-def parse_args() -> tuple[BisectCertifyScriptConfig, LyapunovCertificationConfig]:
+def _scale_cert_bounds(state_bounds: np.ndarray, cert_bound_scales: list[float]) -> np.ndarray:
+    scales = np.asarray(cert_bound_scales, dtype=float)
+    if scales.shape != (state_bounds.shape[1],):
+        raise ValueError(
+            "cert_bound_scales must contain exactly one scale per state dimension. "
+            f"Expected {state_bounds.shape[1]}, got {scales.shape[0]}."
+        )
+    return np.asarray(state_bounds, dtype=float) * scales.reshape(1, -1)
+
+
+def _resolve_script_config(
+    script_config: BisectCertifyScriptConfig,
+    script_defaults: BisectCertifyScriptConfig,
+) -> BisectCertifyScriptConfig:
+    policy_dir = Path(script_config.policy_dir).resolve()
+    lyapunov_dir = Path(script_config.lyapunov_dir).resolve()
+    default_policy_dir = Path(script_defaults.policy_dir).resolve()
+    default_lyapunov_dir = Path(script_defaults.lyapunov_dir).resolve()
+    if policy_dir != default_policy_dir and lyapunov_dir == default_lyapunov_dir:
+        lyapunov_dir = discover_latest_lyapunov_dir(policy_dir)
+    return replace(
+        script_config,
+        policy_dir=str(policy_dir),
+        lyapunov_dir=str(lyapunov_dir),
+    )
+
+
+def parse_args() -> GridSearchHelper[tuple[BisectCertifyScriptConfig, LyapunovCertificationConfig]]:
     script_defaults = _build_script_defaults()
 
     bootstrap_parser = argparse.ArgumentParser(add_help=False)
@@ -113,69 +146,84 @@ def parse_args() -> tuple[BisectCertifyScriptConfig, LyapunovCertificationConfig
         policy_dir=str(bootstrap_policy_dir),
         lyapunov_dir=str(bootstrap_lyapunov_dir),
     )
-    certification_defaults = _build_certification_defaults(bootstrap_lyapunov_dir)
+    certification_defaults = _build_certification_defaults(
+        bootstrap_lyapunov_dir,
+        script_defaults.cert_bound_scales,
+    )
 
     parser = _build_parser(script_defaults, certification_defaults)
     args = parser.parse_args()
-    return (
-        script_defaults.from_namespace(args),
-        certification_defaults.from_namespace(args),
-    )
+    configs: list[tuple[BisectCertifyScriptConfig, LyapunovCertificationConfig]] = []
+    for script_config in script_defaults.iter_from_namespace(args):
+        resolved_script_config = _resolve_script_config(script_config, script_defaults)
+        dir_certification_defaults = _build_certification_defaults(
+            Path(resolved_script_config.lyapunov_dir),
+            resolved_script_config.cert_bound_scales,
+        )
+        for certification_config in dir_certification_defaults.iter_from_namespace(args):
+            configs.append((resolved_script_config, certification_config))
+    return GridSearchHelper(configs)
 
 def main() -> None:
-    script_config, certification_config = parse_args()
-    device = th.device(script_config.device)
+    sweep = parse_args()
+    total_runs = len(sweep.configs)
+    for run_idx, (script_config, certification_config) in enumerate(sweep.configs, start=1):
+        __logger__.info("[%d/%d] Certifying %s", run_idx, total_runs, script_config.lyapunov_dir)
+        device = th.device(script_config.device)
 
-    policy_dir = Path(script_config.policy_dir).resolve()
-    lyapunov_dir = Path(script_config.lyapunov_dir).resolve()
+        policy_dir = Path(script_config.policy_dir).resolve()
+        lyapunov_dir = Path(script_config.lyapunov_dir).resolve()
 
-    policy_model = load_policy_model(policy_dir, device)
-    lyap_model = load_lyapunov_model(lyapunov_dir, device)
+        policy_model = load_policy_model(policy_dir, device)
+        lyap_model = load_lyapunov_model(lyapunov_dir, device)
 
-    dyn_model = CartpoleDynamics(dt=policy_model.net.global_config.dt).to(device)
-    dyn_model.eval()
+        dyn_model = CartpoleDynamics(dt=policy_model.net.global_config.dt).to(device)
+        dyn_model.eval()
 
-    results_path = lyapunov_dir / "training_result.json"
-    if not results_path.is_file():
-        raise FileNotFoundError(f"Training results file not found at {results_path}. Cannot extract rho estimate. Please provide an initial rho estimate via the --rho_estimate argument or ensure the training results file exists.")
-    training_results = LyapunovTrainingResult.load(results_path)
-    train_rho_estimate = training_results.rho_estimate
-    rho_estimate = script_config.rho_estimate if script_config.rho_estimate is not None else train_rho_estimate
+        results_path = lyapunov_dir / TRAINING_RESULTS_FILENAME
+        if not results_path.is_file():
+            raise FileNotFoundError(
+                f"Training results file not found at {results_path}. Cannot extract rho estimate. "
+                "Please provide an initial rho estimate via --rho-estimate or ensure the training result exists."
+            )
+        training_results = LyapunovTrainingResult.load(results_path)
+        train_rho_estimate = training_results.rho_estimate
+        rho_estimate = script_config.rho_estimate if script_config.rho_estimate is not None else train_rho_estimate
 
-    save_dir = (
-        Path(script_config.save_dir).resolve()
-        if script_config.save_dir is not None
-        else (lyapunov_dir / "bisect_certification").resolve()
-    )
-    save_dir.mkdir(parents=True, exist_ok=True)
+        save_dir = (
+            Path(script_config.save_dir).resolve()
+            if script_config.save_dir is not None
+            else (lyapunov_dir / "bisect_certification").resolve()
+        )
+        save_dir.mkdir(parents=True, exist_ok=True)
 
-    __logger__.info("Using rho estimate %.6f", rho_estimate)
+        __logger__.info("Using rho estimate %.6f", rho_estimate)
 
-    certifier = BisectCertifier(
-        policy_model=policy_model,
-        lyap_model=lyap_model,
-        dyn_model=dyn_model,
-        config=certification_config,
-        device=device,
-    )
+        certifier = BisectCertifier(
+            policy_model=policy_model,
+            lyap_model=lyap_model,
+            dyn_model=dyn_model,
+            config=certification_config,
+            device=device,
+        )
 
-    cert_results = certifier.certify(rho_estimate)
-    certifier.save(save_dir)
+        cert_results = certifier.certify(rho_estimate)
+        certifier.save(save_dir)
 
-    cert_tester = CertificationResultTester(
-        policy_model=policy_model,
-        lyap_model=lyap_model,
-        dyn_model=dyn_model,
-        config=certification_config,
-        device=device,
-    )
-    test_results = cert_tester.test_result(
-        rho=float(cert_results.rho),
-        sample_size=int(script_config.test_sample_size),
-        rollout_steps=int(script_config.test_rollout_steps),
-    )
-    test_results.save(save_dir)
-    __logger__.info("Saved certification tester results to %s", save_dir)
+        cert_tester = CertificationResultTester(
+            policy_model=policy_model,
+            lyap_model=lyap_model,
+            dyn_model=dyn_model,
+            config=certification_config,
+            device=device,
+        )
+        test_results = cert_tester.test_result(
+            rho=float(cert_results.rho),
+            sample_size=int(script_config.test_sample_size),
+            rollout_steps=int(script_config.test_rollout_steps),
+        )
+        test_results.save(save_dir)
+        __logger__.info("Saved certification tester results to %s", save_dir)
 
     
 

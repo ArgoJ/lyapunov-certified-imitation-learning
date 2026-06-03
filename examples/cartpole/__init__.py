@@ -1,4 +1,5 @@
 from .acados_ocp import get_ocp_solver, get_ocp, get_batch_ocp_solver, get_model
+from .basis import *
 from .model import CartpoleAngleWrapper
 from .cartpole_dyn import CartpoleDynamics
 from .sys_cfg import PendulumOnCartConfig
@@ -20,6 +21,8 @@ from ..example_utils import (
 
 _RESULTS_ROOT = Path(__file__).resolve().parents[2] / "results" / "cartpole"
 _DATA_ROOT = _RESULTS_ROOT / "data"
+CARTPOLE_RESULTS_DIR = _RESULTS_ROOT
+DATA_DIR = _DATA_ROOT
 
 
 def discover_latest_policy_dir(results_root: Path | str | None = None):

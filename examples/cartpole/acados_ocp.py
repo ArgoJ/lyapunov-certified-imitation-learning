@@ -8,49 +8,8 @@ from mpc_datagen import mdg_linalg, add_temp_folder
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver, AcadosOcpBatchSolver
 
 from .sys_cfg import PendulumOnCartConfig
+from .basis import linearized_inverted_pendulum_on_cart_matrices
 
-
-def _linearized_inverted_pendulum_on_cart_matrices(
-    cfg: PendulumOnCartConfig
-) -> tuple[np.ndarray, np.ndarray]:    
-    """Linearized inverted pendulum on cart dynamics around the upright equilibrium
-    with optional damping.
-
-    Parameters
-    ----------
-    cfg : PendulumOnCartConfig
-        System configuration parameters.
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        Discrete-time state transition matrix (Ad) and control input matrix (Bd)
-    """
-    m_c = cfg.m_cart
-    m_p = cfg.m_pole
-    l = cfg.length
-    g = cfg.gravity
-    d = cfg.damping
-    ac = np.array(
-        [
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, -d / m_c, -(m_p * g) / m_c, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-            [0.0, - d / (m_c * l), ((m_c + m_p) * g) / (m_c * l), 0.0],
-        ],
-        dtype=np.float64,
-    )
-    bc = np.array(
-        [
-            [0.0],
-            [1.0 / m_c],
-            [0.0],
-            [1.0 / (m_c * l)],
-        ],
-        dtype=np.float64,
-    )
-
-    return ac, bc
 
 
 # %% Model Definition
@@ -178,7 +137,7 @@ def get_ocp(
     ocp = AcadosOcp()
     ocp.model = get_model(cfg=sys_cfg)
 
-    A_c, B_c = _linearized_inverted_pendulum_on_cart_matrices(cfg=sys_cfg)
+    A_c, B_c = linearized_inverted_pendulum_on_cart_matrices(cfg=sys_cfg)
     A_d, B_d = mdg_linalg.lin_c2d_rk4(A_c, B_c, dt, num_steps=1)
     P = solve_discrete_are(A_d, B_d, Q, R)
 
