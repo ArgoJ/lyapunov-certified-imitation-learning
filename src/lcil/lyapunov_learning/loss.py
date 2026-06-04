@@ -350,17 +350,18 @@ class ParameterL1Loss(nn.Module):
     def forward(self) -> th.Tensor:
         trainable_params = self.get_train_params()
         if not trainable_params:
-            return th.zeros((), dtype=th.float32, device=self.device)
-        return th.stack([param.abs().sum() for param in trainable_params]).sum()
+            return th.tensor(0.0, device=self.device)
+        return sum(param.abs().sum() for param in trainable_params)
 
 
 class PolicyRegularizationLoss(nn.Module):
     """Regularize the policy to stay close to an initial reference policy."""
 
-    def __init__(self, policy: nn.Module, device: th.device | str = "cpu") -> None:
+    def __init__(self, policy: nn.Module, device: th.device | str = "cpu", eps: float = 1e-8) -> None:
         super().__init__()
         self.init_policy = deepcopy(policy).to(device)
         self.policy = policy
+        self.eps = eps
         self._set_init_policy_mode()
 
     def _set_init_policy_mode(self) -> None:
@@ -372,8 +373,11 @@ class PolicyRegularizationLoss(nn.Module):
         with th.no_grad():
             orig_out = self.init_policy(x)
         out = self.policy(x) 
-        return th.nn.functional.mse_loss(out, orig_out)
-
+        
+        squared_diff = th.square(out - orig_out)
+        orig_squared_norm = th.sum(th.square(orig_out), dim=-1, keepdim=True)
+        normalized_loss = th.mean(squared_diff / (orig_squared_norm + self.eps))
+        return normalized_loss
 
 class LyapunovTrainingLoss(nn.Module):
     """Full Lyapunov training objective with embedded models and sub-losses."""
@@ -392,11 +396,6 @@ class LyapunovTrainingLoss(nn.Module):
         self.dyn_model = dyn_model
         self.config = config
         self.device = th.device(device)
-
-        bounds = th.as_tensor(config.state_bounds, dtype=th.float32, device=self.device)
-        self.register_buffer("lbx", bounds[0].reshape(-1))
-        self.register_buffer("ubx", bounds[1].reshape(-1))
-        self.register_buffer("center", 0.5 * (self.lbx + self.ubx))
 
         self.condition_loss = RhoGatedConditionLoss(config, device=self.device)
         self.roa_loss = RoaSurrogateLoss(config)
