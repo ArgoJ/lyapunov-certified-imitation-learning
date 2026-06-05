@@ -39,7 +39,7 @@ class LyapunovRegionBounds:
         inside_regions = regions[inside_mask]
         boundary_regions = regions[boundary_mask]
         outside_regions = regions[outside_mask]
-        __logger__.info(
+        __logger__.debug(
             "Classified %d / %d regions as outside sublevel: V(x) > %.4f.",
             len(outside_regions),
             len(regions),

@@ -34,7 +34,7 @@ from .counterexample import (
     find_counter_examples,
     sample_uniform_box,
 )
-from .utils import ThresholdMonitor
+from .utils import ThresholdMonitor, get_th_lbx_ubx, get_center
 from ..utils import (
     JsonDataclass,
     GracefulInterruptHandler,
@@ -391,9 +391,8 @@ class LyapunovTrainer:
             config=self.config,
             device=self.device,
         )
-        self.lbx = self.loss_module.lbx
-        self.ubx = self.loss_module.ubx
-        self.center = self.loss_module.center
+        self.lbx, self.ubx = get_th_lbx_ubx(self.config.state_bounds, self.device)
+        self.center = get_center(self.lbx, self.ubx)
     
         self.rho_monitor = rho_monitor
         self.results: LyapunovTrainingResult | None = None

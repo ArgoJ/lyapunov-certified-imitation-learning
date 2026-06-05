@@ -1,6 +1,25 @@
 from __future__ import annotations
 
+import torch as th
+
+from numpy.typing import NDArray
 from dataclasses import dataclass, field
+
+
+def get_th_lbx_ubx(bounds: NDArray, device: th.device = "cpu") -> tuple[float, float]:
+    """Convert bounds to lbx and ubx arrays."""
+    th_bounds = th.as_tensor(bounds, dtype=th.float32, device=device)
+    if th_bounds.ndim != 2 or th_bounds.shape[0] != 2:
+        raise ValueError("state_bounds must have shape (2, nx).")
+    
+    lbx = th_bounds[0].reshape(-1)
+    ubx = th_bounds[1].reshape(-1)
+    return lbx, ubx
+
+
+def get_center(lbx: th.Tensor, ubx: th.Tensor) -> th.Tensor:
+    """Compute the center of the state space from lbx and ubx."""
+    return (lbx + ubx) / 2.0
 
 
 class TrainingAbortedError(RuntimeError):

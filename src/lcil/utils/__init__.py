@@ -20,3 +20,4 @@ from .base_models import (
 )
 from .early_stopping import EarlyStopping
 from .helpers import none_to_float, add_entry
+from .search_utils import search_and_bisect_value

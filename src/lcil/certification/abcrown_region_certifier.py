@@ -190,7 +190,7 @@ class BaseABCrownCertifier(ABC):
         self.verifier = self._setup_verifier()
         self.verifier.eval()
 
-        __logger__.info(
+        __logger__.debug(
             "Configured ABCrown region backend with solver_batch_size=%d on device=%s (timeout=%s, max_domains=%s).",
             int(self.config.batch_size),
             self.device.type,
@@ -244,7 +244,7 @@ class BaseABCrownCertifier(ABC):
         elapsed = f"{result.stats.get('elapsed', -1.0):.3f}s"
         bab_vals = result.stats.get("bab", list())
         bab_violation = f"violation={self._extract_bab_violation(bab_vals)}." if _is_unknown_status(status) else "no violation."
-        __logger__.info("ABCrown solver status: %s after %s with %s", status, elapsed, bab_violation)
+        __logger__.debug("ABCrown solver status: %s after %s with %s", status, elapsed, bab_violation)
         return ABCrownRegionVerification(
             status=status,
             verified=_is_safe_status(status),

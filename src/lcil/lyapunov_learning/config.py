@@ -186,7 +186,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
 
     # Weights
-    lyapunov_condition_weight: float = config_field(
+    condition_weight: float = config_field(
         default=1.0,
         help="Weight of the Lyapunov decrease and set-invariance condition penalty term.",
         display_alias="condw",

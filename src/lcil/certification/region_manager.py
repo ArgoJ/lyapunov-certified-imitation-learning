@@ -344,7 +344,7 @@ class RegionManager:
         if make_current:
             self.region_bounds = cached_region_bounds
             self._cached_regions = current_regions
-            __logger__.info(
+            __logger__.debug(
                 "Cached V bounds for %d certification regions.",
                 len(current_regions),
             )

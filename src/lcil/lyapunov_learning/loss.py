@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
 from .config import LyapunovTrainingConfig
+from .utils import get_th_lbx_ubx, get_center
 
 
 
@@ -79,12 +80,9 @@ class StateBoundsModule(nn.Module):
         super().__init__()
         self.device = th.device(device)
 
-        bounds = th.as_tensor(state_bounds, dtype=th.float32, device=self.device)
-        if bounds.ndim != 2 or bounds.shape[0] != 2:
-            raise ValueError("state_bounds must have shape (2, nx).")
-
-        self.register_buffer("lbx", bounds[0].reshape(-1))
-        self.register_buffer("ubx", bounds[1].reshape(-1))
+        lbx, ubx = get_th_lbx_ubx(state_bounds, device=self.device)
+        self.register_buffer("lbx", lbx)
+        self.register_buffer("ubx", ubx)
 
 
 class LyapunovScaleAnchorLoss(StateBoundsModule):
@@ -105,7 +103,7 @@ class LyapunovScaleAnchorLoss(StateBoundsModule):
         
         if target_value <= 0.0:
             raise ValueError("target_value must be positive.")
-        self.register_buffer("target_log_value", float(math.log(target_value)))
+        self.target_log_value = float(math.log(target_value))
 
         rand_uniform = th.rand((num_anchor_points, self.lbx.shape[0]), device=self.device, dtype=self.lbx.dtype)
         anchor_states = self.lbx + rand_uniform * (self.ubx - self.lbx)
@@ -324,7 +322,7 @@ class FormalPositivityLoss(StateBoundsModule):
     def _build_bounded_positivity_input(self) -> BoundedTensor:
         batch_lbs = self.lbx.reshape(1, -1)
         batch_ubs = self.ubx.reshape(1, -1)
-        batch_centers = 0.5 * (self.lbx + self.ubx).reshape(1, -1)
+        batch_centers = get_center(self.lbx, self.ubx).reshape(1, -1)
         ptb = PerturbationLpNorm(norm=float("inf"), x_L=batch_lbs, x_U=batch_ubs)
         return BoundedTensor(batch_centers, ptb)
 
@@ -437,7 +435,7 @@ class LyapunovTrainingLoss(nn.Module):
             LyapunovScaleAnchorLoss(
                 lyap_model=lyap_model,
                 state_bounds=config.state_bounds,
-                target_value=config.rho_scale_anchor,
+                target_value=config.scale_anchor,
                 num_anchor_points=config.scale_anchor_num_points,
                 device=self.device,
             ) 
@@ -552,7 +550,7 @@ class LyapunovTrainingLoss(nn.Module):
             formal_positivity_raw=formal_positivity_loss_value,
             scale_raw=scale_loss_value,
             policy_regularization_raw=policy_regularization_loss_value,
-            condition_weight=self.config.lyapunov_condition_weight,
+            condition_weight=self.config.condition_weight,
             roa_weight=self.config.roa_weight,
             l1_weight=self.config.l1_weight,
             equilibrium_weight=self.config.equilibrium_weight,

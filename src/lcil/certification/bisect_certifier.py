@@ -6,6 +6,7 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 
+from functools import partial
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Sequence
@@ -24,7 +25,7 @@ from .region_builder import RegionBuilder
 from .region_manager import RegionManager
 from .abcrown_region_certifier import CompleteABCrownCertifier, CoreABCrownCertifier
 from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds, LyapunovRegionBounds
-from ..utils.helpers import none_to_float
+from ..utils.search_utils import search_and_bisect_value
 from ..utils.constants import *
 
 __logger__ = logging.getLogger(__name__)
@@ -409,7 +410,7 @@ class BisectCertifier:
             )
             boundary_core_unchecked_bs = self.region_manager.empty_regions()
 
-        __logger__.info(
+        __logger__.debug(
             "rho=%.6f batch routing: total=%d outside=%d cached_complete=%d cached_core_safe_after_rho_gate=%d inside_core_cex=%d inside_core_unknown=%d inside_core_unchecked=%d boundary_core_unchecked=%d boundary_complete=%d.",
             float(rho),
             len(bs),
@@ -592,137 +593,8 @@ class BisectCertifier:
 
 
     # =========================================
-    # RHO SEARCH AND BISECTION
+    # CERTIFICATION SEARCH
     # ========================================
-    @staticmethod
-    def _iterative_rho_search(
-        total: int,
-        desc: str,
-        initial_values: tuple[float, float],
-        step_fn: callable,
-    ) -> tuple[float | None, float]:
-        """Run iterative rho updates until stopping criterion is met.
-
-        Parameters
-        ----------
-        total : int
-            Maximum number of iterations.
-        desc : str
-            Progress-bar description.
-        initial_values : tuple[float, float]
-            Initial ``(rho_lo, rho_up)`` values.
-        step_fn : callable
-            Function mapping ``(rho_lo, rho_up)`` to ``(stop, rho_lo, rho_up)``.
-
-        Returns
-        -------
-        tuple[float | None, float]
-            Final ``(rho_lo, rho_up)`` pair.
-        """
-        rho_lo, rho_up = initial_values
-        with Progress(
-            TextColumn("[bold]{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TextColumn("rho_lo: {task.fields[rho_lo]:.4f}"),
-            TextColumn("rho_up: {task.fields[rho_up]:.4f}"),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-        ) as progress:
-            task = progress.add_task(
-                desc,
-                total=total,
-                rho_lo=none_to_float(rho_lo),
-                rho_up=none_to_float(rho_up),
-            )
-            for _ in range(total):
-                try:
-                    stop, rho_lo, rho_up = step_fn(rho_lo, rho_up)
-                    if stop:
-                        break
-                finally:
-                    progress.update(
-                        task,
-                        advance=1,
-                        rho_lo=none_to_float(rho_lo),
-                        rho_up=none_to_float(rho_up),
-                    )
-                    progress.refresh()
-        return rho_lo, rho_up
-
-    def _scale_rho_up(self, rho_lo: float, rho_up: float) -> tuple[bool, float, float]:
-        """Scales up ``rho_lo`` until the new trial is not certified.
-
-        Parameters
-        ----------
-        rho_lo : float
-            Lower bound of rho, updated if trial is certified.
-        rho_up : float
-            Upper bound of rho, updated if trial is not certified.
-
-        Returns
-        -------
-        tuple[bool, float, float]
-            A tuple of (stop, rho_lo, rho_up) where stop is a boolean indicating if the search should stop,
-            and rho_lo and rho_up are the updated bounds.
-        """
-        trial = rho_up * self.config.rho_scaling
-        if self.is_rho_certified(rho=trial):
-            return False, trial, trial
-        return True, rho_lo, trial
-
-    def _scale_rho_down(self, rho_lo: float | None, rho_up: float) -> tuple[bool, float | None, float]:
-        """Scales down ``rho_up`` until the new trial is either certified 
-        or it is below rho_min, in which case we stop and return the last certified rho as lower bound.
-
-        Parameters
-        ----------
-        rho_lo : float | None
-            Lower bound of rho, updated if trial is certified or the trial is lower than ``rho_lo``.
-        rho_up : float
-            Upper bound of rho, updated if trial is not certified.
-
-        Returns
-        -------
-        tuple[bool, float | None, float]
-            A tuple of (stop, rho_lo, rho_up) where stop is a boolean indicating if the search should stop,
-            and rho_lo and rho_up are the updated bounds.
-        """
-        trial = max(self.config.rho_min, rho_up / self.config.rho_scaling)
-        if self.is_rho_certified(rho=trial):
-            return True, trial, rho_up
-
-        if trial <= self.config.rho_min:
-            return True, None, trial
-        return False, rho_lo, trial
-
-    def _bisect_rho(self, rho_lo: float, rho_up: float) -> tuple[bool, float, float]:
-        """Uses the midpoint of rho upper and lower for bisection.
-
-        Parameters
-        ----------
-        rho_lo : float
-            Lower bound of rho (known to be certified).
-        rho_up : float
-            Upper bound of rho (known to be **not** certified).
-
-        Returns
-        -------
-        tuple[bool, float, float]
-            A tuple of (stop, rho_lo, rho_up) where stop is a boolean indicating if the search should stop,
-            and rho_lo and rho_up are the updated bounds.
-        """
-        rho_mid = 0.5 * (rho_lo + rho_up)
-
-        if self.is_rho_certified(rho=rho_mid):
-            rho_lo = rho_mid
-        else:
-            rho_up = rho_mid
-
-        if rho_up - rho_lo <= self.config.bisection_tol:
-            return True, rho_lo, rho_up
-        return False, rho_lo, rho_up
-
     def is_rho_certified(self, rho: float) -> bool:
         """Check whether all regions satisfy Lyapunov conditions at ``rho``."""
         result = self._certify_recursive_regions(
@@ -734,74 +606,25 @@ class BisectCertifier:
 
     def find_max_rho(self, rho_estimate: float) -> float:
         """Search for the largest certifiable rho and return it."""
-        if rho_estimate <= 0:
-            raise ValueError("rho_estimate must be positive.")
-
         __logger__.info("Starting Lyapunov certification.")
-
+        
         self.cache_region_bounds()
 
-        if self.config.rho_min > rho_estimate:
-            __logger__.warning(
-                "Provided rho_estimate (%.4f) is below rho_min (%.4f). Starting search from rho_min.",
-                rho_estimate,
-                self.config.rho_min,
-            )
-            initial_rho = self.config.rho_min
-        else:
-            initial_rho = float(rho_estimate)
+        best_rho = search_and_bisect_value(
+            initial_estimate=rho_estimate,
+            eval_fn=self.is_rho_certified,
+            min_val=self.config.rho_min,
+            scaling_factor=self.config.rho_scaling,
+            bisection_tol=self.config.bisection_tol,
+            max_scale_steps=self.config.max_scale_steps,
+            max_bisection_steps=self.config.max_bisection_steps,
+            value_name="rho",
+        )
 
-        initial_ok = self.is_rho_certified(rho=initial_rho)
-        has_certified_lower_bound = True
-
-        # Scale up
-        if initial_ok:
-            rho_lo, rho_up = self._iterative_rho_search(
-                total=self.config.max_scale_steps,
-                desc="Scale up",
-                initial_values=(initial_rho, initial_rho),
-                step_fn=self._scale_rho_up,
-            )
-            if rho_lo == rho_up:
-                __logger__.warning(
-                    "Maximum scaling steps (%d) reached without finding an upper bound.",
-                    self.config.max_scale_steps,
-                )
-
-        # Scale down
-        else:
-            rho_lo, rho_up = self._iterative_rho_search(
-                total=self.config.max_scale_steps,
-                desc="Scale down",
-                initial_values=(None, initial_rho),
-                step_fn=self._scale_rho_down,
-            )
-
-            # Fallback
-            if rho_lo is None:
-                has_certified_lower_bound = False
-                rho_lo = self.config.rho_min
-                rho_up = self.config.rho_min
-                __logger__.error(
-                    "Could not find any certified rho >= rho_min (%.0e).",
-                    self.config.rho_min,
-                )
-
-        # Bisect
-        if has_certified_lower_bound and rho_up - rho_lo >= self.config.bisection_tol:
-            rho_lo, rho_up = self._iterative_rho_search(
-                total=self.config.max_bisection_steps,
-                desc="Bisect rho",
-                initial_values=(rho_lo, rho_up),
-                step_fn=self._bisect_rho,
-            )
-
-        if not has_certified_lower_bound:
-            __logger__.warning("No certified rho found.")
-            return 0.0
-
-        __logger__.info("Found best certified rho: %.6f", rho_lo)
-        return rho_lo
+        if best_rho > 0.0:
+            __logger__.info("Found best certified rho: %.6f", best_rho)
+            
+        return best_rho
 
 
     # =========================================
@@ -840,7 +663,7 @@ class BisectCertifier:
             uncertified_regions=uncertified_regions_np,
             certified_sublevel_regions=certified_sublevel_regions_np,
         )
-        __logger__.info(
+        __logger__.debug(
             "Certification detail pass at rho=%.6f: success=%s, certified_sublevel=%d, uncertified=%d, outside_sublevel=%d.",
             float(self.details.rho),
             self.details.global_success,
