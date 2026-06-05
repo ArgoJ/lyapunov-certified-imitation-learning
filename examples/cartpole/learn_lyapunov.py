@@ -8,14 +8,14 @@ from pathlib import Path
 import numpy as np
 import torch as th
 
-from mpc_datagen import MPCDataset
+from mpc_datagen import MPCDataset, mdg_plt
 from lcil.lyapunov_learning import (
     LyapunovTrainer,
     LyapunovTrainingConfig,
     NeuralLyapunovCandidate,
     ThresholdMonitor,
 )
-from lcil.utils import ArgumentParserConfig, GridSearchHelper, MLP, config_field, lcil_plt
+from lcil.utils import ArgumentParserConfig, GridSearchHelper, MLP, config_field
 
 from . import (
     CartpoleAngleWrapper,
@@ -29,7 +29,6 @@ from ..example_utils import build_lyapunov_func
 
 __logger__ = logging.getLogger("lcil.examples.cartpole.learn_lyapunov")
 
-_DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[2] / "results" / "cartpole"
 _DEFAULT_TRAIN_BOUND_FACTORS = (0.5, 0.4, 0.15, 0.4)
 
 
@@ -55,7 +54,7 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
 
 
 def _build_script_defaults() -> LyapunovLearningScriptConfig:
-    default_policy_dir = discover_latest_policy_dir(_DEFAULT_RESULTS_ROOT)
+    default_policy_dir = discover_latest_policy_dir()
     return LyapunovLearningScriptConfig(policy_dir=str(default_policy_dir))
 
 
@@ -234,7 +233,7 @@ def main() -> None:
 
         if rollout_dataset is not None:
             lyapunov_func = build_lyapunov_func(lyap_model, device)
-            lcil_plt.lyapunov(
+            mdg_plt.lyapunov(
                 lyapunov_func=lyapunov_func,
                 dataset=rollout_dataset[:100],
                 state_indices=[0, 1, 2, 3],

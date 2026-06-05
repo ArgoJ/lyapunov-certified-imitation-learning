@@ -15,8 +15,8 @@ from lcil.lyapunov_learning import (
     ThresholdMonitor,
     FromRolloutsPolicyWrapper,
 )
-from lcil.utils import GridSearchHelper, lcil_plt, MLP, IntegrationMethod, config_field, ArgumentParserConfig
-from mpc_datagen import MPCDataset
+from lcil.utils import GridSearchHelper, MLP, IntegrationMethod, config_field, ArgumentParserConfig
+from mpc_datagen import MPCDataset, mdg_plt
 
 from . import (
     DoubleIntegratorDynamics,
@@ -229,7 +229,7 @@ def main() -> None:
         if rollout_dataset is not None:
             lyapunov_func = build_lyapunov_func(lyap_model, device)
 
-            lcil_plt.lyapunov(
+            mdg_plt.lyapunov(
                 lyapunov_func=lyapunov_func,
                 dataset=rollout_dataset[:100],
                 state_indices=[0, 1],

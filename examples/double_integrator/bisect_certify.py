@@ -28,8 +28,6 @@ from ..constants import *
 
 __logger__ = logging.getLogger("lcil.examples.double_integrator.bisect_certify")
 
-_DEFAULT_CERT_BOUND_SCALES = (0.15, 0.15)
-
 
 @dataclass(frozen=True)
 class BisectCertifyScriptConfig(ArgumentParserConfig):
@@ -38,10 +36,6 @@ class BisectCertifyScriptConfig(ArgumentParserConfig):
     rho_multiplicator: float = config_field(default=0.4, help="Optional multiplicative factor for the initial rho estimate in the bisection search.")
     device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
     test_rollout_steps: int = config_field(default=50, help="Closed-loop rollout steps per region center during empirical result testing.")
-    cert_bound_scales: list[float] = config_field(
-        default_factory=lambda: list(_DEFAULT_CERT_BOUND_SCALES),
-        help="Per-dimension scaling applied to policy state bounds to define certification bounds.",
-    )
     save_dir: str | None = config_field(default=None, help="Optional directory where certification details and tester results are written.")
 
 
@@ -93,7 +87,7 @@ def parse_args() -> list[tuple[BisectCertifyScriptConfig, LyapunovCertificationC
     certification_defaults = _build_certification_defaults(Path(script_defaults.lyapunov_dir))
     parser = _build_parser(script_defaults, certification_defaults)
     args = parser.parse_args()
-    __logger__.info("Parsed command-line arguments: %s", args)
+    __logger__.debug("Parsed command-line arguments: %s", args)
     script_config = script_defaults.from_namespace(args)
 
     configs = []
@@ -143,7 +137,7 @@ def main() -> None:
         )
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        __logger__.info(f"Using rho estimate %.6f for Lyapunov dir %s", rho_estimate, lyapunov_dir)
+        __logger__.info("Using rho estimate %.6f for Lyapunov dir %s", rho_estimate, lyapunov_dir)
 
         certifier = BisectCertifier(
             policy_model=policy_model,
@@ -176,7 +170,6 @@ def main() -> None:
             plot_3d=False,
             html_path=save_dir / "certification_lyapunov_plot.html",
         )
-        __logger__.info("Saved certification lyapunov and region plot to %s", save_dir)
 
         del policy_model
         del lyap_model

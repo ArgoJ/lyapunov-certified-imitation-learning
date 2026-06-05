@@ -36,6 +36,8 @@ def iterative_rho_search(
         Function mapping ``(val_lo, val_up, eval_fn)`` to ``(stop, val_lo, val_up)``.
     eval_fn : Callable[[float], bool]
         The actual evaluation function to determine if a value is certified.
+    transient : bool, optional
+        Whether to use a transient progress bar.
 
     Returns
     -------
@@ -53,6 +55,7 @@ def iterative_rho_search(
         TextColumn("[magenta]test: {task.fields[test]:.4f}[/magenta]"),
         TimeElapsedColumn(),
         TimeRemainingColumn(),
+        transient=True,
     ) as progress:
         task = progress.add_task(
             desc,
@@ -160,7 +163,6 @@ def search_and_bisect_value(
         initial_val = float(initial_estimate)
 
     initial_ok = eval_fn(initial_val)
-    has_certified_lower_bound = True
 
     # Scale up
     if initial_ok:
@@ -173,7 +175,8 @@ def search_and_bisect_value(
         )
         if val_lo == val_up:
             __logger__.warning(
-                "Maximum scaling steps (%d) reached without finding an upper bound.",
+                "Maximum scaling steps (%d) reached without finding an upper bound. " \
+                "Consider increasing max_scale_steps or initial_estimate.",
                 max_scale_steps,
             )
 
@@ -189,17 +192,15 @@ def search_and_bisect_value(
 
         # Fallback
         if val_lo is None:
-            has_certified_lower_bound = False
-            val_lo = min_val
-            val_up = min_val
-            __logger__.error(
+            __logger__.warning(
                 "Could not find any certified value >= min_%s (%.0e).",
                 value_name,
                 min_val,
             )
+            return 0.0
 
     # Bisect
-    if has_certified_lower_bound and val_up - val_lo >= bisection_tol:
+    if val_up - val_lo >= bisection_tol:
         val_lo, val_up = iterative_rho_search(
             total=max_bisection_steps,
             desc=f"Bisect {value_name}",
@@ -207,9 +208,5 @@ def search_and_bisect_value(
             step_fn=partial(bisect_rho, bisection_tol=bisection_tol),
             eval_fn=eval_fn,
         )
-
-    if not has_certified_lower_bound:
-        __logger__.warning("No certified %s found.", value_name)
-        return 0.0
 
     return val_lo
