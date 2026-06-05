@@ -167,6 +167,18 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=True,
         help="Whether to detach V(x) in the denominator of the relative decrease violation.",
     )
+    scale_anchor: float = config_field(
+        default=100.0,
+        help="Anchor value for the Lyapunov scale loss, which encourages the Lyapunov function values to be close to this anchor for better numerical conditioning.",
+        display_alias="scale_anchor",
+        validators=(positive_validator,),
+    )
+    scale_anchor_num_points: int = config_field(
+        default=1024,
+        help="Number of anchor points used in the Lyapunov scale anchor loss.",
+        display_alias="scale_anchor_points",
+        validators=(positive_validator,),
+    )
     tb_log_dir: str | os.PathLike | None = config_field(
         default=None,
         help="TensorBoard logging directory.",
@@ -174,6 +186,12 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
 
     # Weights
+    lyapunov_condition_weight: float = config_field(
+        default=1.0,
+        help="Weight of the Lyapunov decrease and set-invariance condition penalty term.",
+        display_alias="condw",
+        validators=(non_negative_validator,),
+    )
     invariance_weight: float = config_field(
         default=1.0,
         help="Weight of the set-invariance penalty term.",
@@ -258,12 +276,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=1e-6,
         help="Minimum admissible rho value.",
         display_alias="\u03C1_min",
-        validators=(positive_validator,),
-    )
-    rho_scale_anchor: float = config_field(
-        default=100.0,
-        help="Anchor value for the Lyapunov scale loss, which encourages the Lyapunov function values to be close to this anchor for better numerical conditioning.",
-        display_alias="\u03C1_anchor",
         validators=(positive_validator,),
     )
 

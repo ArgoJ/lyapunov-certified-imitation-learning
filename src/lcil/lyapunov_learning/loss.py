@@ -23,6 +23,7 @@ class LyapunovTrainingLossParts:
     scale_raw: th.Tensor
     policy_regularization_raw: th.Tensor
 
+    condition_weight: float
     roa_weight: float
     l1_weight: float
     equilibrium_weight: float
@@ -32,7 +33,7 @@ class LyapunovTrainingLossParts:
 
     @property
     def condition(self) -> th.Tensor:
-        return self.condition_raw
+        return self.condition_raw * self.condition_weight
 
     @property
     def roa(self) -> th.Tensor:
@@ -71,21 +72,6 @@ class LyapunovTrainingLossParts:
         )
 
 
-class LyapunovScaleAnchorLoss(nn.Module):
-    """Anchor the absolute scale of V on reference states."""
-    
-    def __init__(self, target_value: float = 1.0, eps: float = 1e-6) -> None:
-        super().__init__()
-        if target_value <= 0.0:
-            raise ValueError("target_value must be positive.")
-        self.target_log_value = float(math.log(target_value))
-        self.eps = float(eps)
-        
-    def forward(self, v_reference: th.Tensor) -> th.Tensor:
-        ref_mean = v_reference.mean().clamp_min(self.eps)
-        return (th.log(ref_mean) - self.target_log_value).pow(2)
-
-
 class StateBoundsModule(nn.Module):
     """Base module that stores the shared training-state bounds."""
 
@@ -99,9 +85,37 @@ class StateBoundsModule(nn.Module):
 
         self.register_buffer("lbx", bounds[0].reshape(-1))
         self.register_buffer("ubx", bounds[1].reshape(-1))
-        self.register_buffer("center", 0.5 * (self.lbx + self.ubx))
-        self.register_buffer("widths", (self.ubx - self.lbx).clamp_min(1e-6))
 
+
+class LyapunovScaleAnchorLoss(StateBoundsModule):
+    """Anchor the absolute scale of V on uniformly sampled reference states."""
+    
+    def __init__(
+        self,
+        lyap_model: nn.Module,
+        state_bounds: th.Tensor,
+        target_value: float,
+        num_anchor_points: int = 1000,
+        device: th.device | str = "cpu",
+        eps: float = 1e-6
+    ) -> None:
+        super().__init__(state_bounds=state_bounds, device=device)
+        self.lyap_model = lyap_model
+        self.eps = float(eps)
+        
+        if target_value <= 0.0:
+            raise ValueError("target_value must be positive.")
+        self.register_buffer("target_log_value", float(math.log(target_value)))
+
+        rand_uniform = th.rand((num_anchor_points, self.lbx.shape[0]), device=self.device, dtype=self.lbx.dtype)
+        anchor_states = self.lbx + rand_uniform * (self.ubx - self.lbx)
+        self.register_buffer("anchor_states", anchor_states)
+
+    def forward(self) -> th.Tensor:
+        v_reference = self.lyap_model(self.anchor_states)
+        ref_mean = v_reference.mean().clamp_min(self.eps)
+        return (th.log(ref_mean) - self.target_log_value).pow(2)
+    
 
 class LyapunovDecreaseViolation(nn.Module):
     """Compute the one-step Lyapunov decrease violation."""
@@ -163,17 +177,19 @@ class RelativeInvarianceViolation(InvarianceViolation):
     ) -> None:
         super().__init__(state_bounds=state_bounds, device=device)
         self.relative_eps = float(relative_eps)
+        self.register_buffer("widths", (self.ubx - self.lbx).clamp_min(1e-6))
 
     def forward(self, x_next: th.Tensor) -> th.Tensor:
         upper_violation = th.relu(x_next - self.ubx) / self.widths
         lower_violation = th.relu(self.lbx - x_next) / self.widths
         return upper_violation.sum(dim=1, keepdim=True) + lower_violation.sum(dim=1, keepdim=True)
 
-class RhoGatedConditionLoss(StateBoundsModule):
+
+class RhoGatedConditionLoss(nn.Module):
     """Compute a rho-gated relative condition loss with explicit V-size regularization."""
 
     def __init__(self, config: LyapunovTrainingConfig, device: th.device | str = "cpu") -> None:
-        super().__init__(state_bounds=config.state_bounds, device=device)
+        super().__init__()
         self.invariance_weight = float(config.invariance_weight)
         self.rho_min = float(config.rho_min)
         self.relative_eps = float(config.relative_condition_eps)
@@ -308,7 +324,7 @@ class FormalPositivityLoss(StateBoundsModule):
     def _build_bounded_positivity_input(self) -> BoundedTensor:
         batch_lbs = self.lbx.reshape(1, -1)
         batch_ubs = self.ubx.reshape(1, -1)
-        batch_centers = self.center.reshape(1, -1)
+        batch_centers = 0.5 * (self.lbx + self.ubx).reshape(1, -1)
         ptb = PerturbationLpNorm(norm=float("inf"), x_L=batch_lbs, x_U=batch_ubs)
         return BoundedTensor(batch_centers, ptb)
 
@@ -376,7 +392,7 @@ class PolicyRegularizationLoss(nn.Module):
         
         squared_diff = th.square(out - orig_out)
         orig_squared_norm = th.sum(th.square(orig_out), dim=-1, keepdim=True)
-        normalized_loss = th.mean(squared_diff / (orig_squared_norm + self.eps))
+        normalized_loss = th.mean(squared_diff / (orig_squared_norm.detach() + self.eps))
         return normalized_loss
 
 class LyapunovTrainingLoss(nn.Module):
@@ -399,21 +415,39 @@ class LyapunovTrainingLoss(nn.Module):
 
         self.condition_loss = RhoGatedConditionLoss(config, device=self.device)
         self.roa_loss = RoaSurrogateLoss(config)
-        self.equilibrium_loss = EquilibriumLoss(lyap_model, config.state_dim, device=self.device)
-        self.positivity_loss = FormalPositivityLoss(
-            lyap_model=lyap_model,
-            state_bounds=config.state_bounds,
-            device=self.device,
-        )
-        self.l1_loss = ParameterL1Loss(lyap_model, policy_model, device=self.device)
-        self.scale_loss = LyapunovScaleAnchorLoss(target_value=config.rho_scale_anchor)
-        self.policy_regularization_loss = None
-        if self.config.policy_regularization_weight > 0.0:
-            self.policy_regularization_loss = PolicyRegularizationLoss(policy_model, device=device)
-        self.last_loss_parts: LyapunovTrainingLossParts | None = None
 
-    def refresh_trainable_parameters(self) -> None:
-        self.l1_loss.refresh_train_params()
+        # Only initialize when weight is positive
+        self.equilibrium_loss = (
+            EquilibriumLoss(lyap_model, config.state_dim, device=self.device) 
+            if config.equilibrium_weight > 0.0 else None
+        )
+        self.positivity_loss = (
+            FormalPositivityLoss(
+                lyap_model=lyap_model,
+                state_bounds=config.state_bounds,
+                device=self.device
+            )
+            if config.formal_positivity_weight > 0.0 else None
+        )
+        self.l1_loss = (
+            ParameterL1Loss(lyap_model, policy_model, device=self.device) 
+            if config.l1_weight > 0.0 else None
+        )
+        self.scale_loss = (
+            LyapunovScaleAnchorLoss(
+                lyap_model=lyap_model,
+                state_bounds=config.state_bounds,
+                target_value=config.rho_scale_anchor,
+                num_anchor_points=config.scale_anchor_num_points,
+                device=self.device,
+            ) 
+            if config.scale_weight > 0.0 else None
+        )
+        self.policy_regularization_loss = (
+            PolicyRegularizationLoss(policy_model, device=device)
+            if self.config.policy_regularization_weight > 0.0 else None
+        )
+        self.last_loss_parts: LyapunovTrainingLossParts | None = None
 
     def _closed_loop_values(
         self,
@@ -426,11 +460,9 @@ class LyapunovTrainingLoss(nn.Module):
         v_next = self.lyap_model(x_next)
         return v_batch, x_next, v_next
 
-    def compute_lyapunov_lower_bound(self, method: str = "backward") -> th.Tensor:
-        return self.positivity_loss.compute_lyapunov_lower_bound(method=method)
-
-    def formal_positivity_loss(self) -> th.Tensor:
-        return self.positivity_loss()
+    def refresh_trainable_parameters(self) -> None:
+        if self.l1_loss is not None:
+            self.l1_loss.refresh_train_params()
 
     def mining_objective(
         self,
@@ -480,12 +512,33 @@ class LyapunovTrainingLoss(nn.Module):
         )
 
         v_candidates = self.lyap_model(roa_candidates)
-        roa_loss_value = self.roa_loss(v_candidates=v_candidates, rho_estimate=rho_estimate)
-        origin_loss_value = self.equilibrium_loss()
-        formal_positivity_loss_value = self.positivity_loss()
+        roa_loss_value = self.roa_loss(
+            v_candidates=v_candidates, 
+            rho_estimate=rho_estimate
+        )
+        
         zero = th.zeros((), dtype=v_batch.dtype, device=v_batch.device)
-        l1_loss_value = self.l1_loss() if self.config.l1_weight > 0.0 else zero
-        scale_loss_value = self.scale_loss(v_candidates)
+
+        origin_loss_value = (
+            self.equilibrium_loss()
+            if self.equilibrium_loss is not None else zero
+        )
+
+        formal_positivity_loss_value = (
+            self.positivity_loss()
+            if self.positivity_loss is not None else zero
+        )
+
+        l1_loss_value = (
+            self.l1_loss() 
+            if self.l1_loss is not None else zero
+        )
+
+        scale_loss_value = (
+            self.scale_loss()
+            if self.scale_loss is not None else zero
+        )
+
         policy_regularization_loss_value = (
             self.policy_regularization_loss(x_batch)
             if active_policy_regularization and self.policy_regularization_loss is not None else zero
@@ -499,6 +552,7 @@ class LyapunovTrainingLoss(nn.Module):
             formal_positivity_raw=formal_positivity_loss_value,
             scale_raw=scale_loss_value,
             policy_regularization_raw=policy_regularization_loss_value,
+            condition_weight=self.config.lyapunov_condition_weight,
             roa_weight=self.config.roa_weight,
             l1_weight=self.config.l1_weight,
             equilibrium_weight=self.config.equilibrium_weight,

@@ -463,7 +463,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             config=config,
             device="cpu",
         )
-        lower = loss_module.compute_lyapunov_lower_bound(method="backward")
+        lower = loss_module.positivity_loss.compute_lyapunov_lower_bound(method="backward")
 
         self.assertAlmostEqual(float(lower.item()), -1.0, places=6)
 
@@ -486,10 +486,10 @@ class TestLyapunovCounterexamples(unittest.TestCase):
                 dyn_model=_IdentityDynamics(),
                 config=config,
             )
-            first_loss = trainer.loss_module.formal_positivity_loss()
+            first_loss = trainer.loss_module.positivity_loss()
             with th.no_grad():
                 lyap_model.linear.weight.fill_(2.0)
-            second_loss = trainer.loss_module.formal_positivity_loss()
+            second_loss = trainer.loss_module.positivity_loss()
 
         self.assertEqual(build_bounded_model.call_count, 1)
         self.assertAlmostEqual(float(first_loss.item()), 1.0, places=6)
