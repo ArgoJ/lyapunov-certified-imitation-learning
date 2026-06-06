@@ -2,7 +2,9 @@ import copy
 import importlib
 import importlib.util
 import inspect
+import logging
 import os
+import sysconfig
 from enum import Enum
 
 import torch as th
@@ -12,6 +14,20 @@ import torch.nn.functional as F
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
+
+
+__logger__ = logging.getLogger(__name__)
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _python_dev_headers_available() -> bool:
+    include_dir = sysconfig.get_paths().get("include")
+    if include_dir is None:
+        return False
+    return Path(include_dir, "Python.h").is_file()
 
 
 def build_generator(seed: int | None, device: th.device) -> th.Generator | None:
@@ -269,6 +285,14 @@ class ERKIntegrator(nn.Module):
         Integration step size.
     method : IntegrationMethod | str
         Explicit integration scheme to apply.
+    abcrown_compatible_ops : bool
+        If True, compute the stage updates with explicit for loops and tensor indexing
+        to ensure compatibility with torch.compile's current limitations around
+        in-place operations and advanced indexing. This may reduce performance.
+    device : th.device | str
+        Device to store the Butcher tableau tensors on.
+    dtype : th.dtype
+        Data type for the Butcher tableau tensors.
     """
 
     def __init__(
@@ -303,6 +327,20 @@ class ERKIntegrator(nn.Module):
     @classmethod
     def build_compiled(cls, *args, **kwargs):
         module = cls(*args, **kwargs)
+        if _env_flag_enabled("LCIL_DISABLE_TORCH_COMPILE"):
+            __logger__.info(
+                "Skipping torch.compile for %s because LCIL_DISABLE_TORCH_COMPILE is set.",
+                cls.__name__,
+            )
+            return module
+
+        if not _python_dev_headers_available():
+            __logger__.warning(
+                "Skipping torch.compile for %s because Python development headers are unavailable.",
+                cls.__name__,
+            )
+            return module
+
         return th.compile(module)
 
     def _get_butcher_tableau(

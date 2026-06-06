@@ -57,13 +57,19 @@ class CartpoleDynamics(nn.Module):
     def __init__(
         self,
         dt: float = 0.1,
-        method: IntegrationMethod = IntegrationMethod.CLASSICAL_RK4,
         sys_cfg: PendulumOnCartConfig = PendulumOnCartConfig(),
+        method: IntegrationMethod = IntegrationMethod.CLASSICAL_RK4,
+        abcrown_compatible_ops: bool = False,
     ):
         super().__init__()
         self.dt = float(dt)
         self.sys = CartpoleContinuousDynamics(sys_cfg=sys_cfg)
-        self.integrator = ERKIntegrator.build_compiled(self.sys, dt=dt, method=method)
+        self.integrator = ERKIntegrator(
+            self.sys,
+            dt=dt,
+            method=method,
+            abcrown_compatible_ops=abcrown_compatible_ops,
+        )
 
 
     def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:

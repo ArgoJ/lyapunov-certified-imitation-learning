@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 import torch as th
 import torch.nn as nn
@@ -119,6 +120,19 @@ class TestERKIntegrator(unittest.TestCase):
     def test_rejects_unknown_method(self) -> None:
         with self.assertRaises(ValueError):
             ERKIntegrator(ExponentialDynamics(), dt=0.1, method="rk5", dtype=th.float64)
+
+    def test_build_compiled_skips_compile_without_python_headers(self) -> None:
+        with mock.patch("lcil.utils.base_models._python_dev_headers_available", return_value=False):
+            with mock.patch("torch.compile") as compile_mock:
+                integrator = ERKIntegrator.build_compiled(
+                    ExponentialDynamics(),
+                    dt=0.1,
+                    method=IntegrationMethod.CLASSICAL_RK4,
+                    dtype=th.float64,
+                )
+
+        self.assertIsInstance(integrator, ERKIntegrator)
+        compile_mock.assert_not_called()
 
 
 if __name__ == "__main__":

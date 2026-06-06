@@ -71,7 +71,8 @@ def parse_cli_args() -> GridSearchHelper[tuple[PolicyScriptConfig, ImitationTrai
 def main() -> None:
     sweep = parse_cli_args()
 
-    _, first_train_config = sweep.configs[0]
+    first_script_config, first_train_config = sweep.configs[0]
+    base_device = th.device(first_script_config.device)
     dataset_path = resolve_dataset_path(first_train_config.dataset_path)
 
     source_dataset = MPCDataset.load(dataset_path)
@@ -87,19 +88,20 @@ def main() -> None:
         num_workers=0,
         pin_memory=True,
         dtype=th.float32,
+        device=base_device,
     )
 
     loss_fn = ReferenceWeightedDynamicsAwareLoss(
         reference_loss=ReferenceWeightedMSELoss(
-            reference=[dataset_cfg.cost.yref[-dataset_cfg.nu:]],
+            reference=dataset_cfg.cost.yref[-dataset_cfg.nu:],
             alpha=1.0,
             max_weight=1.0,
             min_weight=0.7,
         ),
         dynamics_loss=DynamicsAwareLoss(
             dynamics=CartpoleDynamics(dt=dataset_cfg.dt, sys_cfg=sys_cfg),
-            x_min=th.tensor(dataset_cfg.constraints.lbx),
-            x_max=th.tensor(dataset_cfg.constraints.ubx),
+            x_min=dataset_cfg.constraints.lbx,
+            x_max=dataset_cfg.constraints.ubx,
         ),
         lambda_dyn=2.0,
     )
@@ -108,7 +110,6 @@ def main() -> None:
     for run in sweep:
         script_config, train_config = run.config
         __logger__.info("%s", run.progress_message())
-        device = th.device(script_config.device)
 
         feature_net = MLPPolicy(
             [5] + [script_config.hidden_size] * script_config.layers + [dataset_cfg.nu],
@@ -117,21 +118,21 @@ def main() -> None:
             u_min=dataset_cfg.constraints.lbu,
             u_max=dataset_cfg.constraints.ubu,
         )
-        net = CartpoleAngleWrapper(feature_net=feature_net).to(device)
+        net = CartpoleAngleWrapper(feature_net=feature_net).to(base_device)
 
-        current_train_config = replace(
+        current_train_cfg = replace(
             train_config,
-            tb_log_dir=CARTPOLE_RESULTS_DIR / "tb" / sweep.sweep_id / run.run_name,
+            tb_log_dir=sweep._sweep_base_path.parent.parent / "tb" / sweep.sweep_id / run.run_name
         )
 
         trainer = PolicyTrainer(
             model=net,
             dataloader=train_loader,
-            training_config=current_train_config,
+            training_config=current_train_cfg,
             val_dataloader=val_loader,
             early_stopper=EarlyStopping(patience=10, delta=1e-5),
             loss_fn=loss_fn,
-            device=device,
+            device=base_device,
         )
         trainer.train()
         trainer.save(
