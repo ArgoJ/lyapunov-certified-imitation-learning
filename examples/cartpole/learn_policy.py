@@ -122,7 +122,7 @@ def main() -> None:
 
         current_train_cfg = replace(
             train_config,
-            tb_log_dir=sweep._sweep_base_path.parent.parent / "tb" / sweep.sweep_id / run.run_name
+            tb_log_dir=sweep._sweep_base_path.parent / "tb" / sweep.sweep_id / run.run_name
         )
 
         trainer = PolicyTrainer(

@@ -107,10 +107,10 @@ class PolicyTrainingMetrics:
 def _tb_writer_add_metrics(tb_writer: SummaryWriter, metrics: PolicyTrainingMetrics) -> None:
     if tb_writer is not None:
         epoch = metrics.epochs_completed - 1
-        tb_writer.add_scalar("Policy/TrainLoss", metrics.train_loss[epoch], epoch)
+        tb_writer.add_scalar("Loss/Train", metrics.train_loss[epoch], epoch)
         if metrics.val_loss[epoch] is not None:
             tb_writer.add_scalar("Loss/Validation", metrics.val_loss[epoch], epoch)
-        tb_writer.add_scalar("Policy/LearningRate", metrics.learning_rate[epoch], epoch)
+        tb_writer.add_scalar("LearningRate", metrics.learning_rate[epoch], epoch)
 
 def _tb_writer_close(tb_writer: SummaryWriter | None) -> None:
     if tb_writer is not None:
