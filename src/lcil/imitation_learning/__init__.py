@@ -9,7 +9,11 @@ from .dataset import (
 from .trainer import PolicyTrainer
 from .config import ImitationTrainingConfig
 from .models import MLPPolicy, TransformerPolicy
-from .loss import ReferenceWeightedMSELoss, DynamicsAwareLoss, ReferenceWeightedDynamicsAwareLoss
+from .loss import (
+    BoundedReferenceWeightedMSELoss,
+    DynamicsAwareLoss,
+    ReferenceWeightedDynamicsAwareLoss,
+)
 
 
 __all__ = [
@@ -30,7 +34,7 @@ __all__ = [
     "TransformerPolicy",
     
     # Losses
-    "ReferenceWeightedMSELoss",
+    "BoundedReferenceWeightedMSELoss",
     "DynamicsAwareLoss",
     "ReferenceWeightedDynamicsAwareLoss",
 ]

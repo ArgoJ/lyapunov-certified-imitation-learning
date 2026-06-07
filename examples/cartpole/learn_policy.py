@@ -92,8 +92,10 @@ def main() -> None:
     )
 
     loss_fn = ReferenceWeightedDynamicsAwareLoss(
-        reference_loss=ReferenceWeightedMSELoss(
+        reference_loss=BoundedReferenceWeightedMSELoss(
             reference=dataset_cfg.cost.yref[-dataset_cfg.nu:],
+            x_min=dataset_cfg.constraints.lbu,
+            x_max=dataset_cfg.constraints.ubu,
             alpha=1.0,
             max_weight=1.0,
             min_weight=0.7,
@@ -103,7 +105,7 @@ def main() -> None:
             x_min=dataset_cfg.constraints.lbx,
             x_max=dataset_cfg.constraints.ubx,
         ),
-        lambda_dyn=2.0,
+        dynamics_weight=2.0,
     )
 
     __logger__.info("Starting grid search over %d configurations...", len(sweep))

@@ -25,6 +25,7 @@ from rich.progress import (
 
 from .config import ImitationTrainingConfig
 from .dataset import save_state_action_dataset_subset
+from .loss import ImitationLearningLossParts
 from ..utils import (
     EarlyStopping,
     GracefulInterruptHandler,
@@ -36,11 +37,77 @@ __logger__ = logging.getLogger(__name__)
 
 
 @dataclass
+class PolicyEpochLossSummary:
+    """Epoch-averaged total loss and optional constituent parts."""
+
+    total: float
+    reference_raw: float = np.nan
+    dynamics_raw: float = np.nan
+    reference: float = np.nan
+    dynamics: float = np.nan
+
+
+@dataclass
+class _PolicyEpochLossAccumulator:
+    """Accumulate batch losses into epoch-averaged summaries."""
+
+    total_sum: float = 0.0
+    reference_raw_sum: float = 0.0
+    dynamics_raw_sum: float = 0.0
+    reference_sum: float = 0.0
+    dynamics_sum: float = 0.0
+    num_datapoints: int = 0
+    tracked_datapoints: int = 0
+
+    def update(
+        self,
+        batch_size: int,
+        loss: th.Tensor,
+        loss_parts: ImitationLearningLossParts | None,
+    ) -> None:
+        self.total_sum += float(loss.item()) * batch_size
+        self.num_datapoints += batch_size
+
+        if loss_parts is None:
+            return
+
+        self.reference_raw_sum += float(loss_parts.reference_raw.item()) * batch_size
+        self.dynamics_raw_sum += float(loss_parts.dynamics_raw.item()) * batch_size
+        self.reference_sum += float(loss_parts.reference.item()) * batch_size
+        self.dynamics_sum += float(loss_parts.dynamics.item()) * batch_size
+        self.tracked_datapoints += batch_size
+
+    def finalize(self) -> PolicyEpochLossSummary:
+        num_datapoints = max(self.num_datapoints, 1)
+        total = self.total_sum / num_datapoints
+
+        if self.tracked_datapoints == 0:
+            return PolicyEpochLossSummary(total=total)
+
+        tracked_datapoints = self.tracked_datapoints
+        return PolicyEpochLossSummary(
+            total=total,
+            reference_raw=self.reference_raw_sum / tracked_datapoints,
+            dynamics_raw=self.dynamics_raw_sum / tracked_datapoints,
+            reference=self.reference_sum / tracked_datapoints,
+            dynamics=self.dynamics_sum / tracked_datapoints,
+        )
+
+
+@dataclass
 class PolicyTrainingMetrics:
     """Per-epoch training metrics for policy optimization."""
 
     train_loss: NDArray
     val_loss: NDArray
+    train_reference_raw: NDArray
+    train_dynamics_raw: NDArray
+    val_reference_raw: NDArray
+    val_dynamics_raw: NDArray
+    train_reference: NDArray
+    train_dynamics: NDArray
+    val_reference: NDArray
+    val_dynamics: NDArray
     learning_rate: NDArray
     epochs_completed: int = 0
 
@@ -66,30 +133,59 @@ class PolicyTrainingMetrics:
         return cls(
             train_loss=nan_array.copy(),
             val_loss=nan_array.copy(),
+            train_reference_raw=nan_array.copy(),
+            train_dynamics_raw=nan_array.copy(),
+            val_reference_raw=nan_array.copy(),
+            val_dynamics_raw=nan_array.copy(),
+            train_reference=nan_array.copy(),
+            train_dynamics=nan_array.copy(),
+            val_reference=nan_array.copy(),
+            val_dynamics=nan_array.copy(),
             learning_rate=nan_array.copy(),
             epochs_completed=0,
         )
 
-    def update(self, epoch: int, train_loss: float, val_loss: float | None, learning_rate: float) -> None:
+    def update(
+        self,
+        epoch: int,
+        train_summary: PolicyEpochLossSummary,
+        val_summary: PolicyEpochLossSummary | None,
+        learning_rate: float,
+    ) -> None:
         """Update metric arrays with new values for a completed epoch.
 
         Parameters
         ----------
         epoch : int
             Index of the completed epoch (0-based).
-        train_loss : float
-            Average training loss for the completed epoch.
-        val_loss : float | None
-            Average validation loss for the completed epoch, or ``None`` if not applicable.
+        train_summary : PolicyEpochLossSummary
+            Average training loss summary for the completed epoch.
+        val_summary : PolicyEpochLossSummary | None
+            Average validation loss summary for the completed epoch, or ``None`` if not applicable.
         learning_rate : float
             Learning rate used during the completed epoch.
         """
         if not (0 <= epoch < len(self.train_loss)):
             raise IndexError(f"Epoch index {epoch} is out of bounds for metric arrays of length {len(self.train_loss)}.")
 
-        self.train_loss[epoch] = none_to_float(train_loss)
+        self.train_loss[epoch] = none_to_float(train_summary.total)
+        self.train_reference_raw[epoch] = none_to_float(train_summary.reference_raw)
+        self.train_dynamics_raw[epoch] = none_to_float(train_summary.dynamics_raw)
+        self.train_reference[epoch] = none_to_float(train_summary.reference)
+        self.train_dynamics[epoch] = none_to_float(train_summary.dynamics)
+
+        val_total = None if val_summary is None else val_summary.total
+        val_reference_raw = None if val_summary is None else val_summary.reference_raw
+        val_dynamics_raw = None if val_summary is None else val_summary.dynamics_raw
+        val_reference = None if val_summary is None else val_summary.reference
+        val_dynamics = None if val_summary is None else val_summary.dynamics
+
         self.learning_rate[epoch] = none_to_float(learning_rate)
-        self.val_loss[epoch] = none_to_float(val_loss)
+        self.val_loss[epoch] = none_to_float(val_total)
+        self.val_reference_raw[epoch] = none_to_float(val_reference_raw)
+        self.val_dynamics_raw[epoch] = none_to_float(val_dynamics_raw)
+        self.val_reference[epoch] = none_to_float(val_reference)
+        self.val_dynamics[epoch] = none_to_float(val_dynamics)
         self.epochs_completed = max(self.epochs_completed, epoch + 1)
 
     def save(self, path: os.PathLike) -> None:
@@ -99,18 +195,45 @@ class PolicyTrainingMetrics:
             metrics_path,
             train_loss=self.train_loss,
             val_loss=self.val_loss,
+            train_reference_raw=self.train_reference_raw,
+            train_dynamics_raw=self.train_dynamics_raw,
+            val_reference_raw=self.val_reference_raw,
+            val_dynamics_raw=self.val_dynamics_raw,
+            train_reference=self.train_reference,
+            train_dynamics=self.train_dynamics,
+            val_reference=self.val_reference,
+            val_dynamics=self.val_dynamics,
             learning_rate=self.learning_rate,
             epochs_completed=np.asarray(self.epochs_completed, dtype=np.int64),
         )
 
 
-def _tb_writer_add_metrics(tb_writer: SummaryWriter, metrics: PolicyTrainingMetrics) -> None:
-    if tb_writer is not None:
-        epoch = metrics.epochs_completed - 1
-        tb_writer.add_scalar("Loss/Train", metrics.train_loss[epoch], epoch)
-        if metrics.val_loss[epoch] is not None:
-            tb_writer.add_scalar("Loss/Validation", metrics.val_loss[epoch], epoch)
-        tb_writer.add_scalar("LearningRate", metrics.learning_rate[epoch], epoch)
+def _tb_writer_add_scalar_if_finite(
+    tb_writer: SummaryWriter,
+    tag: str,
+    value: float,
+    step: int,
+) -> None:
+    if np.isfinite(value):
+        tb_writer.add_scalar(tag, value, step)
+
+
+def _tb_writer_add_metrics(tb_writer: SummaryWriter | None, metrics: PolicyTrainingMetrics) -> None:
+    if tb_writer is None:
+        return
+
+    epoch = metrics.epochs_completed - 1
+    _tb_writer_add_scalar_if_finite(tb_writer, "Loss/Train", metrics.train_loss[epoch], epoch)
+    _tb_writer_add_scalar_if_finite(tb_writer, "Loss/Validation", metrics.val_loss[epoch], epoch)
+    _tb_writer_add_scalar_if_finite(tb_writer, "RawLoss/TrainReference", metrics.train_reference_raw[epoch], epoch)
+    _tb_writer_add_scalar_if_finite(tb_writer, "RawLoss/TrainDynamics", metrics.train_dynamics_raw[epoch], epoch)
+    _tb_writer_add_scalar_if_finite(tb_writer, "RawLoss/ValidationReference", metrics.val_reference_raw[epoch], epoch)
+    _tb_writer_add_scalar_if_finite(tb_writer, "RawLoss/ValidationDynamics", metrics.val_dynamics_raw[epoch], epoch)
+    _tb_writer_add_scalar_if_finite(tb_writer, "WeightedLoss/TrainReference", metrics.train_reference[epoch], epoch)
+    _tb_writer_add_scalar_if_finite(tb_writer, "WeightedLoss/TrainDynamics", metrics.train_dynamics[epoch], epoch)
+    _tb_writer_add_scalar_if_finite(tb_writer, "WeightedLoss/ValidationReference", metrics.val_reference[epoch], epoch)
+    _tb_writer_add_scalar_if_finite(tb_writer, "WeightedLoss/ValidationDynamics", metrics.val_dynamics[epoch], epoch)
+    _tb_writer_add_scalar_if_finite(tb_writer, "LearningRate", metrics.learning_rate[epoch], epoch)
 
 def _tb_writer_close(tb_writer: SummaryWriter | None) -> None:
     if tb_writer is not None:
@@ -269,11 +392,16 @@ class PolicyTrainer:
             return raw_forward(nn_inputs)
         return self.model(nn_inputs)
 
-    def _train_epoch(self, progress: Progress, task: TaskID, bar_step: float) -> float:
+    def _get_last_loss_parts(self) -> ImitationLearningLossParts | None:
+        loss_parts = getattr(self.loss_fn, "last_loss_parts", None)
+        if isinstance(loss_parts, ImitationLearningLossParts):
+            return loss_parts
+        return None
+
+    def _train_epoch(self, progress: Progress, task: TaskID, bar_step: float) -> PolicyEpochLossSummary:
         """Executes a single training epoch."""
         self.model.train()
-        train_epoch_loss = 0.0
-        num_datapoints = max(len(self.dataloader.dataset), 1)
+        epoch_loss = _PolicyEpochLossAccumulator()
 
         for batch in self.dataloader:
             nn_inputs, states, actions = self._extract_batch(batch)
@@ -286,23 +414,29 @@ class PolicyTrainer:
             else:
                 loss = self.loss_fn(pred_actions, actions)
 
+            loss_parts = self._get_last_loss_parts()
+
             loss.backward()
             self.optimizer.step()
 
             batch_size = nn_inputs.size(0)
-            train_epoch_loss += loss.item() * batch_size
+            epoch_loss.update(batch_size=batch_size, loss=loss, loss_parts=loss_parts)
             progress.update(task, advance=bar_step * batch_size)
 
-        return train_epoch_loss / num_datapoints
+        return epoch_loss.finalize()
     
-    def _validate_epoch(self, progress: Progress, task: TaskID, bar_step: float) -> float | None:
+    def _validate_epoch(
+        self,
+        progress: Progress,
+        task: TaskID,
+        bar_step: float,
+    ) -> PolicyEpochLossSummary | None:
         """Executes a single validation epoch."""
         if self.val_dataloader is None:
             return None
 
         self.model.eval()
-        val_epoch_loss = 0.0
-        num_datapoints = max(len(self.val_dataloader.dataset), 1)
+        epoch_loss = _PolicyEpochLossAccumulator()
 
         with th.no_grad():
             for batch in self.val_dataloader:
@@ -314,11 +448,13 @@ class PolicyTrainer:
                 else:
                     loss = self.loss_fn(pred_actions, actions)
 
+                loss_parts = self._get_last_loss_parts()
+
                 batch_size = nn_inputs.size(0)
-                val_epoch_loss += loss.item() * batch_size
+                epoch_loss.update(batch_size=batch_size, loss=loss, loss_parts=loss_parts)
                 progress.update(task, advance=bar_step * batch_size)
 
-        return val_epoch_loss / num_datapoints
+            return epoch_loss.finalize()
     
     def train(
         self,
@@ -359,13 +495,13 @@ class PolicyTrainer:
                     lr=float("nan"),
                 )
                 for epoch in range(epochs):
-                    train_avg_loss = self._train_epoch(progress, task, bar_step)
-                    val_avg_loss = self._validate_epoch(progress, task, bar_step)
+                    train_summary = self._train_epoch(progress, task, bar_step)
+                    val_summary = self._validate_epoch(progress, task, bar_step)
 
                     # Update metrics
                     current_lr = float(self.optimizer.param_groups[0]["lr"])
-                    metrics.update(epoch, train_avg_loss, val_avg_loss, current_lr)
-                    monitored_metric = val_avg_loss if val_avg_loss is not None else train_avg_loss
+                    metrics.update(epoch, train_summary, val_summary, current_lr)
+                    monitored_metric = val_summary.total if val_summary is not None else train_summary.total
                     self._scheduller_step(monitored_metric)
                     _tb_writer_add_metrics(tb_writer, metrics)
 
@@ -379,8 +515,8 @@ class PolicyTrainer:
                     # Update bar
                     progress.update(
                         task,
-                        train_loss=none_to_float(train_avg_loss),
-                        val_loss=none_to_float(val_avg_loss),
+                        train_loss=none_to_float(train_summary.total),
+                        val_loss=none_to_float(None if val_summary is None else val_summary.total),
                         lr=none_to_float(current_lr),
                     )
         

@@ -6,53 +6,119 @@ import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 
+from dataclasses import dataclass
+from collections.abc import Sequence
 
-class ReferenceWeightedMSELoss(nn.Module):
-    """Weighted MSE that emphasizes targets close to a reference value.
 
-    The per-output weights are computed from the absolute distance between
-    target actions and a reference action:
+@dataclass
+class ImitationLearningLossParts:
+    reference_raw: th.Tensor
+    dynamics_raw: th.Tensor
 
-    ``w = |target - reference| + eps)^alpha``
+    reference_weight: float
+    dynamics_weight: float
 
-    Weights are normalized to mean 1 per batch for stable loss scale.
+    @property
+    def reference(self) -> th.Tensor:
+        return self.reference_raw * self.reference_weight
+
+    @property
+    def dynamics(self) -> th.Tensor:
+        return self.dynamics_raw * self.dynamics_weight
+
+    @property
+    def total(self) -> th.Tensor:
+        return self.reference + self.dynamics
+
+
+class BoundedReferenceWeightedMSELoss(nn.Module):
+    """
+    Weighted MSE that normalizes actions via bounds before calculating the 
+    distance to a specific reference value.
     """
 
     def __init__(
         self,
         reference: Sequence[float] | th.Tensor,
+        x_min: Sequence[float] | th.Tensor,
+        x_max: Sequence[float] | th.Tensor,
         alpha: float = 1.0,
         min_weight: float = 1e-3,
         max_weight: float | None = None,
+        emphasize_close: bool = False, 
     ) -> None:
+        """
+        Parameters
+        ----------
+        reference : Sequence[float] | th.Tensor
+            Reference action values to compare against.
+        x_min : Sequence[float] | th.Tensor
+            Minimum action values for normalization.
+        x_max : Sequence[float] | th.Tensor
+            Maximum action values for normalization.
+        alpha : float, optional
+            Exponent for weighting, by default 1.0
+        min_weight : float, optional
+            Minimum weight, by default 1e-3
+        max_weight : float | None, optional
+            Maximum weight, by default None
+        emphasize_close : bool, optional
+            If False (default): Emphasizes actions FAR from the reference.
+            If True: Emphasizes actions CLOSE to the reference.
+        """
         super().__init__()
         if alpha <= 0.0:
             raise ValueError("alpha must be positive.")
         if min_weight <= 0.0:
             raise ValueError("min_weight must be positive.")
-        if max_weight is not None and max_weight <= 0.0:
-            raise ValueError("max_weight must be positive when provided.")
 
         ref_tensor = th.as_tensor(reference, dtype=th.float32).view(-1)
+        x_min_tensor = th.as_tensor(x_min, dtype=th.float32).view(-1)
+        x_max_tensor = th.as_tensor(x_max, dtype=th.float32).view(-1)
+        
+        assert th.all(x_max_tensor > x_min_tensor), "x_max must be strictly greater than x_min"
 
         self.register_buffer("reference", ref_tensor)
+        self.register_buffer("x_min", x_min_tensor)
+        self.register_buffer("x_max", x_max_tensor)
+        
+        self.emphasize_close = emphasize_close
         self.alpha = float(alpha)
         self.min_weight = float(min_weight)
         self.max_weight = max_weight
 
-    def reference_weights(self, target_actions: th.Tensor) -> th.Tensor:
-        centered_abs = (target_actions - self.reference).abs()
-        weights = centered_abs.pow(self.alpha) + self.min_weight
+    def _compute_weights(self, target_actions: th.Tensor) -> th.Tensor:
+        # 1. Normalize targets and reference to a scale of 0.0 to 1.0
+        range_tensor = self.x_max - self.x_min
+
+        target_norm = (target_actions - self.x_min) / range_tensor
+        target_norm = th.clamp(target_norm, 0.0, 1.0)
+
+        ref_norm = (self.reference - self.x_min) / range_tensor
+        ref_norm = th.clamp(ref_norm, 0.0, 1.0)
+
+        # 2. Calculate distance in the normalized space (values between 0.0 and 1.0)
+        distance = (target_norm - ref_norm).abs()
+
+        # 3. Invert logic if emphasizing closeness to the reference
+        if self.emphasize_close:
+            distance = 1.0 - distance
+
+        # 4. calculate weights
+        weights = distance.pow(self.alpha) + self.min_weight
+
         if self.max_weight is not None:
             weights = th.clamp(weights, max=self.max_weight)
 
+        # 5. normalize weights
         weights_mean = weights.mean(dim=0, keepdim=True)
         normalized_weights = weights / (weights_mean + 1e-8)
+        
         return normalized_weights
 
     def forward(self, pred_actions: th.Tensor, target_actions: th.Tensor) -> th.Tensor:
-        ref_weights = self.reference_weights(target_actions)
-        return F.mse_loss(pred_actions, target_actions, reduction="mean", weight=ref_weights)
+        weights = self._compute_weights(target_actions)
+        return F.mse_loss(pred_actions, target_actions, reduction="mean", weight=weights)
 
 
 
@@ -109,16 +175,29 @@ class ReferenceWeightedDynamicsAwareLoss(nn.Module):
     
     def __init__(
         self, 
-        reference_loss: ReferenceWeightedMSELoss, 
+        reference_loss: BoundedReferenceWeightedMSELoss, 
         dynamics_loss: DynamicsAwareLoss, 
-        lambda_dyn: float = 1.0,
+        dynamics_weight: float = 1.0,
     ):
         super().__init__()
         self.reference_loss = reference_loss
         self.dynamics_loss = dynamics_loss
-        self.lambda_dyn = lambda_dyn
+        self.dynamics_weight = dynamics_weight
+        self.last_loss_parts: ImitationLearningLossParts | None = None
+
+    def compute_loss_parts(self, pred_actions: th.Tensor, target_actions: th.Tensor, states: th.Tensor) -> ImitationLearningLossParts:
+        ref_loss_raw = self.reference_loss(pred_actions, target_actions)
+        dyn_loss_raw = self.dynamics_loss(pred_actions, states)
+
+        parts = ImitationLearningLossParts(
+            reference_raw=ref_loss_raw,
+            dynamics_raw=dyn_loss_raw,
+            reference_weight=1.0,
+            dynamics_weight=self.dynamics_weight,
+        )
+        self.last_loss_parts = parts
+        return parts
 
     def forward(self, pred_actions: th.Tensor, target_actions: th.Tensor, states: th.Tensor) -> th.Tensor:
-        ref_loss = self.reference_loss(pred_actions, target_actions)
-        dyn_loss = self.dynamics_loss(pred_actions, states)
-        return ref_loss + self.lambda_dyn * dyn_loss
+        self.last_loss_parts = self.compute_loss_parts(pred_actions, target_actions, states)
+        return self.last_loss_parts.total

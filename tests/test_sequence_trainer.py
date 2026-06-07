@@ -64,6 +64,10 @@ class TestSequencePolicyTrainer(unittest.TestCase):
 
         self.assertEqual(metrics.epochs_completed, 1)
         self.assertTrue(np.isfinite(metrics.train_loss[0]))
+        self.assertTrue(np.isnan(metrics.train_reference_raw[0]))
+        self.assertTrue(np.isnan(metrics.train_dynamics_raw[0]))
+        self.assertTrue(np.isnan(metrics.train_reference[0]))
+        self.assertTrue(np.isnan(metrics.train_dynamics[0]))
 
     def test_dynamics_aware_loss_accepts_last_token_sequence_batches(self) -> None:
         th.manual_seed(0)
@@ -108,6 +112,12 @@ class TestSequencePolicyTrainer(unittest.TestCase):
 
         self.assertEqual(metrics.epochs_completed, 1)
         self.assertTrue(np.isfinite(metrics.train_loss[0]))
+        self.assertTrue(np.isfinite(metrics.train_reference_raw[0]))
+        self.assertTrue(np.isfinite(metrics.train_dynamics_raw[0]))
+        self.assertTrue(np.isfinite(metrics.train_reference[0]))
+        self.assertTrue(np.isfinite(metrics.train_dynamics[0]))
+        self.assertTrue(np.isnan(metrics.val_reference_raw[0]))
+        self.assertTrue(np.isnan(metrics.val_dynamics_raw[0]))
 
 
 if __name__ == "__main__":
