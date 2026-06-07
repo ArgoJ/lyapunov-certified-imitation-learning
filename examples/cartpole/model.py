@@ -23,6 +23,13 @@ class CartpoleAngleWrapper(nn.Module):
         super().__init__()
         self.net = feature_net
 
+    def __getattr__(self, name: str):
+        """Delegate missing attributes to the underlying feature net."""
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.net, name)
+
     @staticmethod
     def _transform_inputs(x: th.Tensor) -> th.Tensor:
         cart_pos_vel = x[:, :2]

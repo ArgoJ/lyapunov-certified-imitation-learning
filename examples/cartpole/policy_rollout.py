@@ -7,8 +7,8 @@ from pathlib import Path
 
 from mpc_datagen import mdg_plt, MPCDataset
 from mpc_datagen.verification import StabilityVerifier, VerificationRender
-from lcil.imitation_learning import StateActionDataset
-from lcil.rollouts import FeasibleSetSampler, PolicyRolloutGenerator
+from lcil.imitation_learning import load_imitation_dataset
+from lcil.rollouts import FeasibleSetSampler, build_policy_rollout_dataset
 from lcil.utils import ArgumentParserConfig, GridSearchHelper, config_field
 
 from . import (
@@ -20,14 +20,14 @@ from . import (
 )
 from ..constants import POLICY_ROLLOUT_FILENAME
 
-__logger__ = logging.getLogger("lcil.examples.cartpole.rollout")
+__logger__ = logging.getLogger("lcil.examples.cartpole.policy_rollout")
 
 
 @dataclass(frozen=True)
 class PolicyRolloutScriptConfig(ArgumentParserConfig):
     policy_dir: str = config_field(help="Policy run directory containing policy_model.pt.")
     n_samples: int = config_field(default=500, help="Number of rollout initial states.")
-    t_sim: int = config_field(default=200, help="Closed-loop rollout horizon in simulation steps.")
+    time_steps: int = config_field(default=200, help="Number of time steps to rollout for each initial state.")
     device: str = config_field(default="cpu", help="Torch device string (e.g. cpu, cuda).")
 
 
@@ -75,7 +75,7 @@ def main() -> None:
         val_dataset_path = policy_dir / "val_dataset.pt"
         sampler = None
         if val_dataset_path.exists():
-            val_dataset = StateActionDataset.load(val_dataset_path)
+            val_dataset = load_imitation_dataset(val_dataset_path)
             sampler = FeasibleSetSampler(dataset=val_dataset)
         else:
             __logger__.warning(
@@ -83,19 +83,18 @@ def main() -> None:
                 val_dataset_path,
             )
 
-        cfg = replace(net.net.global_config, T_sim=int(script_config.t_sim))
+        dt = getattr(getattr(net, "global_config", None), "dt", None)
 
-        simulator = CartpoleDynamics(dt=cfg.dt)
-        policy_rollout_generator = PolicyRolloutGenerator(
-            policy=net,
-            simulator=simulator,
-            cfg=cfg,
-            sampler=sampler,
+        solved_dataset = build_policy_rollout_dataset(
+            policy_model=net,
+            dyn_model=CartpoleDynamics(dt=dt).to(device),
+            rollout_steps=int(script_config.time_steps),
             device=device,
+            sampler=sampler,
+            n_samples=int(script_config.n_samples),
         )
-        solved_dataset = policy_rollout_generator.generate(int(script_config.n_samples))
 
-        p_matrix = compute_riccati_value_matrix(float(cfg.dt))
+        p_matrix = compute_riccati_value_matrix(float(dt))
         _set_quadratic_vn(solved_dataset, p_matrix)
         solved_dataset.validate()
 

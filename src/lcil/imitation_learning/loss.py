@@ -42,6 +42,7 @@ class BoundedReferenceWeightedMSELoss(nn.Module):
         x_max: Sequence[float] | th.Tensor,
         alpha: float = 1.0,
         min_weight: float = 1e-3,
+        max_weight: float = 1.0,
         emphasize_close: bool = False, 
     ) -> None:
         """
@@ -80,7 +81,9 @@ class BoundedReferenceWeightedMSELoss(nn.Module):
         self.emphasize_close = emphasize_close
         self.alpha = float(alpha)
         self.min_weight = float(min_weight)
+        self.max_weight = float(max_weight)
 
+    # TODO: Consider switching back to non range normalized distance 
     def _compute_weights(self, target_actions: th.Tensor) -> th.Tensor:
         range_tensor = self.x_max - self.x_min
         target_norm = th.clamp((target_actions - self.x_min) / range_tensor, 0.0, 1.0)
@@ -88,9 +91,10 @@ class BoundedReferenceWeightedMSELoss(nn.Module):
         distance = (target_norm - ref_norm).abs()
         if self.emphasize_close:
             distance = 1.0 - distance
-        weights = distance.pow(self.alpha)
+
+        weights = 1.0 + distance.pow(self.alpha)
         weights_mean = weights.mean(dim=0, keepdim=True)
-        return (weights / (weights_mean + 1e-8)).clamp_min(self.min_weight)
+        return (weights / weights_mean).clamp(self.min_weight, self.max_weight)
 
     def forward(self, pred_actions: th.Tensor, target_actions: th.Tensor) -> th.Tensor:
         weights = self._compute_weights(target_actions)

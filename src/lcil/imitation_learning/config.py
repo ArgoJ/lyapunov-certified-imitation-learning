@@ -176,18 +176,23 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="Weight for the dynamics loss component.",
         validators=(non_negative_validator,)
     )
-    reference_loss_emphasize_close: bool = config_field(
+    reference_emphasize_close: bool = config_field(
         default=False,
         help="Whether to emphasize actions close to the reference in the reference loss."
     )
-    reference_loss_alpha: float = config_field(
+    reference_alpha: float = config_field(
         default=1.0,
         help="Exponent alpha for the reference loss weighting function.",
         validators=(positive_validator,)
     )
-    reference_loss_min_weight: float = config_field(
+    reference_min_weight: float = config_field(
         default=1e-3,
         help="Minimum weight for the reference loss weighting function.",
+        validators=(positive_validator,)
+    )
+    reference_max_weight: float = config_field(
+        default=2.0,
+        help="Maximum weight for the reference loss. Must be positive.",
         validators=(positive_validator,)
     )
 
