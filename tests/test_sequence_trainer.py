@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from lcil.imitation_learning import (
     DynamicsAwareLoss,
     ImitationTrainingConfig,
-    ReferenceWeightedDynamicsAwareLoss,
+    ScaledDynamicsAwareLoss,
     ReferenceWeightedMSELoss,
     SequenceStateActionDataset,
     PolicyTrainer,
@@ -64,9 +64,9 @@ class TestSequencePolicyTrainer(unittest.TestCase):
 
         self.assertEqual(metrics.epochs_completed, 1)
         self.assertTrue(np.isfinite(metrics.train_loss[0]))
-        self.assertTrue(np.isnan(metrics.train_reference_raw[0]))
+        self.assertTrue(np.isnan(metrics.train_scaled_raw[0]))
         self.assertTrue(np.isnan(metrics.train_dynamics_raw[0]))
-        self.assertTrue(np.isnan(metrics.train_reference[0]))
+        self.assertTrue(np.isnan(metrics.train_scaled[0]))
         self.assertTrue(np.isnan(metrics.train_dynamics[0]))
 
     def test_dynamics_aware_loss_accepts_last_token_sequence_batches(self) -> None:
@@ -92,8 +92,8 @@ class TestSequencePolicyTrainer(unittest.TestCase):
             dropout=0.0,
             output_mode="last",
         )
-        loss_fn = ReferenceWeightedDynamicsAwareLoss(
-            reference_loss=ReferenceWeightedMSELoss(reference=[0.0]),
+        loss_fn = ScaledDynamicsAwareLoss(
+            scaled_loss=ReferenceWeightedMSELoss(reference=[0.0]),
             dynamics_loss=DynamicsAwareLoss(
                 dynamics=AdditiveDynamics(),
                 x_min=th.tensor([-1.0]),
@@ -112,11 +112,11 @@ class TestSequencePolicyTrainer(unittest.TestCase):
 
         self.assertEqual(metrics.epochs_completed, 1)
         self.assertTrue(np.isfinite(metrics.train_loss[0]))
-        self.assertTrue(np.isfinite(metrics.train_reference_raw[0]))
+        self.assertTrue(np.isfinite(metrics.train_scaled_raw[0]))
         self.assertTrue(np.isfinite(metrics.train_dynamics_raw[0]))
-        self.assertTrue(np.isfinite(metrics.train_reference[0]))
+        self.assertTrue(np.isfinite(metrics.train_scaled[0]))
         self.assertTrue(np.isfinite(metrics.train_dynamics[0]))
-        self.assertTrue(np.isnan(metrics.val_reference_raw[0]))
+        self.assertTrue(np.isnan(metrics.val_scaled_raw[0]))
         self.assertTrue(np.isnan(metrics.val_dynamics_raw[0]))
 
 

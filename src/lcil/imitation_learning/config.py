@@ -166,9 +166,9 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
 
     # Loss
-    reference_weight: float = config_field(
+    scaled_weight: float = config_field(
         default=1.0,
-        help="Weight for the reference loss component.",
+        help="Weight for the scaled loss component.",
         validators=(positive_validator,)
     )
     dynamics_weight: float = config_field(
@@ -176,26 +176,6 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="Weight for the dynamics loss component.",
         validators=(non_negative_validator,)
     )
-    reference_emphasize_close: bool = config_field(
-        default=False,
-        help="Whether to emphasize actions close to the reference in the reference loss."
-    )
-    reference_alpha: float = config_field(
-        default=1.0,
-        help="Exponent alpha for the reference loss weighting function.",
-        validators=(positive_validator,)
-    )
-    reference_min_weight: float = config_field(
-        default=1e-3,
-        help="Minimum weight for the reference loss weighting function.",
-        validators=(positive_validator,)
-    )
-    reference_max_weight: float = config_field(
-        default=2.0,
-        help="Maximum weight for the reference loss. Must be positive.",
-        validators=(positive_validator,)
-    )
-
     
     # Others
     tb_log_dir: str | os.PathLike | None = config_field(

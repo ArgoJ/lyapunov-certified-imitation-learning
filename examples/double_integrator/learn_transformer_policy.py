@@ -77,8 +77,8 @@ def main() -> None:
         dtype=th.float32,
     )
 
-    loss_fn = ReferenceWeightedDynamicsAwareLoss(
-        reference_loss=ReferenceWeightedMSELoss(
+    loss_fn = ScaledDynamicsAwareLoss(
+        scaled_loss=ReferenceWeightedMSELoss(
             reference=[dataset_cfg.cost.yref[-dataset_cfg.nu:]],
             alpha=1.0,
             max_weight=5.0,

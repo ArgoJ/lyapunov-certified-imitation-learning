@@ -52,7 +52,7 @@ def parse_cli_args() -> GridSearchHelper[tuple[PolicyScriptConfig, ImitationTrai
         scheduler_type="plateau",
         scheduler_kwargs={"mode": "min", "factor": 0.5, "patience": 4},
         dynamics_weight=0.1,
-        reference_min_weight=0.5,
+        scaled_weight=0.5,
     )
     training_defaults.add_to_argparse(
         parser,
@@ -97,21 +97,16 @@ def main() -> None:
         script_config, train_config = run.config
         __logger__.info("%s", run.progress_message())
 
-        loss_fn = ReferenceWeightedDynamicsAwareLoss(
-            reference_loss=BoundedReferenceWeightedMSELoss(
-                reference=dataset_cfg.cost.yref[-dataset_cfg.nu:],
-                x_min=dataset_cfg.constraints.lbu,
-                x_max=dataset_cfg.constraints.ubu,
-                alpha=train_config.reference_alpha,
-                emphasize_close=train_config.reference_emphasize_close,
-                min_weight=train_config.reference_min_weight,
+        loss_fn = ScaledDynamicsAwareLoss(
+            scaled_loss=ScaledMSELoss(
+                scale=[10, 1],
             ),
             dynamics_loss=DynamicsAwareLoss(
                 dynamics=CartpoleDynamics(dt=dataset_cfg.dt, sys_cfg=sys_cfg).to(base_device),
                 x_min=dataset_cfg.constraints.lbx,
                 x_max=dataset_cfg.constraints.ubx,
             ) if train_config.dynamics_weight > 0.0 else None,
-            reference_weight=train_config.reference_weight,
+            scaled_weight=train_config.scaled_weight,
             dynamics_weight=train_config.dynamics_weight,
         )
 
