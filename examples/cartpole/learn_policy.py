@@ -27,7 +27,7 @@ __logger__ = logging.getLogger("lcil.examples.cartpole.learn_policy")
 class PolicyScriptConfig(ArgumentParserConfig):
     device: str = config_field(default="cpu", help="Torch device string (e.g. cpu, cuda).")
     activation: str = config_field(default="relu", help="Activation function for policy net hidden layers.")
-    hidden_size: int = config_field(default=24, help="Number of neurons in each hidden layer.")
+    hidden_size: int = config_field(default=32, help="Number of neurons in each hidden layer.")
     layers: int = config_field(default=3, help="Number of hidden layers in the policy net.")
 
 
@@ -48,9 +48,11 @@ def parse_cli_args() -> GridSearchHelper[tuple[PolicyScriptConfig, ImitationTrai
         val_fraction=0.2,
         split_strategy="random",
         epochs=200,
-        learning_rate=5e-4,
+        learning_rate=1e-3,
         scheduler_type="plateau",
         scheduler_kwargs={"mode": "min", "factor": 0.5, "patience": 4},
+        dynamics_weight=5.0,
+        reference_loss_min_weight=0.5,
     )
     training_defaults.add_to_argparse(
         parser,
@@ -86,26 +88,8 @@ def main() -> None:
         shuffle=True,
         drop_last=False,
         num_workers=0,
-        pin_memory=True,
+        pin_memory=base_device.type == "cuda",
         dtype=th.float32,
-        device=base_device,
-    )
-
-    loss_fn = ReferenceWeightedDynamicsAwareLoss(
-        reference_loss=BoundedReferenceWeightedMSELoss(
-            reference=dataset_cfg.cost.yref[-dataset_cfg.nu:],
-            x_min=dataset_cfg.constraints.lbu,
-            x_max=dataset_cfg.constraints.ubu,
-            alpha=1.0,
-            max_weight=1.0,
-            min_weight=0.7,
-        ),
-        dynamics_loss=DynamicsAwareLoss(
-            dynamics=CartpoleDynamics(dt=dataset_cfg.dt, sys_cfg=sys_cfg),
-            x_min=dataset_cfg.constraints.lbx,
-            x_max=dataset_cfg.constraints.ubx,
-        ),
-        dynamics_weight=2.0,
     )
 
     __logger__.info("Starting grid search over %d configurations...", len(sweep))
@@ -113,12 +97,31 @@ def main() -> None:
         script_config, train_config = run.config
         __logger__.info("%s", run.progress_message())
 
+        loss_fn = ReferenceWeightedDynamicsAwareLoss(
+            reference_loss=BoundedReferenceWeightedMSELoss(
+                reference=dataset_cfg.cost.yref[-dataset_cfg.nu:],
+                x_min=dataset_cfg.constraints.lbu,
+                x_max=dataset_cfg.constraints.ubu,
+                alpha=train_config.reference_loss_alpha,
+                emphasize_close=train_config.reference_loss_emphasize_close,
+                min_weight=train_config.reference_loss_min_weight,
+            ),
+            dynamics_loss=DynamicsAwareLoss(
+                dynamics=CartpoleDynamics(dt=dataset_cfg.dt, sys_cfg=sys_cfg).to(base_device),
+                x_min=dataset_cfg.constraints.lbx,
+                x_max=dataset_cfg.constraints.ubx,
+            ) if train_config.dynamics_weight > 0.0 else None,
+            reference_weight=train_config.reference_weight,
+            dynamics_weight=train_config.dynamics_weight,
+        )
+
         feature_net = MLPPolicy(
             [5] + [script_config.hidden_size] * script_config.layers + [dataset_cfg.nu],
             [script_config.activation] * script_config.layers + ["identity"],
             dropout=train_config.dropout,
             u_min=dataset_cfg.constraints.lbu,
             u_max=dataset_cfg.constraints.ubu,
+            seed=train_config.seed,
         )
         net = CartpoleAngleWrapper(feature_net=feature_net).to(base_device)
 

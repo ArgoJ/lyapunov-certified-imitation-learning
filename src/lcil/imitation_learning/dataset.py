@@ -902,7 +902,6 @@ def create_train_and_val_dataloader(
     num_workers: int = 0,
     pin_memory: bool = False,
     dtype: th.dtype = th.float32,
-    device: th.device | None = None,
 ) -> tuple[DataLoader[tuple[th.Tensor, th.Tensor]], DataLoader[tuple[th.Tensor, th.Tensor]]]:
     """
     Create train and validation DataLoaders for imitation learning from an ``MPCDataset``.
@@ -922,8 +921,6 @@ def create_train_and_val_dataloader(
         Enable pinned host memory for faster host-to-device transfer.
     dtype : torch.dtype, optional
         Tensor dtype for states/actions emitted by the dataset.
-    device : torch.device or None, optional
-        Optional device to move dataset tensors to. If None, tensors are kept on CPU.
 
     Returns
     -------
@@ -945,7 +942,7 @@ def create_train_and_val_dataloader(
     if not (0.0 < val_fraction < 1.0):
         raise ValueError("val_fraction must be in (0., 1.).")
 
-    generator = build_generator(seed, device=device or "cpu")
+    split_generator = build_generator(seed, device="cpu")
 
     if sequence_length <= 1:
         if training_config.split_strategy != "random":
@@ -971,7 +968,7 @@ def create_train_and_val_dataloader(
         train_dataset, val_dataset = random_split(
             dataset,
             [num_train, num_val],
-            generator=generator,
+            generator=split_generator,
         )
     else:
         dataset = SequenceStateActionDataset.from_mpc_dataset(
@@ -992,7 +989,7 @@ def create_train_and_val_dataloader(
             train_dataset, val_dataset = split_sequence_dataset_by_trajectory(
                 dataset=dataset,
                 val_fraction=val_fraction,
-                generator=generator,
+                generator=split_generator,
             )
         elif training_config.split_strategy == "random":
             num_train = int(len(dataset) * (1.0 - val_fraction))
@@ -1000,7 +997,7 @@ def create_train_and_val_dataloader(
             train_dataset, val_dataset = random_split(
                 dataset,
                 [num_train, num_val],
-                generator=generator,
+                generator=split_generator,
             )
         else:
             raise ValueError(f"Unsupported split_strategy: {training_config.split_strategy}")

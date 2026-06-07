@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from pathlib import Path
 
@@ -179,6 +180,33 @@ class TestSequenceStateActionDataset(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             split_sequence_dataset_by_trajectory(dataset, val_fraction=0.5)
+
+    def test_flat_dataloader_split_seed_works_with_cuda_training_device(self) -> None:
+        training_cfg = ImitationTrainingConfig(
+            dataset_path="unused.h5",
+            sequence_length=1,
+            val_fraction=0.5,
+            seed=7,
+            split_strategy="random",
+            batch_size=2,
+            epochs=1,
+        )
+        dataset = StateActionDataset(
+            states=th.tensor([[0.0], [1.0], [2.0], [3.0]]),
+            actions=th.tensor([[10.0], [11.0], [12.0], [13.0]]),
+        )
+
+        with patch(
+            "lcil.imitation_learning.dataset.StateActionDataset.from_mpc_dataset",
+            return_value=dataset,
+        ):
+            train_loader, val_loader = create_train_and_val_dataloader(
+                training_cfg,
+                device="cuda",
+            )
+
+        self.assertEqual(len(train_loader.dataset), 2)
+        self.assertEqual(len(val_loader.dataset), 2)
 
 
 class TestSequenceStateActionDatasetFromMPCDataset(unittest.TestCase):

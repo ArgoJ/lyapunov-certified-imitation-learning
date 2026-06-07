@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
@@ -44,7 +42,6 @@ class BoundedReferenceWeightedMSELoss(nn.Module):
         x_max: Sequence[float] | th.Tensor,
         alpha: float = 1.0,
         min_weight: float = 1e-3,
-        max_weight: float | None = None,
         emphasize_close: bool = False, 
     ) -> None:
         """
@@ -60,8 +57,6 @@ class BoundedReferenceWeightedMSELoss(nn.Module):
             Exponent for weighting, by default 1.0
         min_weight : float, optional
             Minimum weight, by default 1e-3
-        max_weight : float | None, optional
-            Maximum weight, by default None
         emphasize_close : bool, optional
             If False (default): Emphasizes actions FAR from the reference.
             If True: Emphasizes actions CLOSE to the reference.
@@ -85,41 +80,21 @@ class BoundedReferenceWeightedMSELoss(nn.Module):
         self.emphasize_close = emphasize_close
         self.alpha = float(alpha)
         self.min_weight = float(min_weight)
-        self.max_weight = max_weight
 
     def _compute_weights(self, target_actions: th.Tensor) -> th.Tensor:
-        # 1. Normalize targets and reference to a scale of 0.0 to 1.0
         range_tensor = self.x_max - self.x_min
-
-        target_norm = (target_actions - self.x_min) / range_tensor
-        target_norm = th.clamp(target_norm, 0.0, 1.0)
-
-        ref_norm = (self.reference - self.x_min) / range_tensor
-        ref_norm = th.clamp(ref_norm, 0.0, 1.0)
-
-        # 2. Calculate distance in the normalized space (values between 0.0 and 1.0)
+        target_norm = th.clamp((target_actions - self.x_min) / range_tensor, 0.0, 1.0)
+        ref_norm = th.clamp((self.reference - self.x_min) / range_tensor, 0.0, 1.0)
         distance = (target_norm - ref_norm).abs()
-
-        # 3. Invert logic if emphasizing closeness to the reference
         if self.emphasize_close:
             distance = 1.0 - distance
-
-        # 4. calculate weights
-        weights = distance.pow(self.alpha) + self.min_weight
-
-        if self.max_weight is not None:
-            weights = th.clamp(weights, max=self.max_weight)
-
-        # 5. normalize weights
+        weights = distance.pow(self.alpha)
         weights_mean = weights.mean(dim=0, keepdim=True)
-        normalized_weights = weights / (weights_mean + 1e-8)
-        
-        return normalized_weights
+        return (weights / (weights_mean + 1e-8)).clamp_min(self.min_weight)
 
     def forward(self, pred_actions: th.Tensor, target_actions: th.Tensor) -> th.Tensor:
         weights = self._compute_weights(target_actions)
         return F.mse_loss(pred_actions, target_actions, reduction="mean", weight=weights)
-
 
 
 class DynamicsAwareLoss(nn.Module):
@@ -177,22 +152,25 @@ class ReferenceWeightedDynamicsAwareLoss(nn.Module):
         self, 
         reference_loss: BoundedReferenceWeightedMSELoss, 
         dynamics_loss: DynamicsAwareLoss, 
+        reference_weight: float = 1.0,
         dynamics_weight: float = 1.0,
     ):
         super().__init__()
         self.reference_loss = reference_loss
         self.dynamics_loss = dynamics_loss
+        self.reference_weight = reference_weight
         self.dynamics_weight = dynamics_weight
         self.last_loss_parts: ImitationLearningLossParts | None = None
 
     def compute_loss_parts(self, pred_actions: th.Tensor, target_actions: th.Tensor, states: th.Tensor) -> ImitationLearningLossParts:
-        ref_loss_raw = self.reference_loss(pred_actions, target_actions)
-        dyn_loss_raw = self.dynamics_loss(pred_actions, states)
+        ref_loss_raw = self.reference_loss(pred_actions, target_actions) 
+        dyn_loss_raw = (self.dynamics_loss(pred_actions, states)
+                        if self.dynamics_loss is not None else th.tensor(0.0, device=pred_actions.device))
 
         parts = ImitationLearningLossParts(
             reference_raw=ref_loss_raw,
             dynamics_raw=dyn_loss_raw,
-            reference_weight=1.0,
+            reference_weight=self.reference_weight,
             dynamics_weight=self.dynamics_weight,
         )
         self.last_loss_parts = parts
