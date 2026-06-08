@@ -38,8 +38,6 @@ __logger__ = logging.getLogger(__name__)
 
 @dataclass
 class PolicyEpochLossSummary:
-    """Epoch-averaged total loss and optional constituent parts."""
-
     total: float
     base_raw: float = np.nan
     dynamics_raw: float = np.nan
@@ -49,8 +47,6 @@ class PolicyEpochLossSummary:
 
 @dataclass
 class _PolicyEpochLossAccumulator:
-    """Accumulate batch losses into epoch-averaged summaries."""
-
     total_sum: float = 0.0
     base_raw_sum: float = 0.0
     dynamics_raw_sum: float = 0.0
@@ -78,114 +74,91 @@ class _PolicyEpochLossAccumulator:
         self.tracked_datapoints += batch_size
 
     def finalize(self) -> PolicyEpochLossSummary:
-        num_datapoints = max(self.num_datapoints, 1)
-        total = self.total_sum / num_datapoints
+        total = self.total_sum / max(self.num_datapoints, 1)
 
         if self.tracked_datapoints == 0:
             return PolicyEpochLossSummary(total=total)
 
-        tracked_datapoints = self.tracked_datapoints
+        n = self.tracked_datapoints
         return PolicyEpochLossSummary(
             total=total,
-            base_raw=self.base_raw_sum / tracked_datapoints,
-            dynamics_raw=self.dynamics_raw_sum / tracked_datapoints,
-            base=self.base_sum / tracked_datapoints,
-            dynamics=self.dynamics_sum / tracked_datapoints,
+            base_raw=self.base_raw_sum / n,
+            dynamics_raw=self.dynamics_raw_sum / n,
+            base=self.base_sum / n,
+            dynamics=self.dynamics_sum / n,
         )
 
 
-@dataclass
-class PolicyTrainingMetrics:
-    """Per-epoch training metrics for policy optimization."""
+def _nan_array(num_epochs: int) -> NDArray:
+    return np.full((num_epochs,), np.nan, dtype=np.float64)
 
-    train_loss: NDArray
-    val_loss: NDArray
-    train_base_raw: NDArray
-    train_dynamics_raw: NDArray
-    val_base_raw: NDArray
-    val_dynamics_raw: NDArray
-    train_base: NDArray
-    train_dynamics: NDArray
-    val_base: NDArray
-    val_dynamics: NDArray
-    learning_rate: NDArray
+
+def _write_summary(
+    loss_array: NDArray,
+    base_raw_array: NDArray,
+    dynamics_raw_array: NDArray,
+    base_array: NDArray,
+    dynamics_array: NDArray,
+    epoch: int,
+    summary: PolicyEpochLossSummary | None,
+) -> None:
+    if summary is None:
+        loss_array[epoch] = np.nan
+        base_raw_array[epoch] = np.nan
+        dynamics_raw_array[epoch] = np.nan
+        base_array[epoch] = np.nan
+        dynamics_array[epoch] = np.nan
+        return
+
+    loss_array[epoch] = float(summary.total)
+    base_raw_array[epoch] = float(summary.base_raw)
+    dynamics_raw_array[epoch] = float(summary.dynamics_raw)
+    base_array[epoch] = float(summary.base)
+    dynamics_array[epoch] = float(summary.dynamics)
+
+
+@dataclass
+class PolicyEpochMetrics:
+    loss: NDArray
+    base_raw: NDArray
+    dynamics_raw: NDArray
+    base: NDArray
+    dynamics: NDArray
     epochs_completed: int = 0
 
     @classmethod
-    def from_num_epochs(cls, num_epochs: int) -> PolicyTrainingMetrics:
-        """Create NaN-initialized metric arrays for a fixed epoch budget.
-
-        Parameters
-        ----------
-        num_epochs : int
-            Number of training epochs to allocate storage for.
-
-        Returns
-        -------
-        PolicyTrainingMetrics
-            Metrics container with ``float64`` arrays of shape ``(num_epochs,)``
-            initialized to ``NaN``.
-        """
+    def from_num_epochs(cls, num_epochs: int) -> "PolicyEpochMetrics":
         if num_epochs <= 0:
             raise ValueError("num_epochs must be positive.")
 
-        nan_array = np.full((num_epochs,), np.nan, dtype=np.float64)
         return cls(
-            train_loss=nan_array.copy(),
-            val_loss=nan_array.copy(),
-            train_base_raw=nan_array.copy(),
-            train_dynamics_raw=nan_array.copy(),
-            val_base_raw=nan_array.copy(),
-            val_dynamics_raw=nan_array.copy(),
-            train_base=nan_array.copy(),
-            train_dynamics=nan_array.copy(),
-            val_base=nan_array.copy(),
-            val_dynamics=nan_array.copy(),
-            learning_rate=nan_array.copy(),
-            epochs_completed=0,
+            loss=_nan_array(num_epochs),
+            base_raw=_nan_array(num_epochs),
+            dynamics_raw=_nan_array(num_epochs),
+            base=_nan_array(num_epochs),
+            dynamics=_nan_array(num_epochs),
         )
 
     def update(
         self,
         epoch: int,
-        train_summary: PolicyEpochLossSummary,
-        val_summary: PolicyEpochLossSummary | None,
-        learning_rate: float,
+        summary: PolicyEpochLossSummary | None,
     ) -> None:
-        """Update metric arrays with new values for a completed epoch.
+        if summary is None:
+            return
 
-        Parameters
-        ----------
-        epoch : int
-            Index of the completed epoch (0-based).
-        train_summary : PolicyEpochLossSummary
-            Average training loss summary for the completed epoch.
-        val_summary : PolicyEpochLossSummary | None
-            Average validation loss summary for the completed epoch, or ``None`` if not applicable.
-        learning_rate : float
-            Learning rate used during the completed epoch.
-        """
-        if not (0 <= epoch < len(self.train_loss)):
-            raise IndexError(f"Epoch index {epoch} is out of bounds for metric arrays of length {len(self.train_loss)}.")
+        if not (0 <= epoch < len(self.loss)):
+            raise IndexError(f"Epoch index {epoch} is out of bounds.")
 
-        self.train_loss[epoch] = none_to_float(train_summary.total)
-        self.train_base_raw[epoch] = none_to_float(train_summary.base_raw)
-        self.train_dynamics_raw[epoch] = none_to_float(train_summary.dynamics_raw)
-        self.train_base[epoch] = none_to_float(train_summary.base)
-        self.train_dynamics[epoch] = none_to_float(train_summary.dynamics)
-
-        val_total = None if val_summary is None else val_summary.total
-        val_base_raw = None if val_summary is None else val_summary.base_raw
-        val_dynamics_raw = None if val_summary is None else val_summary.dynamics_raw
-        val_base = None if val_summary is None else val_summary.base
-        val_dynamics = None if val_summary is None else val_summary.dynamics
-
-        self.learning_rate[epoch] = none_to_float(learning_rate)
-        self.val_loss[epoch] = none_to_float(val_total)
-        self.val_base_raw[epoch] = none_to_float(val_base_raw)
-        self.val_dynamics_raw[epoch] = none_to_float(val_dynamics_raw)
-        self.val_base[epoch] = none_to_float(val_base)
-        self.val_dynamics[epoch] = none_to_float(val_dynamics)
+        _write_summary(
+            self.loss,
+            self.base_raw,
+            self.dynamics_raw,
+            self.base,
+            self.dynamics,
+            epoch,
+            summary,
+        )
         self.epochs_completed = max(self.epochs_completed, epoch + 1)
 
     def save(self, path: os.PathLike) -> None:
@@ -193,17 +166,11 @@ class PolicyTrainingMetrics:
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(
             metrics_path,
-            train_loss=self.train_loss,
-            val_loss=self.val_loss,
-            train_base_raw=self.train_base_raw,
-            train_dynamics_raw=self.train_dynamics_raw,
-            val_base_raw=self.val_base_raw,
-            val_dynamics_raw=self.val_dynamics_raw,
-            train_base=self.train_base,
-            train_dynamics=self.train_dynamics,
-            val_base=self.val_base,
-            val_dynamics=self.val_dynamics,
-            learning_rate=self.learning_rate,
+            loss=self.loss,
+            base_raw=self.base_raw,
+            dynamics_raw=self.dynamics_raw,
+            base=self.base,
+            dynamics=self.dynamics,
             epochs_completed=np.asarray(self.epochs_completed, dtype=np.int64),
         )
 
@@ -218,22 +185,20 @@ def _tb_writer_add_scalar_if_finite(
         tb_writer.add_scalar(tag, value, step)
 
 
-def _tb_writer_add_metrics(tb_writer: SummaryWriter | None, metrics: PolicyTrainingMetrics) -> None:
-    if tb_writer is None:
+def _tb_writer_add_summary(
+    tb_writer: SummaryWriter,
+    summary: PolicyEpochLossSummary | None,
+    prefix: str,
+    step: int,
+) -> None:
+    if summary is None:
         return
 
-    epoch = metrics.epochs_completed - 1
-    _tb_writer_add_scalar_if_finite(tb_writer, "Loss/Train", metrics.train_loss[epoch], epoch)
-    _tb_writer_add_scalar_if_finite(tb_writer, "Loss/Validation", metrics.val_loss[epoch], epoch)
-    _tb_writer_add_scalar_if_finite(tb_writer, "RawLoss/TrainBase", metrics.train_base_raw[epoch], epoch)
-    _tb_writer_add_scalar_if_finite(tb_writer, "RawLoss/TrainDynamics", metrics.train_dynamics_raw[epoch], epoch)
-    _tb_writer_add_scalar_if_finite(tb_writer, "RawLoss/ValidationBase", metrics.val_base_raw[epoch], epoch)
-    _tb_writer_add_scalar_if_finite(tb_writer, "RawLoss/ValidationDynamics", metrics.val_dynamics_raw[epoch], epoch)
-    _tb_writer_add_scalar_if_finite(tb_writer, "WeightedLoss/TrainBase", metrics.train_base[epoch], epoch)
-    _tb_writer_add_scalar_if_finite(tb_writer, "WeightedLoss/TrainDynamics", metrics.train_dynamics[epoch], epoch)
-    _tb_writer_add_scalar_if_finite(tb_writer, "WeightedLoss/ValidationBase", metrics.val_base[epoch], epoch)
-    _tb_writer_add_scalar_if_finite(tb_writer, "WeightedLoss/ValidationDynamics", metrics.val_dynamics[epoch], epoch)
-    _tb_writer_add_scalar_if_finite(tb_writer, "LearningRate", metrics.learning_rate[epoch], epoch)
+    _tb_writer_add_scalar_if_finite(tb_writer, f"RawLoss/{prefix}Base", summary.base_raw, step)
+    _tb_writer_add_scalar_if_finite(tb_writer, f"RawLoss/{prefix}Dynamics", summary.dynamics_raw, step)
+    _tb_writer_add_scalar_if_finite(tb_writer, f"WeightedLoss/{prefix}Total", summary.total, step)
+    _tb_writer_add_scalar_if_finite(tb_writer, f"WeightedLoss/{prefix}Base", summary.base, step)
+    _tb_writer_add_scalar_if_finite(tb_writer, f"WeightedLoss/{prefix}Dynamics", summary.dynamics, step)
 
 def _tb_writer_close(tb_writer: SummaryWriter | None) -> None:
     if tb_writer is not None:
@@ -304,7 +269,7 @@ class PolicyTrainer:
             weight_decay=float(self.training_config.weight_decay),
         )
         self.scheduler = self._configure_scheduler()
-        self.metrics: PolicyTrainingMetrics | None = None
+        self.metrics: PolicyEpochMetrics | None = None
 
     def _configure_scheduler(self) -> (
             th.optim.lr_scheduler.LRScheduler | 
@@ -456,15 +421,13 @@ class PolicyTrainer:
 
             return epoch_loss.finalize()
     
-    def train(
-        self,
-    ) -> PolicyTrainingMetrics:
+    def train(self) -> tuple[PolicyEpochMetrics, PolicyEpochMetrics | None]:
         """
         Train a simple MLP policy model on the provided imitation-learning dataset.
 
         Returns
         -------
-        PolicyTrainingMetrics
+        tuple[PolicyEpochMetrics, PolicyEpochMetrics | None]
             Container with per-epoch training and validation loss, learning rates, and total epochs completed.
         """
         epochs = int(self.training_config.epochs)
@@ -473,7 +436,8 @@ class PolicyTrainer:
         self.model.to(self.device)
 
         tb_writer = _tb_writer_build(log_dir=self.training_config.tb_log_dir)
-        metrics = PolicyTrainingMetrics.from_num_epochs(epochs)
+        train_metrics = PolicyEpochMetrics.from_num_epochs(epochs)
+        val_metrics = PolicyEpochMetrics.from_num_epochs(epochs) if self.val_dataloader is not None else None
         bar_step = self._get_bar_step()
 
         with GracefulInterruptHandler(logger=__logger__) as interrupt_handler:
@@ -500,12 +464,16 @@ class PolicyTrainer:
 
                     # Update metrics
                     current_lr = float(self.optimizer.param_groups[0]["lr"])
-                    metrics.update(epoch, train_summary, val_summary, current_lr)
-                    monitored_metric = val_summary.total if val_summary is not None else train_summary.total
-                    self._scheduller_step(monitored_metric)
-                    _tb_writer_add_metrics(tb_writer, metrics)
+                    train_metrics.update(epoch, train_summary, current_lr)
+                    val_metrics.update(epoch, val_summary, current_lr)
 
-                    # Early stopping
+                    # Write TensorBoard scalars
+                    _tb_writer_add_summary(tb_writer, train_summary, prefix="Train", step=epoch)
+                    _tb_writer_add_summary(tb_writer, val_summary, prefix="Validation", step=epoch)
+
+                    # Early stopping and scheduler stepping
+                    monitored_metric = train_summary.total if val_summary is None else val_summary.total
+                    self._scheduller_step(monitored_metric)
                     if self._early_stopping_break(monitored_metric):
                         __logger__.info(
                             f"Early stopping at epoch {epoch + 1:d} (loss {monitored_metric:.6f}).",
@@ -523,7 +491,8 @@ class PolicyTrainer:
         if interrupt_handler.aborted:
             progress.stop()
                 
-        self.metrics = metrics
+        self.train_metrics = train_metrics
+        self.val_metrics = val_metrics
         _tb_writer_close(tb_writer)
         
         if (
@@ -533,7 +502,7 @@ class PolicyTrainer:
         ):
             self.early_stopper.load_best_model(self.model)
 
-        return metrics
+        return train_metrics, val_metrics
 
     def save(
         self,
@@ -553,7 +522,6 @@ class PolicyTrainer:
         """
         save_folder = Path(save_folder).resolve()
         save_folder.mkdir(parents=True, exist_ok=True)
-
 
         # Dataset saving
         train_dataset_path = save_folder / "train_dataset.pt"
@@ -583,6 +551,9 @@ class PolicyTrainer:
 
         # Metrics
         metrics_path = save_folder / TRAINING_METRICS_FILENAME
-        self.metrics.save(metrics_path)
+        self.train_metrics.save(metrics_path)
+        if self.val_metrics is not None:
+            val_metrics_path = save_folder / "val_" + TRAINING_METRICS_FILENAME
+            self.val_metrics.save(val_metrics_path)
         
         __logger__.info(f"Saved training results to {metrics_path.parent}")
