@@ -40,8 +40,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Number of optimization steps per epoch.
     learning_rate : float
         Adam optimizer learning rate.
-    policy_train_start_epoch : int | None
-        Epoch at which to start jointly optimizing policy parameters with Lyapunov parameters.
+    policy_epochs : int | None
+        Epochs jointly optimizing policy parameters with Lyapunov parameters.
         If ``None``, only the Lyapunov model is updated.
     seed : int | None
         Random seed for reproducibility.

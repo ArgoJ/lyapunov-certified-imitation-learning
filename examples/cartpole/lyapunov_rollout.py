@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+import argparse
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+
+import torch as th
+from mpc_datagen import MPCDataset, mdg_plt
+
+from lcil.rollouts import LyapunovRollout
+from lcil.utils.base_config import ArgumentParserConfig, config_field
+
+from . import (
+    discover_latest_lyapunov_dir,
+    discover_latest_policy_dir,
+    load_lyapunov_model,
+    require_dir,
+    require_file,
+    find_all_lyapunov_dirs,
+    build_lyapunov_func,
+)
+from ..constants import *
+
+__logger__ = logging.getLogger("lcil.examples.cartpole.lyapunov_rollout")
+
+
+
+@dataclass(frozen=True)
+class LyapunovRolloutScriptConfig(ArgumentParserConfig):
+    lyapunov_dir: str = config_field(help="Lyapunov run directory containing lyapunov_model.pt.")
+    device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
+
+
+def _build_script_defaults() -> LyapunovRolloutScriptConfig:
+    default_policy_dir = discover_latest_policy_dir()
+    default_lyapunov_dir = discover_latest_lyapunov_dir(default_policy_dir)
+    return LyapunovRolloutScriptConfig(
+        lyapunov_dir=str(default_lyapunov_dir),
+    )
+
+
+def parse_args() -> LyapunovRolloutScriptConfig:
+    script_defaults = _build_script_defaults()
+    parser = argparse.ArgumentParser(
+        description="Copy the policy rollout dataset into a Lyapunov run directory and add Lyapunov values.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    script_defaults.add_to_argparse(parser)
+    args = parser.parse_args()
+    return script_defaults.from_namespace(args)
+
+
+def _infer_source_rollout_path(lyapunov_dir: Path) -> Path:
+    for candidate_dir in [lyapunov_dir, *lyapunov_dir.parents]:
+        rollout_path = candidate_dir / POLICY_ROLLOUT_FILENAME
+        if rollout_path.is_file():
+            return rollout_path.resolve()
+
+    raise FileNotFoundError(
+        f"Could not find '{POLICY_ROLLOUT_FILENAME}' in '{lyapunov_dir}' or any parent directory."
+    )
+
+
+def main() -> None:
+    script_config = parse_args()
+    device = th.device(script_config.device)
+
+    lyapunov_dir = require_dir(script_config.lyapunov_dir, name="Lyapunov run directory")
+    source_rollout_path = _infer_source_rollout_path(lyapunov_dir)
+    rollout_dataset = MPCDataset.load(source_rollout_path)
+    __logger__.info("Loaded source rollout dataset from %s", source_rollout_path)
+
+    lyapunov_dirs = find_all_lyapunov_dirs(lyapunov_dir.parent)
+    if len(lyapunov_dirs) == 0:
+        raise ValueError(f"No Lyapunov run directories found in {script_config.lyapunov_dir}")
+    
+    __logger__.info("Found %d Lyapunov run directories under %s for rollout generation", len(lyapunov_dirs), lyapunov_dir.parent)
+    for lyapunov_dir in lyapunov_dirs:
+        lyapunov_path = require_file(lyapunov_dir / LYAPUNOV_MODEL_FILENAME, name="Lyapunov checkpoint")
+        output_path = lyapunov_dir / LYAPUNOV_ROLLOUT_FILENAME
+
+        lyap_model = load_lyapunov_model(lyapunov_path, device)
+
+        lyapunov_rollout = LyapunovRollout(
+            mpc_dataset=rollout_dataset,
+            lyap_model=lyap_model,
+            device=device,
+        )
+        saved_path = lyapunov_rollout.rollout(output_path=output_path)
+        __logger__.info("Saved Lyapunov rollout dataset to %s", saved_path)
+
+        mdg_plt.lyapunov(
+            lyapunov_func=build_lyapunov_func(lyap_model, device),
+            dataset=rollout_dataset,
+            state_labels=[r"$x$", r"$v$", r"$\theta$", r"$\dot{\theta}$"],
+            plot_3d=False,
+            html_path=(lyapunov_dir / LYAPUNOV_ROLLOUT_FILENAME).with_suffix(".html"),
+            use_dataset_v=True,
+        )
+        mdg_plt.cost_descent(
+            dataset=rollout_dataset,
+            html_path=lyapunov_dir / "cost_descent.html",
+            use_optimal_v=True,
+        )
+
+
+if __name__ == "__main__":
+    main()

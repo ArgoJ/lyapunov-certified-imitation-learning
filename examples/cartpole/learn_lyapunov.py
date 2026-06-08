@@ -62,16 +62,17 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
     return LyapunovTrainingConfig(
         state_dim=4,
         state_bounds=np.array([[-1.0, -1.0, -1.0, -1.0], [1.0, 1.0, 1.0, 1.0]], dtype=float),
-        initial_sample_size=500,
+        initial_sample_size=2000,
         batch_size=2048,
-        outer_epochs=500,
+        outer_epochs=5000,
         steps_per_epoch=10,
-        train_policy_model=False,
-        counterexample_every=10,
-        adversarial_samples=1024,
+        counterexample_every=20,
+        adversarial_samples=8192,
         counterexample_steps=30,
         adversarial_step_size=0.05,
         condition_margin=0.0,
+        policy_epochs=200,
+        rho_boundary_samples=2048,
     )
 
 
@@ -92,10 +93,8 @@ def parse_cli_args() -> GridSearchHelper[tuple[LyapunovLearningScriptConfig, Lya
         nargs_fields={
             "learning_rate",
             "kappa",
-            "invariance_weight",
+            "*weight",
             "rho_growth_gamma",
-            "roa_weight",
-            "l1_weight",
             "rho_estimate_quantile",
             "condition_margin",
         },
