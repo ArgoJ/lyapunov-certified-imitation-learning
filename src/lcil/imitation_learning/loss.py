@@ -215,9 +215,11 @@ class DynamicsAwareLoss(nn.Module):
         self._has_upper_bound = x_max is not None and len(x_max) > 0
 
         if self._has_lower_bound:
-            self.register_buffer("x_min", th.as_tensor(x_min, dtype=th.float32).view(1, -1))
+            x_min_tensor = _as_row_tensor(x_min, "x_min")
+            self.register_buffer("x_min", x_min_tensor)
         if self._has_upper_bound:
-            self.register_buffer("x_max", th.as_tensor(x_max, dtype=th.float32).view(1, -1))
+            x_max_tensor = _as_row_tensor(x_max, "x_max")
+            self.register_buffer("x_max", x_max_tensor)
 
     def forward(self, pred_actions: th.Tensor, states: th.Tensor) -> th.Tensor:
         if not self._has_lower_bound and not self._has_upper_bound:

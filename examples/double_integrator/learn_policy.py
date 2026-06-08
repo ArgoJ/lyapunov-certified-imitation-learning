@@ -94,23 +94,6 @@ def main() -> None:
         pin_memory=True,
         dtype=th.float32,
     )
-    
-    loss_fn = BaselineDynamicsAwareLoss(
-        base_loss=ScaledMSELoss(
-            reference=dataset_cfg.cost.yref[-dataset_cfg.nu:],
-            x_min=dataset_cfg.constraints.lbu,
-            x_max=dataset_cfg.constraints.ubu,
-            alpha=1.0,
-            max_weight=5.0,
-            min_weight=4.0),
-        dynamics_loss=DynamicsAwareLoss(
-            dynamics=DoubleIntegratorDynamics(
-                dt=dataset_cfg.dt,
-                method=IntegrationMethod.CLASSICAL_RK4), 
-            x_min=th.tensor(dataset_cfg.constraints.lbx), 
-            x_max=th.tensor(dataset_cfg.constraints.ubx)),
-        dynamics_weight=5.0,
-    )
 
     # ---------------------------------------------------------------------
     # Grid Search
@@ -133,6 +116,21 @@ def main() -> None:
         current_train_cfg = replace(
             train_config,
             tb_log_dir=sweep._sweep_base_path.parent / "tb" / sweep.sweep_id / run.run_name
+        )
+
+        loss_fn = BaselineDynamicsAwareLoss(
+            base_loss=StateWeightedMSELoss(
+                x_reference=dataset_cfg.cost.yref[:dataset_cfg.nx],
+                x_scale=dataset_cfg.constraints.ubx - dataset_cfg.constraints.lbx,
+                center_alpha=current_train_cfg.reference_center_alpha,
+                min_weight=current_train_cfg.reference_min_weight),
+            dynamics_loss=DynamicsAwareLoss(
+                dynamics=DoubleIntegratorDynamics(
+                    dt=dataset_cfg.dt,
+                    method=IntegrationMethod.CLASSICAL_RK4), 
+                x_min=dataset_cfg.constraints.lbx, 
+                x_max=dataset_cfg.constraints.ubx),
+            dynamics_weight=5.0,
         )
 
         trainer = PolicyTrainer(
