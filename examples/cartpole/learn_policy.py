@@ -41,7 +41,7 @@ def parse_cli_args() -> GridSearchHelper[tuple[PolicyScriptConfig, ImitationTrai
     script_defaults = PolicyScriptConfig()
     script_defaults.add_to_argparse(
         parser,
-        nargs_fields={"activation", "hidden_size", "layers", "use_angle_wrapper"},
+        nargs_fields={"activation", "hidden_size", "layers"},
     )
 
     training_defaults = ImitationTrainingConfig(
@@ -116,7 +116,7 @@ def main() -> None:
         )
 
         feature_net = MLPPolicy(
-            [5] + [script_config.hidden_size] * script_config.layers + [dataset_cfg.nu],
+            [5 if script_config.use_angle_wrapper else 4] + [script_config.hidden_size] * script_config.layers + [dataset_cfg.nu],
             [script_config.activation] * script_config.layers + ["identity"],
             dropout=train_config.dropout,
             u_min=dataset_cfg.constraints.lbu,

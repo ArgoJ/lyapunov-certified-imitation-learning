@@ -172,7 +172,7 @@ def main() -> None:
 
         seed = train_config.seed + run_idx if train_config.seed is not None else None
         lyap_feature = MLP(
-            [5] + [script_config.hidden_size] * script_config.layers + [1],
+            [5 if script_config.use_angle_wrapper else 4] + [script_config.hidden_size] * script_config.layers + [1],
             [script_config.activation] * script_config.layers + ["identity"],
             dropout=train_config.dropout,
             normalization="none",
