@@ -166,15 +166,25 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
 
     # Loss
-    scaled_weight: float = config_field(
+    base_weight: float = config_field(
         default=1.0,
-        help="Weight for the scaled loss component.",
+        help="Weight for the base loss component.",
         validators=(positive_validator,)
     )
     dynamics_weight: float = config_field(
         default=1.0,
         help="Weight for the dynamics loss component.",
         validators=(non_negative_validator,)
+    )
+    reference_min_weight: float = config_field(
+        default=0.5,
+        help="Minimum weight for the reference loss component when using state or action weighting.",
+        validators=(fraction_validator,)
+    )
+    reference_center_alpha: float = config_field(
+        default=1.0,
+        help="Center alpha parameter for the reference loss component when using state or action weighting. Higher values lead to more aggressive weighting.",
+        validators=(positive_validator,)
     )
     
     # Others

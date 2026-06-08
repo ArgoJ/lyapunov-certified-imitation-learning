@@ -95,8 +95,8 @@ def main() -> None:
         dtype=th.float32,
     )
     
-    loss_fn = ScaledDynamicsAwareLoss(
-        scaled_loss=ScaledMSELoss(
+    loss_fn = BaselineDynamicsAwareLoss(
+        base_loss=ScaledMSELoss(
             reference=dataset_cfg.cost.yref[-dataset_cfg.nu:],
             x_min=dataset_cfg.constraints.lbu,
             x_max=dataset_cfg.constraints.ubu,

@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from lcil.imitation_learning import (
     DynamicsAwareLoss,
     ImitationTrainingConfig,
-    ScaledDynamicsAwareLoss,
+    BaselineDynamicsAwareLoss,
     ReferenceWeightedMSELoss,
     SequenceStateActionDataset,
     PolicyTrainer,
@@ -92,8 +92,8 @@ class TestSequencePolicyTrainer(unittest.TestCase):
             dropout=0.0,
             output_mode="last",
         )
-        loss_fn = ScaledDynamicsAwareLoss(
-            scaled_loss=ReferenceWeightedMSELoss(reference=[0.0]),
+        loss_fn = BaselineDynamicsAwareLoss(
+            base_loss=ReferenceWeightedMSELoss(reference=[0.0]),
             dynamics_loss=DynamicsAwareLoss(
                 dynamics=AdditiveDynamics(),
                 x_min=th.tensor([-1.0]),

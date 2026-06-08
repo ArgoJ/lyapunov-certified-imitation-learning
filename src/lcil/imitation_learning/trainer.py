@@ -41,9 +41,9 @@ class PolicyEpochLossSummary:
     """Epoch-averaged total loss and optional constituent parts."""
 
     total: float
-    scaled_raw: float = np.nan
+    base_raw: float = np.nan
     dynamics_raw: float = np.nan
-    scaled: float = np.nan
+    base: float = np.nan
     dynamics: float = np.nan
 
 
@@ -52,9 +52,9 @@ class _PolicyEpochLossAccumulator:
     """Accumulate batch losses into epoch-averaged summaries."""
 
     total_sum: float = 0.0
-    scaled_raw_sum: float = 0.0
+    base_raw_sum: float = 0.0
     dynamics_raw_sum: float = 0.0
-    scaled_sum: float = 0.0
+    base_sum: float = 0.0
     dynamics_sum: float = 0.0
     num_datapoints: int = 0
     tracked_datapoints: int = 0
@@ -71,9 +71,9 @@ class _PolicyEpochLossAccumulator:
         if loss_parts is None:
             return
 
-        self.scaled_raw_sum += float(loss_parts.scaled_raw.item()) * batch_size
+        self.base_raw_sum += float(loss_parts.base_raw.item()) * batch_size
         self.dynamics_raw_sum += float(loss_parts.dynamics_raw.item()) * batch_size
-        self.scaled_sum += float(loss_parts.scaled.item()) * batch_size
+        self.base_sum += float(loss_parts.base.item()) * batch_size
         self.dynamics_sum += float(loss_parts.dynamics.item()) * batch_size
         self.tracked_datapoints += batch_size
 
@@ -87,9 +87,9 @@ class _PolicyEpochLossAccumulator:
         tracked_datapoints = self.tracked_datapoints
         return PolicyEpochLossSummary(
             total=total,
-            scaled_raw=self.scaled_raw_sum / tracked_datapoints,
+            base_raw=self.base_raw_sum / tracked_datapoints,
             dynamics_raw=self.dynamics_raw_sum / tracked_datapoints,
-            scaled=self.scaled_sum / tracked_datapoints,
+            base=self.base_sum / tracked_datapoints,
             dynamics=self.dynamics_sum / tracked_datapoints,
         )
 
@@ -100,13 +100,13 @@ class PolicyTrainingMetrics:
 
     train_loss: NDArray
     val_loss: NDArray
-    train_scaled_raw: NDArray
+    train_base_raw: NDArray
     train_dynamics_raw: NDArray
-    val_scaled_raw: NDArray
+    val_base_raw: NDArray
     val_dynamics_raw: NDArray
-    train_scaled: NDArray
+    train_base: NDArray
     train_dynamics: NDArray
-    val_scaled: NDArray
+    val_base: NDArray
     val_dynamics: NDArray
     learning_rate: NDArray
     epochs_completed: int = 0
@@ -133,13 +133,13 @@ class PolicyTrainingMetrics:
         return cls(
             train_loss=nan_array.copy(),
             val_loss=nan_array.copy(),
-            train_scaled_raw=nan_array.copy(),
+            train_base_raw=nan_array.copy(),
             train_dynamics_raw=nan_array.copy(),
-            val_scaled_raw=nan_array.copy(),
+            val_base_raw=nan_array.copy(),
             val_dynamics_raw=nan_array.copy(),
-            train_scaled=nan_array.copy(),
+            train_base=nan_array.copy(),
             train_dynamics=nan_array.copy(),
-            val_scaled=nan_array.copy(),
+            val_base=nan_array.copy(),
             val_dynamics=nan_array.copy(),
             learning_rate=nan_array.copy(),
             epochs_completed=0,
@@ -169,22 +169,22 @@ class PolicyTrainingMetrics:
             raise IndexError(f"Epoch index {epoch} is out of bounds for metric arrays of length {len(self.train_loss)}.")
 
         self.train_loss[epoch] = none_to_float(train_summary.total)
-        self.train_scaled_raw[epoch] = none_to_float(train_summary.scaled_raw)
+        self.train_base_raw[epoch] = none_to_float(train_summary.base_raw)
         self.train_dynamics_raw[epoch] = none_to_float(train_summary.dynamics_raw)
-        self.train_scaled[epoch] = none_to_float(train_summary.scaled)
+        self.train_base[epoch] = none_to_float(train_summary.base)
         self.train_dynamics[epoch] = none_to_float(train_summary.dynamics)
 
         val_total = None if val_summary is None else val_summary.total
-        val_scaled_raw = None if val_summary is None else val_summary.scaled_raw
+        val_base_raw = None if val_summary is None else val_summary.base_raw
         val_dynamics_raw = None if val_summary is None else val_summary.dynamics_raw
-        val_scaled = None if val_summary is None else val_summary.scaled
+        val_base = None if val_summary is None else val_summary.base
         val_dynamics = None if val_summary is None else val_summary.dynamics
 
         self.learning_rate[epoch] = none_to_float(learning_rate)
         self.val_loss[epoch] = none_to_float(val_total)
-        self.val_scaled_raw[epoch] = none_to_float(val_scaled_raw)
+        self.val_base_raw[epoch] = none_to_float(val_base_raw)
         self.val_dynamics_raw[epoch] = none_to_float(val_dynamics_raw)
-        self.val_scaled[epoch] = none_to_float(val_scaled)
+        self.val_base[epoch] = none_to_float(val_base)
         self.val_dynamics[epoch] = none_to_float(val_dynamics)
         self.epochs_completed = max(self.epochs_completed, epoch + 1)
 
@@ -195,13 +195,13 @@ class PolicyTrainingMetrics:
             metrics_path,
             train_loss=self.train_loss,
             val_loss=self.val_loss,
-            train_scaled_raw=self.train_scaled_raw,
+            train_base_raw=self.train_base_raw,
             train_dynamics_raw=self.train_dynamics_raw,
-            val_scaled_raw=self.val_scaled_raw,
+            val_base_raw=self.val_base_raw,
             val_dynamics_raw=self.val_dynamics_raw,
-            train_scaled=self.train_scaled,
+            train_base=self.train_base,
             train_dynamics=self.train_dynamics,
-            val_scaled=self.val_scaled,
+            val_base=self.val_base,
             val_dynamics=self.val_dynamics,
             learning_rate=self.learning_rate,
             epochs_completed=np.asarray(self.epochs_completed, dtype=np.int64),
@@ -225,13 +225,13 @@ def _tb_writer_add_metrics(tb_writer: SummaryWriter | None, metrics: PolicyTrain
     epoch = metrics.epochs_completed - 1
     _tb_writer_add_scalar_if_finite(tb_writer, "Loss/Train", metrics.train_loss[epoch], epoch)
     _tb_writer_add_scalar_if_finite(tb_writer, "Loss/Validation", metrics.val_loss[epoch], epoch)
-    _tb_writer_add_scalar_if_finite(tb_writer, "RawLoss/TrainScaled", metrics.train_scaled_raw[epoch], epoch)
+    _tb_writer_add_scalar_if_finite(tb_writer, "RawLoss/TrainBase", metrics.train_base_raw[epoch], epoch)
     _tb_writer_add_scalar_if_finite(tb_writer, "RawLoss/TrainDynamics", metrics.train_dynamics_raw[epoch], epoch)
-    _tb_writer_add_scalar_if_finite(tb_writer, "RawLoss/ValidationScaled", metrics.val_scaled_raw[epoch], epoch)
+    _tb_writer_add_scalar_if_finite(tb_writer, "RawLoss/ValidationBase", metrics.val_base_raw[epoch], epoch)
     _tb_writer_add_scalar_if_finite(tb_writer, "RawLoss/ValidationDynamics", metrics.val_dynamics_raw[epoch], epoch)
-    _tb_writer_add_scalar_if_finite(tb_writer, "WeightedLoss/TrainScaled", metrics.train_scaled[epoch], epoch)
+    _tb_writer_add_scalar_if_finite(tb_writer, "WeightedLoss/TrainBase", metrics.train_base[epoch], epoch)
     _tb_writer_add_scalar_if_finite(tb_writer, "WeightedLoss/TrainDynamics", metrics.train_dynamics[epoch], epoch)
-    _tb_writer_add_scalar_if_finite(tb_writer, "WeightedLoss/ValidationScaled", metrics.val_scaled[epoch], epoch)
+    _tb_writer_add_scalar_if_finite(tb_writer, "WeightedLoss/ValidationBase", metrics.val_base[epoch], epoch)
     _tb_writer_add_scalar_if_finite(tb_writer, "WeightedLoss/ValidationDynamics", metrics.val_dynamics[epoch], epoch)
     _tb_writer_add_scalar_if_finite(tb_writer, "LearningRate", metrics.learning_rate[epoch], epoch)
 
