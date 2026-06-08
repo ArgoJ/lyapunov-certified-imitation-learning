@@ -111,7 +111,7 @@ def main() -> None:
             normalization="none",
             u_min=dataset_cfg.constraints.lbu,
             u_max=dataset_cfg.constraints.ubu,
-        ).to(device)
+        )
 
         current_train_cfg = replace(
             train_config,

@@ -29,6 +29,7 @@ class PolicyScriptConfig(ArgumentParserConfig):
     activation: str = config_field(default="relu", help="Activation function for policy net hidden layers.")
     hidden_size: int = config_field(default=32, help="Number of neurons in each hidden layer.")
     layers: int = config_field(default=3, help="Number of hidden layers in the policy net.")
+    use_angle_wrapper: bool = config_field(default=True, help="Whether to use the CartpoleAngleWrapper around the policy net.")
 
 
 def parse_cli_args() -> GridSearchHelper[tuple[PolicyScriptConfig, ImitationTrainingConfig]]:
@@ -40,7 +41,7 @@ def parse_cli_args() -> GridSearchHelper[tuple[PolicyScriptConfig, ImitationTrai
     script_defaults = PolicyScriptConfig()
     script_defaults.add_to_argparse(
         parser,
-        nargs_fields={"activation", "hidden_size", "layers"},
+        nargs_fields={"activation", "hidden_size", "layers", "use_angle_wrapper"},
     )
 
     training_defaults = ImitationTrainingConfig(
@@ -106,7 +107,7 @@ def main() -> None:
                 min_weight=train_config.reference_min_weight
             ),
             dynamics_loss=DynamicsAwareLoss(
-                dynamics=CartpoleDynamics(dt=dataset_cfg.dt, sys_cfg=sys_cfg).to(base_device),
+                dynamics=CartpoleDynamics(dt=dataset_cfg.dt, sys_cfg=sys_cfg),
                 x_min=dataset_cfg.constraints.lbx,
                 x_max=dataset_cfg.constraints.ubx,
             ) if train_config.dynamics_weight > 0.0 else None,
@@ -122,7 +123,6 @@ def main() -> None:
             u_max=dataset_cfg.constraints.ubu,
             seed=train_config.seed,
         )
-        net = CartpoleAngleWrapper(feature_net=feature_net).to(base_device)
 
         current_train_cfg = replace(
             train_config,
@@ -130,7 +130,8 @@ def main() -> None:
         )
 
         trainer = PolicyTrainer(
-            model=net,
+            model=(CartpoleAngleWrapper(feature_net=feature_net)
+                if script_config.use_angle_wrapper else feature_net),
             dataloader=train_loader,
             training_config=current_train_cfg,
             val_dataloader=val_loader,

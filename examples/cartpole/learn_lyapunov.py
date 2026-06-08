@@ -36,10 +36,10 @@ _DEFAULT_TRAIN_BOUND_FACTORS = (0.5, 0.4, 0.15, 0.4)
 class LyapunovLearningScriptConfig(ArgumentParserConfig):
     policy_dir: str = config_field(help=f"Policy run directory containing {POLICY_MODEL_FILENAME}.")
     device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
-    activation: str = config_field(default="tanh", help="Activation function for the Lyapunov feature net.", display_alias="act")
+    activation: str = config_field(default="relu", help="Activation function for the Lyapunov feature net.", display_alias="act")
     hidden_size: int = config_field(default=32, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
     layers: int = config_field(default=3, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
-    lyap_eps: float = config_field(default=0.1, help="Positive-definite baseline epsilon for the Lyapunov candidate.", display_alias="eps")
+    use_angle_wrapper: bool = config_field(default=True, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
     train_bound_factors: list[float] = config_field(
         default_factory=lambda: list(_DEFAULT_TRAIN_BOUND_FACTORS),
         help="Per-dimension scaling applied to policy state bounds before Lyapunov training.",
@@ -84,7 +84,7 @@ def parse_cli_args() -> GridSearchHelper[tuple[LyapunovLearningScriptConfig, Lya
     script_defaults = _build_script_defaults()
     script_defaults.add_to_argparse(
         parser,
-        nargs_fields={"activation", "hidden_size", "layers", "lyap_eps"},
+        nargs_fields={"activation", "hidden_size", "layers"},
     )
 
     training_defaults = _build_training_defaults()
@@ -97,6 +97,7 @@ def parse_cli_args() -> GridSearchHelper[tuple[LyapunovLearningScriptConfig, Lya
             "rho_growth_gamma",
             "rho_estimate_quantile",
             "condition_margin",
+            "policy_epochs",
         },
     )
 
@@ -166,7 +167,7 @@ def main() -> None:
         __logger__.info("Using curriculum scales: %s", curriculum_scales)
 
         base_path = run.output_dir.resolve()
-        dyn_model = CartpoleDynamics(dt=policy_global_config.dt).to(device)
+        dyn_model = CartpoleDynamics(dt=policy_global_config.dt)
         dyn_model.eval()
 
         seed = train_config.seed + run_idx if train_config.seed is not None else None
@@ -176,13 +177,13 @@ def main() -> None:
             dropout=train_config.dropout,
             normalization="none",
             seed=seed,
-        ).to(device)
+        )
         lyap_model = NeuralLyapunovCandidate(
-            feature_net=CartpoleAngleWrapper(feature_net=lyap_feature),
+            feature_net=(CartpoleAngleWrapper(feature_net=lyap_feature) 
+                if script_config.use_angle_wrapper else lyap_feature),
             state_dim=policy_global_config.nx,
-            eps=script_config.lyap_eps,
             riccati_p=riccati_p,
-        ).to(device)
+        )
 
         training_config = replace(
             train_config,

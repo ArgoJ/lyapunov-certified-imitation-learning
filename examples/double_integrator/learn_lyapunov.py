@@ -67,11 +67,7 @@ def parse_cli_args() -> GridSearchHelper[tuple[LyapunovLearningScriptConfig, Lya
     script_defaults = _build_script_defaults()
     script_defaults.add_to_argparse(
         parser,
-        nargs_fields={
-            "activation",
-            "hidden_size",
-            "layers"
-        }
+        nargs_fields={"activation", "hidden_size", "layers"}
     )
     training_defaults = _build_training_defaults()
     training_defaults.add_to_argparse(
@@ -83,6 +79,7 @@ def parse_cli_args() -> GridSearchHelper[tuple[LyapunovLearningScriptConfig, Lya
             "rho_growth_gamma",
             "rho_estimate_quantile",
             "condition_margin",
+            "policy_epochs",
         }
     )
     
@@ -131,7 +128,7 @@ def load_policy_and_dataset(
             policy=policy_model,
             rollout_source=rollout_dataset,
             sequence_length=policy_sequence_length,
-        ).to(device)
+        )
     else:
         __logger__.info("Standard policy detected. Using directly for Lyapunov learning.")
 
@@ -170,7 +167,7 @@ def main() -> None:
         dyn_model = DoubleIntegratorDynamics(
             dt=policy_global_config.dt,
             method=IntegrationMethod.EXPLICIT_EULER
-        ).to(device)
+        )
         dyn_model.eval()
 
         # ---------------------------------------------------------------------
@@ -183,13 +180,12 @@ def main() -> None:
             dropout=train_config.dropout,
             normalization='none',
             seed=seed,
-        ).to(device)
+        )
         lyap_model = NeuralLyapunovCandidate(
             feature_net=lyap_feature,
             state_dim=policy_global_config.nx,
-            eps=1e-3,
             riccati_p=riccati_p,
-        ).to(device)
+        )
 
         # ---------------------------------------------------------------------
         # 2. Setup Configs with current grid parameters
