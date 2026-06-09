@@ -54,13 +54,34 @@ def discover_latest_cert_lyapunov_path(lyapunov_root: Path | str | None = None) 
     return _discover_latest_cert_lyapunov_path(resolved_lyapunov_root.parent)
 
 
+def _resolve_policy_model_cls(model_path: Path) -> type[nn.Module]:
+    checkpoint = th.load(model_path, map_location="cpu", weights_only=True)
+    if not isinstance(checkpoint, dict):
+        raise TypeError(f"Unsupported checkpoint format in '{model_path}'.")
+
+    if "layer_sizes" in checkpoint and "activations" in checkpoint:
+        return MLPPolicy
+    if "input_dim" in checkpoint and "output_dim" in checkpoint and "max_seq_len" in checkpoint:
+        return TransformerPolicy
+    if "feature_net_path" in checkpoint:
+        return CartpoleAngleWrapper
+
+    raise ValueError(
+        f"Could not infer policy model type from checkpoint '{model_path}'. "
+        "Expected MLPPolicy, TransformerPolicy, or CartpoleAngleWrapper architecture metadata."
+    )
+
+
 def load_policy_model(
     path: Path | str | None,
     device: th.device | str,
+    model_cls: type[PolicyModelT] | None = None,
     model_name: str = POLICY_MODEL_FILENAME,
-) -> CartpoleAngleWrapper:
+) -> PolicyModelT | nn.Module:
     model_loader = _GenericModelLoader(model_name)
-    return model_loader[CartpoleAngleWrapper](path, device, CARTPOLE_RESULTS_DIR)
+    checkpoint_path = model_loader._resolve_checkpoint_path(path, results_root=CARTPOLE_RESULTS_DIR)
+    resolved_model_cls = _resolve_policy_model_cls(checkpoint_path) if model_cls is None else model_cls
+    return model_loader[resolved_model_cls](checkpoint_path, device, CARTPOLE_RESULTS_DIR)
 
 
 def load_lyapunov_model(

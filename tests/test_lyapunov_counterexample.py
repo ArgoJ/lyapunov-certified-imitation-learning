@@ -73,7 +73,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=2,
             state_bounds=np.array([[-4.0, -1.0], [4.0, 1.0]], dtype=np.float32),
-            rho_boundary_samples=4,
+            rho_estimation_samples=4,
             rho_descent_steps=0,
             rho_growth_gamma=1.5,
             rho_estimate_quantile=0.5,
@@ -103,7 +103,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=2,
             state_bounds=np.array([[-12.0, -1.0], [12.0, 1.0]], dtype=np.float32),
-            rho_boundary_samples=2,
+            rho_estimation_samples=2,
             rho_boundary_buffer_size=2,
             rho_descent_steps=0,
             rho_growth_gamma=1.0,

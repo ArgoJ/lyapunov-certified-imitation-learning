@@ -9,6 +9,7 @@ import numpy as np
 import torch as th
 
 from mpc_datagen import MPCDataset, mdg_plt
+from lcil.imitation_learning.models import MLPPolicy
 from lcil.lyapunov_learning import (
     LyapunovTrainer,
     LyapunovTrainingConfig,
@@ -46,10 +47,7 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     )
     curriculum_scales: list[float] = config_field(
         default_factory=lambda: [1.0],
-        help=(
-            "Curriculum scales applied to the final training bounds. "
-            "Example: --curriculum-scales 0.3 0.6 1.0 trains first on 30%, then 60%, then 100% of the configured training box."
-        ),
+        help=("Curriculum scales applied to the final training bounds."),
     )
 
 
@@ -62,7 +60,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
     return LyapunovTrainingConfig(
         state_dim=4,
         state_bounds=np.array([[-1.0, -1.0, -1.0, -1.0], [1.0, 1.0, 1.0, 1.0]], dtype=float),
-        initial_sample_size=2000,
+        initial_sample_size=2048,
         batch_size=2048,
         outer_epochs=5000,
         steps_per_epoch=10,
@@ -72,7 +70,10 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         adversarial_step_size=0.05,
         condition_margin=0.0,
         policy_epochs=200,
-        rho_boundary_samples=2048,
+        roa_candidate_size=8192,
+        rho_estimation_samples=8192,
+        scale_anchor_num_points=2048,
+        scale_anchor=1000.0,
     )
 
 
@@ -108,7 +109,7 @@ def parse_cli_args() -> GridSearchHelper[tuple[LyapunovLearningScriptConfig, Lya
 def _load_policy_and_rollout_dataset(
     policy_dir: Path,
     device: th.device,
-) -> tuple[CartpoleAngleWrapper, MPCDataset | None]:
+) -> tuple[CartpoleAngleWrapper | MLPPolicy, MPCDataset | None]:
     policy_model = load_policy_model(policy_dir, device)
     rollout_dataset_path = policy_dir / POLICY_ROLLOUT_FILENAME
     rollout_dataset = MPCDataset.load(rollout_dataset_path) if rollout_dataset_path.exists() else None
@@ -134,7 +135,7 @@ def main() -> None:
     sweep.set_output_root(actual_output_root)
 
     policy_model, rollout_dataset = _load_policy_and_rollout_dataset(init_policy_dir, device)
-    policy_global_config = policy_model.net.global_config
+    policy_global_config = policy_model.global_config
     state_bounds = np.vstack([
         policy_global_config.constraints.lbx,
         policy_global_config.constraints.ubx,
@@ -150,7 +151,7 @@ def main() -> None:
         if current_policy_dir != init_policy_dir:
             __logger__.info("Loading policy model from %s for this run...", current_policy_dir)
             policy_model, rollout_dataset = _load_policy_and_rollout_dataset(current_policy_dir, device)
-            policy_global_config = policy_model.net.global_config
+            policy_global_config = policy_model.global_config
             state_bounds = np.vstack([
                 policy_global_config.constraints.lbx,
                 policy_global_config.constraints.ubx,

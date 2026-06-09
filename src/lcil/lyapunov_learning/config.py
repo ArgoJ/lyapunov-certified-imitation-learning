@@ -242,7 +242,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="\u03C1_fac",
         validators=(growth_rate_validator,),
     )
-    rho_boundary_samples: int = config_field(
+    rho_estimation_samples: int = config_field(
         default=512,
         help="Number of boundary points used to estimate rho.",
         display_alias="\u03C1_num",
@@ -376,7 +376,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
             object.__setattr__(
                 self,
                 "rho_boundary_buffer_size",
-                max(self.rho_boundary_samples, 4 * self.rho_boundary_samples),
+                max(self.rho_estimation_samples, 4 * self.rho_estimation_samples),
             )
 
         if self.state_bounds.shape[1] != self.state_dim:

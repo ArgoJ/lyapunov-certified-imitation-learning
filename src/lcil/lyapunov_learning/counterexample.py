@@ -149,7 +149,7 @@ def estimate_rho_from_boundary_diagnostics(
     bounds = _bounds_tensor(config.state_bounds, device)
     lbx, ubx = bounds[0], bounds[1]
     boundary_x, face_dims, is_ub = sample_boundary_points(
-        sample_size=config.rho_boundary_samples,
+        sample_size=config.rho_estimation_samples,
         lb=lbx,
         ub=ubx,
         device=device,
