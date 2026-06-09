@@ -1,11 +1,14 @@
 import torch as th
 import torch.nn as nn
+import numpy as np
 import logging
 import re
 
 from pathlib import Path
 from typing import Callable, TypeVar
 from numpy.typing import NDArray
+
+from mpc_datagen import MPCDataset
 
 from .constants import *
 
@@ -358,3 +361,15 @@ def find_all_lyapunov_dirs(path: Path) -> list[Path]:
         lyap_dirs.append(model_file.parent)
         
     return lyap_dirs
+
+
+def get_initial_states(dataset: MPCDataset) -> NDArray:
+    """Extracts the initial states from all trajectories in the dataset."""
+    initial_states = []
+    for entry in dataset:
+        traj = entry.trajectory
+        if traj.states.shape[0] > 0:
+            initial_states.append(traj.states[0])
+        else:
+            initial_states.append(np.full((dataset.global_config.nx,), np.nan))
+    return np.array(initial_states)

@@ -6,19 +6,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch as th
-from mpc_datagen import MPCDataset, mdg_plt
+from mpc_datagen import MPCDataset, mdg_plt, StabilityVerifier, VerificationRender
 
-from lcil.rollouts import LyapunovRollout
+from lcil.rollouts import build_rollout_dataset
 from lcil.utils.base_config import ArgumentParserConfig, config_field
 
 from . import (
+    DoubleIntegratorDynamics,
     discover_latest_lyapunov_dir,
     discover_latest_policy_dir,
+    load_policy_model,
     load_lyapunov_model,
     require_dir,
     require_file,
     find_all_lyapunov_dirs,
     build_lyapunov_func,
+    get_initial_states,
 )
 from ..constants import *
 
@@ -30,6 +33,7 @@ __logger__ = logging.getLogger("lcil.examples.double_integrator.lyapunov_rollout
 class LyapunovRolloutScriptConfig(ArgumentParserConfig):
     lyapunov_dir: str = config_field(help="Lyapunov run directory containing lyapunov_model.pt.")
     device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
+    time_steps: int = config_field(default=40, help="Number of time steps to rollout for each initial state.")
 
 
 def _build_script_defaults() -> LyapunovRolloutScriptConfig:
@@ -69,7 +73,8 @@ def main() -> None:
     lyapunov_dir = require_dir(script_config.lyapunov_dir, name="Lyapunov run directory")
     source_rollout_path = _infer_source_rollout_path(lyapunov_dir)
     rollout_dataset = MPCDataset.load(source_rollout_path)
-    __logger__.info("Loaded source rollout dataset from %s", source_rollout_path)
+    initial_states = get_initial_states(rollout_dataset)
+    del rollout_dataset
 
     lyapunov_dirs = find_all_lyapunov_dirs(lyapunov_dir.parent)
     if len(lyapunov_dirs) == 0:
@@ -77,29 +82,41 @@ def main() -> None:
     
     __logger__.info("Found %d Lyapunov run directories under %s for rollout generation", len(lyapunov_dirs), lyapunov_dir.parent)
     for lyapunov_dir in lyapunov_dirs:
+        policy_path = require_file(lyapunov_dir / POLICY_MODEL_FILENAME, name="Policy checkpoint")
         lyapunov_path = require_file(lyapunov_dir / LYAPUNOV_MODEL_FILENAME, name="Lyapunov checkpoint")
         output_path = lyapunov_dir / LYAPUNOV_ROLLOUT_FILENAME
 
+        policy_model = load_policy_model(policy_path, device)
+        dyn_model = DoubleIntegratorDynamics(
+            dt=policy_model.global_config.dt,
+            abcrown_compatible_ops=True,
+        )
         lyap_model = load_lyapunov_model(lyapunov_path, device)
 
-        lyapunov_rollout = LyapunovRollout(
-            mpc_dataset=rollout_dataset,
+        dataset = build_rollout_dataset(
+            policy_model=policy_model,
+            dyn_model=dyn_model,
             lyap_model=lyap_model,
             device=device,
+            rollout_steps=script_config.time_steps,
+            initial_states=initial_states,
         )
-        saved_path = lyapunov_rollout.rollout(output_path=output_path)
-        __logger__.info("Saved Lyapunov rollout dataset to %s", saved_path)
+        dataset.save(output_path, save_ocp_trajs=False)
+        __logger__.info("Saved Lyapunov rollout dataset to %s", output_path)
+
+        veri_stats = StabilityVerifier.verify(dataset)
+        VerificationRender(veri_stats).render()
 
         mdg_plt.lyapunov(
             lyapunov_func=build_lyapunov_func(lyap_model, device),
-            dataset=rollout_dataset,
+            dataset=dataset,
             state_labels=["$x$", "$v$"],
             plot_3d=False,
             html_path=(lyapunov_dir / LYAPUNOV_ROLLOUT_FILENAME).with_suffix(".html"),
             use_dataset_v=True,
         )
         mdg_plt.cost_descent(
-            dataset=rollout_dataset,
+            dataset=dataset,
             html_path=lyapunov_dir / "cost_descent.html",
             use_optimal_v=True,
         )
