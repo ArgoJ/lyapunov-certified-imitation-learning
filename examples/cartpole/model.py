@@ -2,8 +2,25 @@ import torch as th
 import torch.nn as nn
 
 from pathlib import Path
+from mpc_datagen import MPCConfig
 
 from lcil.utils.base_models import load_feature_net, save_feature_net
+
+
+def get_mpc_cfg_from_policy_model(policy_model: nn.Module) -> MPCConfig:
+    global_config = getattr(policy_model, "global_config", None)
+    if global_config is None:
+        global_config = getattr(policy_model, "net", None)
+        if global_config is not None:
+            global_config = getattr(global_config, "global_config", None)
+
+    if global_config is None:
+        raise ValueError("Could not find a 'global_config' attribute in the policy model or its 'net' submodule.")
+
+    if not isinstance(global_config, MPCConfig):
+        raise TypeError(f"Expected 'global_config' to be an instance of MPCConfig, but got {type(global_config)}.")
+
+    return global_config
 
 
 class CartpoleAngleWrapper(nn.Module):

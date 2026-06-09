@@ -21,6 +21,7 @@ from . import (
     find_all_lyapunov_dirs,
     load_lyapunov_model,
     load_policy_model,
+    get_mpc_cfg_from_policy_model,
 )
 from ..constants import CERTIFICATION_DIRNAME, POLICY_MODEL_FILENAME, TRAINING_RESULTS_FILENAME
 
@@ -155,9 +156,10 @@ def main() -> None:
 
         policy_model = load_policy_model(policy_dir, device)
         lyap_model = load_lyapunov_model(lyapunov_dir, device)
+        mpc_cfg = get_mpc_cfg_from_policy_model(policy_model)
 
         dyn_model = CartpoleDynamics(
-            dt=policy_model.net.global_config.dt,
+            dt=mpc_cfg.dt,
             abcrown_compatible_ops=True,
         ).to(device)
         dyn_model.eval()

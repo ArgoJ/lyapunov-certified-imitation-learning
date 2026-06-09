@@ -9,7 +9,7 @@ from lcil.lyapunov_learning import NeuralLyapunovCandidate
 
 from .acados_ocp import get_ocp_solver, get_ocp, get_batch_ocp_solver, get_model
 from .basis import *
-from .model import CartpoleAngleWrapper
+from .model import CartpoleAngleWrapper, get_mpc_cfg_from_policy_model
 from .cartpole_dyn import CartpoleDynamics
 from .sys_cfg import PendulumOnCartConfig
 from ..example_utils import (

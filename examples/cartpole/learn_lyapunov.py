@@ -21,6 +21,7 @@ from lcil.utils import ArgumentParserConfig, GridSearchHelper, MLP, config_field
 from . import (
     CartpoleAngleWrapper,
     CartpoleDynamics,
+    get_mpc_cfg_from_policy_model,
     compute_riccati_value_matrix,
     discover_latest_policy_dir,
     load_policy_model,
@@ -135,12 +136,12 @@ def main() -> None:
     sweep.set_output_root(actual_output_root)
 
     policy_model, rollout_dataset = _load_policy_and_rollout_dataset(init_policy_dir, device)
-    policy_global_config = policy_model.global_config
+    mpc_cfg = get_mpc_cfg_from_policy_model(policy_model)
     state_bounds = np.vstack([
-        policy_global_config.constraints.lbx,
-        policy_global_config.constraints.ubx,
+        mpc_cfg.constraints.lbx,
+        mpc_cfg.constraints.ubx,
     ])
-    riccati_p = compute_riccati_value_matrix(float(policy_global_config.dt))
+    riccati_p = compute_riccati_value_matrix(float(mpc_cfg.dt))
 
     __logger__.info("Starting grid search over %d configurations...", len(sweep))
     for run_idx, run in enumerate(sweep):
@@ -151,12 +152,12 @@ def main() -> None:
         if current_policy_dir != init_policy_dir:
             __logger__.info("Loading policy model from %s for this run...", current_policy_dir)
             policy_model, rollout_dataset = _load_policy_and_rollout_dataset(current_policy_dir, device)
-            policy_global_config = policy_model.global_config
+            mpc_cfg = get_mpc_cfg_from_policy_model(policy_model)
             state_bounds = np.vstack([
-                policy_global_config.constraints.lbx,
-                policy_global_config.constraints.ubx,
+                mpc_cfg.constraints.lbx,
+                mpc_cfg.constraints.ubx,
             ])
-            riccati_p = compute_riccati_value_matrix(float(policy_global_config.dt))
+            riccati_p = compute_riccati_value_matrix(float(mpc_cfg.dt))
 
         training_bounds = _scale_state_bounds(
             state_bounds,
@@ -168,7 +169,7 @@ def main() -> None:
         __logger__.info("Using curriculum scales: %s", curriculum_scales)
 
         base_path = run.output_dir.resolve()
-        dyn_model = CartpoleDynamics(dt=policy_global_config.dt)
+        dyn_model = CartpoleDynamics(dt=mpc_cfg.dt)
         dyn_model.eval()
 
         seed = train_config.seed + run_idx if train_config.seed is not None else None
@@ -182,13 +183,13 @@ def main() -> None:
         lyap_model = NeuralLyapunovCandidate(
             feature_net=(CartpoleAngleWrapper(feature_net=lyap_feature) 
                 if script_config.use_angle_wrapper else lyap_feature),
-            state_dim=policy_global_config.nx,
+            state_dim=mpc_cfg.nx,
             riccati_p=riccati_p,
         )
 
         training_config = replace(
             train_config,
-            state_dim=policy_global_config.nx,
+            state_dim=mpc_cfg.nx,
             state_bounds=training_bounds,
             seed=seed,
             tb_log_dir=actual_output_root / "tb" / sweep.sweep_id / run.run_name,

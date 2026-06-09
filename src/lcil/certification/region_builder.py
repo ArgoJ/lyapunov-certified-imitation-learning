@@ -26,6 +26,7 @@ class RegionBuilder:
         self.bins_per_dim = self._normalize_bins(bins_per_dim)
         self.center_refinement_factor = self._normalize_refinement_factors(center_refinement_factor)
         self.origin_exclusion = self._resolve_origin_exclusion(origin_exclusion)
+        self._check_exclusion_ratio()
 
     @staticmethod
     def _resolve_bounds(bounds: Sequence[float], device: th.device) -> th.Tensor:
@@ -105,6 +106,33 @@ class RegionBuilder:
 
         max_centered = th.clamp(th.minimum(-self.bounds[0], self.bounds[1]), min=0.0)
         return th.minimum(exclusion, max_centered)
+
+    def _check_exclusion_ratio(self, threshold: float = 0.75) -> None:
+        """Log warnings if the origin exclusion is too large compared to the overall bounds."""
+        bounds_width = self.bounds[1] - self.bounds[0]
+        exclusion_width = self.origin_exclusion * 2
+        dim_ratios = (exclusion_width / bounds_width)
+        max_dim_ratio = dim_ratios.max().item()
+
+        if max_dim_ratio >= 1.0:
+            idx = (dim_ratios >= 1.0).nonzero(as_tuple=True)[0].tolist()
+            raise ValueError(
+                f"The origin exclusion covers 100% or more of the bounds in dims: {idx}! "
+                "Please reduce the origin_exclusion or increase the bounds."
+            )
+        
+        if max_dim_ratio >= threshold:
+            __logger__.warning(
+                "High Origin Exclusion: In at least one dimension, the exclusion covers %.1f%% of the bounds!",
+                max_dim_ratio * 100
+            )
+
+        volume_ratio = (exclusion_width.prod() / bounds_width.prod()).item()
+        if volume_ratio >= threshold:
+            __logger__.warning(
+                "High Origin Exclusion Volume: The total exclusion volume covers %.1f%% of the entire state space!",
+                volume_ratio * 100
+            )
 
     @staticmethod
     def _build_center_refined_axis_edges(
@@ -411,10 +439,11 @@ class RegionBuilder:
             packed_regions = th.empty((0, 2, self.state_dim), dtype=th.float32, device=self.device)
 
         __logger__.info(
-            "Built %d root regions from %d base grid cells after origin exclusion %s.",
+            "Built %d root regions from %d base grid cells after origin exclusion %s in %s.",
             len(packed_regions),
             len(lbs),
-            [float(value) for value in self.origin_exclusion.detach().cpu().tolist()],
+            [round(v, 3) for v in self.origin_exclusion.detach().cpu().tolist()],
+            [[round(v, 3) for v in upper_lower] for upper_lower in self.bounds.detach().cpu().tolist()]
         )
 
         return packed_regions
