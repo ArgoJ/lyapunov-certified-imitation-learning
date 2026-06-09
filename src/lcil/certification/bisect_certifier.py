@@ -6,7 +6,8 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 
-from functools import partial
+from enum import Enum
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Sequence
@@ -29,6 +30,12 @@ from ..utils.search_utils import search_and_bisect_value
 from ..utils.constants import *
 
 __logger__ = logging.getLogger(__name__)
+
+
+class PROGRESS_LEVEL(Enum):
+    NONE = 0
+    TOP = 1
+    ALL = 2
 
 
 @dataclass(frozen=True)
@@ -147,6 +154,7 @@ class BisectCertifier:
         dyn_model: nn.Module,
         config: LyapunovCertificationConfig,
         device: th.device = th.device("cpu"),
+        progress_level: int | PROGRESS_LEVEL = PROGRESS_LEVEL.ALL,
     ):
         """Initialize a Lyapunov certifier.
 
@@ -164,9 +172,24 @@ class BisectCertifier:
         device : th.device, optional
             Device used for all model parameters and certification tensors,
             by default ``th.device("cpu")``.
+        progress_level : int | ProgressLevel, optional
+            Progress verbosity level: ``0`` disables progress bars, ``1`` shows
+            only the outermost task, and ``2`` enables nested tasks.
         """
         self.config = config
         self.device = device
+
+        try:
+            self.progress_level = PROGRESS_LEVEL(progress_level)
+        except ValueError:
+            valid_values = [e.value for e in PROGRESS_LEVEL]
+            raise ValueError(
+                f"progress_level must be a PROGRESS_LEVEL enum or one of its integer values: {valid_values}."
+            )
+        
+        if self._show_progress(PROGRESS_LEVEL.TOP):
+            color = "cyan" if self.progress_level == PROGRESS_LEVEL.TOP else "green"
+            __logger__.info("Enabling progress bars for %s: [%s]%s", self.__class__.__name__, color, self.progress_level)
 
         self.policy_model = policy_model.to(self.device).eval()
         self.lyap_model = lyap_model.to(self.device).eval()
@@ -318,6 +341,10 @@ class BisectCertifier:
             return np.empty((0, 2, self.config.state_dim), dtype=np.float32)
         return regions.cpu().numpy()
 
+    def _show_progress(self, required_level: PROGRESS_LEVEL) -> bool:
+        """Whether to show progress for a task at the given required level."""
+        return self.progress_level.value >= required_level.value
+
 
     # ========================================
     # CERTIFICATION
@@ -328,6 +355,7 @@ class BisectCertifier:
             rho: float,
             *,
             early_exit: bool,
+            progress: Progress | None = None,
         ) -> RecursiveCertificationResult:
         """Process one region batch and return step-level certification data.
 
@@ -429,7 +457,7 @@ class BisectCertifier:
                 regions=inside_core_unchecked_bs,
                 rho=rho,
                 early_exit=early_exit,
-                show_progress=False,
+                progress=progress,
             )
             inside_core_update = self.region_manager.apply_core_certification_result(
                 inside_core_unchecked_bs,
@@ -454,7 +482,7 @@ class BisectCertifier:
                 regions=boundary_core_unchecked_bs,
                 rho=rho,
                 early_exit=False,
-                show_progress=False,
+                progress=progress,
             )
             boundary_core_update = self.region_manager.apply_core_certification_result(
                 boundary_core_unchecked_bs,
@@ -480,7 +508,7 @@ class BisectCertifier:
             regions=boundary_complete_candidates,
             rho=rho,
             early_exit=early_exit,
-            show_progress=False,
+            progress=progress,
         )
         complete_update = self.region_manager.apply_complete_certification_result(
             boundary_complete_candidates,
@@ -503,8 +531,9 @@ class BisectCertifier:
         self,
         rho: float,
         *,
-        show_progress: bool,
+        show_progress: bool = False,
         early_exit: bool = False,
+        progress: Progress | None = None,
     ) -> RecursiveCertificationResult:
         """Run recursive certification for a fixed ``rho`` over all regions."""
         recursive_result = RecursiveCertificationResult.empty(
@@ -519,39 +548,65 @@ class BisectCertifier:
         pending_bs = self.region_manager.ensure_regions()
         max_depth = self.config.max_recursion_depth
 
-        if show_progress:
+        # Progress setup
+        owns_progress = False
+        if not show_progress:
+            progress = None
+
+        if progress is None and show_progress:
             progress = Progress(
                 TextColumn("[bold]{task.description}"),
                 BarColumn(),
                 MofNCompleteColumn(),
-                TextColumn("failed: {task.fields[failed]:.0f}"),
+                TextColumn("{task.fields[detail]}"),
                 TimeElapsedColumn(),
                 TimeRemainingColumn(),
+                transient=True,
             )
             progress.__enter__()
-            task = progress.add_task(
-                "Certify and split",
-                total=float(max_depth + 1),
-                failed=float(len(pending_bs)),
-            )
-        else:
-            progress = None
-            task = None
+            owns_progress = True
+
+        # Task init
+        desc = "Region Splits"
+        task = progress.add_task(desc, total=float(max_depth + 1), detail="") if progress is not None else None
+
+        def update_progress(advance: int = 0, is_completed: bool = False) -> None:
+            if progress is not None and task is not None:
+                if is_completed:
+                    progress.update(task, completed=max_depth + 1)
+                else:
+                    n_resolved = len(recursive_result.resolved)
+                    n_unresolved = len(recursive_result.unresolved)
+                    n_irrelevant = len(recursive_result.irrelevant)
+                    n_pending = len(pending_bs)
+                    
+                    detail_str = (
+                        f" [green]safe: {n_resolved}[/green], "
+                        f"[yellow]unknown: {n_unresolved}[/yellow], "
+                        f"[dim]outside: {n_irrelevant}[/dim], "
+                        f"[red]pending: {n_pending}[/red] "
+                    )
+                    
+                    progress.update(
+                        task, 
+                        advance=advance, 
+                        detail=detail_str,
+                    )
+                progress.refresh()
 
         try:
             for depth in range(max_depth + 1):
-                if progress is not None and task is not None:
-                    progress.update(task, failed=float(len(pending_bs)))
+                update_progress(advance=0)
 
                 if len(pending_bs) == 0:
-                    if progress is not None and task is not None:
-                        progress.update(task, completed=max_depth + 1)
+                    update_progress(is_completed=True)
                     break
 
                 step_result = self._process_regions(
                     pending_bs,
                     rho,
                     early_exit=early_exit,
+                    progress=progress,
                 )
 
                 if early_exit and step_result.counterexample_found:
@@ -559,15 +614,13 @@ class BisectCertifier:
 
                 if depth >= max_depth:
                     recursive_result = recursive_result + step_result
-                    if progress is not None and task is not None:
-                        progress.update(task, completed=max_depth + 1)
+                    update_progress(is_completed=True)
                     break
 
                 recursive_result = recursive_result + step_result.with_unresolved(step_result.unresolved[:0])
 
                 if len(step_result.unresolved) == 0:
-                    if progress is not None and task is not None:
-                        progress.update(task, completed=max_depth + 1)
+                    update_progress(is_completed=True)
                     break
 
                 pending_bs, terminal_failed_bs = self.region_manager.split_failed_regions_on_certification_frontier(
@@ -578,15 +631,14 @@ class BisectCertifier:
                     recursive_result = recursive_result + empty_result.with_unresolved(terminal_failed_bs)
 
                 if len(pending_bs) == 0:
-                    if progress is not None and task is not None:
-                        progress.update(task, completed=max_depth + 1)
+                    update_progress(is_completed=True)
                     break
 
-                if progress is not None and task is not None:
-                    progress.update(task, advance=1)
-                    progress.refresh()
+                update_progress(advance=1)
         finally:
-            if progress is not None:
+            if show_progress and task is not None:
+                progress.remove_task(task)
+            if owns_progress:
                 progress.__exit__(None, None, None)
 
         return recursive_result
@@ -595,12 +647,13 @@ class BisectCertifier:
     # =========================================
     # CERTIFICATION SEARCH
     # ========================================
-    def is_rho_certified(self, rho: float) -> bool:
+    def is_rho_certified(self, rho: float, progress: Progress | None = None) -> bool:
         """Check whether all regions satisfy Lyapunov conditions at ``rho``."""
         result = self._certify_recursive_regions(
             rho=rho,
-            show_progress=False,
+            show_progress=self._show_progress(PROGRESS_LEVEL.ALL),
             early_exit=True,
+            progress=progress,
         )
         return result.global_success
 
@@ -610,16 +663,34 @@ class BisectCertifier:
         
         self.cache_region_bounds()
 
-        best_rho = search_and_bisect_value(
-            initial_estimate=rho_estimate,
-            eval_fn=self.is_rho_certified,
-            min_val=self.config.rho_min,
-            scaling_factor=self.config.rho_scaling,
-            bisection_tol=self.config.bisection_tol,
-            max_scale_steps=self.config.max_scale_steps,
-            max_bisection_steps=self.config.max_bisection_steps,
-            value_name="rho",
-        )
+        progress = None
+        if self._show_progress(PROGRESS_LEVEL.TOP):
+            progress = Progress(
+                TextColumn("[bold]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TextColumn("{task.fields[detail]}"),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+                transient=True,
+            )
+            progress.__enter__()
+
+        try:
+            best_rho = search_and_bisect_value(
+                initial_estimate=rho_estimate,
+                eval_fn=lambda rho: self.is_rho_certified(rho, progress=progress),
+                min_val=self.config.rho_min,
+                scaling_factor=self.config.rho_scaling,
+                bisection_tol=self.config.bisection_tol,
+                max_scale_steps=self.config.max_scale_steps,
+                max_bisection_steps=self.config.max_bisection_steps,
+                value_name="rho",
+                progress=progress,
+            )
+        finally:
+            if progress is not None:
+                progress.__exit__(None, None, None)
 
         if best_rho > 0.0:
             __logger__.info("Found best certified rho: %.6f", best_rho)
@@ -643,7 +714,10 @@ class BisectCertifier:
         RegionCertificationResult
             Aggregated certification result with region partitions.
         """
-        recursive_result = self._certify_recursive_regions(rho, show_progress=True)
+        recursive_result = self._certify_recursive_regions(
+            rho=rho,
+            show_progress=self._show_progress(PROGRESS_LEVEL.TOP)
+        )
 
         certified_sublevel_regions_np = self._regions_tensor_to_np(recursive_result.resolved)
         uncertified_regions_np = self._regions_tensor_to_np(recursive_result.unresolved)

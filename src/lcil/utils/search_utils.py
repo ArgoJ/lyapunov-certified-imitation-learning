@@ -21,6 +21,7 @@ def iterative_rho_search(
     initial_values: tuple[float, float],
     step_fn: Callable,
     eval_fn: Callable[[float], bool],
+    progress: Progress | None = None,
 ) -> tuple[float | None, float]:
     """Run iterative value updates until stopping criterion is met.
 
@@ -45,44 +46,36 @@ def iterative_rho_search(
         Final ``(val_lo, val_up)`` pair.
     """
     val_lo, val_up = initial_values
+    is_progress = isinstance(progress, Progress)
+    task = progress.add_task(desc, total=total, detail="") if is_progress else None
 
-    with Progress(
-        TextColumn("[bold]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TextColumn("lo: {task.fields[lo]:.4f}"),
-        TextColumn("up: {task.fields[up]:.4f}"),
-        TextColumn("[magenta]test: {task.fields[test]:.4f}[/magenta]"),
-        TimeElapsedColumn(),
-        TimeRemainingColumn(),
-        transient=True,
-    ) as progress:
-        task = progress.add_task(
-            desc,
-            total=total,
-            lo=none_to_float(val_lo),
-            up=none_to_float(val_up),
-            test=0.0,
-        )
-
-        def tracked_eval(trial: float) -> bool:
-            progress.update(task, test=none_to_float(trial))
+    def update_progress(trial: float, advance: int = 0) -> None:
+        if is_progress and task is not None:
+            detail_str = (
+                f" lo: {none_to_float(val_lo):.4f} "
+                f"up: {none_to_float(val_up):.4f} "
+                f"[magenta]test: {none_to_float(trial):.4f}[/magenta] "
+            )
+            progress.update(task, advance=advance, detail=detail_str)
             progress.refresh()
-            return eval_fn(trial)
 
+    def tracked_eval(trial: float) -> bool:
+        update_progress(trial)
+        return eval_fn(trial)
+
+    try:
+        update_progress(0.0)
         for _ in range(total):
             try:
                 stop, val_lo, val_up = step_fn(val_lo, val_up, tracked_eval)
                 if stop:
                     break
             finally:
-                progress.update(
-                    task,
-                    advance=1,
-                    lo=none_to_float(val_lo),
-                    up=none_to_float(val_up),
-                )
-                progress.refresh()
+                update_progress(val_up, advance=1)
+    finally:
+        if is_progress and task is not None:
+            progress.remove_task(task)
+
     return val_lo, val_up
 
 
@@ -146,6 +139,7 @@ def search_and_bisect_value(
     max_scale_steps: int,
     max_bisection_steps: int,
     value_name: str = "val",
+    progress: Progress | None = None,
 ) -> float:
     """Orchestrates scaling and bisection to find the maximum certifiable value."""
     if initial_estimate <= 0:
@@ -172,6 +166,7 @@ def search_and_bisect_value(
             initial_values=(initial_val, initial_val),
             step_fn=partial(scale_rho_up, scaling=scaling_factor),
             eval_fn=eval_fn,
+            progress=progress,
         )
         if val_lo == val_up:
             __logger__.warning(
@@ -188,6 +183,7 @@ def search_and_bisect_value(
             initial_values=(None, initial_val),
             step_fn=partial(scale_rho_down, min_val=min_val, scaling=scaling_factor),
             eval_fn=eval_fn,
+            progress=progress,
         )
 
         # Fallback
@@ -207,6 +203,7 @@ def search_and_bisect_value(
             initial_values=(val_lo, val_up),
             step_fn=partial(bisect_rho, bisection_tol=bisection_tol),
             eval_fn=eval_fn,
+            progress=progress,
         )
 
     return val_lo

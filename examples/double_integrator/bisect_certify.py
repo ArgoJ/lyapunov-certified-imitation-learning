@@ -145,6 +145,7 @@ def main() -> None:
             dyn_model=dyn_model,
             config=certification_config,
             device=device,
+            # progress_level=2,
         )
 
         cert_results = certifier.certify(rho_estimate)

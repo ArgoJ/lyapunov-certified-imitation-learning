@@ -310,6 +310,7 @@ class CertificationMockedABCrownTestCase(unittest.TestCase):
         lyap_model: nn.Module | None = None,
         dyn_model: nn.Module | None = None,
         config: Any = None,
+        progress_level: int = 0,
         **config_kwargs,
     ) -> Any:
         if config is None:
@@ -321,6 +322,7 @@ class CertificationMockedABCrownTestCase(unittest.TestCase):
             dyn_model=_ZeroDynamics() if dyn_model is None else dyn_model,
             config=config,
             device=th.device("cpu"),
+            progress_level=progress_level,
         )
 
     @classmethod

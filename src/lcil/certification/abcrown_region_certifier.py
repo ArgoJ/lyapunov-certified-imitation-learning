@@ -5,13 +5,7 @@ import logging
 import torch as th
 import torch.nn as nn
 
-from rich.progress import (
-    Progress,
-    TextColumn,
-    BarColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-)
+from rich.progress import Progress
 from abc import ABC, abstractmethod
 from typing import Any
 from contextlib import nullcontext
@@ -131,22 +125,23 @@ class BaseABCrownCertifier(ABC):
         """Build a safe output constraint for ABCrown based on the verifier output y and sublevel rho."""
 
     def _get_abcrown_api(self) -> _ABCrownAPI:
-        if self._abcrown_api is None:
-            from abcrown import (
-                ABCrownSolver,
-                ConfigBuilder,
-                VerificationSpec,
-                input_vars,
-                output_vars,
-            )
+        with self._get_suppress_ctx():
+            if self._abcrown_api is None:
+                from abcrown import (
+                    ABCrownSolver,
+                    ConfigBuilder,
+                    VerificationSpec,
+                    input_vars,
+                    output_vars,
+                )
 
-            self._abcrown_api = _ABCrownAPI(
-                solver_cls=ABCrownSolver,
-                verification_spec_cls=VerificationSpec,
-                config_builder_cls=ConfigBuilder,
-                input_vars_fn=input_vars,
-                output_vars_fn=output_vars,
-            )
+                self._abcrown_api = _ABCrownAPI(
+                    solver_cls=ABCrownSolver,
+                    verification_spec_cls=VerificationSpec,
+                    config_builder_cls=ConfigBuilder,
+                    input_vars_fn=input_vars,
+                    output_vars_fn=output_vars,
+                )
         return self._abcrown_api
 
     def _get_suppress_ctx(self):
@@ -257,7 +252,7 @@ class BaseABCrownCertifier(ABC):
         rho: float,
         *,
         early_exit: bool = False,
-        show_progress: bool = False,
+        progress: Progress | None = None,
     ) -> ABCrownRegionBatchVerification:
         if regions.ndim != 3 or regions.shape[1] != 2 or regions.shape[2] != self.config.state_dim:
             raise ValueError(
@@ -271,22 +266,17 @@ class BaseABCrownCertifier(ABC):
         counterexample_mask = th.zeros((len(regions),), dtype=th.bool, device=self.device)
         unknown_mask = th.zeros((len(regions),), dtype=th.bool, device=self.device)
 
-        progress = None
-        task = None
-        if show_progress:
-            progress = Progress(
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TimeElapsedColumn(),
-                TimeRemainingColumn(),
-            )
-            progress.__enter__()
-            task = progress.add_task(
-                f"Certifying {len(regions)} regions with ABCrown (rho={rho:.6g})...",
-                total=len(regions),
-            )
+        is_progress = isinstance(progress, Progress)
+        desc = f"Certify Regions"
+        task = progress.add_task(desc, total=len(regions), detail="") if is_progress else None
+
+        def update_progress(status: str) -> None:
+            if is_progress and task is not None:
+                progress.update(task, advance=1, detail=f" Status: {status} ")
+                progress.refresh()
 
         try:
+            update_progress("starting")
             for idx, region in enumerate(regions):
                 verification_result = self.verify_region(region, rho)
                 verified_mask[idx] = verification_result.verified
@@ -295,13 +285,13 @@ class BaseABCrownCertifier(ABC):
                     not verification_result.verified
                     and not verification_result.counterexample_found
                 )
-                if show_progress: progress.update(task, advance=1)
+                update_progress(verification_result.status)
                 if early_exit and verification_result.counterexample_found:
-                    if show_progress: progress.update(task, completed=len(regions))
                     break
+                
         finally:
-            if show_progress:
-                progress.__exit__(None, None, None)
+            if is_progress and task is not None:
+                progress.remove_task(task)
 
         return ABCrownRegionBatchVerification(
             verified_mask=verified_mask,
