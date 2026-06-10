@@ -247,7 +247,7 @@ def find_counter_examples(
         best_states = adv_states.clone()
         best_objective = init_objective.clone()
 
-    for _ in range(config.counterexample_steps):
+    for _ in range(config.cex_steps):
         adv_states.requires_grad_(True)
         raw_objective = objective(adv_states)
 

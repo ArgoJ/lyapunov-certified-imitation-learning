@@ -8,7 +8,6 @@ import torch as th
 import torch.nn as nn
 
 from collections.abc import Sequence
-from typing import Literal
 from numpy.typing import NDArray
 from pathlib import Path
 from dataclasses import dataclass, replace
@@ -38,6 +37,7 @@ from .utils import ThresholdMonitor, get_th_lbx_ubx, get_center
 from ..utils import (
     JsonDataclass,
     GracefulInterruptHandler,
+    RegionBuilder,
     save_model_checkpoint,
     build_generator,
     none_to_float,
@@ -133,6 +133,7 @@ class LyapunovTrainingMetrics:
     loss: NDArray
     condition_raw: NDArray
     roa_raw: NDArray
+    condition_ibp_raw: NDArray
     l1_raw: NDArray
     equilibrium_raw: NDArray
     formal_positivity_raw: NDArray
@@ -140,6 +141,7 @@ class LyapunovTrainingMetrics:
     policy_regularization_raw: NDArray
     condition: NDArray
     roa: NDArray
+    condition_ibp: NDArray
     l1: NDArray
     equilibrium: NDArray
     formal_positivity: NDArray
@@ -179,6 +181,7 @@ class LyapunovTrainingMetrics:
             loss=inner_nan_array.copy(),
             condition_raw=inner_nan_array.copy(),
             roa_raw=inner_nan_array.copy(),
+            condition_ibp_raw=inner_nan_array.copy(),
             l1_raw=inner_nan_array.copy(),
             equilibrium_raw=inner_nan_array.copy(),
             formal_positivity_raw=inner_nan_array.copy(),
@@ -186,6 +189,7 @@ class LyapunovTrainingMetrics:
             policy_regularization_raw=inner_nan_array.copy(),
             condition=inner_nan_array.copy(),
             roa=inner_nan_array.copy(),
+            condition_ibp=inner_nan_array.copy(),
             l1=inner_nan_array.copy(),
             equilibrium=inner_nan_array.copy(),
             formal_positivity=inner_nan_array.copy(),
@@ -210,6 +214,7 @@ class LyapunovTrainingMetrics:
         self.loss[inner_iter] = float(loss_parts.total.item())
         self.condition_raw[inner_iter] = float(loss_parts.condition_raw.item())
         self.roa_raw[inner_iter] = float(loss_parts.roa_raw.item())
+        self.condition_ibp_raw[inner_iter] = float(loss_parts.condition_ibp_raw.item())
         self.l1_raw[inner_iter] = float(loss_parts.l1_raw.item())
         self.equilibrium_raw[inner_iter] = float(loss_parts.equilibrium_raw.item())
         self.formal_positivity_raw[inner_iter] = float(loss_parts.formal_positivity_raw.item())
@@ -218,6 +223,7 @@ class LyapunovTrainingMetrics:
 
         self.condition[inner_iter] = float(loss_parts.condition.item())
         self.roa[inner_iter] = float(loss_parts.roa.item())
+        self.condition_ibp[inner_iter] = float(loss_parts.condition_ibp.item())
         self.l1[inner_iter] = float(loss_parts.l1.item())
         self.equilibrium[inner_iter] = float(loss_parts.equilibrium.item())
         self.formal_positivity[inner_iter] = float(loss_parts.formal_positivity.item())
@@ -268,6 +274,7 @@ class LyapunovTrainingMetrics:
             inner_loss=self.loss,
             inner_condition_raw=self.condition_raw,
             inner_roa_raw=self.roa_raw,
+            inner_condition_ibp_raw=self.condition_ibp_raw,
             inner_l1_raw=self.l1_raw,
             inner_equilibrium_raw=self.equilibrium_raw,
             inner_formal_positivity_raw=self.formal_positivity_raw,
@@ -275,6 +282,7 @@ class LyapunovTrainingMetrics:
             inner_policy_regularization_raw=self.policy_regularization_raw,
             inner_condition=self.condition,
             inner_roa=self.roa,
+            inner_condition_ibp=self.condition_ibp,
             inner_l1=self.l1,
             inner_equilibrium=self.equilibrium,
             inner_formal_positivity=self.formal_positivity,
@@ -323,6 +331,7 @@ def _tb_writer_add_metrics(
         tb_writer.add_scalar(raw_loss_str + "Total", metrics.loss[inner_iter], tb_step)
         tb_writer.add_scalar(raw_loss_str + "Condition", metrics.condition_raw[inner_iter], tb_step)
         tb_writer.add_scalar(raw_loss_str + "Roa", metrics.roa_raw[inner_iter], tb_step)
+        tb_writer.add_scalar(raw_loss_str + "ConditionIBP", metrics.condition_ibp_raw[inner_iter], tb_step)
         tb_writer.add_scalar(raw_loss_str + "L1", metrics.l1_raw[inner_iter], tb_step)
         tb_writer.add_scalar(raw_loss_str + "Equilibrium", metrics.equilibrium_raw[inner_iter], tb_step)
         tb_writer.add_scalar(raw_loss_str + "FormalPositivity", metrics.formal_positivity_raw[inner_iter], tb_step)
@@ -334,6 +343,7 @@ def _tb_writer_add_metrics(
         )
         tb_writer.add_scalar(weighted_loss_str + "Condition", metrics.condition[inner_iter], tb_step)
         tb_writer.add_scalar(weighted_loss_str + "Roa", metrics.roa[inner_iter], tb_step)
+        tb_writer.add_scalar(weighted_loss_str + "ConditionIBP", metrics.condition_ibp[inner_iter], tb_step)
         tb_writer.add_scalar(weighted_loss_str + "L1", metrics.l1[inner_iter], tb_step)
         tb_writer.add_scalar(weighted_loss_str + "Equilibrium", metrics.equilibrium[inner_iter], tb_step)
         tb_writer.add_scalar(
@@ -393,6 +403,14 @@ class LyapunovTrainer:
         )
         self.lbx, self.ubx = get_th_lbx_ubx(self.config.state_bounds, self.device)
         self.center = get_center(self.lbx, self.ubx)
+
+        self.region_builder = RegionBuilder(
+            bounds=self.config.state_bounds,
+            bins_per_dim=self.config.bins_per_dim,
+            origin_exclusion=self.config.origin_exclusion * (self.ubx - self.lbx),
+            device=self.device,
+        )
+        self.regions = self.region_builder.build_regions()
     
         self.rho_monitor = rho_monitor
         self.results: LyapunovTrainingResult | None = None
@@ -533,7 +551,7 @@ class LyapunovTrainer:
         )
         roa_candidates = self._build_roa_candidates()
 
-        mining_interval = max(1, int(self.config.counterexample_every))
+        mining_interval = max(1, int(self.config.cex_every))
         rho_estimate = self.config.rho_min
         cex_fraction_ema = 0.0
         cex_fraction = 0.0
@@ -626,6 +644,7 @@ class LyapunovTrainer:
                             x_batch=x_batch,
                             roa_candidates=roa_candidates,
                             rho_estimate=rho_estimate,
+                            ibp_regions=self.regions,
                             active_policy_regularization=self._curr_policy_train_status,
                         )
 

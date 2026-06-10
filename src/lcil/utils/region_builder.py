@@ -33,7 +33,7 @@ class RegionBuilder:
     def _resolve_bounds(bounds: Sequence[float], device: th.device) -> th.Tensor:
         bounds_tensor = th.as_tensor(bounds, dtype=th.float32, device=device)
         if bounds_tensor.ndim != 2 or bounds_tensor.shape[0] != 2:
-            raise ValueError("bounds must have shape (2, state_dim) [lb, ub].")
+            raise ValueError(f"bounds must have shape (2, state_dim) [lb, ub]. Got shape: {bounds_tensor.shape}")
         if not th.all(bounds_tensor[1] > bounds_tensor[0]):
             raise ValueError("Each upper bound must be strictly greater than the lower bound.")
         return bounds_tensor
@@ -44,12 +44,12 @@ class RegionBuilder:
         elif isinstance(bins_per_dim, Sequence):
             bins = tuple(int(value) for value in bins_per_dim)
             if len(bins) != self.state_dim:
-                raise ValueError("bins_per_dim must be scalar or match state_dim.")
+                raise ValueError(f"bins_per_dim must be scalar or match state_dim. Got length: {len(bins)}")
         else:
-            raise ValueError("bins_per_dim must be scalar or match state_dim.")
+            raise ValueError(f"bins_per_dim must be scalar or match state_dim. Got type: {type(bins_per_dim)}")
 
         if any(value <= 0 for value in bins):
-            raise ValueError("bins_per_dim must contain only positive integers.")
+            raise ValueError(f"bins_per_dim must contain only positive integers. Got: {bins}")
         return bins
 
     def _normalize_refinement_factors(
@@ -62,15 +62,15 @@ class RegionBuilder:
             refinement = tuple(float(value) for value in center_refinement_factor)
             if len(refinement) != self.state_dim:
                 raise ValueError(
-                    "center_refinement_factor must be scalar or match state_dim."
+                    f"center_refinement_factor must be scalar or match state_dim. Got length: {len(refinement)}"
                 )
         else:
             raise ValueError(
-                "center_refinement_factor must be scalar or match state_dim."
+                f"center_refinement_factor must be scalar or match state_dim. Got type: {type(center_refinement_factor)}"
             )
 
         if any((value <= 0.0 or value > 1.0) for value in refinement):
-            raise ValueError("center_refinement_factor must contain values in (0, 1].")
+            raise ValueError(f"center_refinement_factor must contain values in (0, 1]. Got: {refinement}")
         return refinement
 
     def _resolve_origin_exclusion(
@@ -87,7 +87,7 @@ class RegionBuilder:
         elif isinstance(origin_exclusion, (int, float)):
             scalar = float(origin_exclusion)
             if scalar < 0.0:
-                raise ValueError("origin_exclusion must be non-negative.")
+                raise ValueError(f"origin_exclusion must be non-negative. Got: {scalar}")
             exclusion = th.full(
                 (self.state_dim,),
                 scalar,
@@ -101,9 +101,9 @@ class RegionBuilder:
                 device=self.device,
             ).reshape(-1)
             if exclusion.numel() != self.state_dim:
-                raise ValueError("origin_exclusion must be scalar or match state_dim.")
+                raise ValueError(f"origin_exclusion must be scalar or match state_dim. Got length: {exclusion.numel()}")
             if (exclusion < 0.0).any():
-                raise ValueError("origin_exclusion must be non-negative.")
+                raise ValueError(f"origin_exclusion must be non-negative. Got: {exclusion}")
 
         max_centered = th.clamp(th.minimum(-self.bounds[0], self.bounds[1]), min=0.0)
         return th.minimum(exclusion, max_centered)

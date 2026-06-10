@@ -179,6 +179,16 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="scale_anchor_points",
         validators=(positive_validator,),
     )
+    bins_per_dim: int = config_field(
+        default=10,
+        help="Number of bins per dimension for region discretization.",
+        validators=(positive_validator,),
+    )
+    origin_exclusion: float = config_field(
+        default=0.0,
+        help="Origin exclusion percentage per dimension of bounds.",
+        validators=(fraction_validator,),
+    )
     tb_log_dir: str | os.PathLike | None = config_field(
         default=None,
         help="TensorBoard logging directory.",
@@ -295,19 +305,17 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     adversarial_step_size: float = config_field(
         default=0.05,
         help="Relative PGD step size for counterexample mining.",
-        display_alias="cex_step",
+        display_alias="adv_step_size",
         validators=(positive_validator,),
     )
-    counterexample_steps: int = config_field(
+    cex_steps: int = config_field(
         default=10,
         help="PGD steps used during counterexample search.",
-        display_alias="cex_steps",
         validators=(positive_validator,),
     )
-    counterexample_every: int = config_field(
+    cex_every: int = config_field(
         default=1,
         help="Frequency of counterexample mining in outer epochs.",
-        display_alias="cex_every",
         validators=(positive_validator,),
     )
     cex_fraction_min: float = config_field(

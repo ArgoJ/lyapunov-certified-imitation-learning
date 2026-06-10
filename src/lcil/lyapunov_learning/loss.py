@@ -300,7 +300,7 @@ class SignedConditionMargin(nn.Module):
         v_next = self.lyap_model(x_next)
 
         denom_source = v_curr.detach() if self.detach_relative_denominator else v_curr
-        denom = denom_source.abs().clamp_min(self.relative_eps)
+        denom = denom_source.abs().clamp(min=self.relative_eps, max=1e6)
 
         inv = self.relative_invariance_violation(x_next=x_next)
         signed_margin = (
@@ -315,7 +315,7 @@ class ConditionIBPLoss(StateBoundsModule):
     def __init__(self, signed_margin_model: nn.Module, state_bounds: th.Tensor, device="cpu"):
         super().__init__(state_bounds=state_bounds, device=device)
         self.signed_margin_model = signed_margin_model
-        self.bounded_model: BoundedModule | None = None
+        self.bounded_model = self._build_bounded_module()
 
     def _build_bounded_module(self) -> BoundedModule:
         dummy_x = get_center(self.lbx, self.ubx).reshape(1, -1)
@@ -326,20 +326,21 @@ class ConditionIBPLoss(StateBoundsModule):
             verbose=False,
             bound_opts={"perturb_bound": True},
         )
-    
-    def _get_bounded_model(self) -> BoundedModule:
-        if self.bounded_model is None:
-            self.bounded_model = self._build_bounded_module()
-        return self.bounded_model
 
     def bounded_input(self, x_L: th.Tensor, x_U: th.Tensor) -> BoundedTensor:
         x_center = 0.5 * (x_L + x_U)
         ptb = PerturbationLpNorm(norm=float("inf"), x_L=x_L, x_U=x_U)
         return BoundedTensor(x_center, ptb)
 
-    def forward(self, x_L: th.Tensor, x_U: th.Tensor, method: str = "IBP") -> th.Tensor:
+    def forward(self, regions: th.Tensor, method: str = "IBP") -> th.Tensor:
+        if regions.shape[0] == 0:
+            return th.tensor(0.0, device=self.device, requires_grad=True)
+        
+        x_L = regions[:, 0, :]
+        x_U = regions[:, 1, :]
+
         bounded_x = self.bounded_input(x_L=x_L, x_U=x_U)
-        lb, _ = self._get_bounded_model().compute_bounds(
+        lb, _ = self.bounded_model.compute_bounds(
             x=(bounded_x,),
             method=method,
             bound_upper=False,
@@ -609,8 +610,7 @@ class LyapunovTrainingLoss(nn.Module):
         x_batch: th.Tensor,
         roa_candidates: th.Tensor,
         rho_estimate: float,
-        ibp_lower_boxes: th.Tensor | None = None,
-        ibp_upper_boxes: th.Tensor | None = None,
+        ibp_regions: th.Tensor | None = None,
         active_policy_regularization: bool = False,
     ) -> LyapunovTrainingLossParts:
         """Compute the individual loss components without combining them into a total loss."""
@@ -631,18 +631,10 @@ class LyapunovTrainingLoss(nn.Module):
         
         zero = th.zeros((), dtype=v_batch.dtype, device=v_batch.device)
 
-        condition_ibp_loss_value = (
-            self.condition_ibp_loss(
-                x_L=ibp_lower_boxes,
-                x_U=ibp_upper_boxes,
-            )
-            if (
-                self.condition_ibp_loss is not None
-                and ibp_lower_boxes is not None
-                and ibp_upper_boxes is not None
-            )
-            else zero
-        )
+        if self.condition_ibp_loss is not None and ibp_regions is not None:
+            condition_ibp_loss_value = self.condition_ibp_loss(regions=ibp_regions)
+        else:
+            condition_ibp_loss_value = zero
 
         origin_loss_value = (
             self.equilibrium_loss()
@@ -696,12 +688,14 @@ class LyapunovTrainingLoss(nn.Module):
         x_batch: th.Tensor,
         roa_candidates: th.Tensor,
         rho_estimate: float,
+        ibp_regions: th.Tensor | None = None,
         active_policy_regularization: bool = False,
     ) -> th.Tensor:
         parts = self.compute_loss_parts(
             x_batch=x_batch,
             roa_candidates=roa_candidates,
             rho_estimate=rho_estimate,
+            ibp_regions=ibp_regions,
             active_policy_regularization=active_policy_regularization,
         )
         return parts.total

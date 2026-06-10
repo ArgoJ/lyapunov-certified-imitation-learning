@@ -197,12 +197,11 @@ class BisectCertifier:
 
         self.bounds = self._resolve_bounds(config.cert_bounds, device)
 
-        self.region_builder: RegionBuilder | None = None
         self.bounder: LiRPALyapunovRegionBounds | None = None
         self.certifier: CompleteABCrownCertifier | None = None
         self.core_certifier: CoreABCrownCertifier | None = None
         self.region_manager = RegionManager(
-            region_builder=self._get_region_builder(),
+            region_builder=self._build_region_builder(),
         )
         self.details = None
 
@@ -267,12 +266,6 @@ class BisectCertifier:
             origin_exclusion=self.config.origin_exclusion,
             device=self.device,
         )
-
-    def _get_region_builder(self) -> RegionBuilder:
-        """Return the cached region builder used for region refinement."""
-        if self.region_builder is None:
-            self.region_builder = self._build_region_builder()
-        return self.region_builder
 
     
     # ==========================================

@@ -53,7 +53,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         batch_size=512,
         outer_epochs=100,
         steps_per_epoch=5,
-        counterexample_every=10,
+        cex_every=10,
         seed=5912354,
     )
 

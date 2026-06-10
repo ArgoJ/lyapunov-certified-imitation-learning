@@ -142,7 +142,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
             train_policy_model=False,
             adversarial_samples=256,
-            counterexample_steps=0,
+            cex_steps=0,
             adversarial_step_size=0.0,
             condition_tolerance=1e-6,
         )
@@ -185,7 +185,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             batch_size=2,
             outer_epochs=2,
             steps_per_epoch=1,
-            counterexample_every=100,
+            cex_every=100,
             policy_epochs=1,
         )
         trainer = LyapunovTrainer(
@@ -298,7 +298,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
             train_policy_model=False,
             adversarial_samples=256,
-            counterexample_steps=0,
+            cex_steps=0,
             adversarial_step_size=0.0,
             condition_tolerance=1e-6,
         )
@@ -325,7 +325,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             batch_size=2,
             outer_epochs=3,
             steps_per_epoch=1,
-            counterexample_every=100,
+            cex_every=100,
             train_policy_model=False,
         )
         trainer = LyapunovTrainer(
