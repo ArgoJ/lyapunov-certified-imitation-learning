@@ -242,9 +242,15 @@ def find_counter_examples(
     adv_states = sample_uniform_box(config.adversarial_samples, lbx, ubx, device, generator)
     step = config.adversarial_step_size * (ubx - lbx).unsqueeze(0)
 
+    with th.no_grad():
+        init_objective = objective(adv_states).flatten()
+        best_states = adv_states.clone()
+        best_objective = init_objective.clone()
+
     for _ in range(config.counterexample_steps):
         adv_states.requires_grad_(True)
         raw_objective = objective(adv_states)
+
         grad = th.autograd.grad(
             raw_objective.mean(),
             adv_states,
@@ -253,11 +259,18 @@ def find_counter_examples(
         )[0]
 
         with th.no_grad():
-            adv_states = adv_states - step * grad.sign()
-            adv_states = project_to_box(adv_states, lbx, ubx)
+            candidate_states = adv_states - step * grad.sign()
+            candidate_states = project_to_box(candidate_states, lbx, ubx)
+
+            candidate_objective = objective(candidate_states).flatten()
+
+            improved = candidate_objective < best_objective
+            best_states[improved] = candidate_states[improved]
+            best_objective[improved] = candidate_objective[improved]
+
+            adv_states = candidate_states
 
     with th.no_grad():
-        raw_objective = objective(adv_states)
-        counter_mask = raw_objective.flatten() < -config.condition_tolerance
+        counter_mask = best_objective < -config.condition_tolerance
 
-    return adv_states[counter_mask].clone().detach()
+    return best_states[counter_mask].clone().detach()

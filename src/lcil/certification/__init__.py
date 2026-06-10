@@ -14,7 +14,6 @@ from .core_constraint_inspector import (
     CoreConstraintInspectionResult,
     CoreConstraintInspector,
 )
-from .region_builder import RegionBuilder
 from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds, LyapunovRegionBounds
 from .config import LyapunovCertificationConfig
 from .models import LyapunovCoreVerifier
@@ -38,7 +37,6 @@ __all__ = [
     "LyapunovCertificationConfig",
     "LyapunovCoreVerifier",
     "LevelSetEstimate",
-    "RegionBuilder",
     "LiRPALyapunovRegionBounds",
     "LyapunovRegionBounds",
     "estimate_level_set_measure",

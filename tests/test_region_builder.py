@@ -6,7 +6,7 @@ import torch as th
 
 from plot_assertions_mixin import PlotAssertionsMixin
 
-from lcil.certification.region_builder import RegionBuilder
+from lcil.utils.region_builder import RegionBuilder
 
 
 def _regions_to_numpy(regions: th.Tensor | np.ndarray) -> np.ndarray:

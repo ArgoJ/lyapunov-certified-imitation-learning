@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 from .lirpa_lyapunov_bounds import LyapunovRegionBounds
-from .region_builder import RegionBuilder
+from ..utils.region_builder import RegionBuilder
 
 __logger__ = logging.getLogger(__name__)
 

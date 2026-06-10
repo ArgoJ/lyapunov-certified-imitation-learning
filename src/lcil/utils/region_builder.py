@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+import torch as th
+
 from collections.abc import Sequence
 
-import torch as th
 
 __logger__ = logging.getLogger(__name__)
 

@@ -22,11 +22,11 @@ from rich.progress import (
 )
 
 from .config import LyapunovCertificationConfig
-from .region_builder import RegionBuilder
 from .region_manager import RegionManager
 from .abcrown_region_certifier import CompleteABCrownCertifier, CoreABCrownCertifier
 from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds, LyapunovRegionBounds
 from ..utils.search_utils import search_and_bisect_value
+from ..utils.region_builder import RegionBuilder
 from ..utils.constants import *
 
 __logger__ = logging.getLogger(__name__)

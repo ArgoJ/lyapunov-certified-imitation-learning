@@ -15,8 +15,8 @@ from .abcrown_region_certifier import (
     PositivityABCrownCertifier,
 )
 from .config import LyapunovCertificationConfig
-from .region_builder import RegionBuilder
 from .region_manager import RegionManager
+from ..utils.region_builder import RegionBuilder
 
 __logger__ = logging.getLogger(__name__)
 

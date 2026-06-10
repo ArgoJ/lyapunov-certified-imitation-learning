@@ -11,7 +11,7 @@ import torch.nn as nn
 from .abcrown_region_certifier import CompleteABCrownCertifier
 from .config import LyapunovCertificationConfig
 from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds, LyapunovRegionBounds
-from .region_builder import RegionBuilder
+from ..utils.region_builder import RegionBuilder
 
 __logger__ = logging.getLogger(__name__)
 

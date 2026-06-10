@@ -192,6 +192,12 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="condw",
         validators=(non_negative_validator,),
     )
+    condition_ibp_weight: float = config_field(
+        default=1.0,
+        help="Weight of the IBP-based Lyapunov decrease penalty term.",
+        display_alias="cond_ibp_w",
+        validators=(non_negative_validator,),
+    )
     invariance_weight: float = config_field(
         default=1.0,
         help="Weight of the set-invariance penalty term.",

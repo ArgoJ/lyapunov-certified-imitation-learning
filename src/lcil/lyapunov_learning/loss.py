@@ -18,6 +18,7 @@ class LyapunovTrainingLossParts:
     """Container for the individual loss components of the Lyapunov training objective."""
     condition_raw: th.Tensor
     roa_raw: th.Tensor
+    condition_ibp_raw: th.Tensor
     l1_raw: th.Tensor
     equilibrium_raw: th.Tensor
     formal_positivity_raw: th.Tensor
@@ -26,6 +27,7 @@ class LyapunovTrainingLossParts:
 
     condition_weight: float
     roa_weight: float
+    condition_ibp_weight: float
     l1_weight: float
     equilibrium_weight: float
     formal_positivity_weight: float
@@ -39,6 +41,10 @@ class LyapunovTrainingLossParts:
     @property
     def roa(self) -> th.Tensor:
         return self.roa_weight * self.roa_raw
+
+    @property
+    def condition_ibp(self) -> th.Tensor:
+        return self.condition_ibp_raw * self.condition_ibp_weight
 
     @property
     def l1(self) -> th.Tensor:
@@ -71,6 +77,16 @@ class LyapunovTrainingLossParts:
             + self.scale
             + self.policy_regularization
         )
+
+
+def lyapunov_decrease(
+    v_curr: th.Tensor,
+    v_next: th.Tensor,
+    kappa: float,
+    condition_margin: float = 0.0,
+) -> th.Tensor:
+    """Compute the one-step Lyapunov decrease value."""
+    return v_next - (1.0 - kappa) * v_curr + condition_margin
 
 
 class StateBoundsModule(nn.Module):
@@ -124,7 +140,7 @@ class LyapunovDecreaseViolation(nn.Module):
         self.condition_margin = float(condition_margin)
 
     def forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
-        return th.relu(v_next - (1.0 - self.kappa) * v_curr + self.condition_margin)
+        return th.relu(lyapunov_decrease(v_curr, v_next, self.kappa, self.condition_margin))
 
 
 class RelativeLyapunovDecreaseViolation(LyapunovDecreaseViolation):
@@ -188,9 +204,9 @@ class RhoGatedConditionLoss(nn.Module):
 
     def __init__(self, config: LyapunovTrainingConfig, device: th.device | str = "cpu") -> None:
         super().__init__()
-        self.invariance_weight = float(config.invariance_weight)
         self.rho_min = float(config.rho_min)
         self.relative_eps = float(config.relative_condition_eps)
+        self.invariance_weight = float(config.invariance_weight)
         self.relative_decrease_violation = RelativeLyapunovDecreaseViolation(
             kappa=config.kappa,
             condition_margin=config.condition_margin,
@@ -202,6 +218,16 @@ class RhoGatedConditionLoss(nn.Module):
             device=device,
             relative_eps=config.relative_condition_eps,
         )
+
+    def relative_condition_violation(
+        self,
+        v_curr: th.Tensor,
+        v_next: th.Tensor,
+        x_next: th.Tensor,
+    ) -> th.Tensor:
+        rel_decrease = self.relative_decrease_violation(v_curr=v_curr, v_next=v_next)
+        rel_invariance = self.relative_invariance_violation(x_next=x_next)
+        return rel_decrease + self.invariance_weight * rel_invariance
 
     @staticmethod
     def weighted_mean(values: th.Tensor, weights: th.Tensor) -> th.Tensor:
@@ -224,32 +250,6 @@ class RhoGatedConditionLoss(nn.Module):
         scaled_v = (v_curr.detach() / max(rho_value, self.relative_eps)).clamp(0.0, 1.0)
         return self.inside_sublevel_mask(v_curr=v_curr, rho_estimate=rho_estimate) * (1.0 - scaled_v)
 
-    def relative_condition_violation(
-        self,
-        v_curr: th.Tensor,
-        v_next: th.Tensor,
-        x_next: th.Tensor,
-    ) -> th.Tensor:
-        """Compute the relative condition violation as a weighted sum of the relative decrease violation and the relative invariance violation.
-
-        Parameters
-        ----------
-        v_curr : th.Tensor
-            Value at the current state, i.e., V(x).
-        v_next : th.Tensor
-            Value at the next state, i.e., V(x').
-        x_next : th.Tensor
-            Next state, i.e., x'.
-
-        Returns
-        -------
-        th.Tensor
-            Relative condition violation.
-        """
-        rel_decrease = self.relative_decrease_violation(v_curr=v_curr, v_next=v_next)
-        rel_invariance = self.relative_invariance_violation(x_next=x_next)
-        return rel_decrease + self.invariance_weight * rel_invariance
-
     def forward(
         self,
         v_curr: th.Tensor,
@@ -264,6 +264,81 @@ class RhoGatedConditionLoss(nn.Module):
         )
         weights = self.origin_focused_weight(v_curr, rho_estimate)
         return self.weighted_mean(relative_violation, weights)
+
+
+class SignedConditionMargin(nn.Module):
+    def __init__(
+        self,
+        policy_model: nn.Module,
+        lyap_model: nn.Module,
+        dyn_model: nn.Module,
+        config: LyapunovTrainingConfig,
+        device="cpu"
+    ) -> None:
+        super().__init__()
+        self.policy_model = policy_model
+        self.lyap_model = lyap_model
+        self.dyn_model = dyn_model
+
+        self.relative_invariance_violation = RelativeInvarianceViolation(
+            config.state_bounds,
+            device=device,
+            relative_eps=config.relative_condition_eps
+        )
+        
+        self.kappa = float(config.kappa)
+        self.condition_margin = float(config.condition_margin)
+        self.relative_eps = float(config.relative_condition_eps)
+        self.invariance_weight = float(config.invariance_weight)
+        self.detach_relative_denominator = bool(config.detach_relative_denominator)
+
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        v_curr = self.lyap_model(x)
+        u = self.policy_model(x)
+        x_next = self.dyn_model(x, u)
+        v_next = self.lyap_model(x_next)
+
+        denom_source = v_curr.detach() if self.detach_relative_denominator else v_curr
+        denom = denom_source.abs().clamp_min(self.relative_eps)
+
+        inv = self.relative_invariance_violation(x_next=x_next)
+        signed_margin = (
+            -lyapunov_decrease(v_curr, v_next, self.kappa, self.condition_margin) / denom
+            - self.invariance_weight * inv
+        )
+
+        return signed_margin
+
+
+class ConditionIBPLoss(StateBoundsModule):
+    def __init__(self, signed_margin_model: nn.Module, state_bounds: th.Tensor, device="cpu"):
+        super().__init__(state_bounds=state_bounds, device=device)
+        self.signed_margin_model = signed_margin_model
+        self.bounded_model = self._build_bounded_module()
+
+    def _build_bounded_module(self) -> BoundedModule:
+        dummy_x = get_center(self.lbx, self.ubx).reshape(1, -1)
+        return BoundedModule(
+            self.signed_margin_model,
+            (dummy_x,),
+            device=self.device,
+            verbose=False,
+            bound_opts={"perturb_bound": True},
+        )
+
+    def bounded_input(self, x_L: th.Tensor, x_U: th.Tensor) -> BoundedTensor:
+        x_center = 0.5 * (x_L + x_U)
+        ptb = PerturbationLpNorm(norm=float("inf"), x_L=x_L, x_U=x_U)
+        return BoundedTensor(x_center, ptb)
+
+    def forward(self, x_L: th.Tensor, x_U: th.Tensor, method: str = "IBP") -> th.Tensor:
+        bounded_x = self.bounded_input(x_L=x_L, x_U=x_U)
+        lb, _ = self.bounded_model.compute_bounds(
+            x=(bounded_x,),
+            method=method,
+            bound_upper=False,
+        )
+        return th.relu(-lb).mean()
 
 
 class RoaSurrogateLoss(nn.Module):
@@ -294,10 +369,10 @@ class EquilibriumLoss(nn.Module):
 class FormalPositivityLoss(StateBoundsModule):
     """Compute the positivity loss induced by a lower bound on V."""
     def __init__(
-            self, 
-            lyap_model: nn.Module, 
-            state_bounds: th.Tensor, 
-            device: th.device | str = "cpu"
+        self, 
+        lyap_model: nn.Module, 
+        state_bounds: th.Tensor, 
+        device: th.device | str = "cpu"
     ) -> None:
         super().__init__(state_bounds=state_bounds, device=device)
 
@@ -410,15 +485,41 @@ class LyapunovTrainingLoss(nn.Module):
         self.dyn_model = dyn_model
         self.config = config
         self.device = th.device(device)
+        self.last_loss_parts: LyapunovTrainingLossParts | None = None
 
         self.condition_loss = RhoGatedConditionLoss(config, device=self.device)
         self.roa_loss = RoaSurrogateLoss(config)
 
         # Only initialize when weight is positive
+        # =======================================
+
+        # Condition IBP loss with signed margin model
+        self.signed_condition_margin = (
+            SignedConditionMargin(
+                policy_model=policy_model,
+                lyap_model=lyap_model,
+                dyn_model=dyn_model,
+                config=config,
+                device=self.device,
+            )
+            if config.condition_ibp_weight > 0.0 else None
+        )
+        self.condition_ibp_loss = (
+            ConditionIBPLoss(
+                signed_margin_model=self.signed_condition_margin,
+                state_bounds=config.state_bounds,
+                device=self.device,
+            )
+            if self.signed_condition_margin is not None else None
+        )
+        
+        # Equilibrium loss
         self.equilibrium_loss = (
             EquilibriumLoss(lyap_model, config.state_dim, device=self.device) 
             if config.equilibrium_weight > 0.0 else None
         )
+
+        # Positivity loss
         self.positivity_loss = (
             FormalPositivityLoss(
                 lyap_model=lyap_model,
@@ -427,10 +528,14 @@ class LyapunovTrainingLoss(nn.Module):
             )
             if config.formal_positivity_weight > 0.0 else None
         )
+
+        # L1 regularization loss
         self.l1_loss = (
             ParameterL1Loss(lyap_model, policy_model, device=self.device) 
             if config.l1_weight > 0.0 else None
         )
+
+        # Scale anchor loss
         self.scale_loss = (
             LyapunovScaleAnchorLoss(
                 lyap_model=lyap_model,
@@ -441,11 +546,12 @@ class LyapunovTrainingLoss(nn.Module):
             ) 
             if config.scale_weight > 0.0 else None
         )
+
+        # Policy regularization loss
         self.policy_regularization_loss = (
             PolicyRegularizationLoss(policy_model, device=device)
             if self.config.policy_regularization_weight > 0.0 else None
         )
-        self.last_loss_parts: LyapunovTrainingLossParts | None = None
 
     def _closed_loop_values(
         self,
@@ -497,6 +603,8 @@ class LyapunovTrainingLoss(nn.Module):
         x_batch: th.Tensor,
         roa_candidates: th.Tensor,
         rho_estimate: float,
+        ibp_lower_boxes: th.Tensor | None = None,
+        ibp_upper_boxes: th.Tensor | None = None,
         active_policy_regularization: bool = False,
     ) -> LyapunovTrainingLossParts:
         """Compute the individual loss components without combining them into a total loss."""
@@ -516,6 +624,19 @@ class LyapunovTrainingLoss(nn.Module):
         )
         
         zero = th.zeros((), dtype=v_batch.dtype, device=v_batch.device)
+
+        condition_ibp_loss_value = (
+            self.condition_ibp_loss(
+                x_L=ibp_lower_boxes,
+                x_U=ibp_upper_boxes,
+            )
+            if (
+                self.condition_ibp_loss is not None
+                and ibp_lower_boxes is not None
+                and ibp_upper_boxes is not None
+            )
+            else zero
+        )
 
         origin_loss_value = (
             self.equilibrium_loss()
@@ -545,13 +666,16 @@ class LyapunovTrainingLoss(nn.Module):
         parts = LyapunovTrainingLossParts(
             condition_raw=condition_loss_value,
             roa_raw=roa_loss_value,
+            condition_ibp_raw=condition_ibp_loss_value,
             l1_raw=l1_loss_value,
             equilibrium_raw=origin_loss_value,
             formal_positivity_raw=formal_positivity_loss_value,
             scale_raw=scale_loss_value,
             policy_regularization_raw=policy_regularization_loss_value,
+
             condition_weight=self.config.condition_weight,
             roa_weight=self.config.roa_weight,
+            condition_ibp_weight=self.config.condition_ibp_weight,
             l1_weight=self.config.l1_weight,
             equilibrium_weight=self.config.equilibrium_weight,
             formal_positivity_weight=self.config.formal_positivity_weight,
