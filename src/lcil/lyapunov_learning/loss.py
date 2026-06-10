@@ -314,7 +314,7 @@ class ConditionIBPLoss(StateBoundsModule):
     def __init__(self, signed_margin_model: nn.Module, state_bounds: th.Tensor, device="cpu"):
         super().__init__(state_bounds=state_bounds, device=device)
         self.signed_margin_model = signed_margin_model
-        self.bounded_model = self._build_bounded_module()
+        self.bounded_model: BoundedModule | None = None
 
     def _build_bounded_module(self) -> BoundedModule:
         dummy_x = get_center(self.lbx, self.ubx).reshape(1, -1)
@@ -325,6 +325,11 @@ class ConditionIBPLoss(StateBoundsModule):
             verbose=False,
             bound_opts={"perturb_bound": True},
         )
+    
+    def _get_bounded_model(self) -> BoundedModule:
+        if self.bounded_model is None:
+            self.bounded_model = self._build_bounded_module()
+        return self.bounded_model
 
     def bounded_input(self, x_L: th.Tensor, x_U: th.Tensor) -> BoundedTensor:
         x_center = 0.5 * (x_L + x_U)
@@ -333,7 +338,7 @@ class ConditionIBPLoss(StateBoundsModule):
 
     def forward(self, x_L: th.Tensor, x_U: th.Tensor, method: str = "IBP") -> th.Tensor:
         bounded_x = self.bounded_input(x_L=x_L, x_U=x_U)
-        lb, _ = self.bounded_model.compute_bounds(
+        lb, _ = self._get_bounded_model().compute_bounds(
             x=(bounded_x,),
             method=method,
             bound_upper=False,

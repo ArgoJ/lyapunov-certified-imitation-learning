@@ -166,7 +166,8 @@ def main() -> None:
         base_path = run.output_dir.resolve()
         dyn_model = DoubleIntegratorDynamics(
             dt=policy_global_config.dt,
-            method=IntegrationMethod.EXPLICIT_EULER
+            method=IntegrationMethod.EXPLICIT_EULER,
+            abcrown_compatible_ops=True,
         )
         dyn_model.eval()
 
