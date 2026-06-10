@@ -345,7 +345,13 @@ class ConditionIBPLoss(StateBoundsModule):
             method=method,
             bound_upper=False,
         )
-        return th.relu(-lb).mean()
+        violations = th.relu(-lb).squeeze()
+        centers = 0.5 * (x_L + x_U)
+        distances = th.norm(centers, p=2, dim=1)
+        weights = 1.0 / (distances + 1e-3)
+        weights = weights / weights.mean()
+        weighted_violations = (violations * weights).mean()
+        return weighted_violations
 
 
 class RoaSurrogateLoss(nn.Module):
