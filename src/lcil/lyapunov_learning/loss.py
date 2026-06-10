@@ -71,6 +71,7 @@ class LyapunovTrainingLossParts:
         return (
             self.condition
             + self.roa
+            + self.condition_ibp
             + self.l1
             + self.equilibrium
             + self.formal_positivity
