@@ -74,8 +74,8 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         bins_per_dim=10,
 
         condition_weight=10.0,
-        roa_weight=0.1,
-        condition_ibp_weight=0.001,
+        roa_weight=0.05,
+        condition_ibp_weight=0.005,
         l1_weight=0.0000,
         scale_weight=10.0,
         equilibrium_weight=0.0,
@@ -84,6 +84,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
 
         roa_candidate_size=8192,
         rho_estimation_samples=8192,
+        rho_growth_gamma=1.2,
         cex_every=20,
         cex_steps=30,
         adversarial_samples=8192,

@@ -43,8 +43,9 @@ class NeuralLyapunovCandidate(nn.Module):
                 "Using Riccati value matrix to seed the Lyapunov R factor:\n%s", riccati_p)
         
         with th.no_grad():
-            initial_scale = th.linalg.norm(self.r_factor, ord="fro").clamp_min(1.0)
-        self.register_buffer("feature_scale", initial_scale)
+            feature_scale = th.linalg.norm(self.r_factor, ord="fro").clamp_min(1.0)
+        self.register_buffer("feature_scale", feature_scale)
+        __logger__.info("Initialized NeuralLyapunovCandidate with feature scale %.3e", feature_scale)
 
     def _pd_matrix(self) -> th.Tensor:
         eye = th.eye(
