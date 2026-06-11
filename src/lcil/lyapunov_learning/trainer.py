@@ -410,7 +410,6 @@ class LyapunovTrainer:
             origin_exclusion=self.config.origin_exclusion,
             device=self.device,
         )
-        self.regions = self.region_builder.build_regions()
     
         self.rho_monitor = rho_monitor
         self.results: LyapunovTrainingResult | None = None
@@ -550,6 +549,7 @@ class LyapunovTrainer:
             dtype=initial_x.dtype,
         )
         roa_candidates = self._build_roa_candidates()
+        ibp_regions = self.region_builder.build_regions()
 
         mining_interval = max(1, int(self.config.cex_every))
         rho_estimate = self.config.rho_min
@@ -644,7 +644,7 @@ class LyapunovTrainer:
                             x_batch=x_batch,
                             roa_candidates=roa_candidates,
                             rho_estimate=rho_estimate,
-                            ibp_regions=self.regions,
+                            ibp_regions=ibp_regions,
                             active_policy_regularization=self._curr_policy_train_status,
                         )
 

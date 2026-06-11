@@ -31,7 +31,7 @@ from ..example_utils import build_lyapunov_func
 
 __logger__ = logging.getLogger("lcil.examples.cartpole.learn_lyapunov")
 
-_DEFAULT_TRAIN_BOUND_FACTORS = (0.5, 0.4, 0.15, 0.4)
+_DEFAULT_TRAIN_BOUND_FACTORS = (1.0, 1.0, 1.0, 1.0)
 
 
 @dataclass(frozen=True)
@@ -41,7 +41,7 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     activation: str = config_field(default="relu", help="Activation function for the Lyapunov feature net.", display_alias="act")
     hidden_size: int = config_field(default=32, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
     layers: int = config_field(default=3, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
-    use_angle_wrapper: bool = config_field(default=True, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
+    use_angle_wrapper: bool = config_field(default=False, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
     train_bound_factors: list[float] = config_field(
         default_factory=lambda: list(_DEFAULT_TRAIN_BOUND_FACTORS),
         help="Per-dimension scaling applied to policy state bounds before Lyapunov training.",
@@ -63,17 +63,32 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         state_bounds=np.array([[-1.0, -1.0, -1.0, -1.0], [1.0, 1.0, 1.0, 1.0]], dtype=float),
         initial_sample_size=2048,
         batch_size=2048,
+        learning_rate=0.0001,
         outer_epochs=5000,
         steps_per_epoch=10,
-        cex_every=20,
-        adversarial_samples=8192,
-        cex_steps=30,
-        adversarial_step_size=0.05,
-        condition_margin=0.0,
         policy_epochs=200,
+        kappa=0.01,
+        seed=1674653,
+        scale_anchor_num_points=8192,
+        origin_exclusion=[0.05, 0.15, 0.05, 0.15],
+        bins_per_dim=10,
+
+        condition_weight=10.0,
+        roa_weight=0.1,
+        condition_ibp_weight=0.001,
+        l1_weight=0.0000,
+        scale_weight=10.0,
+        equilibrium_weight=0.0,
+        formal_positivity_weight=0.0,
+        policy_regularization_weight=1.0,
+
         roa_candidate_size=8192,
         rho_estimation_samples=8192,
-        scale_anchor_num_points=2048,
+        cex_every=20,
+        cex_steps=30,
+        adversarial_samples=8192,
+        adversarial_step_size=0.05,
+        condition_margin=0.00001,
     )
 
 
@@ -168,7 +183,10 @@ def main() -> None:
         __logger__.info("Using curriculum scales: %s", curriculum_scales)
 
         base_path = run.output_dir.resolve()
-        dyn_model = CartpoleDynamics(dt=mpc_cfg.dt)
+        dyn_model = CartpoleDynamics(
+            dt=mpc_cfg.dt,
+            abcrown_compatible_ops=True,
+        )
         dyn_model.eval()
 
         seed = train_config.seed + run_idx if train_config.seed is not None else None
@@ -184,6 +202,7 @@ def main() -> None:
                 if script_config.use_angle_wrapper else lyap_feature),
             state_dim=mpc_cfg.nx,
             riccati_p=riccati_p,
+            fixed_r_factor=True,
         )
 
         training_config = replace(
@@ -205,14 +224,10 @@ def main() -> None:
 
         curriculum_result = trainer.train_with_scaled_bounds(curriculum_scales)
         train_results = curriculum_result.final_result
-        if train_results is None:
-            __logger__.warning("Skipping run %s: curriculum produced no training result", run.run_name)
-            continue
 
         trainer.save(base_path)
         if train_results.aborted:
             __logger__.warning("Skipping run %s: %s", run.run_name, train_results.abort_reason)
-            continue
 
         curriculum_summary = {
             "curriculum_scales": curriculum_scales,

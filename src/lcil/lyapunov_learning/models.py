@@ -41,6 +41,10 @@ class NeuralLyapunovCandidate(nn.Module):
             self.set_riccati_p(riccati_p)
             __logger__.info(
                 "Using Riccati value matrix to seed the Lyapunov R factor:\n%s", riccati_p)
+        
+        with th.no_grad():
+            initial_scale = th.linalg.norm(self.r_factor, ord="fro").clamp_min(1.0)
+        self.register_buffer("feature_scale", initial_scale)
 
     def _pd_matrix(self) -> th.Tensor:
         eye = th.eye(
@@ -87,8 +91,8 @@ class NeuralLyapunovCandidate(nn.Module):
     def forward(self, x: th.Tensor) -> th.Tensor:
         x_star = self.x_star.to(dtype=x.dtype, device=x.device)
         x_star_batch = x_star.expand(x.shape[0], -1)
-        phi_x = self.feature_net(x)
-        phi_x_star = self.feature_net(x_star_batch)
+        phi_x = self.feature_net(x) * self.feature_scale
+        phi_x_star = self.feature_net(x_star_batch) * self.feature_scale
         feature_term = th.abs(phi_x - phi_x_star).sum(dim=1, keepdim=True)
 
         delta = x - x_star_batch
