@@ -48,13 +48,25 @@ def _build_script_defaults() -> LyapunovLearningScriptConfig:
 def _build_training_defaults() -> LyapunovTrainingConfig:
     return LyapunovTrainingConfig(
         state_dim=2,
-        state_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]], dtype=float),
+        state_bounds=np.array([[-10.0, -10.0], [10.0, 10.0]], dtype=float),
         initial_sample_size=1000,
-        batch_size=512,
-        outer_epochs=100,
+        batch_size=1024,
+        outer_epochs=2000,
         steps_per_epoch=5,
+        policy_epochs=200,
         cex_every=10,
-        seed=5912354,
+        seed=1674653,
+        kappa=0.01,
+        condition_margin=0.00001,
+        learning_rate=0.0005,
+        condition_weight=10.0,
+        condition_ibp_weight=1.0,
+        l1_weight=0.00001,
+        scale_weight=1.0,
+        policy_regularization_weight=1.0,
+        scale_anchor_num_points=4096,
+        origin_exclusion=[0.05, 0.15],
+        bins_per_dim=50
     )
 
 
@@ -186,6 +198,7 @@ def main() -> None:
             feature_net=lyap_feature,
             state_dim=policy_global_config.nx,
             riccati_p=riccati_p,
+            fixed_r_factor=False,
         )
 
         # ---------------------------------------------------------------------

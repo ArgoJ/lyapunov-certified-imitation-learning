@@ -74,7 +74,6 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         roa_candidate_size=8192,
         rho_estimation_samples=8192,
         scale_anchor_num_points=2048,
-        scale_anchor=1000.0,
     )
 
 

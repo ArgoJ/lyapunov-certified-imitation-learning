@@ -22,15 +22,20 @@ class NeuralLyapunovCandidate(nn.Module):
         eps: float = 1e-3,
         x_star: th.Tensor | None = None,
         riccati_p: th.Tensor | None = None,
+        fixed_r_factor: bool = False,
     ):
         super().__init__()
         self.feature_net = feature_net
         self.state_dim = state_dim
         self.eps = float(eps)
-        self.r_factor = nn.Parameter(th.eye(state_dim))
         if x_star is None:
             x_star = th.zeros(state_dim, dtype=th.float32)
         self.register_buffer("x_star", x_star.reshape(1, state_dim))
+
+        if fixed_r_factor:
+            self.register_buffer("r_factor", th.eye(state_dim))
+        else:
+            self.r_factor = nn.Parameter(th.eye(state_dim))
 
         if riccati_p is not None:
             self.set_riccati_p(riccati_p)
@@ -108,6 +113,7 @@ class NeuralLyapunovCandidate(nn.Module):
             "feature_net_path": feature_net_path.name,
             "state_dim": self.state_dim,
             "eps": self.eps,
+            "fixed_r_factor": not isinstance(self.r_factor, nn.Parameter),
         }
         th.save(model_payload, checkpoint_path)
 
@@ -130,6 +136,7 @@ class NeuralLyapunovCandidate(nn.Module):
         eps = payload["eps"]
 
         feature_net_path = checkpoint_path.with_name(payload["feature_net_path"])
+        fixed_r_factor = payload.get("fixed_r_factor", False)
         feature_net = load_feature_net(
             feature_net_path,
             map_location=map_location,
@@ -143,7 +150,7 @@ class NeuralLyapunovCandidate(nn.Module):
             feature_net=feature_net,
             state_dim=state_dim,
             eps=eps,
-            x_star=payload["state_dict"].get("x_star", None),
+            fixed_r_factor=fixed_r_factor,
         ).to(map_location)
         model.load_state_dict(payload["state_dict"], strict=strict)
         model.eval()

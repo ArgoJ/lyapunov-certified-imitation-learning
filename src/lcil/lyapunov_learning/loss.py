@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import torch as th
 import torch.nn as nn
@@ -13,6 +14,7 @@ from .config import LyapunovTrainingConfig
 from .utils import get_th_lbx_ubx, get_center
 
 
+__logger__ = logging.getLogger(__name__)
 
 @dataclass
 class LyapunovTrainingLossParts:
@@ -115,7 +117,6 @@ class LyapunovScaleAnchorLoss(StateBoundsModule):
         self,
         lyap_model: nn.Module,
         state_bounds: th.Tensor,
-        target_value: float,
         num_anchor_points: int = 1000,
         device: th.device | str = "cpu",
         eps: float = 1e-6
@@ -123,19 +124,30 @@ class LyapunovScaleAnchorLoss(StateBoundsModule):
         super().__init__(state_bounds=state_bounds, device=device)
         self.lyap_model = lyap_model
         self.eps = float(eps)
-        
-        if target_value <= 0.0:
-            raise ValueError("target_value must be positive.")
-        self.target_log_value = float(math.log(target_value))
 
         rand_uniform = th.rand((num_anchor_points, self.lbx.shape[0]), device=self.device, dtype=self.lbx.dtype)
         anchor_states = self.lbx + rand_uniform * (self.ubx - self.lbx)
         self.register_buffer("anchor_states", anchor_states)
 
+        self.register_buffer(
+            "target_log_value", 
+            th.tensor(float("nan"), dtype=th.float32, device=self.device)
+        )
+
     def forward(self) -> th.Tensor:
         v_reference = self.lyap_model(self.anchor_states)
         ref_mean = v_reference.mean().clamp_min(self.eps)
-        return (th.log(ref_mean) - self.target_log_value).pow(2)
+        current_log_value = th.log(ref_mean)
+        
+        if th.isnan(self.target_log_value):
+            self.target_log_value.copy_(current_log_value.detach())
+            __logger__.info(
+                "Auto-anchored Lyapunov scale at log(V) = %.4f (V ≈ %.4f)",
+                self.target_log_value.item(),
+                th.exp(self.target_log_value).item()
+            )
+
+        return (current_log_value - self.target_log_value).pow(2)
     
 
 class LyapunovDecreaseViolation(nn.Module):
@@ -560,7 +572,12 @@ class LyapunovTrainingLoss(nn.Module):
 
         # L1 regularization loss
         self.l1_loss = (
-            ParameterL1Loss(lyap_model, policy_model, exclude_param=("r_factor",), device=self.device) 
+            ParameterL1Loss(
+                lyap_model,
+                policy_model,
+                exclude_param=("r_factor",),
+                device=self.device
+            ) 
             if config.l1_weight > 0.0 else None
         )
 
@@ -569,7 +586,6 @@ class LyapunovTrainingLoss(nn.Module):
             LyapunovScaleAnchorLoss(
                 lyap_model=lyap_model,
                 state_bounds=config.state_bounds,
-                target_value=config.scale_anchor,
                 num_anchor_points=config.scale_anchor_num_points,
                 device=self.device,
             ) 

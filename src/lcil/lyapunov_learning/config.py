@@ -52,9 +52,21 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Exponential decay factor in the Lyapunov decrease condition.
     dropout : float
         Dropout probability for the Lyapunov model. Must be in the range [0, 1].
+    detach_relative_denominator : bool
+        Whether to detach the relative denominator in the Lyapunov loss computation.
+    scale_anchor_num_points : int
+        Number of anchor points used in the Lyapunov scale anchor loss.
+    bins_per_dim : int | Sequence[int]
+        Number of bins per dimension for region discretization when enforcing conditions over a grid.
+    origin_exclusion : float | Sequence[float]
+        Origin exclusion per dimension of bounds, used to exclude a neighborhood around the origin.
     tb_log_dir : str | os.PathLike | None
         TensorBoard logging directory. If ``None``, TensorBoard logging is disabled.
 
+    condition_weight : float
+        Weight of the Lyapunov decrease and set-invariance condition penalty term.
+    condition_ibp_weight : float
+        Weight of the IBP-based Lyapunov decrease penalty term.
     invariance_weight : float
         Weight of the set-invariance penalty term.
     equilibrium_weight : float
@@ -65,6 +77,10 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Weight for the ROA surrogate term.
     l1_weight : float
         Weight for the parameter l1 regularization.
+    scale_weight : float
+        Weight for the Lyapunov scale anchor loss.
+    policy_regularization_weight : float
+        Weight for the policy regularization loss, which encourages the policy to stay close to the initial policy.
     
     roa_candidate_size : int
         Number of candidate states used in the ROA surrogate loss.
@@ -88,9 +104,9 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Number of PGD seeds for counterexample mining.
     adversarial_step_size : float
         Relative PGD step size for counterexample mining.
-    counterexample_steps : int
+    cex_steps : int
         PGD steps for counterexample search.
-    counterexample_every : int
+    cex_every : int
         Frequency of counterexample mining in outer epochs.
     cex_fraction_min : float
         Minimum fraction of counterexamples in a batch.
@@ -170,12 +186,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=True,
         help="Whether to detach V(x) in the denominator of the relative loss terms.",
     )
-    scale_anchor: float = config_field(
-        default=100.0,
-        help="Anchor value for the Lyapunov scale loss, which encourages the Lyapunov function values to be close to this anchor for better numerical conditioning.",
-        display_alias="scale_anchor",
-        validators=(positive_validator,),
-    )
     scale_anchor_num_points: int = config_field(
         default=1024,
         help="Number of anchor points used in the Lyapunov scale anchor loss.",
@@ -242,7 +252,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         validators=(non_negative_validator,),
     )
     scale_weight: float = config_field(
-        default=0.1,
+        default=1.0,
         help="Weight for the Lyapunov scale anchor loss, which encourages the Lyapunov function values to be close to a specified anchor value for better numerical conditioning.",
         display_alias="scalew",
         validators=(non_negative_validator,),
