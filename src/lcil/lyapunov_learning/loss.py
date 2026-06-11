@@ -6,6 +6,7 @@ import torch.nn as nn
 
 from copy import deepcopy
 from dataclasses import dataclass
+from collections.abc import Sequence
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
 from .config import LyapunovTrainingConfig
@@ -88,6 +89,11 @@ def lyapunov_decrease(
 ) -> th.Tensor:
     """Compute the one-step Lyapunov decrease value."""
     return v_next - (1.0 - kappa) * v_curr + condition_margin
+
+def weighted_mean(values: th.Tensor, weights: th.Tensor) -> th.Tensor:
+    """Compute a weighted mean of the given values with the provided weights."""
+    weights = weights.to(dtype=values.dtype)
+    return (values * weights).sum() / weights.sum().clamp_min(1e-6)
 
 
 class StateBoundsModule(nn.Module):
@@ -229,11 +235,6 @@ class RhoGatedConditionLoss(nn.Module):
         rel_decrease = self.relative_decrease_violation(v_curr=v_curr, v_next=v_next)
         rel_invariance = self.relative_invariance_violation(x_next=x_next)
         return rel_decrease + self.invariance_weight * rel_invariance
-
-    @staticmethod
-    def weighted_mean(values: th.Tensor, weights: th.Tensor) -> th.Tensor:
-        weights = weights.to(dtype=values.dtype)
-        return (values * weights).sum() / weights.sum().clamp_min(1e-6)
     
     def rho_value(self, rho_estimate: float) -> float:
         return max(float(rho_estimate), self.rho_min)
@@ -264,7 +265,7 @@ class RhoGatedConditionLoss(nn.Module):
             x_next=x_next,
         )
         weights = self.origin_focused_weight(v_curr, rho_estimate)
-        return self.weighted_mean(relative_violation, weights)
+        return weighted_mean(relative_violation, weights)
 
 
 class SignedConditionMargin(nn.Module):
@@ -281,17 +282,11 @@ class SignedConditionMargin(nn.Module):
         self.lyap_model = lyap_model
         self.dyn_model = dyn_model
 
-        self.relative_invariance_violation = RelativeInvarianceViolation(
-            config.state_bounds,
-            device=device,
-            relative_eps=config.relative_condition_eps
-        )
+        self.invariance_violation = InvarianceViolation(config.state_bounds, device=device)
         
         self.kappa = float(config.kappa)
         self.condition_margin = float(config.condition_margin)
-        self.relative_eps = float(config.relative_condition_eps)
         self.invariance_weight = float(config.invariance_weight)
-        self.detach_relative_denominator = bool(config.detach_relative_denominator)
 
     def forward(self, x: th.Tensor) -> th.Tensor:
         v_curr = self.lyap_model(x)
@@ -299,12 +294,9 @@ class SignedConditionMargin(nn.Module):
         x_next = self.dyn_model(x, u)
         v_next = self.lyap_model(x_next)
 
-        denom_source = v_curr.detach() if self.detach_relative_denominator else v_curr
-        denom = denom_source.abs().clamp(min=self.relative_eps, max=1e6)
-
-        inv = self.relative_invariance_violation(x_next=x_next)
+        inv = self.invariance_violation(x_next=x_next)
         signed_margin = (
-            -lyapunov_decrease(v_curr, v_next, self.kappa, self.condition_margin) / denom
+            -lyapunov_decrease(v_curr, v_next, self.kappa, self.condition_margin)
             - self.invariance_weight * inv
         )
 
@@ -312,9 +304,16 @@ class SignedConditionMargin(nn.Module):
 
 
 class ConditionIBPLoss(StateBoundsModule):
-    def __init__(self, signed_margin_model: nn.Module, state_bounds: th.Tensor, device="cpu"):
+    def __init__(
+        self,
+        signed_margin_model: nn.Module,
+        state_bounds: th.Tensor,
+        relative_eps: float = 1e-4,
+        device="cpu"
+    ):
         super().__init__(state_bounds=state_bounds, device=device)
         self.signed_margin_model = signed_margin_model
+        self.relative_eps = float(relative_eps)
         self.bounded_model = self._build_bounded_module()
 
     def _build_bounded_module(self) -> BoundedModule:
@@ -326,13 +325,18 @@ class ConditionIBPLoss(StateBoundsModule):
             verbose=False,
             bound_opts={"perturb_bound": True},
         )
+    
+    def _calculate_weight(self, centers: th.Tensor) -> th.Tensor:
+        distances_sq = (centers ** 2).sum(dim=1)
+        alpha = 0.1 
+        return th.exp(-alpha * distances_sq).clamp(min=0.01)
 
     def bounded_input(self, x_L: th.Tensor, x_U: th.Tensor) -> BoundedTensor:
         x_center = 0.5 * (x_L + x_U)
         ptb = PerturbationLpNorm(norm=float("inf"), x_L=x_L, x_U=x_U)
         return BoundedTensor(x_center, ptb)
 
-    def forward(self, regions: th.Tensor, method: str = "IBP") -> th.Tensor:
+    def forward(self, regions: th.Tensor) -> th.Tensor:
         if regions.shape[0] == 0:
             return th.tensor(0.0, device=self.device, requires_grad=True)
         
@@ -342,15 +346,18 @@ class ConditionIBPLoss(StateBoundsModule):
         bounded_x = self.bounded_input(x_L=x_L, x_U=x_U)
         lb, _ = self.bounded_model.compute_bounds(
             x=(bounded_x,),
-            method=method,
+            method="ibp",
             bound_upper=False,
         )
         violations = th.relu(-lb).squeeze()
+
         centers = 0.5 * (x_L + x_U)
-        distances = th.norm(centers, p=2, dim=1)
-        weights = 1.0 / (distances + 1e-3)
-        weights = weights / weights.mean()
-        weighted_violations = (violations * weights).mean()
+        with th.no_grad():
+            v_centers = self.signed_margin_model.lyap_model(centers).squeeze(-1)
+            
+        relative_violations = violations / v_centers.clamp_min(self.relative_eps)
+        weights = self._calculate_weight(centers=centers)
+        weighted_violations = weighted_mean(relative_violations, weights)
         return weighted_violations
 
 
@@ -429,21 +436,30 @@ class FormalPositivityLoss(StateBoundsModule):
 class ParameterL1Loss(nn.Module):
     """Compute the l1 norm of a trainable parameter collection."""
 
-    def __init__(self, *models: nn.Module, device: th.device | str = "cpu") -> None:
+    def __init__(
+        self, 
+        *models: nn.Module, 
+        exclude_param: Sequence[str] = (), 
+        device: th.device | str = "cpu"
+    ) -> None:
         super().__init__()
         self.device = th.device(device)
         self.models = models
+        self.exclude_param = exclude_param
         self._train_params: tuple[nn.Parameter, ...] = ()
         self.refresh_train_params()
     
     def refresh_train_params(self) -> None:
         """Refresh the cached set of currently trainable parameters."""
-        self._train_params = tuple(
-            param
-            for model in self.models
-            for param in model.parameters()
-            if param.requires_grad
-        )
+        train_params = []
+        for model in self.models:
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    # keep excluded parameters out of L1-Loss
+                    if any(exclude in name for exclude in self.exclude_param):
+                        continue
+                    train_params.append(param)
+        self._train_params = tuple(train_params)
 
     def get_train_params(self) -> tuple[nn.Parameter, ...]:
         """Return the cached trainable parameters of the training objective."""
@@ -544,7 +560,7 @@ class LyapunovTrainingLoss(nn.Module):
 
         # L1 regularization loss
         self.l1_loss = (
-            ParameterL1Loss(lyap_model, policy_model, device=self.device) 
+            ParameterL1Loss(lyap_model, policy_model, exclude_param=("r_factor",), device=self.device) 
             if config.l1_weight > 0.0 else None
         )
 
@@ -637,10 +653,20 @@ class LyapunovTrainingLoss(nn.Module):
         
         zero = th.zeros((), dtype=v_batch.dtype, device=v_batch.device)
 
+        condition_ibp_loss_value = zero
         if self.condition_ibp_loss is not None and ibp_regions is not None:
-            condition_ibp_loss_value = self.condition_ibp_loss(regions=ibp_regions)
-        else:
-            condition_ibp_loss_value = zero
+            centers = 0.5 * (ibp_regions[:, 0, :] + ibp_regions[:, 1, :])
+
+            with th.no_grad():
+                v_centers = self.lyap_model(centers).squeeze(-1)
+                
+            rho_safe = max(float(rho_estimate), 1e-6)
+            expansion_factor = 1.1 
+            active_mask = v_centers <= (rho_safe * expansion_factor)
+
+            active_regions = ibp_regions[active_mask]
+            if active_regions.shape[0] > 0:
+                condition_ibp_loss_value = self.condition_ibp_loss(regions=active_regions)
 
         origin_loss_value = (
             self.equilibrium_loss()

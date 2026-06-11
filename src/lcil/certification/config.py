@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Callable, TypeVar
+import logging
+
 from collections.abc import Sequence
 from dataclasses import dataclass
 from numpy.typing import NDArray
@@ -15,32 +16,14 @@ from ..utils.base_config import (
     positive_validator,
     non_negative_validator,
     growth_rate_validator,
-    pathlike_validator,
     run_field_validators,
     sequence_validator,
+    normalize_scalar_or_sequence,
 )
 from ..utils.constants import *
 
 
-T = TypeVar("T")
-
-
-def _normalize_scalar_or_sequence(
-    value: Any,
-    *,
-    state_dim: int,
-    name: str,
-    caster: Callable[[Any], T],
-) -> T | tuple[T, ...]:
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        normalized = tuple(caster(item) for item in value)
-        if len(normalized) != state_dim:
-            raise ValueError(f"{name} must be scalar or match state_dim.")
-        return normalized
-
-    scalar = caster(value)
-    return (scalar,) * state_dim
-
+__logger__ = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
@@ -64,7 +47,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         origin. ``1.0`` keeps the grid uniform, smaller values create finer
         bins toward the center while keeping the same total bin count.
     origin_exclusion : float | Sequence[float] | None
-        Radius around the origin to skip during certification. If a sequence is
+        Origin exclusion per dimension of bounds. If a sequence is
         provided, it is interpreted per state dimension.
     rho_scaling : float
         Multiplicative factor used in rho scaling before bisection.
@@ -113,7 +96,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
 
     # Regions
     bins_per_dim: int | Sequence[int] = config_field(
-        default=4,
+        default=1,
         help="Initial certification bins per state dimension.",
         validators=(sequence_validator(positive_validator),),
     )
@@ -127,7 +110,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     )
     origin_exclusion: float | Sequence[float] = config_field(
         default=0.0,
-        help="Radius around the origin to skip during certification.",
+        help="Origin exclusion per dimension of bounds.",
         validators=(sequence_validator(non_negative_validator),),
     )
 
@@ -235,19 +218,19 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
 
     def __post_init__(self) -> None:
         run_field_validators(self)
-        bins_per_dim = _normalize_scalar_or_sequence(
+        bins_per_dim = normalize_scalar_or_sequence(
             self.bins_per_dim,
             state_dim=self.state_dim,
             name="bins_per_dim",
             caster=int,
         )
-        refinement_factors = _normalize_scalar_or_sequence(
+        refinement_factors = normalize_scalar_or_sequence(
             self.center_refinement_factor,
             state_dim=self.state_dim,
             name="center_refinement_factor",
             caster=float,
         )
-        normalized_origin_exclusion = _normalize_scalar_or_sequence(
+        normalized_origin_exclusion = normalize_scalar_or_sequence(
             self.origin_exclusion,
             state_dim=self.state_dim,
             name="origin_exclusion",
@@ -259,6 +242,9 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         object.__setattr__(self, "center_refinement_factor", refinement_factors)
         object.__setattr__(self, "origin_exclusion", normalized_origin_exclusion)
         object.__setattr__(self, "cert_method", self.cert_method.strip().lower())
+
+        if all(e == 0.0 for e in self.origin_exclusion):
+            __logger__.warning("You may want to set a positive origin_exclusion to avoid numerical issues near the origin during certification.")
 
     @staticmethod
     def from_training_config(

@@ -328,7 +328,6 @@ def _tb_writer_add_metrics(
 
     for inner_iter in range(start_iter, end_iter):
         tb_step = metrics.inner_tb_step(inner_iter)
-        tb_writer.add_scalar(raw_loss_str + "Total", metrics.loss[inner_iter], tb_step)
         tb_writer.add_scalar(raw_loss_str + "Condition", metrics.condition_raw[inner_iter], tb_step)
         tb_writer.add_scalar(raw_loss_str + "Roa", metrics.roa_raw[inner_iter], tb_step)
         tb_writer.add_scalar(raw_loss_str + "ConditionIBP", metrics.condition_ibp_raw[inner_iter], tb_step)
@@ -341,6 +340,7 @@ def _tb_writer_add_metrics(
             metrics.policy_regularization_raw[inner_iter],
             tb_step,
         )
+        tb_writer.add_scalar(weighted_loss_str + "Total", metrics.loss[inner_iter], tb_step)
         tb_writer.add_scalar(weighted_loss_str + "Condition", metrics.condition[inner_iter], tb_step)
         tb_writer.add_scalar(weighted_loss_str + "Roa", metrics.roa[inner_iter], tb_step)
         tb_writer.add_scalar(weighted_loss_str + "ConditionIBP", metrics.condition_ibp[inner_iter], tb_step)
@@ -407,7 +407,7 @@ class LyapunovTrainer:
         self.region_builder = RegionBuilder(
             bounds=self.config.state_bounds,
             bins_per_dim=self.config.bins_per_dim,
-            origin_exclusion=self.config.origin_exclusion * (self.ubx - self.lbx),
+            origin_exclusion=self.config.origin_exclusion,
             device=self.device,
         )
         self.regions = self.region_builder.build_regions()

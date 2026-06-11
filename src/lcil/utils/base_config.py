@@ -12,9 +12,12 @@ from dataclasses import MISSING, asdict, field as dataclass_field, fields, is_da
 from os import PathLike
 from pathlib import Path
 from types import UnionType
-from typing import Any, ClassVar, Literal, Union, Self, get_args, get_origin, get_type_hints
+from typing import Any, ClassVar, Literal, Union, Self, get_args, get_origin, get_type_hints, TypeVar
 
 __logger__ = logging.getLogger(__name__)
+
+
+T = TypeVar("T")
 
 
 def positive_validator(value: int | float, name: str) -> None:
@@ -53,9 +56,23 @@ def optional_validator(base_validator: Callable[[Any, str], None]) -> Callable[[
     def wrapper(value: Any, name: str) -> None:
         if value is not None:
             base_validator(value, name)
-            
     return wrapper
 
+def normalize_scalar_or_sequence(
+    value: Any,
+    *,
+    state_dim: int,
+    name: str,
+    caster: Callable[[Any], T],
+) -> T | tuple[T, ...]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        normalized = tuple(caster(item) for item in value)
+        if len(normalized) != state_dim:
+            raise ValueError(f"{name} must be scalar or match state_dim.")
+        return normalized
+
+    scalar = caster(value)
+    return (scalar,) * state_dim
 
 def sequence_validator(
     base_validator: Callable[[Any, str], None],

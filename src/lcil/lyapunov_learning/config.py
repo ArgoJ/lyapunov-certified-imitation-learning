@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from numpy.typing import NDArray
+from typing import Sequence
 
 from ..utils.base_config import (
     ArgumentParserConfig,
@@ -13,6 +14,8 @@ from ..utils.base_config import (
     positive_validator,
     non_negative_validator,
     fraction_validator,
+    sequence_validator,
+    normalize_scalar_or_sequence,
     growth_rate_validator,
     pathlike_validator,
     run_field_validators,
@@ -165,7 +168,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     detach_relative_denominator: bool = config_field(
         default=True,
-        help="Whether to detach V(x) in the denominator of the relative decrease violation.",
+        help="Whether to detach V(x) in the denominator of the relative loss terms.",
     )
     scale_anchor: float = config_field(
         default=100.0,
@@ -179,15 +182,15 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="scale_anchor_points",
         validators=(positive_validator,),
     )
-    bins_per_dim: int = config_field(
+    bins_per_dim: int | Sequence[int] = config_field(
         default=10,
         help="Number of bins per dimension for region discretization.",
-        validators=(positive_validator,),
+        validators=(sequence_validator(positive_validator),),
     )
-    origin_exclusion: float = config_field(
+    origin_exclusion: float | Sequence[float] = config_field(
         default=0.0,
-        help="Origin exclusion percentage per dimension of bounds.",
-        validators=(fraction_validator,),
+        help="Origin exclusion per dimension of bounds.",
+        validators=(sequence_validator(non_negative_validator),),
     )
     tb_log_dir: str | os.PathLike | None = config_field(
         default=None,
@@ -373,6 +376,23 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
 
     def __post_init__(self):
         run_field_validators(self)
+
+        bins_per_dim = normalize_scalar_or_sequence(
+            self.bins_per_dim,
+            state_dim=self.state_dim,
+            name="bins_per_dim",
+            caster=int,
+        )
+        normalized_origin_exclusion = normalize_scalar_or_sequence(
+            self.origin_exclusion,
+            state_dim=self.state_dim,
+            name="origin_exclusion",
+            caster=float,
+        )
+
+        # object.__setattr__, because of frozen=True
+        object.__setattr__(self, "bins_per_dim", bins_per_dim)
+        object.__setattr__(self, "origin_exclusion", normalized_origin_exclusion)
 
         lbx = self.state_bounds[0]
         ubx = self.state_bounds[1]

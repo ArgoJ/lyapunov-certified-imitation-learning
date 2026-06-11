@@ -48,6 +48,7 @@ class BoundaryStateBuffer:
 
 class DynamicStateBuffer:
     """A dynamic replay buffer for CEGIS counterexamples and initial states, strictly kept on the specified device."""
+
     def __init__(
         self,
         initial_states: th.Tensor,
@@ -59,6 +60,34 @@ class DynamicStateBuffer:
         generator: th.Generator | None = None,
         filter_eps: float = 0.05,
     ):
+        """Initialize the dynamic state buffer.
+
+        Parameters
+        ----------
+        initial_states : th.Tensor
+            Tensor of shape (N, state_dim) containing the initial states.
+        state_buffer_limit : int
+            Maximum number of states to retain in the buffer.
+        cex_buffer_limit : int
+            Maximum number of counterexample states to retain in the buffer.
+        device : th.device
+            The device on which to store the buffer tensors.
+        min_cex_fraction : float, optional
+            Minimum fraction of counterexample states in sampled batches, by default 0.0
+        max_cex_fraction : float, optional
+            Maximum fraction of counterexample states in sampled batches, by default 1.0
+        generator : th.Generator | None, optional
+            Random number generator for sampling, by default None
+        filter_eps : float, optional
+            Minimum distance between retained states for spatial diversity, by default 0.05
+
+        Raises
+        ------
+        ValueError
+            If initial_states is empty.
+        ValueError
+            If min_cex_fraction or max_cex_fraction are out of bounds.
+        """
         if initial_states.numel() == 0:
             raise ValueError("initial_states cannot be empty.")
         if min_cex_fraction < 0.0 or max_cex_fraction > 1.0 or min_cex_fraction > max_cex_fraction:
@@ -82,7 +111,20 @@ class DynamicStateBuffer:
         states: th.Tensor,
         violations: th.Tensor,
     ) -> tuple[th.Tensor, th.Tensor]:
+        """Filters states to retain only the most violating ones while ensuring spatial diversity.
 
+        Parameters
+        ----------
+        states : th.Tensor
+            Tensor of shape (N, state_dim) containing candidate states.
+        violations : th.Tensor
+            Tensor of shape (N,) containing violation scores for each state.
+
+        Returns
+        -------
+        tuple[th.Tensor, th.Tensor]
+            Tuple containing the filtered states and their corresponding violation scores.
+        """
         if states.shape[0] <= 1:
             return states, violations
 
@@ -148,8 +190,8 @@ class DynamicStateBuffer:
         ----------
         batch_size : int
             Total number of states to return.
-        cex_fraction: float
-            Fraction of the batch reserved for recent CEXs.
+        cex_fraction: float, optional
+            Fraction of the batch reserved for recent CEXs. default is 0.25
         """
         if batch_size <= 0:
             raise ValueError("batch_size must be positive.")
