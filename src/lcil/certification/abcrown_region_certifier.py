@@ -270,13 +270,22 @@ class BaseABCrownCertifier(ABC):
         desc = f"Certify Regions"
         task = progress.add_task(desc, total=len(regions), detail="") if is_progress else None
 
-        def update_progress(status: str) -> None:
+        verified_count = 0
+        cex_count = 0
+        unknown_count = 0
+
+        def update_progress(advance: int = 1) -> None:
             if is_progress and task is not None:
-                progress.update(task, advance=1, detail=f" Status: {status} ")
+                details = (
+                    f"[green]safe: {verified_count}[/green], "
+                    f"[yellow]unknown: {unknown_count}[/yellow], "
+                    f"[red]cex: {cex_count}[/red]"
+                )
+                progress.update(task, advance=advance, detail=details)
                 progress.refresh()
 
         try:
-            update_progress("starting")
+            update_progress(0)
             for idx, region in enumerate(regions):
                 verification_result = self.verify_region(region, rho)
                 verified_mask[idx] = verification_result.verified
@@ -285,7 +294,14 @@ class BaseABCrownCertifier(ABC):
                     not verification_result.verified
                     and not verification_result.counterexample_found
                 )
-                update_progress(verification_result.status)
+                if verification_result.verified:
+                    verified_count += 1
+                elif verification_result.counterexample_found:
+                    cex_count += 1
+                else:
+                    unknown_count += 1
+                    
+                update_progress(1)
                 if early_exit and verification_result.counterexample_found:
                     break
                 

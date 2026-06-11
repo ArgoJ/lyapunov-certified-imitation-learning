@@ -198,7 +198,7 @@ def main() -> None:
             feature_net=lyap_feature,
             state_dim=policy_global_config.nx,
             riccati_p=riccati_p,
-            fixed_r_factor=False,
+            fixed_r_factor=True,
         )
 
         # ---------------------------------------------------------------------
