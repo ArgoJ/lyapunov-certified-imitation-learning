@@ -120,20 +120,25 @@ class NeuralLyapunovCandidate(nn.Module):
             scale = th.linalg.norm(factor, ord="fro").clamp_min(1.0)
             self.r_factor.copy_(factor)
             self.feature_scale.copy_(scale)
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
+    
+    def get_feature_term(self, x: th.Tensor) -> th.Tensor:
         x_star = self.x_star.to(dtype=x.dtype, device=x.device)
         x_star_batch = x_star.expand(x.shape[0], -1)
         phi_x = self.feature_net(x) * self.feature_scale
         phi_x_star = self.feature_net(x_star_batch) * self.feature_scale
         feature_term = th.abs(phi_x - phi_x_star).sum(dim=1, keepdim=True)
+        return feature_term
 
+    def get_linear_term(self, x: th.Tensor) -> th.Tensor:
+        x_star_batch = self.x_star.expand(x.shape[0], -1)
         delta = x - x_star_batch
         pd_matrix = self._pd_matrix()
-        linear_term = th.abs(delta @ pd_matrix.transpose(0, 1)).sum(
-            dim=1,
-            keepdim=True,
-        )
+        linear_term = th.abs(delta @ pd_matrix.transpose(0, 1)).sum(dim=1, keepdim=True)
+        return linear_term
+
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        feature_term = self.get_feature_term(x)
+        linear_term = self.get_linear_term(x)
         return feature_term + linear_term
 
     def save(self, path: str | Path) -> None:
