@@ -92,8 +92,8 @@ def _boundary_term_diagnostics(
 ) -> tuple[float, float, float, float, float, float, float]:
     """Return Lyapunov term diagnostics when the model exposes them."""
     nan = float("nan")
-    if not all(hasattr(lyap_model, attr) for attr in ("feature_net", "x_star", "_pd_matrix")) and \
-       not all(hasattr(lyap_model, method) for method in ("get_feature_term", "get_linear_term")):
+    if not all(hasattr(lyap_model, attr) 
+        for attr in ("feature_net", "x_star", "_pd_matrix", "get_feature_term", "get_linear_term")):
         return nan, nan, nan, nan, nan, nan, nan
 
     pd_matrix_fn = getattr(lyap_model, "_pd_matrix")
