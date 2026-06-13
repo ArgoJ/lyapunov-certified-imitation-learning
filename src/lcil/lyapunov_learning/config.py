@@ -46,6 +46,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     policy_epochs : int | None
         Epochs jointly optimizing policy parameters with Lyapunov parameters.
         If ``None``, only the Lyapunov model is updated.
+    policy_lr_factor : float
+        Learning rate factor for policy optimization when policy_epochs is not None.
     seed : int | None
         Random seed for reproducibility.
     kappa : float
@@ -160,6 +162,12 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="Number of final outer epochs jointly optimizing policy and lyapunov parameters, starting at outer_epochs - policy_epochs. If None, the policy is never updated.",
         display_alias="policy_epochs",
         validators=(optional_validator(positive_validator),)
+    )
+    policy_lr_factor: float = config_field(
+        default=0.01,
+        help="Learning rate factor for policy optimization when policy_epochs is not None.",
+        display_alias="policy_lr_factor",
+        validators=(positive_validator,),
     )
     seed: int | None = config_field(
         default=None,
