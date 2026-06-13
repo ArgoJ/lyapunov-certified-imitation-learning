@@ -23,6 +23,7 @@ class NeuralLyapunovCandidate(nn.Module):
         x_star: th.Tensor | None = None,
         riccati_p: th.Tensor | None = None,
         fixed_r_factor: bool = False,
+        feature_last_init_std: float | None = None,
     ):
         super().__init__()
         self.feature_net = feature_net
@@ -37,15 +38,44 @@ class NeuralLyapunovCandidate(nn.Module):
         else:
             self.r_factor = nn.Parameter(th.eye(state_dim))
 
+        with th.no_grad():
+            initial_scale = th.linalg.norm(self.r_factor, ord="fro").clamp_min(1.0)
+        self.register_buffer("feature_scale", initial_scale)
+
         if riccati_p is not None:
             self.set_riccati_p(riccati_p)
             __logger__.info(
-                "Using Riccati value matrix to seed the Lyapunov R factor:\n%s", riccati_p)
+                "Using Riccati value matrix to seed the Lyapunov R factor: \n%s",
+                riccati_p,
+            )
+            __logger__.info(
+                "Initialized NeuralLyapunovCandidate with feature scale %.3e from Riccati seed.",
+                self.feature_scale.item(),
+            )
         
+        if feature_last_init_std is not None:
+            self._set_last_feature_layer(feature_last_init_std)
+
+    def _set_last_feature_layer(self, std: float) -> None:
+        if std <= 0.0:
+            return
+
+        linear_layers = [
+            module for module in self.feature_net.modules() 
+            if isinstance(module, nn.Linear)
+        ]
+
+        if not linear_layers:
+            __logger__.warning(
+                "No Linear layers found in feature_net. Cannot apply last layer initialization."
+            )
+            return
+
+        last_layer = linear_layers[-1]
         with th.no_grad():
-            feature_scale = th.linalg.norm(self.r_factor, ord="fro").clamp_min(1.0)
-        self.register_buffer("feature_scale", feature_scale)
-        __logger__.info("Initialized NeuralLyapunovCandidate with feature scale %.3e", feature_scale)
+            last_layer.weight.normal_(mean=0.0, std=std)
+            if last_layer.bias is not None:
+                last_layer.bias.zero_()
 
     def _pd_matrix(self) -> th.Tensor:
         eye = th.eye(
@@ -85,9 +115,11 @@ class NeuralLyapunovCandidate(nn.Module):
                 f"Minimum eigenvalue after subtracting eps is {min_eig:.6e}."
             )
 
-        factor = th.diag(th.sqrt(eigvals.clamp_min(0.0))) @ eigvecs.transpose(0, 1)
         with th.no_grad():
+            factor = th.diag(th.sqrt(eigvals.clamp_min(0.0))) @ eigvecs.transpose(0, 1)
+            scale = th.linalg.norm(factor, ord="fro").clamp_min(1.0)
             self.r_factor.copy_(factor)
+            self.feature_scale.copy_(scale)
 
     def forward(self, x: th.Tensor) -> th.Tensor:
         x_star = self.x_star.to(dtype=x.dtype, device=x.device)

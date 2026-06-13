@@ -204,6 +204,7 @@ def main() -> None:
             state_dim=mpc_cfg.nx,
             riccati_p=riccati_p,
             fixed_r_factor=True,
+            feature_last_init_std=0.01,
         )
 
         training_config = replace(
