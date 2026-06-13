@@ -31,7 +31,7 @@ from ..example_utils import build_lyapunov_func
 
 __logger__ = logging.getLogger("lcil.examples.cartpole.learn_lyapunov")
 
-_DEFAULT_TRAIN_BOUND_FACTORS = (1.0, 1.0, 1.0, 1.0)
+_DEFAULT_TRAIN_BOUND_FACTORS = (1.0, 1.0, 0.1, 1.0)
 
 
 @dataclass(frozen=True)
@@ -88,8 +88,8 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         rho_growth_gamma=1.2,
         cex_every=20,
         cex_steps=30,
-        adversarial_samples=8192,
-        adversarial_step_size=0.05,
+        adversarial_samples=2048,
+        adversarial_step_size=0.01,
         condition_margin=0.00001,
     )
 
