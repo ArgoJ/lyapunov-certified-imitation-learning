@@ -315,6 +315,12 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="\u03C1_min",
         validators=(positive_validator,),
     )
+    rho_ema_decay: float = config_field(
+        default=0.8,
+        help="Exponential moving average decay for rho estimates across epochs, used to stabilize training when rho estimates are noisy.",
+        display_alias="\u03C1_ema_decay",
+        validators=(fraction_validator,),
+    )
 
     # PGD counterexample mining parameters
     adversarial_samples: int = config_field(

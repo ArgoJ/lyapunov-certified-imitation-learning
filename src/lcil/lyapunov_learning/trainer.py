@@ -33,7 +33,12 @@ from .counterexample import (
     find_counter_examples,
     sample_uniform_box,
 )
-from .utils import ThresholdMonitor, get_th_lbx_ubx, get_center
+from .utils import (
+    ThresholdMonitor,
+    get_th_lbx_ubx,
+    get_center,
+    get_ema,
+)
 from ..utils import (
     JsonDataclass,
     GracefulInterruptHandler,
@@ -561,8 +566,8 @@ class LyapunovTrainer:
         ibp_regions = self.region_builder.build_regions()
 
         mining_interval = max(1, int(self.config.cex_every))
-        rho_estimate = self.config.rho_min
-        cex_fraction_ema = 0.0
+        rho_estimate = None
+        cex_fraction_ema = None
         cex_fraction = 0.0
         total_steps = self.config.outer_epochs * self.config.steps_per_epoch
 
@@ -585,7 +590,7 @@ class LyapunovTrainer:
                     "Lyapunov Training Iterations",
                     total=float(total_steps),
                     loss=float("nan"),
-                    rho=float(rho_estimate),
+                    rho=float(0.0),
                     cex_pool=float(0.0),
                     cex_samples=float(0.0),
                     batch_size=float(self.config.batch_size),
@@ -605,7 +610,7 @@ class LyapunovTrainer:
                         boundary_buffer=boundary_buffer,
                         generator=self.torch_gen,
                     )
-                    rho_estimate = rho_diagnostics.rho # TODO: Consider smoothing or just constant
+                    rho_estimate = get_ema(rho_estimate, rho_diagnostics.rho, self.config.rho_ema_decay)
                     if self.rho_monitor is not None and self.rho_monitor.update(rho_estimate):
                         train_time = time.time() - start_time
                         abort_reason = (
@@ -641,7 +646,7 @@ class LyapunovTrainer:
                         roa_candidates = self._build_roa_candidates()
 
                         frac_yield = new_cex.shape[0] / self.config.adversarial_samples
-                        cex_fraction_ema = self.config.cex_fraction_ema_decay * cex_fraction_ema + (1 - self.config.cex_fraction_ema_decay) * frac_yield
+                        cex_fraction_ema = get_ema(cex_fraction_ema, frac_yield, self.config.cex_fraction_ema_decay)
                         cex_fraction = self.config.cex_fraction_min + cex_fraction_ema * (self.config.cex_fraction_max - self.config.cex_fraction_min)
 
                     # Inner training loop
@@ -736,11 +741,14 @@ class LyapunovTrainer:
                 stage_tb_log_dir = Path(self.config.tb_log_dir) / f"curriculum_stage_{stage_index:02d}"
 
             stage_seed = None if self.config.seed is None else self.config.seed + stage_index
+            rho_min = stage_records[-1].result.rho_estimate if stage_records else self.config.rho_min
             stage_config = replace(
                 self.config,
                 state_bounds=stage_bounds,
                 seed=stage_seed,
                 tb_log_dir=stage_tb_log_dir,
+                rho_min=rho_min,
+
             )
             stage_trainer = type(self)(
                 policy_model=self.policy_model,

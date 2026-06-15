@@ -17,6 +17,12 @@ def get_th_lbx_ubx(bounds: NDArray, device: th.device = "cpu") -> tuple[float, f
     return lbx, ubx
 
 
+def get_ema(old: float | None, new: float, decay: float) -> float:
+    if old is None:
+        return new
+    return decay * old + (1 - decay) * new
+
+
 def get_center(lbx: th.Tensor, ubx: th.Tensor) -> th.Tensor:
     """Compute the center of the state space from lbx and ubx."""
     return (lbx + ubx) / 2.0
