@@ -295,7 +295,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=15,
         help="Number of projected gradient steps for boundary-value descent.",
         display_alias="\u03C1_steps",
-        validators=(positive_validator,),
+        validators=(non_negative_validator,),
     )
     rho_step_size: float = config_field(
         default=0.05,
