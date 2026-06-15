@@ -487,11 +487,20 @@ class LyapunovTrainer:
     def _build_optimizer(self) -> th.optim.Adam:
         return th.optim.Adam(self._get_train_params(), self.config.learning_rate)
 
-    def _enable_policy_training(self) -> None:
+    def _enable_policy_training(self, at_iter: int = 0) -> None:
         self._curr_policy_train_status = True
         self._set_policy_train_mode(train_mode=True)
         self.loss_module.refresh_trainable_parameters()
-        self.optimizer.add_param_group({"params": self.policy_model.parameters()})
+        policy_lr = self.config.learning_rate * self.config.policy_lr_factor
+        self.optimizer.add_param_group({
+            "params": self.policy_model.parameters(),
+            "lr": policy_lr,
+        })
+
+        __logger__.info(
+            "Policy training enabled at iteration %d! Added to optimizer with LR: %.2e (Factor: %s)",
+            at_iter, policy_lr, self.config.policy_lr_factor
+        )
 
     def _mine_new_counterexamples(self, rho_estimate: float) -> th.Tensor:
         """Mine rho-gated counterexamples using the external training semantics."""
@@ -584,11 +593,10 @@ class LyapunovTrainer:
                 for outer_iter in range(self.config.outer_epochs):
                     start_policy_training = (outer_iter >= self._policy_start_epoch)
                     if start_policy_training and not self._curr_policy_train_status:
-                        __logger__.info("Starting policy training at outer iteration %d.", outer_iter)
-                        self._enable_policy_training()
+                        self._enable_policy_training(
+                            at_iter=outer_iter * self.config.steps_per_epoch
+                        )
 
-                    last_loss_value = np.nan
-                    
                     # Estimate current Region of Attraction
                     rho_diagnostics = estimate_rho_from_boundary_diagnostics(
                         lyap_model=self.lyap_model,

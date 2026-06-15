@@ -92,25 +92,19 @@ def _boundary_term_diagnostics(
 ) -> tuple[float, float, float, float, float, float, float]:
     """Return Lyapunov term diagnostics when the model exposes them."""
     nan = float("nan")
-    if not all(hasattr(lyap_model, attr) for attr in ("feature_net", "x_star", "_pd_matrix")):
+    if not all(hasattr(lyap_model, attr) 
+        for attr in ("feature_net", "x_star", "_pd_matrix", "get_feature_term", "get_linear_term")):
         return nan, nan, nan, nan, nan, nan, nan
 
     pd_matrix_fn = getattr(lyap_model, "_pd_matrix")
-    if not callable(pd_matrix_fn):
+    get_feature_term_fn = getattr(lyap_model, "get_feature_term")
+    get_linear_term_fn = getattr(lyap_model, "get_linear_term")
+    if not callable(pd_matrix_fn) or not callable(get_feature_term_fn) or \
+       not callable(get_linear_term_fn):
         return nan, nan, nan, nan, nan, nan, nan
 
-    x_star = getattr(lyap_model, "x_star")
-    feature_net = getattr(lyap_model, "feature_net")
-
-    x_star = x_star.to(dtype=boundary_x.dtype, device=boundary_x.device)
-    x_star_batch = x_star.expand(boundary_x.shape[0], -1)
-    phi_x = feature_net(boundary_x)
-    phi_x_star = feature_net(x_star_batch)
-    feature_term = th.abs(phi_x - phi_x_star).sum(dim=1)
-
-    delta = boundary_x - x_star_batch
-    pd_matrix = pd_matrix_fn()
-    linear_term = th.abs(delta @ pd_matrix.transpose(0, 1)).sum(dim=1)
+    feature_term = get_feature_term_fn(boundary_x)
+    linear_term = get_linear_term_fn(boundary_x)
     total_mean = float((feature_term + linear_term).mean().item())
     feature_term_mean = float(feature_term.mean().item())
     linear_term_mean = float(linear_term.mean().item())

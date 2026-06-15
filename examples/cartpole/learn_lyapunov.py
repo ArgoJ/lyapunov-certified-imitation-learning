@@ -31,7 +31,7 @@ from ..example_utils import build_lyapunov_func
 
 __logger__ = logging.getLogger("lcil.examples.cartpole.learn_lyapunov")
 
-_DEFAULT_TRAIN_BOUND_FACTORS = (1.0, 1.0, 1.0, 1.0)
+_DEFAULT_TRAIN_BOUND_FACTORS = (1.0, 1.0, 0.1, 1.0)
 
 
 @dataclass(frozen=True)
@@ -42,6 +42,7 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     hidden_size: int = config_field(default=32, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
     layers: int = config_field(default=3, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
     use_angle_wrapper: bool = config_field(default=False, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
+    last_layer_std: float = config_field(default=0.001, help="Standard deviation for the last layer of the Lyapunov feature net.")
     train_bound_factors: list[float] = config_field(
         default_factory=lambda: list(_DEFAULT_TRAIN_BOUND_FACTORS),
         help="Per-dimension scaling applied to policy state bounds before Lyapunov training.",
@@ -87,8 +88,8 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         rho_growth_gamma=1.2,
         cex_every=20,
         cex_steps=30,
-        adversarial_samples=8192,
-        adversarial_step_size=0.05,
+        adversarial_samples=2048,
+        adversarial_step_size=0.01,
         condition_margin=0.00001,
     )
 
@@ -204,6 +205,7 @@ def main() -> None:
             state_dim=mpc_cfg.nx,
             riccati_p=riccati_p,
             fixed_r_factor=True,
+            feature_last_init_std=script_config.last_layer_std,
         )
 
         training_config = replace(
