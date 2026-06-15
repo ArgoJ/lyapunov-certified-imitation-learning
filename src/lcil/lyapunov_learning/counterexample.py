@@ -203,15 +203,15 @@ def estimate_rho_from_boundary_diagnostics(
 
     rho_boundary = max(config.rho_min, config.rho_growth_gamma * boundary_quantile)
 
-    rho_cex = float("inf")
-    if cex_buffer is not None and cex_buffer.cex_count > 0:
-        with th.no_grad():
-            v_cexs = lyap_model(cex_buffer.cexs)
-            rho_cex = float(v_cexs.min().item()) * 0.99 
+    # rho_cex = float("inf")
+    # if cex_buffer is not None and cex_buffer.cex_count > 0:
+    #     with th.no_grad():
+    #         v_cexs = lyap_model(cex_buffer.cexs)
+    #         rho_cex = float(v_cexs.min().item()) * 0.99 
             
-    rho = min(rho_boundary, rho_cex)
+    # rho = min(rho_boundary, rho_cex)
     return BoundaryRhoDiagnostics(
-        rho=float(rho),
+        rho=float(rho_boundary),
         boundary_quantile=boundary_quantile,
         boundary_mean=boundary_mean,
         feature_term_quantile=feature_term_quantile,
