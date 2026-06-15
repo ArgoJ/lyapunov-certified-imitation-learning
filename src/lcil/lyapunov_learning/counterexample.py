@@ -136,7 +136,6 @@ def estimate_rho_from_boundary_diagnostics(
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),
     boundary_buffer: BoundaryStateBuffer | None = None,
-    cex_buffer: DynamicStateBuffer | None = None,
     generator: th.Generator | None = None,
 ) -> BoundaryRhoDiagnostics:
     """Estimate rho and expose boundary-term diagnostics for logging."""
@@ -196,14 +195,6 @@ def estimate_rho_from_boundary_diagnostics(
         )
 
     rho_boundary = max(config.rho_min, config.rho_growth_gamma * boundary_quantile)
-
-    # rho_cex = float("inf")
-    # if cex_buffer is not None and cex_buffer.cex_count > 0:
-    #     with th.no_grad():
-    #         v_cexs = lyap_model(cex_buffer.cexs)
-    #         rho_cex = float(v_cexs.min().item()) * 0.99 
-            
-    # rho = min(rho_boundary, rho_cex)
     return BoundaryRhoDiagnostics(
         rho=float(rho_boundary),
         boundary_quantile=boundary_quantile,

@@ -603,7 +603,6 @@ class LyapunovTrainer:
                         config=self.config,
                         device=self.device,
                         boundary_buffer=boundary_buffer,
-                        # cex_buffer=state_buffer,
                         generator=self.torch_gen,
                     )
                     rho_estimate = rho_diagnostics.rho # TODO: Consider smoothing or just constant
