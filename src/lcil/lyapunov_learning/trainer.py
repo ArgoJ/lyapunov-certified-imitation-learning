@@ -32,6 +32,7 @@ from .counterexample import (
     estimate_rho_from_boundary_diagnostics,
     find_counter_examples,
     sample_uniform_box,
+    sample_boundary_points,
 )
 from .utils import (
     ThresholdMonitor,
@@ -538,6 +539,23 @@ class LyapunovTrainer:
         half_width = 0.5 * (self.ubx - self.lbx)
         return z_candidates * half_width + self.center
 
+    def _get_boundary_buffer(self):
+        boundary_buffer = BoundaryStateBuffer(
+            state_dim=self.config.state_dim,
+            max_size=int(self.config.rho_boundary_buffer_size),
+            device=self.device,
+        )
+        init_boundary_x, _, _ = sample_boundary_points(
+            sample_size=int(self.config.rho_boundary_buffer_size),
+            lb=self.lbx,
+            ub=self.ubx,
+            device=self.device,
+            generator=self.torch_gen,
+        )
+        boundary_buffer.update(init_boundary_x, value_fn=self.lyap_model)
+        return boundary_buffer
+
+
     def train(self) -> LyapunovTrainingResult:
         """Execute the CEGIS-style training loop."""
         metrics = LyapunovTrainingMetrics.from_num_steps(
@@ -556,12 +574,7 @@ class LyapunovTrainer:
             max_cex_fraction=self.config.cex_fraction_max,
             generator=self.torch_gen,
         )
-        boundary_buffer = BoundaryStateBuffer(
-            state_dim=self.config.state_dim,
-            max_size=int(self.config.rho_boundary_buffer_size),
-            device=self.device,
-            dtype=initial_x.dtype,
-        )
+        boundary_buffer = self._get_boundary_buffer()
         roa_candidates = self._build_roa_candidates()
         ibp_regions = self.region_builder.build_regions()
 
