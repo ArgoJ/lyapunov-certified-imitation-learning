@@ -21,24 +21,36 @@ def get_spatial_diversity_indices(
     descending: bool = True,
     max_elements: int | None = None,
 ) -> th.Tensor:
+    n = states.shape[0]
+    if n <= 1:
+        return th.arange(n, device=states.device)
+
     sorted_indices = th.argsort(values, descending=descending)
-    sorted_states = states[sorted_indices]
-    
-    keep_indices = [0]
-    eps_sq = filter_eps ** 2
-    accepted = sorted_states[0:1]
-    remaining = sorted_states[1:]
-    
-    for i in range(remaining.shape[0]):
-        dist_sq = th.sum((accepted - remaining[i]) ** 2, dim=1)
-        if th.all(dist_sq >= eps_sq):
-            accepted = th.cat([accepted, remaining[i:i+1]], dim=0)
-            keep_indices.append(i + 1)
-            
-            if max_elements is not None and len(keep_indices) >= max_elements:
-                break
-                
-    return sorted_indices[th.tensor(keep_indices, device=states.device)]
+    if filter_eps <= 0:
+        return sorted_indices if max_elements is None else sorted_indices[:max_elements]
+
+    pts = states[sorted_indices].detach().to("cpu").numpy()
+    tree = cKDTree(pts)
+
+    suppressed = np.zeros(n, dtype=bool)
+    keep_rel = []
+
+    limit = n if max_elements is None else min(n, max_elements)
+
+    for i in range(n):
+        if suppressed[i]:
+            continue
+
+        keep_rel.append(i)
+        if len(keep_rel) >= limit:
+            break
+
+        nbrs = tree.query_ball_point(pts[i], r=filter_eps)
+        suppressed[np.asarray(nbrs, dtype=np.int64)] = True
+        suppressed[i] = False
+
+    keep_rel = th.as_tensor(keep_rel, dtype=th.long, device=sorted_indices.device)
+    return sorted_indices[keep_rel]
 
 class AgedTensorPool:
     """Efficiently wraps a state tensor, tracking and managing the FIFO age of each state."""
