@@ -13,7 +13,7 @@ __logger__ = logging.getLogger(__name__)
 
 
 @th.no_grad()
-timeit(__logger__)
+@timeit(__logger__)
 def get_spatial_diversity_indices_fast(
     states: th.Tensor,
     values: th.Tensor,
