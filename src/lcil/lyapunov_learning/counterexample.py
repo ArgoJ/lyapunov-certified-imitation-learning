@@ -200,7 +200,7 @@ def _boundary_term_diagnostics(
     )
 
 
-def estimate_rho_from_boundary_diagnostics(
+def estimate_rho_from_boundary(
     lyap_model: nn.Module,
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),

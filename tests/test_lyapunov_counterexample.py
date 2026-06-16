@@ -19,7 +19,7 @@ from lcil.lyapunov_learning.config import LyapunovTrainingConfig
 from lcil.lyapunov_learning.buffer import BoundaryStateBuffer, DynamicStateBuffer
 from lcil.lyapunov_learning.counterexample import (
     BoundaryRhoDiagnostics,
-    estimate_rho_from_boundary_diagnostics,
+    estimate_rho_from_boundary,
     find_counter_examples,
 )
 from lcil.lyapunov_learning.loss import FormalPositivityLoss, LyapunovTrainingLoss, PolicyRegularizationLoss
@@ -94,7 +94,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             "lcil.lyapunov_learning.counterexample.sample_boundary_points",
             return_value=(boundary_points, face_dims, is_ub),
         ):
-            rho = estimate_rho_from_boundary_diagnostics(_FirstCoordinateValue(), config).rho
+            rho = estimate_rho_from_boundary(_FirstCoordinateValue(), config).rho
 
         expected = 1.5 * th.quantile(boundary_points[:, 0], q=0.5).item()
         self.assertAlmostEqual(rho, expected, places=6)
@@ -122,12 +122,12 @@ class TestLyapunovCounterexamples(unittest.TestCase):
                 (second_boundary, face_dims, is_ub),
             ],
         ):
-            first_rho = estimate_rho_from_boundary_diagnostics(
+            first_rho = estimate_rho_from_boundary(
                 _FirstCoordinateValue(),
                 config,
                 boundary_buffer=boundary_buffer,
             ).rho
-            second_rho = estimate_rho_from_boundary_diagnostics(
+            second_rho = estimate_rho_from_boundary(
                 _FirstCoordinateValue(),
                 config,
                 boundary_buffer=boundary_buffer,

@@ -29,7 +29,7 @@ from .loss import (
 )
 from .counterexample import (
     BoundaryRhoDiagnostics,
-    estimate_rho_from_boundary_diagnostics,
+    estimate_rho_from_boundary,
     find_counter_examples,
     sample_uniform_box,
     sample_boundary_points,
@@ -616,7 +616,7 @@ class LyapunovTrainer:
                         )
 
                     # Estimate current Region of Attraction
-                    rho_diagnostics = estimate_rho_from_boundary_diagnostics(
+                    rho_diagnostics = estimate_rho_from_boundary(
                         lyap_model=self.lyap_model,
                         config=self.config,
                         device=self.device,
