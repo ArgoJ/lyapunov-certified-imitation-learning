@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import logging
 import torch as th
+import numpy as np
+
 from collections.abc import Callable
+from scipy.spatial import cKDTree
 
 from ..utils import timeit
 
 __logger__ = logging.getLogger(__name__)
 
 
+@th.no_grad()
 @timeit(__logger__)
 def get_spatial_diversity_indices(
     states: th.Tensor,
@@ -17,64 +21,36 @@ def get_spatial_diversity_indices(
     descending: bool = True,
     max_elements: int | None = None,
 ) -> th.Tensor:
-    """
-    Computes indices of states that satisfy spatial diversity constraints.
-    Returns the indices relative to the ORIGINAL input tensors.
+    n = states.shape[0]
+    if n <= 1:
+        return th.arange(n, device=states.device)
 
-    Parameters
-    ----------
-    states : Tensor
-        The states to consider for spatial diversity.
-    values : Tensor
-        The values associated with each state.
-    filter_eps : float
-        The minimum distance between selected states.
-    descending : bool, optional
-        Whether to sort values in descending order. Default is True.
-    max_elements : int or None, optional
-        The maximum number of elements to keep. Default is None.
-
-    Returns
-    -------
-    Tensor
-        The indices of the selected states relative to the original input tensors.
-    """
-    if states.shape[0] <= 1:
-        return th.arange(states.shape[0], device=states.device)
-
-    # Sort after values (descending or ascending) 
     sorted_indices = th.argsort(values, descending=descending)
-    sorted_states = states[sorted_indices]
+    if filter_eps <= 0:
+        return sorted_indices if max_elements is None else sorted_indices[:max_elements]
 
-    keep_idx_relative = []
-    remaining_idx = th.arange(sorted_states.shape[0], device=states.device)
-    eps_sq = filter_eps ** 2
+    pts = states[sorted_indices].detach().to("cpu").numpy()
+    tree = cKDTree(pts)
 
-    # Greedy NMS Loop
-    while remaining_idx.numel() > 0:
-        first_idx = remaining_idx[0].item()
-        keep_idx_relative.append(first_idx)
+    suppressed = np.zeros(n, dtype=bool)
+    keep_rel = []
 
-        # Early Exit
-        if max_elements is not None and len(keep_idx_relative) >= max_elements:
+    limit = n if max_elements is None else min(n, max_elements)
+
+    for i in range(n):
+        if suppressed[i]:
+            continue
+
+        keep_rel.append(i)
+        if len(keep_rel) >= limit:
             break
 
-        if remaining_idx.numel() == 1:
-            break
+        nbrs = tree.query_ball_point(pts[i], r=filter_eps)
+        suppressed[np.asarray(nbrs, dtype=np.int64)] = True
+        suppressed[i] = False
 
-        current_state = sorted_states[first_idx]
-        other_states = sorted_states[remaining_idx[1:]]
-        
-        dists_sq = th.sum((other_states - current_state) ** 2, dim=1)
-        keep_mask = dists_sq >= eps_sq
-
-        remaining_idx = remaining_idx[1:][keep_mask]
-
-    final_keep_relative = th.tensor(keep_idx_relative, dtype=th.long, device=states.device)
-    original_indices = sorted_indices[final_keep_relative]
-
-    return original_indices
-
+    keep_rel = th.as_tensor(keep_rel, dtype=th.long, device=sorted_indices.device)
+    return sorted_indices[keep_rel]
 
 class AgedTensorPool:
     """Efficiently wraps a state tensor, tracking and managing the FIFO age of each state."""
