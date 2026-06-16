@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable, Sequence
-
+import logging
 import torch as th
 import torch.nn as nn
 
-from .buffer import BoundaryStateBuffer, DynamicStateBuffer
+from dataclasses import dataclass
+from typing import Callable, Sequence
+
 from .config import LyapunovTrainingConfig
+from ..utils import timeit
+
+__logger__ = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -134,6 +137,7 @@ def _boundary_term_diagnostics(
     )
 
 
+@timeit(__logger__)
 def estimate_rho_from_boundary(
     lyap_model: nn.Module,
     config: LyapunovTrainingConfig,
