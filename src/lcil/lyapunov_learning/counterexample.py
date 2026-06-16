@@ -137,7 +137,6 @@ def _boundary_term_diagnostics(
     )
 
 
-@timeit(__logger__)
 def estimate_rho_from_boundary(
     lyap_model: nn.Module,
     config: LyapunovTrainingConfig,
