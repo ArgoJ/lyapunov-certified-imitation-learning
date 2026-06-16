@@ -12,7 +12,6 @@ from ..utils import timeit
 __logger__ = logging.getLogger(__name__)
 
 @th.no_grad()
-@timeit(__logger__)
 def get_spatial_diversity_indices(
     states: th.Tensor,
     values: th.Tensor,
@@ -29,7 +28,7 @@ def get_spatial_diversity_indices(
     if filter_eps <= 0:
         return sorted_indices if max_elements is None else sorted_indices[:max_elements]
 
-    pts = states[sorted_indices].detach().to("cpu").numpy()
+    pts = states[sorted_indices].detach().cpu().numpy()
     tree = cKDTree(pts)
 
     neighbors = tree.query_ball_tree(tree, r=filter_eps)
