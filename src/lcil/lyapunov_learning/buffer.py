@@ -11,7 +11,6 @@ from ..utils import timeit
 
 __logger__ = logging.getLogger(__name__)
 
-
 @th.no_grad()
 @timeit(__logger__)
 def get_spatial_diversity_indices(
@@ -26,11 +25,14 @@ def get_spatial_diversity_indices(
         return th.arange(n, device=states.device)
 
     sorted_indices = th.argsort(values, descending=descending)
+
     if filter_eps <= 0:
         return sorted_indices if max_elements is None else sorted_indices[:max_elements]
 
     pts = states[sorted_indices].detach().to("cpu").numpy()
     tree = cKDTree(pts)
+
+    neighbors = tree.query_ball_tree(tree, r=filter_eps)
 
     suppressed = np.zeros(n, dtype=bool)
     keep_rel = []
@@ -45,8 +47,7 @@ def get_spatial_diversity_indices(
         if len(keep_rel) >= limit:
             break
 
-        nbrs = tree.query_ball_point(pts[i], r=filter_eps)
-        suppressed[np.asarray(nbrs, dtype=np.int64)] = True
+        suppressed[np.asarray(neighbors[i], dtype=np.int64)] = True
         suppressed[i] = False
 
     keep_rel = th.as_tensor(keep_rel, dtype=th.long, device=sorted_indices.device)
