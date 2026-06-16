@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-
+import logging
 import torch as th
 from collections.abc import Callable
+
+from ..utils import timeit
+
+__logger__ = logging.getLogger(__name__)
 
 
 def get_spatial_diversity_indices(
@@ -144,6 +148,7 @@ class BoundaryStateBuffer:
     def __len__(self) -> int:
         return len(self._pool)
 
+    @timeit(__logger__)
     def update(self, new_states: th.Tensor, value_fn: Callable[[th.Tensor], th.Tensor]) -> None:
         self._pool.step_time_and_clean()
         self._pool.add_fresh(new_states)
