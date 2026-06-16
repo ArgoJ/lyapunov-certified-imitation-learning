@@ -1,7 +1,10 @@
 import numpy as np
+import time
 
 from pathlib import Path
 from numpy.typing import ArrayLike
+from typing import Callable
+from functools import wraps
 
 def none_to_float(value: float | None) -> float:
     return float(value) if value is not None else float("nan")
@@ -27,3 +30,20 @@ def add_entry(entry: str, output_root: str | Path, summary_name: str) -> None:
         if not entry.endswith("\n"):
             entry += "\n"
         f.write(entry)
+
+
+def timeit(logger: logging.Logger) -> Callable:
+    """Decorator factory to measure execution time of a function."""
+    
+    def decorator(func: Callable) -> Callable:
+        @wraps(func) # Erhält den ursprünglichen Namen und Docstring der Funktion
+        def wrapper(*args, **kwargs):
+            start_time = time.time()
+            result = func(*args, **kwargs)
+            elapsed = time.time() - start_time
+            logger.info(f"{func.__name__} executed in {elapsed:.4f} seconds")
+            return result
+            
+        return wrapper
+        
+    return decorator
