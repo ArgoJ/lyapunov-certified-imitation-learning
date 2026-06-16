@@ -521,7 +521,6 @@ class LyapunovTrainer:
             generator=self.torch_gen,
         )
 
-    @timeit(__logger__)
     def _build_roa_candidates(self, injection_states: th.Tensor) -> th.Tensor:
         """Create diverse candidate states near the boundary of the asymmetric B."""
         directions = th.randn(
@@ -546,8 +545,6 @@ class LyapunovTrainer:
         
         return random_candidates
 
-
-    @timeit(__logger__)
     def _get_boundary_buffer(self):
         boundary_buffer = BoundaryStateBuffer(
             state_dim=self.config.state_dim,
@@ -564,8 +561,6 @@ class LyapunovTrainer:
         boundary_buffer.update(init_boundary_x, value_fn=self.lyap_model)
         return boundary_buffer
 
-
-    @timeit(__logger__)
     def _get_cegis_buffer(self) -> DynamicStateBuffer:
         initial_x = sample_uniform_box(self.config.initial_sample_size, self.lbx, self.ubx, self.device)
         cegis_buffer = DynamicStateBuffer(
@@ -624,7 +619,6 @@ class LyapunovTrainer:
         if start_policy_training and not self._curr_policy_train_status:
             self._enable_policy_training(at_iter=outer_iter * self.config.steps_per_epoch)
 
-    @timeit(__logger__)
     def _evaluate_boundary_and_roa(
         self, boundary_buffer: BoundaryStateBuffer, current_rho_estimate: float | None
     ) -> tuple[float, th.Tensor, BoundaryRhoDiagnostics]:
@@ -646,7 +640,6 @@ class LyapunovTrainer:
             return self.rho_monitor.update(rho_estimate)
         return False
 
-    @timeit(__logger__)
     def _mine_cegis_step(
         self,
         outer_iter: int,
