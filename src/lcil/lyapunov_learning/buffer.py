@@ -1,8 +1,59 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 
 import torch as th
+from collections.abc import Callable
+
+from .counterexample import get_spatial_diversity_indices
+
+
+
+class AgedTensorPool:
+    """Efficiently wraps a state tensor, tracking and managing the FIFO age of each state."""
+
+    def __init__(
+        self,
+        state_dim: int,
+        max_age: int,
+        device: th.device | str = "cpu",
+        dtype: th.dtype = th.float32,
+    ) -> None:
+        self.max_age = int(max_age)
+        self.device = th.device(device)
+        self.dtype = dtype
+
+        self.states = th.empty((0, state_dim), dtype=self.dtype, device=self.device)
+        self.ages = th.empty((0,), dtype=th.long, device=self.device)
+
+    def step_time_and_clean(self) -> None:
+        """Increments the age of all states and strictly drops expired ones."""
+        if self.states.shape[0] == 0:
+            return
+            
+        self.ages += 1
+        valid_mask = self.ages <= self.max_age
+        
+        self.states = self.states[valid_mask]
+        self.ages = self.ages[valid_mask]
+
+    def add_fresh(self, new_states: th.Tensor) -> None:
+        """Appends new states, initializing their age to 0."""
+        if new_states.numel() == 0:
+            return
+            
+        new_states = new_states.to(self.device)
+        new_ages = th.zeros(new_states.shape[0], dtype=th.long, device=self.device)
+
+        self.states = th.cat((self.states, new_states), dim=0)
+        self.ages = th.cat((self.ages, new_ages), dim=0)
+
+    def filter_by_indices(self, keep_indices: th.Tensor) -> None:
+        """Synchronously slices both states and ages based on external logic (e.g., NMS)."""
+        self.states = self.states[keep_indices]
+        self.ages = self.ages[keep_indices]
+
+    def __len__(self) -> int:
+        return self.states.shape[0]
 
 
 class BoundaryStateBuffer:
@@ -12,38 +63,43 @@ class BoundaryStateBuffer:
         self,
         state_dim: int,
         max_size: int,
-        device: th.device | str,
+        max_age: int = 15,
+        filter_eps: float = 0.01,
+        device: th.device | str = "cpu",
         dtype: th.dtype = th.float32,
     ) -> None:
-        if max_size <= 0:
-            raise ValueError("max_size must be positive.")
-
         self.max_size = int(max_size)
-        self.device = th.device(device)
-        self.dtype = dtype
-        self.states = th.empty((0, state_dim), dtype=dtype, device=self.device)
+        self.filter_eps = float(filter_eps)
 
-    def update(
-        self,
-        new_states: th.Tensor,
-        value_fn: Callable[[th.Tensor], th.Tensor],
-    ) -> None:
-        """Merge new boundary points and retain the states with the smallest values."""
-        if new_states.numel() == 0:
-            return
+        self._pool = AgedTensorPool(state_dim, max_age, device, dtype)
 
-        combined = th.cat((self.states, new_states.to(self.device)), dim=0)
-        if combined.shape[0] <= self.max_size:
-            self.states = combined
+    @property
+    def states(self) -> th.Tensor:
+        """Access to the pool's states."""
+        return self._pool.states
+
+    def __len__(self) -> int:
+        return len(self._pool)
+
+    def update(self, new_states: th.Tensor, value_fn: Callable[[th.Tensor], th.Tensor]) -> None:
+        self._pool.step_time_and_clean()
+        self._pool.add_fresh(new_states)
+
+        if len(self) == 0: 
             return
 
         with th.no_grad():
-            values = value_fn(combined).flatten()
-            _, keep_idx = th.sort(values, descending=False)
-        self.states = combined[keep_idx[: self.max_size]]
+            values = value_fn(self.states).flatten()
 
-    def __len__(self) -> int:
-        return self.states.shape[0]
+        keep_indices = get_spatial_diversity_indices(
+            states=self.states,
+            values=values,
+            filter_eps=self.filter_eps,
+            descending=False,
+            max_elements=self.max_size,
+        )
+
+        self._pool.filter_by_indices(keep_indices)
 
 
 class DynamicStateBuffer:
@@ -97,7 +153,6 @@ class DynamicStateBuffer:
             )
         
         self.states = initial_states.to(device)
-        self.cexs = th.empty((0, initial_states.shape[1]), dtype=initial_states.dtype, device=device)
         self.state_buffer_limit = state_buffer_limit
         self.cex_buffer_limit = cex_buffer_limit
         self.device = device
@@ -106,60 +161,23 @@ class DynamicStateBuffer:
         self.generator = generator
         self.filter_eps = filter_eps
 
-    def _apply_spatial_diversity_filter(
-        self,
-        states: th.Tensor,
-        violations: th.Tensor,
-    ) -> tuple[th.Tensor, th.Tensor]:
-        """Filters states to retain only the most violating ones while ensuring spatial diversity.
+        self._cex_pool = AgedTensorPool(initial_states.shape[1], max_age=10, device=device, dtype=initial_states.dtype)
 
-        Parameters
-        ----------
-        states : th.Tensor
-            Tensor of shape (N, state_dim) containing candidate states.
-        violations : th.Tensor
-            Tensor of shape (N,) containing violation scores for each state.
+    @property
+    def cexs(self) -> th.Tensor:
+        """Access to the CEX pool's states."""
+        return self._cex_pool.states
+    
+    @property
+    def state_count(self) -> int:
+        return self.states.shape[0]
 
-        Returns
-        -------
-        tuple[th.Tensor, th.Tensor]
-            Tuple containing the filtered states and their corresponding violation scores.
-        """
-        if states.shape[0] <= 1:
-            return states, violations
+    @property
+    def cex_count(self) -> int:
+        return len(self._cex_pool)
 
-        sorted_indices = th.argsort(violations, descending=True)
-        sorted_states = states[sorted_indices]
-        sorted_violations = violations[sorted_indices]
-
-        distances = th.cdist(sorted_states, sorted_states)
-
-        close_mask = distances < self.filter_eps
-        close_mask = th.triu(close_mask, diagonal=1)
-
-        suppress_mask = close_mask.any(dim=0)
-        keep_mask = ~suppress_mask
-
-        return (
-            sorted_states[keep_mask],
-            sorted_violations[keep_mask]
-        )
-
-    def add(self, new_states: th.Tensor) -> None:
-        """Adds new states to the buffer and strictly enforces the maximum size."""
-        if new_states.numel() == 0:
-            return
-
-        self.states = th.cat((self.states, new_states), dim=0).to(self.device)
-
-        if self.states.shape[0] > self.state_buffer_limit:
-            # Randomly sub-sample to respect the max_buffer limit
-            keep_idx = th.randperm(
-                self.states.shape[0],
-                device=self.device,
-                generator=self.generator,
-            )[:self.state_buffer_limit]
-            self.states = self.states[keep_idx]
+    def __len__(self) -> int:
+        return self.state_count + self.cex_count
 
     def register_cex(
         self,
@@ -170,16 +188,23 @@ class DynamicStateBuffer:
         if new_cexs.numel() == 0:
             return
 
-        combined_cexs = th.cat((new_cexs.to(self.device), self.cexs), dim=0)
+        self._cex_pool.step_time_and_clean()
+        self._cex_pool.add_fresh(new_cexs)
+
+        if len(self._cex_pool) == 0:
+            return
 
         with th.no_grad():
-            violation_scores = -objective(combined_cexs).flatten()
+            violation_scores = -objective(self.cexs).flatten()
 
-        filtered_cexs, filtered_scores = self._apply_spatial_diversity_filter(
-            states=combined_cexs,
-            violations=violation_scores,
+        keep_indices = get_spatial_diversity_indices(
+            states=self.cexs,
+            values=violation_scores,
+            filter_eps=self.filter_eps,
+            descending=True,
+            max_elements=self.cex_buffer_limit,
         )
-        self.cexs = filtered_cexs[: self.cex_buffer_limit]
+        self._cex_pool.filter_by_indices(keep_indices)
 
     def sample(self, batch_size: int, cex_fraction: float = 0.25) -> th.Tensor:
         """
@@ -234,14 +259,3 @@ class DynamicStateBuffer:
         regular_states = self.states[reg_idx]
 
         return th.cat((injected_cexs, regular_states), dim=0)
-
-    @property
-    def state_count(self) -> int:
-        return self.states.shape[0]
-
-    @property
-    def cex_count(self) -> int:
-        return self.cexs.shape[0]
-
-    def __len__(self) -> int:
-        return self.state_count + self.cex_count

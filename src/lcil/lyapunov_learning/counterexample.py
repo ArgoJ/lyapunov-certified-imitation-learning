@@ -33,6 +33,72 @@ def _bounds_tensor(state_bounds: Sequence[float], device: th.device) -> th.Tenso
     return bounds
 
 
+def get_spatial_diversity_indices(
+    states: th.Tensor,
+    values: th.Tensor,
+    filter_eps: float,
+    descending: bool = True,
+    max_elements: int | None = None,
+) -> th.Tensor:
+    """
+    Computes indices of states that satisfy spatial diversity constraints.
+    Returns the indices relative to the ORIGINAL input tensors.
+
+    Parameters
+    ----------
+    states : Tensor
+        The states to consider for spatial diversity.
+    values : Tensor
+        The values associated with each state.
+    filter_eps : float
+        The minimum distance between selected states.
+    descending : bool, optional
+        Whether to sort values in descending order. Default is True.
+    max_elements : int or None, optional
+        The maximum number of elements to keep. Default is None.
+
+    Returns
+    -------
+    Tensor
+        The indices of the selected states relative to the original input tensors.
+    """
+    if states.shape[0] <= 1:
+        return th.arange(states.shape[0], device=states.device)
+
+    # Sort after values (descending or ascending) 
+    sorted_indices = th.argsort(values, descending=descending)
+    sorted_states = states[sorted_indices]
+
+    keep_idx_relative = []
+    remaining_idx = th.arange(sorted_states.shape[0], device=states.device)
+    eps_sq = filter_eps ** 2
+
+    # Greedy NMS Loop
+    while remaining_idx.numel() > 0:
+        first_idx = remaining_idx[0].item()
+        keep_idx_relative.append(first_idx)
+
+        # Early Exit
+        if max_elements is not None and len(keep_idx_relative) >= max_elements:
+            break
+
+        if remaining_idx.numel() == 1:
+            break
+
+        current_state = sorted_states[first_idx]
+        other_states = sorted_states[remaining_idx[1:]]
+        
+        dists_sq = th.sum((other_states - current_state) ** 2, dim=1)
+        keep_mask = dists_sq >= eps_sq
+
+        remaining_idx = remaining_idx[1:][keep_mask]
+
+    final_keep_relative = th.tensor(keep_idx_relative, dtype=th.long, device=states.device)
+    original_indices = sorted_indices[final_keep_relative]
+
+    return original_indices
+
+
 def project_to_box(state: th.Tensor, lb: th.Tensor, ub: th.Tensor) -> th.Tensor:
     """Project states to the asymmetric box B = {x | lb <= x <= ub}."""
     return th.maximum(th.minimum(state, ub), lb)
@@ -57,13 +123,16 @@ def sample_boundary_points(
     device: th.device,
     generator: th.Generator | None = None,
 ) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
-    """Sample points on the boundary ∂B of the asymmetric box."""
+    """Sample points uniformly distributed over the actual surface area of the box."""
     points = sample_uniform_box(sample_size, lb, ub, device, generator)
+    widths = ub - lb
+    face_areas = th.prod(widths) / widths
+    probs = face_areas / th.sum(face_areas)
     
-    # Randomly select a face dimension for each point to lie on.
-    face_dims = th.randint(0, lb.numel(), (sample_size,), device=device, generator=generator)
+    # Choose the dimensions weighted by their actual geometric area
+    face_dims = th.multinomial(probs, sample_size, replacement=True, generator=generator)
     
-    # 50/50 Chance: ub or lb
+    # 50/50 Chance for Upper or Lower Bound
     is_ub = th.rand(sample_size, device=device, generator=generator) >= 0.5
     batch_idx = th.arange(sample_size, device=device)
     points[batch_idx, face_dims] = th.where(is_ub, ub[face_dims], lb[face_dims])
@@ -180,15 +249,8 @@ def estimate_rho_from_boundary_diagnostics(
         boundary_values = lyap_model(boundary_eval_x).flatten()
         boundary_quantile = float(th.quantile(boundary_values, q=float(config.rho_estimate_quantile)).item())
         boundary_mean = float(boundary_values.mean().item())
-        (
-            feature_term_quantile,
-            linear_term_quantile,
-            feature_term_mean,
-            linear_term_mean,
-            feature_term_mean_share,
-            linear_term_mean_share,
-            r_factor_fro_norm,
-        ) = _boundary_term_diagnostics(
+        
+        term_diagnostics = _boundary_term_diagnostics(
             lyap_model=lyap_model,
             boundary_x=boundary_eval_x,
             quantile=float(config.rho_estimate_quantile),
@@ -199,13 +261,13 @@ def estimate_rho_from_boundary_diagnostics(
         rho=float(rho_boundary),
         boundary_quantile=boundary_quantile,
         boundary_mean=boundary_mean,
-        feature_term_quantile=feature_term_quantile,
-        linear_term_quantile=linear_term_quantile,
-        feature_term_mean=feature_term_mean,
-        linear_term_mean=linear_term_mean,
-        feature_term_mean_share=feature_term_mean_share,
-        linear_term_mean_share=linear_term_mean_share,
-        r_factor_fro_norm=r_factor_fro_norm,
+        feature_term_quantile=term_diagnostics[0],
+        linear_term_quantile=term_diagnostics[1],
+        feature_term_mean=term_diagnostics[2],
+        linear_term_mean=term_diagnostics[3],
+        feature_term_mean_share=term_diagnostics[4],
+        linear_term_mean_share=term_diagnostics[5],
+        r_factor_fro_norm=term_diagnostics[6],
     )
 
 
