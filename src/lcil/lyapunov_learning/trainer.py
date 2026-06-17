@@ -234,6 +234,7 @@ class LyapunovTrainer:
         boundary_buffer = BoundaryStateBuffer(
             state_dim=self.config.state_dim,
             max_size=int(self.config.rho_boundary_buffer_size),
+            max_age=self.config.roa_max_age,
             device=self.device,
         )
         init_boundary_x, _, _ = sample_boundary_points(
@@ -252,10 +253,11 @@ class LyapunovTrainer:
             initial_states=initial_x,
             state_buffer_limit=self.config.state_buffer_limit,
             cex_buffer_limit=self.config.cex_buffer_limit,
-            device=self.device,
             min_cex_fraction=self.config.cex_fraction_min,
             max_cex_fraction=self.config.cex_fraction_max,
+            max_cex_age=self.config.cex_max_age,
             generator=self.torch_gen,
+            device=self.device,
         )
         return cegis_buffer
     
@@ -386,7 +388,7 @@ class LyapunovTrainer:
 
     def train(self) -> LyapunovTrainingResult:
         """Execute the CEGIS-style training loop."""
-        self.metrics, cex_buffer, boundary_buffer, ibp_regions = self._init_training_components()
+        self.metrics, cegis_buffer, boundary_buffer, ibp_regions = self._init_training_components()
 
         mining_interval = max(1, int(self.config.cex_every))
         rho_estimate = None
@@ -416,19 +418,19 @@ class LyapunovTrainer:
                         )
                         tb_writer_close(tb_writer)
                         return self._finalize_training(
-                            cex_count=cex_buffer.cex_count,
+                            cex_count=cegis_buffer.cex_count,
                             rho_estimate=none_to_float(rho_estimate),
                             start_time=start_time,
                             abort_reason=abort_reason
                         )
 
                     cex_fraction, cex_fraction_ema = self._mine_cegis_step(
-                        outer_iter, mining_interval, rho_estimate, cex_buffer, cex_fraction_ema
+                        outer_iter, mining_interval, rho_estimate, cegis_buffer, cex_fraction_ema
                     )
 
                     # Inner training loop
                     for inner_step in range(self.config.steps_per_epoch):
-                        x_batch = cex_buffer.sample(self.config.batch_size, cex_fraction=cex_fraction)
+                        x_batch = cegis_buffer.sample(self.config.batch_size, cex_fraction=cex_fraction)
                         loss = self.loss_module(
                             x_batch=x_batch,
                             roa_candidates=roa_candidates,
@@ -456,22 +458,22 @@ class LyapunovTrainer:
                             advance=1.0,
                             loss=none_to_float(loss.item()),
                             rho=none_to_float(rho_estimate),
-                            cex_pool=none_to_float(cex_buffer.cex_count),
+                            cex_pool=none_to_float(cegis_buffer.cex_count),
                             cex_samples=none_to_float(cex_fraction * self.config.batch_size),
                         )
 
                     self.metrics.fill_outer(
                         outer_iter=outer_iter,
-                        state_buffer=cex_buffer,
-                        num_mined_counterexamples=cex_buffer.cex_count,
+                        state_buffer=cegis_buffer,
+                        num_mined_counterexamples=cegis_buffer.cex_count,
                         rho_diagnostics=rho_diagnostics,
                     )
                     tb_writer_add_metrics(tb_writer, self.metrics)
-                    if self._is_mining_step(outer_iter, mining_interval) and cex_buffer.cexs.numel() > 0:
+                    if self._is_mining_step(outer_iter, mining_interval) and cegis_buffer.cexs.numel() > 0:
                         tb_writer_add_parallel_coordinates(
                             tb_writer,
                             tag="Counterexamples",
-                            states=cex_buffer.cexs,
+                            states=cegis_buffer.cexs,
                             state_bounds=self.config.state_bounds,
                             global_step=outer_iter,
                             max_lines=512,
@@ -484,7 +486,7 @@ class LyapunovTrainer:
             final_abort_reason = "Lyapunov training interrupted by user."
 
         return self._finalize_training(
-            cex_count=cex_buffer.cex_count,
+            cex_count=cegis_buffer.cex_count,
             rho_estimate=none_to_float(rho_estimate),
             start_time=start_time,
             abort_reason=final_abort_reason,

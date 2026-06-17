@@ -154,11 +154,12 @@ class DynamicStateBuffer:
         initial_states: th.Tensor,
         state_buffer_limit: int,
         cex_buffer_limit: int,
-        device: th.device,
         min_cex_fraction: float = 0.0,
         max_cex_fraction: float = 1.0,
         generator: th.Generator | None = None,
         filter_eps: float = 0.05,
+        max_age: int = 5,
+        device: th.device | str = "cpu",
     ):
         """Initialize the dynamic state buffer.
 
@@ -170,8 +171,6 @@ class DynamicStateBuffer:
             Maximum number of states to retain in the buffer.
         cex_buffer_limit : int
             Maximum number of counterexample states to retain in the buffer.
-        device : th.device
-            The device on which to store the buffer tensors.
         min_cex_fraction : float, optional
             Minimum fraction of counterexample states in sampled batches, by default 0.0
         max_cex_fraction : float, optional
@@ -180,6 +179,10 @@ class DynamicStateBuffer:
             Random number generator for sampling, by default None
         filter_eps : float, optional
             Minimum distance between retained states for spatial diversity, by default 0.05
+        max_age : int, optional
+            Maximum age for counterexamples in the buffer before they are automatically removed, by default 5
+        device : th.device | str, optional
+            The device on which to store the buffer tensors, by default "cpu".
 
         Raises
         ------
@@ -205,7 +208,7 @@ class DynamicStateBuffer:
         self.generator = generator
         self.filter_eps = filter_eps
 
-        self._cex_pool = AgedTensorPool(initial_states.shape[1], max_age=10, device=device, dtype=initial_states.dtype)
+        self._cex_pool = AgedTensorPool(initial_states.shape[1], max_age=max_age, device=device, dtype=initial_states.dtype)
 
     @property
     def cexs(self) -> th.Tensor:

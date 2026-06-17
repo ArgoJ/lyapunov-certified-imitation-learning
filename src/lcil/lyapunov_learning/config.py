@@ -190,6 +190,13 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="roa_cand",
         validators=(positive_validator,),
     )
+    roa_max_age: int = config_field(
+        default=15,
+        help="Maximum age for states in the ROA surrogate buffer before they are removed, " \
+        "used to ensure that the surrogate loss is computed based on up-to-date samples.",
+        display_alias="roa_age",
+        validators=(positive_validator,),
+    )
     detach_relative_denominator: bool = config_field(
         default=True,
         help="Whether to detach V(x) in the denominator of the relative loss terms.",
@@ -261,7 +268,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     scale_weight: float = config_field(
         default=1.0,
-        help="Weight for the Lyapunov scale anchor loss, which encourages the Lyapunov function values to be close to a specified anchor value for better numerical conditioning.",
+        help="Weight for the Lyapunov scale anchor loss, which encourages the Lyapunov " \
+        "function values to be close to a specified anchor value for better numerical conditioning.",
         display_alias="scalew",
         validators=(non_negative_validator,),
     )
@@ -373,6 +381,12 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=10000,
         help="Maximum size of the counterexample buffer.",
         display_alias="cex_buff",
+        validators=(positive_validator,),
+    )
+    cex_max_age: int = config_field(
+        default=5,
+        help="Maximum age for counterexamples in the buffer before they are automatically removed, used to ensure that the training buffer contains up-to-date counterexamples.",
+        display_alias="cex_age",
         validators=(positive_validator,),
     )
 
