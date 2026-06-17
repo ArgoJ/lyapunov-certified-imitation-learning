@@ -37,9 +37,10 @@ from .results import (
     LyapunovTrainingCurriculumStage,
 )
 from .tensorboard import (
-    tb_writer_add_metrics,
     tb_writer_build,
     tb_writer_close,
+    tb_writer_add_metrics,
+    tb_writer_add_parallel_coordinates,
 )
 from .utils import (
     ThresholdMonitor,
@@ -324,18 +325,20 @@ class LyapunovTrainer:
             return self.rho_monitor.update(rho_estimate)
         return False
 
+    def _is_mining_step(self, outer_iter: int, mining_interval: int) -> bool:
+        return (outer_iter + 1) % mining_interval == 0
+
     def _mine_cegis_step(
         self,
         outer_iter: int,
+        mining_interval: int,
         rho_estimate: float,
         state_buffer: DynamicStateBuffer,
-        cex_fraction_ema: float | None
+        cex_fraction_ema: float | None,
     ) -> tuple[float, float | None]:
         
-        mining_interval = max(1, int(self.config.cex_every))
-        
         # Only mine at intervals
-        if (outer_iter + 1) % mining_interval != 0:
+        if not self._is_mining_step(outer_iter, mining_interval):
             if cex_fraction_ema is None:
                 return 0.0, None
             current_fraction = self.config.cex_fraction_min + \
@@ -352,7 +355,7 @@ class LyapunovTrainer:
         frac_yield = new_cex.shape[0] / self.config.adversarial_samples
         new_ema = get_ema(cex_fraction_ema, frac_yield, self.config.cex_fraction_ema_decay)
         new_fraction = self.config.cex_fraction_min + new_ema * (self.config.cex_fraction_max - self.config.cex_fraction_min)
-        
+
         return new_fraction, new_ema
 
     def _finalize_training(
@@ -385,6 +388,7 @@ class LyapunovTrainer:
         """Execute the CEGIS-style training loop."""
         self.metrics, state_buffer, boundary_buffer, ibp_regions = self._init_training_components()
 
+        mining_interval = max(1, int(self.config.cex_every))
         rho_estimate = None
         cex_fraction_ema = None
         cex_fraction = 0.0
@@ -419,7 +423,7 @@ class LyapunovTrainer:
                         )
 
                     cex_fraction, cex_fraction_ema = self._mine_cegis_step(
-                        outer_iter, rho_estimate, state_buffer, cex_fraction_ema
+                        outer_iter, rho_estimate, state_buffer, cex_fraction_ema, mining_interval
                     )
 
                     # Inner training loop
@@ -463,6 +467,15 @@ class LyapunovTrainer:
                         rho_diagnostics=rho_diagnostics,
                     )
                     tb_writer_add_metrics(tb_writer, self.metrics)
+                    if self._is_mining_step(outer_iter, mining_interval):
+                        tb_writer_add_parallel_coordinates(
+                            tb_writer,
+                            tag="Counterexamples",
+                            states=state_buffer.cexs,
+                            state_bounds=self.config.state_bounds,
+                            global_step=outer_iter,
+                        )
+                    
 
         tb_writer_close(tb_writer)
         final_abort_reason = None

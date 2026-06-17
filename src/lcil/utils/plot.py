@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import logging
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt
 
 from pathlib import Path
 from numpy.typing import NDArray
@@ -746,3 +747,80 @@ def certified_regions_2d(
         return
 
     return figures
+
+
+def parallel_coordinates(
+    states: NDArray,
+    state_bounds: NDArray | None = None,
+    state_labels: Sequence[str] | None = None,
+    state_order: Sequence[int] | None = None,
+    max_lines: int = 64,
+):
+    x = np.asarray(states, dtype=np.float32)
+    if x.ndim != 2 or x.shape[0] == 0:
+        raise ValueError("states must have shape (N, nx) with N > 0.")
+
+    n, d = x.shape
+
+    if state_order is None:
+        order = np.arange(d)
+    else:
+        order = np.asarray(state_order, dtype=np.int64)
+        if order.shape != (d,):
+            raise ValueError(f"state_order must have shape ({d},), got {order.shape}.")
+        if np.unique(order).shape[0] != d:
+            raise ValueError("state_order must be a permutation of state indices.")
+
+    x = x[:, order]
+
+    if n > max_lines:
+        idx = np.linspace(0, n - 1, num=max_lines, dtype=int)
+        x = x[idx]
+        n = x.shape[0]
+
+    if state_labels is None:
+        labels = [f"x{i}" for i in range(d)]
+    else:
+        labels = list(state_labels)
+        if len(labels) != d:
+            raise ValueError(f"state_labels must have length {d}, got {len(labels)}.")
+    labels = [labels[i] for i in order]
+
+    if state_bounds is not None:
+        bounds = np.asarray(state_bounds, dtype=np.float32)
+        if bounds.shape != (2, d):
+            raise ValueError(f"state_bounds must have shape (2, {d}).")
+        bounds = bounds[:, order]
+        lb, ub = bounds
+        center = 0.5 * (lb + ub)
+        half = 0.5 * (ub - lb)
+        half = np.where(half > 1e-8, half, 1.0)
+        x = (x - center[None, :]) / half[None, :]
+        ylim = (-1.1, 1.1)
+    else:
+        mins = x.min(axis=0)
+        maxs = x.max(axis=0)
+        span = np.where((maxs - mins) > 1e-8, maxs - mins, 1.0)
+        x = 2.0 * (x - mins[None, :]) / span[None, :] - 1.0
+        ylim = (-1.1, 1.1)
+
+    xs = np.arange(d)
+
+    fig, ax = plt.subplots(figsize=(max(6, 1.2 * d), 3.0), constrained_layout=True)
+
+    for i in range(n):
+        ax.plot(xs, x[i], color="tab:red", alpha=0.15, linewidth=0.8)
+
+    for xi in xs:
+        ax.axvline(xi, color="0.85", linewidth=0.8, zorder=0)
+
+    ax.axhline(-1.0, color="0.6", linestyle="--", linewidth=0.8)
+    ax.axhline(0.0, color="0.2", linestyle="-", linewidth=0.8)
+    ax.axhline(1.0, color="0.6", linestyle="--", linewidth=0.8)
+
+    ax.set_xticks(xs, labels=labels)
+    ax.set_ylim(*ylim)
+    ax.set_ylabel("normalized state")
+    ax.set_title(f"Counterexamples (n={n})")
+
+    return fig

@@ -1,7 +1,13 @@
 import os
+import torch as th
+import numpy as np
+from numpy.typing import NDArray
+from typing import Sequence
+
 from torch.utils.tensorboard import SummaryWriter
 
 from .results import LyapunovTrainingMetrics
+from ..utils.plot import parallel_coordinates
 
 
 def tb_writer_add_metrics(
@@ -31,7 +37,6 @@ def tb_writer_add_metrics(
         metrics.num_mined_counterexamples[outer_iter],
         tb_step,
     )
-
 
     end_iter = metrics.inner_iterations_completed
     start_iter = max(0, end_iter - metrics.steps_per_epoch)
@@ -68,10 +73,48 @@ def tb_writer_add_metrics(
             tb_step,
         )
 
+
+def tb_writer_add_parallel_coordinates(
+    tb_writer: SummaryWriter | None,
+    *,
+    tag: str,
+    global_step: int,
+    states: th.Tensor | NDArray | None,
+    state_bounds: th.Tensor | NDArray | None = None,
+    state_labels: Sequence[str] | None = None,
+    state_order: Sequence[int] | None = None,
+    max_lines: int = 64,
+) -> None:
+    if tb_writer is None or states is None:
+        return
+
+    if isinstance(states, th.Tensor):
+        x_np = states.detach().cpu().numpy()
+    else:
+        x_np = np.asarray(states)
+
+    bounds_np = None
+    if state_bounds is not None:
+        if isinstance(state_bounds, th.Tensor):
+            bounds_np = state_bounds.detach().cpu().numpy()
+        else:
+            bounds_np = np.asarray(state_bounds)
+
+    fig = parallel_coordinates(
+        states=x_np,
+        state_bounds=bounds_np,
+        state_labels=state_labels,
+        state_order=state_order,
+        max_lines=max_lines,
+    )
+    tb_writer.add_figure(tag, fig, global_step=global_step, close=True)
+
+
 def tb_writer_close(tb_writer: SummaryWriter | None) -> None:
     if tb_writer is not None:
         tb_writer.flush()
         tb_writer.close()
+
 
 def tb_writer_build(log_dir: os.PathLike | None) -> SummaryWriter | None:
     if log_dir is not None:
