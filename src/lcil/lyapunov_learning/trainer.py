@@ -423,7 +423,7 @@ class LyapunovTrainer:
                         )
 
                     cex_fraction, cex_fraction_ema = self._mine_cegis_step(
-                        outer_iter, rho_estimate, cex_buffer, cex_fraction_ema, mining_interval
+                        outer_iter, mining_interval, rho_estimate, cex_buffer, cex_fraction_ema
                     )
 
                     # Inner training loop
