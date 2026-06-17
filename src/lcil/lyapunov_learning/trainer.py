@@ -474,6 +474,7 @@ class LyapunovTrainer:
                             states=cex_buffer.cexs,
                             state_bounds=self.config.state_bounds,
                             global_step=outer_iter,
+                            max_lines=512,
                         )
                     
 
