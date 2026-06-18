@@ -739,22 +739,29 @@ class BisectCertifier:
         )
         return self.details
 
-    def certify(self, rho_estimate: float) -> RegionCertificationResult:
+    def certify(
+        self, rho_estimate: float, collect_details_on_failed: bool = False
+    ) -> RegionCertificationResult | None:
         """Convenience method to run the full certification and return details."""
         best_rho = self.find_max_rho(rho_estimate)
 
+        # Successful certification
         if best_rho >= self.config.rho_min:
-            inspection_rho = best_rho
-        else:
-            inspection_rho = max(float(rho_estimate), self.config.rho_min)
-            __logger__.warning(
-                "No globally certified rho found above rho_min (%.0e). Collecting fallback inspection details at rho=%.6f.",
-                self.config.rho_min,
-                inspection_rho,
-            )
+            return self._collect_certification_details(rho=best_rho)
 
-        self.details = self._collect_certification_details(rho=inspection_rho)
-        return self.details
+        # Failed certification
+        __logger__.warning(
+            "No globally certified rho found above rho_min (%.0e).", self.config.rho_min
+        )
+
+        if not collect_details_on_failed:
+            return None
+
+        # Fallback detail collection
+        fallback_rho = max(float(rho_estimate), self.config.rho_min)
+        __logger__.info("Collecting diagnostic details at fallback rho=%.6f.", fallback_rho)
+        
+        return self._collect_certification_details(rho=fallback_rho)
 
     def save(
         self,
@@ -764,12 +771,16 @@ class BisectCertifier:
         save_path = Path(save_folder).resolve()
         save_path.mkdir(parents=True, exist_ok=True)
 
-        details_path = save_path / CERTIFICATION_DETAILS_FILENAME
-        if self.details is not None:
-            self.details.save(details_path)
-
         config_path = save_path / CERTIFICATION_CONFIG_FILENAME
         self.config.save(config_path)
+
+        details_path = None
+        if self.details is None:
+            failed_flag_path = save_path / CERTIFICATION_FAILED_FLAG_FILENAME
+            failed_flag_path.touch(exist_ok=True)
+        else:
+            details_path = save_path / CERTIFICATION_DETAILS_FILENAME
+            self.details.save(details_path)
 
         __logger__.info("Saved certification details to %s", save_path)
         return details_path
