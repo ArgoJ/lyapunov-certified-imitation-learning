@@ -561,7 +561,11 @@ class LyapunovTrainer:
         if final_stage_trainer is None:
             return LyapunovTrainingCurriculumResult(stages=[])
 
-        self.config = final_stage_trainer.config
+        self.config = replace(
+            final_stage_trainer.config,
+            rho_min=self.config.rho_min,
+            seed=self.config.seed,
+        )
         self.optimizer = final_stage_trainer.optimizer
         self.loss_module = final_stage_trainer.loss_module
         self.lbx = final_stage_trainer.lbx
