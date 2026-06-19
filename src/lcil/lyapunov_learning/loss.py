@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import math
 import torch as th
 import torch.nn as nn
 
@@ -118,23 +117,46 @@ class LyapunovScaleAnchorLoss(StateBoundsModule):
         lyap_model: nn.Module,
         state_bounds: th.Tensor,
         num_anchor_points: int = 1000,
+        resample_interval: int = 100,
         device: th.device | str = "cpu",
         eps: float = 1e-6
     ) -> None:
         super().__init__(state_bounds=state_bounds, device=device)
         self.lyap_model = lyap_model
         self.eps = float(eps)
+        self.num_points = int(num_anchor_points)
+        self.resample_interval = int(resample_interval)
+        self._step_counter = 0
 
-        rand_uniform = th.rand((num_anchor_points, self.lbx.shape[0]), device=self.device, dtype=self.lbx.dtype)
-        anchor_states = self.lbx + rand_uniform * (self.ubx - self.lbx)
-        self.register_buffer("anchor_states", anchor_states)
-
+        self.register_buffer(
+            "anchor_states",
+            th.zeros((self.num_points, self.lbx.shape[0]), device=self.device)
+        )
         self.register_buffer(
             "target_log_value", 
             th.tensor(float("nan"), dtype=th.float32, device=self.device)
         )
 
+        with th.no_grad():
+            self._register_new_anchor_points(self._sample_new_anchor_points())
+
+    def _sample_new_anchor_points(self) -> th.Tensor:
+        """Sample a batch of anchor states for scale anchoring."""
+        rand_uniform = th.rand((self.anchor_states.shape[0], self.lbx.shape[0]), device=self.device, dtype=self.lbx.dtype)
+        return self.lbx + rand_uniform * (self.ubx - self.lbx)
+    
+    def _register_new_anchor_points(self, new_points: th.Tensor) -> None:
+        """Register a new batch of anchor states for scale anchoring."""
+        self.anchor_states.copy_(new_points)
+
     def forward(self) -> th.Tensor:
+        if self.training and self.resample_interval > 0:
+            if self._step_counter % self.resample_interval == 0:
+                with th.no_grad():
+                    new_pts = self._sample_new_anchor_points()
+                    self._register_new_anchor_points(new_pts)
+            self._step_counter += 1
+
         v_reference = self.lyap_model(self.anchor_states)
         ref_mean = v_reference.mean().clamp_min(self.eps)
         current_log_value = th.log(ref_mean)
