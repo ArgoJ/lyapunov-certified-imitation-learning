@@ -609,6 +609,7 @@ class LyapunovTrainingLoss(nn.Module):
                 lyap_model=lyap_model,
                 state_bounds=config.state_bounds,
                 num_anchor_points=config.scale_anchor_num_points,
+                resample_interval=config.scale_anchor_resample_interval,
                 device=self.device,
             ) 
             if config.scale_weight > 0.0 else None

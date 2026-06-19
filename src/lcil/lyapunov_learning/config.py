@@ -56,8 +56,15 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Dropout probability for the Lyapunov model. Must be in the range [0, 1].
     detach_relative_denominator : bool
         Whether to detach the relative denominator in the Lyapunov loss computation.
+    roa_candidate_size : int
+        Number of candidate states used in the ROA surrogate loss.
+    roa_max_age : int
+        Maximum age for states in the ROA surrogate buffer before they are removed.
     scale_anchor_num_points : int
         Number of anchor points used in the Lyapunov scale anchor loss.
+    scale_anchor_resample_interval : int
+        Number of optimization steps between resampling anchor points for the scale anchor loss. 
+        If 0, anchor points are only sampled once at initialization.
     bins_per_dim : int | Sequence[int]
         Number of bins per dimension for region discretization when enforcing conditions over a grid.
     origin_exclusion : float | Sequence[float]
@@ -84,8 +91,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     policy_regularization_weight : float
         Weight for the policy regularization loss, which encourages the policy to stay close to the initial policy.
     
-    roa_candidate_size : int
-        Number of candidate states used in the ROA surrogate loss.
     rho_growth_gamma : float
         Growth factor for estimating sublevel values from boundary points.
     rho_boundary_samples : int
@@ -159,7 +164,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     policy_epochs: int | None = config_field(
         default=None,
-        help="Number of final outer epochs jointly optimizing policy and lyapunov parameters, starting at outer_epochs - policy_epochs. If None, the policy is never updated.",
+        help="Number of final outer epochs jointly optimizing policy and lyapunov parameters, " \
+             "starting at outer_epochs - policy_epochs. If None, the policy is never updated.",
         display_alias="policy_epochs",
         validators=(optional_validator(positive_validator),)
     )
@@ -206,6 +212,12 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="Number of anchor points used in the Lyapunov scale anchor loss.",
         display_alias="scale_anchor_points",
         validators=(positive_validator,),
+    )
+    scale_anchor_resample_interval: int = config_field(
+        default=100,
+        help="Number of optimization steps between resampling anchor points " \
+             "for the scale anchor loss. If 0, anchor points are only sampled once at initialization.",
+        validators=(non_negative_validator,),
     )
     bins_per_dim: int | Sequence[int] = config_field(
         default=10,
@@ -275,7 +287,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     policy_regularization_weight: float = config_field(
         default=1.0,
-        help="Weight for the policy regularization loss, which helps keep the policy close to the initial reference policy.",
+        help="Weight for the policy regularization loss, which helps keep the policy close to " \
+             "the initial reference policy.",
         display_alias="policy_reg_w",
         validators=(non_negative_validator,),
     )
@@ -325,7 +338,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     rho_ema_decay: float = config_field(
         default=0.8,
-        help="Exponential moving average decay for rho estimates across epochs, used to stabilize training when rho estimates are noisy.",
+        help="Exponential moving average decay for rho estimates across epochs, " \
+             "used to stabilize training when rho estimates are noisy.",
         display_alias="\u03C1_ema_decay",
         validators=(fraction_validator,),
     )
@@ -385,7 +399,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     cex_max_age: int = config_field(
         default=5,
-        help="Maximum age for counterexamples in the buffer before they are automatically removed, used to ensure that the training buffer contains up-to-date counterexamples.",
+        help="Maximum age for counterexamples in the buffer before they are automatically removed, " \
+             "used to ensure that the training buffer contains up-to-date counterexamples.",
         display_alias="cex_age",
         validators=(positive_validator,),
     )

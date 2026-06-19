@@ -31,16 +31,16 @@ from ..example_utils import build_lyapunov_func
 
 __logger__ = logging.getLogger("lcil.examples.cartpole.learn_lyapunov")
 
-_DEFAULT_TRAIN_BOUND_FACTORS = (1.0, 1.0, 0.1, 1.0)
+_DEFAULT_TRAIN_BOUND_FACTORS = (1.0, 1.0, 0.12, 1.0)
 
 
 @dataclass(frozen=True)
 class LyapunovLearningScriptConfig(ArgumentParserConfig):
     policy_dir: str = config_field(help=f"Policy run directory containing {POLICY_MODEL_FILENAME}.")
     device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
-    activation: str = config_field(default="relu", help="Activation function for the Lyapunov feature net.", display_alias="act")
-    hidden_size: int = config_field(default=32, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
-    layers: int = config_field(default=3, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
+    activation: str = config_field(default="tanh", help="Activation function for the Lyapunov feature net.", display_alias="act")
+    hidden_size: int = config_field(default=16, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
+    layers: int = config_field(default=2, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
     use_angle_wrapper: bool = config_field(default=False, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
     last_layer_std: float = config_field(default=0.001, help="Standard deviation for the last layer of the Lyapunov feature net.")
     train_bound_factors: list[float] = config_field(
@@ -48,7 +48,7 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
         help="Per-dimension scaling applied to policy state bounds before Lyapunov training.",
     )
     curriculum_scales: list[float] = config_field(
-        default_factory=lambda: [1.0],
+        default_factory=lambda: [0.3, 0.6, 1.0],
         help=("Curriculum scales applied to the final training bounds."),
     )
 
@@ -70,7 +70,8 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         policy_epochs=200,
         kappa=0.01,
         seed=1674653,
-        scale_anchor_num_points=8192,
+        scale_anchor_num_points=1024,
+        scale_anchor_resample_interval=100,
         origin_exclusion=[0.05, 0.15, 0.05, 0.15],
         bins_per_dim=10,
 
