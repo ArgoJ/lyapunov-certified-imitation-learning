@@ -602,6 +602,7 @@ class LyapunovTrainingLoss(nn.Module):
             ) 
             if config.l1_weight > 0.0 else None
         )
+        self._dyn_l1_weight = float(config.l1_weight)
 
         # Scale anchor loss
         self.scale_loss = (
@@ -634,7 +635,17 @@ class LyapunovTrainingLoss(nn.Module):
 
     def refresh_trainable_parameters(self) -> None:
         if self.l1_loss is not None:
+            num_prev_param = self.l1_loss.get_train_params()
             self.l1_loss.refresh_train_params()
+            num_new_param = self.l1_loss.get_train_params()
+            weight_fraction = len(num_new_param) / max(len(num_prev_param), 1)
+            self._dyn_l1_weight = self.config.l1_weight * weight_fraction
+            __logger__.info(
+                "Refreshed trainable parameters for L1 loss: %d -> %d (weight scaled by %.3f)",
+                len(num_prev_param),
+                len(num_new_param),
+                weight_fraction,
+            )
 
     def mining_objective(
         self,
@@ -745,7 +756,7 @@ class LyapunovTrainingLoss(nn.Module):
             condition_weight=self.config.condition_weight,
             roa_weight=self.config.roa_weight,
             condition_ibp_weight=self.config.condition_ibp_weight,
-            l1_weight=self.config.l1_weight,
+            l1_weight=self._dyn_l1_weight,
             equilibrium_weight=self.config.equilibrium_weight,
             formal_positivity_weight=self.config.formal_positivity_weight,
             scale_weight=self.config.scale_weight,
