@@ -37,7 +37,7 @@ def timeit(logger: logging.Logger) -> Callable:
     """Decorator factory to measure execution time of a function."""
     
     def decorator(func: Callable) -> Callable:
-        @wraps(func) # Erhält den ursprünglichen Namen und Docstring der Funktion
+        @wraps(func)
         def wrapper(*args, **kwargs):
             start_time = time.time()
             result = func(*args, **kwargs)

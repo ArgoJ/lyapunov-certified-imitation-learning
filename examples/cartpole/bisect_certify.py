@@ -188,6 +188,9 @@ def main() -> None:
         cert_results = certifier.certify(rho_estimate)
         certifier.save(save_dir)
 
+        if cert_results is None:
+            continue
+
         cert_bounds = certification_config.cert_bounds
         plot_bounds = [
             (float(cert_bounds[0, i]), float(cert_bounds[1, i]))

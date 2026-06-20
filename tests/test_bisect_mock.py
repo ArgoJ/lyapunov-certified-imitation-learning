@@ -23,7 +23,7 @@ from certification_mock_common import (
 )
 from lcil.certification.lirpa_lyapunov_bounds import LyapunovRegionBounds
 from lcil.certification.region_manager import CertificationRegionPartition
-from lcil.utils.plot import certified_regions_2d, lyapunov_cert_regions
+from lcil.utils.lcil_plt import certified_regions_2d, lyapunov_cert_regions
 
 
 @dataclass(frozen=True)

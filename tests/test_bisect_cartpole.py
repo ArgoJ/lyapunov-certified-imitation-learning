@@ -16,7 +16,7 @@ from shared_cartpole import (
     RiccatiQuadraticLyapunov
 )
 
-from lcil.utils.plot import certified_regions_2d, lyapunov_cert_regions
+from lcil.utils.lcil_plt import certified_regions_2d, lyapunov_cert_regions
 
 
 class TestBisectInvertedPendulumOnCartIntegration(PlotAssertionsMixin):

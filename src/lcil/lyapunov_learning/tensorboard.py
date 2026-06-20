@@ -7,7 +7,7 @@ from typing import Sequence
 from torch.utils.tensorboard import SummaryWriter
 
 from .results import LyapunovTrainingMetrics
-from ..utils.plot import parallel_coordinates
+from ..utils.lcil_plt.parallel_coodrdinates import parallel_coordinates_matplot
 
 
 def tb_writer_add_metrics(
@@ -100,7 +100,7 @@ def tb_writer_add_parallel_coordinates(
         else:
             bounds_np = np.asarray(state_bounds)
 
-    fig = parallel_coordinates(
+    fig = parallel_coordinates_matplot(
         states=x_np,
         state_bounds=bounds_np,
         state_labels=state_labels,

@@ -1,0 +1,193 @@
+from __future__ import annotations
+
+import numpy as np
+import logging
+import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+
+from pathlib import Path
+from numpy.typing import NDArray
+from typing import Sequence
+
+from mpc_datagen.plots import (
+    _resolve_labels,
+    _to_latex,
+    _handle_figure_output,
+)
+from .styles import *
+
+__logger__ = logging.getLogger(__name__)
+
+
+def _normalize_states(x: NDArray, state_bounds: NDArray | None) -> tuple[NDArray, str]:
+    """Normalisiert die Daten auf einen Bereich von ca. -1.0 bis 1.0."""
+    if state_bounds is not None:
+        bounds = np.asarray(state_bounds, dtype=np.float32)
+        if bounds.shape != (2, x.shape[1]):
+            raise ValueError(f"state_bounds must have shape (2, {x.shape[1]}).")
+        
+        lb, ub = bounds
+        center = 0.5 * (lb + ub)
+        half = 0.5 * (ub - lb)
+        half = np.where(half > 1e-8, half, 1.0)
+        
+        return (x - center[None, :]) / half[None, :], "Normalized by provided state bounds"
+    else:
+        mins = x.min(axis=0)
+        maxs = x.max(axis=0)
+        span = np.where((maxs - mins) > 1e-8, maxs - mins, 1.0)
+        
+        return 2.0 * (x - mins[None, :]) / span[None, :] - 1.0, "Normalized by observed per-dimension min/max"
+
+
+def parallel_coordinates_matplot(
+    states: NDArray,
+    state_bounds: NDArray | None = None,
+    state_labels: Sequence[str] | None = None,
+    state_order: Sequence[int] | None = None,
+    max_lines: int = 64,
+):
+    x = np.asarray(states, dtype=np.float32)
+    if x.ndim != 2 or x.shape[0] == 0:
+        raise ValueError("states must have shape (N, nx) with N > 0.")
+
+    n, d = x.shape
+
+    if state_order is None:
+        order = np.arange(d)
+    else:
+        order = np.asarray(state_order, dtype=np.int64)
+        if order.shape != (d,):
+            raise ValueError(f"state_order must have shape ({d},), got {order.shape}.")
+        if np.unique(order).shape[0] != d:
+            raise ValueError("state_order must be a permutation of state indices.")
+
+    x = x[:, order]
+
+    if n > max_lines:
+        idx = np.linspace(0, n - 1, num=max_lines, dtype=int)
+        x = x[idx]
+        n = x.shape[0]
+
+    if state_labels is None:
+        labels = [f"x{i}" for i in range(d)]
+    else:
+        labels = list(state_labels)
+        if len(labels) != d:
+            raise ValueError(f"state_labels must have length {d}, got {len(labels)}.")
+    labels = [labels[i] for i in order]
+
+    if state_bounds is not None:
+        bounds = np.asarray(state_bounds, dtype=np.float32)
+        if bounds.shape != (2, d):
+            raise ValueError(f"state_bounds must have shape (2, {d}).")
+        bounds = bounds[:, order]
+        lb, ub = bounds
+        center = 0.5 * (lb + ub)
+        half = 0.5 * (ub - lb)
+        half = np.where(half > 1e-8, half, 1.0)
+        x = (x - center[None, :]) / half[None, :]
+        ylim = (-1.1, 1.1)
+    else:
+        mins = x.min(axis=0)
+        maxs = x.max(axis=0)
+        span = np.where((maxs - mins) > 1e-8, maxs - mins, 1.0)
+        x = 2.0 * (x - mins[None, :]) / span[None, :] - 1.0
+        ylim = (-1.1, 1.1)
+
+    xs = np.arange(d)
+
+    fig, ax = plt.subplots(figsize=(max(6, 1.2 * d), 3.0), constrained_layout=True)
+
+    for i in range(n):
+        ax.plot(xs, x[i], color="tab:red", alpha=0.15, linewidth=0.8)
+
+    for xi in xs:
+        ax.axvline(xi, color="0.85", linewidth=0.8, zorder=0)
+
+    ax.axhline(-1.0, color="0.6", linestyle="--", linewidth=0.8)
+    ax.axhline(0.0, color="0.2", linestyle="-", linewidth=0.8)
+    ax.axhline(1.0, color="0.6", linestyle="--", linewidth=0.8)
+
+    ax.set_xticks(xs, labels=labels)
+    ax.set_ylim(*ylim)
+    ax.set_ylabel("normalized state")
+    ax.set_title(f"Counterexamples (n={n})")
+
+    return fig
+
+
+def parallel_coordinates_plotly(
+    states: NDArray,
+    state_bounds: NDArray | None = None,
+    state_labels: Sequence[str] | None = None,
+    max_lines: int | None = None,
+    line_color: str = STYLE_UNCERTIFIED,
+    title: str | None = None,
+    annotation_text: str | None = None,
+    html_path: Path | None = None,
+) -> go.Figure | None:
+    
+    x = np.asarray(states, dtype=np.float32)
+    if x.ndim != 2 or x.shape[0] == 0:
+        raise ValueError("states must have shape (N, nx) with N > 0.")
+
+    n_total, d = x.shape
+
+    # Downsampling
+    if max_lines is not None and n_total > max_lines:
+        idx = np.linspace(0, n_total - 1, num=max_lines, dtype=int)
+        x = x[idx]
+    n = x.shape[0]
+    
+    labels = _resolve_labels(state_labels, d)
+    x_norm, norm_note = _normalize_states(x, state_bounds)
+
+    # Build dimensions for Parallel Coordinates
+    dimensions = []
+    for i in range(d):
+        dimensions.append(dict(
+            range=[-1.1, 1.1],
+            label=_to_latex(labels[i]),
+            values=x_norm[:, i],
+            tickvals=[-1.0, 0.0, 1.0],
+            ticktext=[_to_latex("-1"), _to_latex("0"), _to_latex("+1")],
+        ))
+
+    # Text annotation
+    title = title or f"Counterexamples (n={n})"
+    if annotation_text is None:
+        sampled_note = f"Showing {n}/{n_total} lines" if n < n_total else f"Showing all {n} lines"
+        lines = ["Parallel coordinates", norm_note, sampled_note]
+        latex_annotation = "<br>".join(_to_latex(line) for line in lines)
+    else:
+        latex_annotation = "<br>".join(_to_latex(line) for line in annotation_text.split("<br>"))
+
+    fig = go.Figure(data=go.Parcoords(
+        line=dict(color=line_color),
+        dimensions=dimensions,
+        labelangle=-45,
+    ))
+
+    # Layout
+    fig.update_layout(
+        title=_to_latex(title),
+        template="plotly_white",
+        width=max(700, 170 * d),
+        height=340,
+        margin=dict(l=60, r=20, t=60, b=70),
+    )
+
+    # Info-Box
+    fig.add_annotation(
+        x=0.01, y=0.99,
+        xref="paper", yref="paper",
+        xanchor="left", yanchor="top",
+        align="left", showarrow=False,
+        bgcolor=STYLE_ANNOTATION_BG,
+        bordercolor=STYLE_ANNOTATION_BORDER,
+        borderwidth=1,
+        text=latex_annotation,
+    )
+
+    return _handle_figure_output(fig, html_path, kind="Parallel Coordinates")
