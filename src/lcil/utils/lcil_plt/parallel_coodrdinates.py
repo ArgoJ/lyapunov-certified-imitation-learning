@@ -40,94 +40,14 @@ def _normalize_states(x: NDArray, state_bounds: NDArray | None) -> tuple[NDArray
         return 2.0 * (x - mins[None, :]) / span[None, :] - 1.0, "Normalized by observed per-dimension min/max"
 
 
-def parallel_coordinates_matplot(
+def _prepare_parallel_data(
     states: NDArray,
-    state_bounds: NDArray | None = None,
-    state_labels: Sequence[str] | None = None,
-    state_order: Sequence[int] | None = None,
-    max_lines: int = 64,
-):
-    x = np.asarray(states, dtype=np.float32)
-    if x.ndim != 2 or x.shape[0] == 0:
-        raise ValueError("states must have shape (N, nx) with N > 0.")
-
-    n, d = x.shape
-
-    if state_order is None:
-        order = np.arange(d)
-    else:
-        order = np.asarray(state_order, dtype=np.int64)
-        if order.shape != (d,):
-            raise ValueError(f"state_order must have shape ({d},), got {order.shape}.")
-        if np.unique(order).shape[0] != d:
-            raise ValueError("state_order must be a permutation of state indices.")
-
-    x = x[:, order]
-
-    if n > max_lines:
-        idx = np.linspace(0, n - 1, num=max_lines, dtype=int)
-        x = x[idx]
-        n = x.shape[0]
-
-    if state_labels is None:
-        labels = [f"x{i}" for i in range(d)]
-    else:
-        labels = list(state_labels)
-        if len(labels) != d:
-            raise ValueError(f"state_labels must have length {d}, got {len(labels)}.")
-    labels = [labels[i] for i in order]
-
-    if state_bounds is not None:
-        bounds = np.asarray(state_bounds, dtype=np.float32)
-        if bounds.shape != (2, d):
-            raise ValueError(f"state_bounds must have shape (2, {d}).")
-        bounds = bounds[:, order]
-        lb, ub = bounds
-        center = 0.5 * (lb + ub)
-        half = 0.5 * (ub - lb)
-        half = np.where(half > 1e-8, half, 1.0)
-        x = (x - center[None, :]) / half[None, :]
-        ylim = (-1.1, 1.1)
-    else:
-        mins = x.min(axis=0)
-        maxs = x.max(axis=0)
-        span = np.where((maxs - mins) > 1e-8, maxs - mins, 1.0)
-        x = 2.0 * (x - mins[None, :]) / span[None, :] - 1.0
-        ylim = (-1.1, 1.1)
-
-    xs = np.arange(d)
-
-    fig, ax = plt.subplots(figsize=(max(6, 1.2 * d), 3.0), constrained_layout=True)
-
-    for i in range(n):
-        ax.plot(xs, x[i], color="tab:red", alpha=0.15, linewidth=0.8)
-
-    for xi in xs:
-        ax.axvline(xi, color="0.85", linewidth=0.8, zorder=0)
-
-    ax.axhline(-1.0, color="0.6", linestyle="--", linewidth=0.8)
-    ax.axhline(0.0, color="0.2", linestyle="-", linewidth=0.8)
-    ax.axhline(1.0, color="0.6", linestyle="--", linewidth=0.8)
-
-    ax.set_xticks(xs, labels=labels)
-    ax.set_ylim(*ylim)
-    ax.set_ylabel("normalized state")
-    ax.set_title(f"Counterexamples (n={n})")
-
-    return fig
-
-
-def parallel_coordinates_plotly(
-    states: NDArray,
-    state_bounds: NDArray | None = None,
-    state_labels: Sequence[str] | None = None,
-    max_lines: int | None = None,
-    line_color: str = STYLE_UNCERTIFIED,
-    title: str | None = None,
-    annotation_text: str | None = None,
-    html_path: Path | None = None,
-) -> go.Figure | None:
-    
+    state_bounds: NDArray | None,
+    state_labels: Sequence[str] | None,
+    state_order: Sequence[int] | None,
+    max_lines: int | None,
+) -> tuple[NDArray, list[str], int, int, int, str]:
+    """Zentrale Funktion zur Vorbereitung (Validierung, Downsampling, Normalisierung) der Daten."""
     x = np.asarray(states, dtype=np.float32)
     if x.ndim != 2 or x.shape[0] == 0:
         raise ValueError("states must have shape (N, nx) with N > 0.")
@@ -139,11 +59,76 @@ def parallel_coordinates_plotly(
         idx = np.linspace(0, n_total - 1, num=max_lines, dtype=int)
         x = x[idx]
     n = x.shape[0]
-    
-    labels = _resolve_labels(state_labels, d)
-    x_norm, norm_note = _normalize_states(x, state_bounds)
 
-    # Build dimensions for Parallel Coordinates
+    # resolve labels
+    labels = _resolve_labels(state_labels, d)
+    
+    # State sorting
+    bounds_ordered = state_bounds
+    if state_order is not None:
+        order = np.asarray(state_order, dtype=np.int64)
+        if order.shape != (d,) or np.unique(order).shape[0] != d:
+            raise ValueError("state_order must be a valid permutation of state indices.")
+        
+        x = x[:, order]
+        labels = [labels[i] for i in order]
+        if state_bounds is not None:
+            bounds_ordered = np.asarray(state_bounds, dtype=np.float32)[:, order]
+
+    x_norm, norm_note = _normalize_states(x, bounds_ordered)
+    return x_norm, labels, n_total, n, d, norm_note
+
+
+# --- MATPLOTLIB IMPLEMENTIERUNG ---
+def parallel_coordinates_matplot(
+    states: NDArray,
+    state_bounds: NDArray | None = None,
+    state_labels: Sequence[str] | None = None,
+    state_order: Sequence[int] | None = None,
+    max_lines: int = 64,
+):
+    x_norm, labels, _, n, d, _ = _prepare_parallel_data(
+        states, state_bounds, state_labels, state_order, max_lines
+    )
+
+    xs = np.arange(d)
+    fig, ax = plt.subplots(figsize=(max(6, 1.2 * d), 3.0), constrained_layout=True)
+
+    for i in range(n):
+        ax.plot(xs, x_norm[i], color="tab:red", alpha=0.15, linewidth=0.8)
+
+    for xi in xs:
+        ax.axvline(xi, color="0.85", linewidth=0.8, zorder=0)
+
+    ax.axhline(-1.0, color="0.6", linestyle="--", linewidth=0.8)
+    ax.axhline(0.0, color="0.2", linestyle="-", linewidth=0.8)
+    ax.axhline(1.0, color="0.6", linestyle="--", linewidth=0.8)
+
+    ax.set_xticks(xs, labels=[_to_latex(lbl) for lbl in labels])
+    ax.set_ylim(-1.1, 1.1)
+    ax.set_ylabel("normalized state")
+    ax.set_title(_to_latex(f"Counterexamples (n={n})"))
+
+    return fig
+
+
+# --- PLOTLY IMPLEMENTIERUNG ---
+def parallel_coordinates_plotly(
+    states: NDArray,
+    state_bounds: NDArray | None = None,
+    state_labels: Sequence[str] | None = None,
+    state_order: Sequence[int] | None = None,
+    max_lines: int | None = None,
+    line_color: str = STYLE_UNCERTIFIED,
+    title: str | None = None,
+    annotation_text: str | None = None,
+    html_path: Path | None = None,
+) -> go.Figure | None:
+
+    x_norm, labels, n_total, n, d, norm_note = _prepare_parallel_data(
+        states, state_bounds, state_labels, state_order, max_lines
+    )
+
     dimensions = []
     for i in range(d):
         dimensions.append(dict(
@@ -169,7 +154,6 @@ def parallel_coordinates_plotly(
         labelangle=-45,
     ))
 
-    # Layout
     fig.update_layout(
         title=_to_latex(title),
         template="plotly_white",
@@ -178,7 +162,6 @@ def parallel_coordinates_plotly(
         margin=dict(l=60, r=20, t=60, b=70),
     )
 
-    # Info-Box
     fig.add_annotation(
         x=0.01, y=0.99,
         xref="paper", yref="paper",
