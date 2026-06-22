@@ -42,6 +42,7 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     hidden_size: int = config_field(default=16, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
     layers: int = config_field(default=2, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
     use_angle_wrapper: bool = config_field(default=False, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
+    fix_r_factor: bool = config_field(default=True, help="Whether to fix the R factor in the Lyapunov candidate to 1.0.")
     last_layer_std: float = config_field(default=0.001, help="Standard deviation for the last layer of the Lyapunov feature net.")
     train_bound_factors: list[float] = config_field(
         default_factory=lambda: list(_DEFAULT_TRAIN_BOUND_FACTORS),
@@ -205,7 +206,7 @@ def main() -> None:
                 if script_config.use_angle_wrapper else lyap_feature),
             state_dim=mpc_cfg.nx,
             riccati_p=riccati_p,
-            fixed_r_factor=True,
+            fixed_r_factor=script_config.fix_r_factor,
             feature_last_init_std=script_config.last_layer_std,
         )
 
