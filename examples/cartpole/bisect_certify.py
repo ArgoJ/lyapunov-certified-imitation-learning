@@ -27,7 +27,7 @@ from ..constants import CERTIFICATION_DIRNAME, POLICY_MODEL_FILENAME, TRAINING_R
 
 __logger__ = logging.getLogger("lcil.examples.cartpole.bisect_certify")
 
-_DEFAULT_CERT_BOUND_SCALES = (0.15, 0.15, 0.05, 0.15)
+_DEFAULT_CERT_BOUND_SCALES = (0.9, 0.9, 0.9, 0.9)
 _STATE_LABELS = [r"$x$", r"$v$", r"$\theta$", r"$\dot{\theta}$"]
 
 
