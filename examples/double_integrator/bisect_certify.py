@@ -14,7 +14,7 @@ from lcil.certification import (
     LyapunovCertificationConfig,
 )
 from lcil.lyapunov_learning import LyapunovTrainingConfig, LyapunovTrainingResult
-from lcil.utils import ArgumentParserConfig, config_field, lcil_plt
+from lcil.utils import ArgumentParserConfig, config_field, lcil_plt, IntegrationMethod
 
 from . import (
     DoubleIntegratorDynamics,

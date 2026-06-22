@@ -12,7 +12,7 @@ from mpc_datagen import mdg_plt
 
 from lcil.certification import BisectCertifier, LyapunovCertificationConfig
 from lcil.lyapunov_learning import LyapunovTrainingConfig, LyapunovTrainingResult
-from lcil.utils import ArgumentParserConfig, config_field, lcil_plt
+from lcil.utils import ArgumentParserConfig, config_field, lcil_plt, IntegrationMethod
 
 from . import (
     CartpoleDynamics,
@@ -160,6 +160,7 @@ def main() -> None:
 
         dyn_model = CartpoleDynamics(
             dt=mpc_cfg.dt,
+            method=IntegrationMethod.EXPLICIT_EULER,
             abcrown_compatible_ops=True,
         ).to(device)
         dyn_model.eval()
