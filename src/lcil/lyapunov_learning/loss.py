@@ -6,7 +6,7 @@ import torch.nn as nn
 
 from copy import deepcopy
 from dataclasses import dataclass
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
 from .config import LyapunovTrainingConfig
@@ -468,42 +468,38 @@ class FormalPositivityLoss(StateBoundsModule):
 
 
 class ParameterL1Loss(nn.Module):
-    """Compute the l1 norm of a trainable parameter collection."""
+    """Compute the l1 norm of an explicitly provided trainable parameter collection."""
 
-    def __init__(
-        self, 
-        *models: nn.Module, 
-        exclude_param: Sequence[str] = (), 
-        device: th.device | str = "cpu"
-    ) -> None:
+    def __init__(self, params: Iterable[nn.Parameter], device: th.device | str = "cpu") -> None:
         super().__init__()
         self.device = th.device(device)
-        self.models = models
-        self.exclude_param = exclude_param
-        self._train_params: tuple[nn.Parameter, ...] = ()
-        self.refresh_train_params()
-    
-    def refresh_train_params(self) -> None:
-        """Refresh the cached set of currently trainable parameters."""
-        train_params = []
-        for model in self.models:
-            for name, param in model.named_parameters():
-                if param.requires_grad:
-                    # keep excluded parameters out of L1-Loss
-                    if any(exclude in name for exclude in self.exclude_param):
-                        continue
-                    train_params.append(param)
-        self._train_params = tuple(train_params)
+        self._train_params = tuple(params)
+        self._base_num_weights = sum(p.numel() for p in self._train_params)
+        self._dyn_weight = 1.0
 
-    def get_train_params(self) -> tuple[nn.Parameter, ...]:
-        """Return the cached trainable parameters of the training objective."""
-        return self._train_params
+    def set_train_params(self, params: Iterable[nn.Parameter]) -> None:
+        """Explicitly set the parameters to be tracked by the L1 loss."""
+        self._train_params = tuple(params)
+        num_new_weights = sum(p.numel() for p in params)
+
+        if num_new_weights > 0:
+            if self._base_num_weights == 0:
+                self._base_num_weights = num_new_weights
+            self._dyn_weight = self._base_num_weights / num_new_weights
+        else:
+            self._dyn_weight = 0.0
+
+        __logger__.info(
+                "Set trainable parameters for L1 loss: %d -> %d (weight scaled by %.3f)",
+                self._base_num_weights,
+                num_new_weights,
+                self._dyn_weight,
+            )
 
     def forward(self) -> th.Tensor:
-        trainable_params = self.get_train_params()
-        if not trainable_params:
+        if not self._train_params:
             return th.tensor(0.0, device=self.device)
-        return sum(param.abs().sum() for param in trainable_params)
+        return sum(param.abs().sum() for param in self._train_params) * self._dyn_weight
 
 
 class PolicyRegularizationLoss(nn.Module):
@@ -594,15 +590,9 @@ class LyapunovTrainingLoss(nn.Module):
 
         # L1 regularization loss
         self.l1_loss = (
-            ParameterL1Loss(
-                lyap_model,
-                policy_model,
-                exclude_param=("r_factor",),
-                device=self.device
-            ) 
+            ParameterL1Loss(self.lyap_model.parameters(), device=self.device) 
             if config.l1_weight > 0.0 else None
         )
-        self._dyn_l1_weight = float(config.l1_weight)
 
         # Scale anchor loss
         self.scale_loss = (
@@ -633,19 +623,10 @@ class LyapunovTrainingLoss(nn.Module):
         v_next = self.lyap_model(x_next)
         return v_batch, x_next, v_next
 
-    def refresh_trainable_parameters(self) -> None:
+    def set_explicit_l1_params(self, params: list[nn.Parameter]) -> None:
+        """Update the explicitly tracked parameters for the L1 loss and adjust the weight accordingly."""
         if self.l1_loss is not None:
-            num_prev_param = self.l1_loss.get_train_params()
-            self.l1_loss.refresh_train_params()
-            num_new_param = self.l1_loss.get_train_params()
-            weight_fraction = len(num_new_param) / max(len(num_prev_param), 1)
-            self._dyn_l1_weight = self.config.l1_weight * weight_fraction
-            __logger__.info(
-                "Refreshed trainable parameters for L1 loss: %d -> %d (weight scaled by %.3f)",
-                len(num_prev_param),
-                len(num_new_param),
-                weight_fraction,
-            )
+            self.l1_loss.set_train_params(params)
 
     def mining_objective(
         self,
@@ -756,7 +737,7 @@ class LyapunovTrainingLoss(nn.Module):
             condition_weight=self.config.condition_weight,
             roa_weight=self.config.roa_weight,
             condition_ibp_weight=self.config.condition_ibp_weight,
-            l1_weight=self._dyn_l1_weight,
+            l1_weight=self.config.l1_weight,
             equilibrium_weight=self.config.equilibrium_weight,
             formal_positivity_weight=self.config.formal_positivity_weight,
             scale_weight=self.config.scale_weight,

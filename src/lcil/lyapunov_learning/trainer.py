@@ -80,12 +80,6 @@ class LyapunovTrainer:
         self.policy_model = policy_model.to(self.device)
         self.lyap_model = lyap_model.to(self.device)
         self.dyn_model = dyn_model.to(self.device)
-
-        self._policy_start_epoch = self.config.outer_epochs - self.config.policy_epochs if self.config.policy_epochs is not None else float("inf")
-        self._curr_policy_train_status = False
-        self._set_train_modes()
-
-        self.optimizer = self._build_optimizer()
         self.loss_module = LyapunovTrainingLoss(
             policy_model=self.policy_model,
             lyap_model=self.lyap_model,
@@ -93,6 +87,12 @@ class LyapunovTrainer:
             config=self.config,
             device=self.device,
         )
+
+        self._policy_start_epoch = self.config.outer_epochs - self.config.policy_epochs if self.config.policy_epochs is not None else float("inf")
+        self._curr_policy_train_status = False
+        self._set_train_modes()
+
+        self.optimizer = self._build_optimizer()
         self.lbx, self.ubx = get_th_lbx_ubx(self.config.state_bounds, self.device)
         self.center = get_center(self.lbx, self.ubx)
 
@@ -182,12 +182,13 @@ class LyapunovTrainer:
     def _enable_policy_training(self, at_iter: int = 0) -> None:
         self._curr_policy_train_status = True
         self._set_policy_train_mode(train_mode=True)
-        self.loss_module.refresh_trainable_parameters()
+
         policy_lr = self.config.learning_rate * self.config.policy_lr_factor
         self.optimizer.add_param_group({
             "params": self.policy_model.parameters(),
             "lr": policy_lr,
         })
+        self.loss_module.set_explicit_l1_params(list(self.policy_model.parameters()) + list(self.lyap_model.parameters()))
 
         __logger__.info(
             "Policy training enabled at iteration %d! Added to optimizer with LR: %.2e (Factor: %s)",
