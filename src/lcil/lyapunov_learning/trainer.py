@@ -513,6 +513,7 @@ class LyapunovTrainer:
         final_stage_trainer: LyapunovTrainer | None = None
         aborted_result: LyapunovTrainingResult | None = None
         aborted_stage_index: int | None = None
+        last_stage_idx = len(scaled_bounds) - 1
 
         for stage_index, (stage_bounds, stage_scale) in enumerate(scaled_bounds):
             stage_tb_log_dir = None
@@ -527,6 +528,8 @@ class LyapunovTrainer:
                 seed=stage_seed,
                 tb_log_dir=stage_tb_log_dir,
                 rho_min=rho_min,
+                outer_epochs=int(self.config.outer_epochs * 0.5) if stage_index != last_stage_idx else self.config.outer_epochs,
+                policy_epochs=int(self.config.policy_epochs * 0.5) if stage_index != last_stage_idx else self.config.policy_epochs,
 
             )
             stage_trainer = type(self)(
