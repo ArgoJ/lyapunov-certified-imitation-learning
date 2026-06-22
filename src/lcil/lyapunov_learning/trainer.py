@@ -529,7 +529,7 @@ class LyapunovTrainer:
                 tb_log_dir=stage_tb_log_dir,
                 rho_min=rho_min,
                 outer_epochs=int(self.config.outer_epochs * 0.5) if stage_index != last_stage_idx else self.config.outer_epochs,
-                policy_epochs=int(self.config.policy_epochs * 0.5) if stage_index != last_stage_idx else self.config.policy_epochs,
+                policy_epochs=None if stage_index != last_stage_idx else self.config.policy_epochs,
 
             )
             stage_trainer = type(self)(
