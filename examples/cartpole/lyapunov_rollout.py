@@ -100,6 +100,7 @@ def main() -> None:
             rollout_steps=script_config.time_steps,
             initial_states=initial_states,
         )
+        dataset.validate()
         dataset.save(output_path, save_ocp_trajs=False)
         __logger__.info("Saved Lyapunov rollout dataset to %s", output_path)
 
