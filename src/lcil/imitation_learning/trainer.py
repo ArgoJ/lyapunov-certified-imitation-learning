@@ -464,8 +464,8 @@ class PolicyTrainer:
 
                     # Update metrics
                     current_lr = float(self.optimizer.param_groups[0]["lr"])
-                    train_metrics.update(epoch, train_summary, current_lr)
-                    val_metrics.update(epoch, val_summary, current_lr)
+                    train_metrics.update(epoch, train_summary)
+                    val_metrics.update(epoch, val_summary)
 
                     # Write TensorBoard scalars
                     _tb_writer_add_summary(tb_writer, train_summary, prefix="Train", step=epoch)
