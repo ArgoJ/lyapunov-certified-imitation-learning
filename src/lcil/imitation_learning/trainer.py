@@ -553,7 +553,7 @@ class PolicyTrainer:
         metrics_path = save_folder / TRAINING_METRICS_FILENAME
         self.train_metrics.save(metrics_path)
         if self.val_metrics is not None:
-            val_metrics_path = save_folder / "val_" + TRAINING_METRICS_FILENAME
+            val_metrics_path = save_folder / ("val_" + TRAINING_METRICS_FILENAME)
             self.val_metrics.save(val_metrics_path)
         
         __logger__.info(f"Saved training results to {metrics_path.parent}")
