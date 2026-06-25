@@ -16,7 +16,7 @@ from lcil.lyapunov_learning import (
     NeuralLyapunovCandidate,
     ThresholdMonitor,
 )
-from lcil.utils import ArgumentParserConfig, GridSearchHelper, MLP, config_field
+from lcil.utils import ArgumentParserConfig, GridSearchHelper, MLP, config_field, IntegrationMethod
 
 from . import (
     CartpoleAngleWrapper,
@@ -39,7 +39,7 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     policy_dir: str = config_field(help=f"Policy run directory containing {POLICY_MODEL_FILENAME}.")
     device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
     activation: str = config_field(default="tanh", help="Activation function for the Lyapunov feature net.", display_alias="act")
-    hidden_size: int = config_field(default=16, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
+    hidden_size: int = config_field(default=32, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
     layers: int = config_field(default=2, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
     use_angle_wrapper: bool = config_field(default=False, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
     fix_r_factor: bool = config_field(default=True, help="Whether to fix the R factor in the Lyapunov candidate to 1.0.")
@@ -49,7 +49,7 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
         help="Per-dimension scaling applied to policy state bounds before Lyapunov training.",
     )
     curriculum_scales: list[float] = config_field(
-        default_factory=lambda: [0.3, 0.6, 1.0],
+        default_factory=lambda: [0.3, 0.5, 0.8, 1.0],
         help=("Curriculum scales applied to the final training bounds."),
     )
 
@@ -66,24 +66,25 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         initial_sample_size=2048,
         batch_size=2048,
         learning_rate=0.0001,
-        outer_epochs=5000,
+        outer_epochs=500,
         steps_per_epoch=10,
-        policy_epochs=200,
+        policy_epochs=400,
+        policy_lr_factor=0.5,
         kappa=0.01,
         seed=1674653,
         scale_anchor_num_points=1024,
         scale_anchor_resample_interval=100,
-        origin_exclusion=[0.05, 0.15, 0.05, 0.15],
-        bins_per_dim=10,
+        origin_exclusion=[0.01, 0.01, 0.001, 0.01],
+        bins_per_dim=15,
 
         condition_weight=10.0,
         roa_weight=0.05,
-        condition_ibp_weight=0.005,
+        condition_ibp_weight=0.1,
         l1_weight=0.0000,
         scale_weight=10.0,
         equilibrium_weight=0.0,
         formal_positivity_weight=0.0,
-        policy_regularization_weight=1.0,
+        policy_regularization_weight=0.1,
 
         roa_candidate_size=8192,
         rho_estimation_samples=8192,
@@ -189,6 +190,7 @@ def main() -> None:
         base_path = run.output_dir.resolve()
         dyn_model = CartpoleDynamics(
             dt=mpc_cfg.dt,
+            method=IntegrationMethod.EXPLICIT_EULER,
             abcrown_compatible_ops=True,
         )
         dyn_model.eval()
