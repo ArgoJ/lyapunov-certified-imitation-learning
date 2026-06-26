@@ -31,7 +31,7 @@ from ..example_utils import build_lyapunov_func
 
 __logger__ = logging.getLogger("lcil.examples.cartpole.learn_lyapunov")
 
-_DEFAULT_TRAIN_BOUND_FACTORS = (0.15, 0.15, 0.12, 0.15)
+_DEFAULT_TRAIN_BOUND_FACTORS = (0.15, 0.15, 0.08, 0.15)
 
 
 @dataclass(frozen=True)
@@ -43,13 +43,13 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     layers: int = config_field(default=2, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
     use_angle_wrapper: bool = config_field(default=False, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
     fix_r_factor: bool = config_field(default=False, help="Whether to fix the R factor in the Lyapunov candidate to 1.0.")
-    last_layer_std: float = config_field(default=0.001, help="Standard deviation for the last layer of the Lyapunov feature net.")
+    last_layer_std: float = config_field(default=0.01, help="Standard deviation for the last layer of the Lyapunov feature net.")
     train_bound_factors: list[float] = config_field(
         default_factory=lambda: list(_DEFAULT_TRAIN_BOUND_FACTORS),
         help="Per-dimension scaling applied to policy state bounds before Lyapunov training.",
     )
     curriculum_scales: list[float] = config_field(
-        default_factory=lambda: [0.3, 0.5, 0.8, 1.0],
+        default_factory=lambda: [0.1, 0.2, 0.4, 0.6, 0.8, 1.0],
         help=("Curriculum scales applied to the final training bounds."),
     )
 
@@ -63,7 +63,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
     return LyapunovTrainingConfig(
         state_dim=4,
         state_bounds=np.array([[-1.0, -1.0, -1.0, -1.0], [1.0, 1.0, 1.0, 1.0]], dtype=float),
-        initial_sample_size=2048,
+        initial_sample_size=4096,
         batch_size=2048,
         learning_rate=5e-4,
         outer_epochs=500,
@@ -72,28 +72,28 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         policy_lr_factor=0.5,
         kappa=0.01,
         seed=1674653,
-        scale_anchor_num_points=8192,
+        scale_anchor_num_points=4096,
         scale_anchor_resample_interval=100,
         origin_exclusion=[0.01, 0.01, 0.001, 0.01],
         bins_per_dim=15,
 
         condition_weight=10.0,
         roa_weight=0.05,
-        condition_ibp_weight=0.1,
+        condition_ibp_weight=0.2,       # Higher → aligns training closer to CROWN verification
         l1_weight=0.00001,
-        scale_weight=10.0,
-        equilibrium_weight=1.0,
-        formal_positivity_weight=1.0,
-        policy_regularization_weight=0.01,
+        scale_weight=0.0,               # Disabled: conflicts with condition loss (DI uses 0.0)
+        equilibrium_weight=0.0,          # Disabled: R^T R term already ensures V(0)≈0 (DI uses 0.0)
+        formal_positivity_weight=0.0,    # Disabled: extra IBP cost without benefit for ReLU (DI uses 0.0)
+        policy_regularization_weight=0.1,  # Slightly stronger anchoring (DI uses 0.1)
 
         roa_candidate_size=8192,
-        rho_estimation_samples=8192,
-        rho_growth_gamma=1.2,
-        cex_every=20,
-        cex_steps=30,
-        adversarial_samples=2048,
-        adversarial_step_size=0.01,
-        condition_margin=0.00001,
+        rho_estimation_samples=32768,
+        rho_growth_gamma=1.1,
+        cex_every=10,                    # Mine counterexamples more frequently (DI uses 10)
+        cex_steps=20,                    # Slightly fewer PGD steps per mining (DI uses 20)
+        adversarial_samples=8192,        # More CEX candidates for 4D coverage
+        adversarial_step_size=0.005,     # Finer PGD steps for the smaller domain
+        condition_margin=0.001,
     )
 
 
