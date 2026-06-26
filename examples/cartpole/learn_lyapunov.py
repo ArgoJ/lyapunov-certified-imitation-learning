@@ -31,7 +31,7 @@ from ..example_utils import build_lyapunov_func
 
 __logger__ = logging.getLogger("lcil.examples.cartpole.learn_lyapunov")
 
-_DEFAULT_TRAIN_BOUND_FACTORS = (1.0, 1.0, 0.12, 1.0)
+_DEFAULT_TRAIN_BOUND_FACTORS = (0.15, 0.15, 0.12, 0.15)
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         state_bounds=np.array([[-1.0, -1.0, -1.0, -1.0], [1.0, 1.0, 1.0, 1.0]], dtype=float),
         initial_sample_size=2048,
         batch_size=2048,
-        learning_rate=0.0001,
+        learning_rate=5e-4,
         outer_epochs=500,
         steps_per_epoch=10,
         policy_epochs=400,
@@ -80,11 +80,11 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         condition_weight=10.0,
         roa_weight=0.05,
         condition_ibp_weight=0.1,
-        l1_weight=0.0000,
-        scale_weight=10.0,
-        equilibrium_weight=0.0,
-        formal_positivity_weight=0.0,
-        policy_regularization_weight=0.1,
+        l1_weight=0.00001,
+        scale_weight=1.0,
+        equilibrium_weight=1.0,
+        formal_positivity_weight=1.0,
+        policy_regularization_weight=0.01,
 
         roa_candidate_size=8192,
         rho_estimation_samples=8192,

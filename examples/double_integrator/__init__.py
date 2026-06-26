@@ -35,17 +35,37 @@ DATA_DIR = DOUBLE_INTEGRATOR_RESULTS_DIR / "data"
 PolicyModelT = TypeVar("PolicyModelT", bound=nn.Module)
 
 
-def discover_latest_policy_dir(results_root: Path | str | None = None):
-    return _discover_latest_policy_dir(results_root or DOUBLE_INTEGRATOR_RESULTS_DIR)
+def discover_latest_policy_dir(
+    results_root: Path | str | None = None,
+    enforce_iso_setup_layout: bool = True,
+):
+    return _discover_latest_policy_dir(
+        results_root or DOUBLE_INTEGRATOR_RESULTS_DIR,
+        enforce_iso_setup_layout=enforce_iso_setup_layout,
+    )
 
 
-def discover_latest_lyapunov_dir(policy_dir: Path | str | None = None):
+def discover_latest_lyapunov_dir(
+    policy_dir: Path | str | None = None,
+    enforce_iso_setup_layout: bool = True,
+):
     resolved_policy_dir = policy_dir or discover_latest_policy_dir()
-    return _discover_latest_lyapunov_dir(resolved_policy_dir)
+    return _discover_latest_lyapunov_dir(
+        resolved_policy_dir,
+        enforce_iso_setup_layout=enforce_iso_setup_layout,
+    )
 
 
-def discover_latest_policy_and_lyapunov_dirs(results_root: Path | str | None = None, max_search: int = 100):
-    return _discover_latest_policy_and_lyapunov_dirs(results_root or DOUBLE_INTEGRATOR_RESULTS_DIR, max_search=max_search)
+def discover_latest_policy_and_lyapunov_dirs(
+    results_root: Path | str | None = None,
+    max_search: int = 100,
+    enforce_iso_setup_layout: bool = True,
+):
+    return _discover_latest_policy_and_lyapunov_dirs(
+        results_root or DOUBLE_INTEGRATOR_RESULTS_DIR,
+        max_search=max_search,
+        enforce_iso_setup_layout=enforce_iso_setup_layout,
+    )
 
 
 def discover_latest_cert_lyapunov_path(lyapunov_root: Path | str | None = None) -> Path:

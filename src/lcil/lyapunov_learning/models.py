@@ -52,6 +52,11 @@ class NeuralLyapunovCandidate(nn.Module):
                 "Initialized NeuralLyapunovCandidate with feature scale %.3e from Riccati seed.",
                 self.feature_scale.item(),
             )
+
+        if isinstance(self.r_factor, nn.Parameter):
+            self.r_factor.register_post_accumulate_grad_hook(
+                self._check_r_factor_conditioning
+            )
         
         if feature_last_init_std is not None:
             self._set_last_feature_layer(feature_last_init_std)
@@ -76,6 +81,23 @@ class NeuralLyapunovCandidate(nn.Module):
             last_layer.weight.normal_(mean=0.0, std=std)
             if last_layer.bias is not None:
                 last_layer.bias.zero_()
+
+    _COND_WARN_THRESHOLD: float = 1e4
+
+    def _check_r_factor_conditioning(self, _param: th.Tensor) -> None:
+        """Warn if εI + RᵀR becomes ill-conditioned."""
+        with th.no_grad():
+            pd = self._pd_matrix()
+            eigs = th.linalg.eigvalsh(pd)
+            lo, hi = eigs[0].item(), eigs[-1].item()
+            cond = hi / lo if lo > 0.0 else float("inf")
+        if cond > self._COND_WARN_THRESHOLD:
+            __logger__.warning(
+                "PD matrix (εI + RᵀR) ill-conditioned: cond=%.2e "
+                "(λ_min=%.2e, λ_max=%.2e). Consider fixing R or "
+                "adding regularization.",
+                cond, lo, hi,
+            )
 
     def _pd_matrix(self) -> th.Tensor:
         eye = th.eye(

@@ -38,6 +38,8 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     activation: str = config_field(default="relu", help="Activation function for Lyapunov feature net.", display_alias="act")
     hidden_size: int = config_field(default=32, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
     layers: int = config_field(default=2, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
+    fix_r_factor: bool = config_field(default=True, help="Whether to fix the R factor in the Lyapunov candidate to 1.0.")
+    last_layer_std: float = config_field(default=0.001, help="Standard deviation for the last layer of the Lyapunov feature net.")
 
 def _build_script_defaults() -> LyapunovLearningScriptConfig:
     default_policy_dir = discover_latest_policy_dir()
@@ -49,24 +51,37 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
     return LyapunovTrainingConfig(
         state_dim=2,
         state_bounds=np.array([[-10.0, -10.0], [10.0, 10.0]], dtype=float),
-        initial_sample_size=1000,
+        initial_sample_size=2048,
         batch_size=1024,
-        outer_epochs=2000,
-        steps_per_epoch=5,
-        policy_epochs=200,
-        cex_every=10,
-        seed=1674653,
-        kappa=0.01,
-        condition_margin=0.00001,
         learning_rate=0.0005,
-        condition_weight=10.0,
-        condition_ibp_weight=1.0,
-        l1_weight=0.00001,
-        scale_weight=1.0,
-        policy_regularization_weight=1.0,
-        scale_anchor_num_points=4096,
+        outer_epochs=500,
+        steps_per_epoch=10,
+        policy_epochs=400,
+        policy_lr_factor=0.5,
+        kappa=0.01,
+        seed=1674653,
+        scale_anchor_num_points=1024,
+        scale_anchor_resample_interval=100,
         origin_exclusion=[0.05, 0.15],
-        bins_per_dim=50
+        bins_per_dim=50,
+
+        condition_weight=10.0,
+        roa_weight=0.05,
+        condition_ibp_weight=0.1,
+        l1_weight=0.00001,
+        scale_weight=0.0,
+        equilibrium_weight=0.0,
+        formal_positivity_weight=0.0,
+        policy_regularization_weight=0.1,
+
+        roa_candidate_size=2048,
+        rho_estimation_samples=2048,
+        rho_growth_gamma=1.1,
+        cex_every=10,
+        cex_steps=20,
+        adversarial_samples=2048,
+        adversarial_step_size=0.001,
+        condition_margin=0.001,
     )
 
 
@@ -198,7 +213,8 @@ def main() -> None:
             feature_net=lyap_feature,
             state_dim=policy_global_config.nx,
             riccati_p=riccati_p,
-            fixed_r_factor=True,
+            fixed_r_factor=script_config.fix_r_factor,
+            feature_last_init_std=script_config.last_layer_std,
         )
 
         # ---------------------------------------------------------------------

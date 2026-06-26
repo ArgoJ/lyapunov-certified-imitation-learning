@@ -52,12 +52,27 @@ def _path_is_within_named_dir(path: Path, root: Path, dir_name: str) -> bool:
     return dir_name in relative_parts
 
 
+def _matches_iso_setup_layout(path: Path, root: Path) -> bool:
+    """Return True when checkpoint parent matches ``{iso_name}/{setup}`` below root."""
+    try:
+        relative_parts = path.parent.relative_to(root).parts
+    except ValueError:
+        return False
+
+    if len(relative_parts) != 2:
+        return False
+
+    iso_name, setup_name = relative_parts
+    return ISO_PATTERN.match(iso_name) is not None and setup_name != ""
+
+
 def discover_model_dir(
     results_root: Path,
     checkpoint_name: str,
     n: int = -1,
     sorting_idx: int | slice = 0,
     excluded_dir_names: tuple[str, ...] = (),
+    candidate_filter: Callable[[Path, Path], bool] | None = None,
 ) -> Path:
     """Discover the directory containing the nth latest checkpoint with the given name under the results root.
 
@@ -74,6 +89,9 @@ def discover_model_dir(
     excluded_dir_names : tuple[str, ...], optional
         Directory names that, when present anywhere between ``results_root`` and
         the checkpoint file, cause that candidate to be ignored.
+    candidate_filter : Callable[[Path, Path], bool] | None, optional
+        Optional predicate ``f(checkpoint_path, resolved_results_root)`` to
+        restrict candidate paths.
 
     Returns
     -------
@@ -90,6 +108,8 @@ def discover_model_dir(
     candidates: list[tuple[Path, str]] = []
     for path in resolved_results_root.rglob(checkpoint_name):
         if any(_path_is_within_named_dir(path, resolved_results_root, dir_name) for dir_name in excluded_dir_names):
+            continue
+        if candidate_filter is not None and not candidate_filter(path, resolved_results_root):
             continue
         # __logger__.info("searching for model %s in %s", checkpoint_name, path)
         if isinstance(sorting_idx, slice):
@@ -111,9 +131,9 @@ def discover_model_dir(
 
         if found_iso_name is None:
             if isinstance(sorting_idx, slice):
-                 found_iso_name = path.parents[sorting_idx.start or 0].name
+                found_iso_name = path.parents[sorting_idx.start or 0].name
             else:
-                 found_iso_name = path.parents[sorting_idx].name
+                found_iso_name = path.parents[sorting_idx].name
 
         candidates.append((path, found_iso_name))
             
@@ -126,7 +146,10 @@ def discover_model_dir(
     return candidates[n][0].parent
 
 
-def discover_latest_policy_dir(dir: Path | str | None = None) -> Path:
+def discover_latest_policy_dir(
+    dir: Path | str | None = None,
+    enforce_iso_setup_layout: bool = False,
+) -> Path:
     """Discover the directory containing the nth latest policy checkpoint.
 
     Parameters
@@ -139,16 +162,21 @@ def discover_latest_policy_dir(dir: Path | str | None = None) -> Path:
     Path
         Directory containing the nth latest policy checkpoint.
     """
+    candidate_filter = _matches_iso_setup_layout if enforce_iso_setup_layout else None
     return discover_model_dir(
         dir,
         POLICY_MODEL_FILENAME,
         n=-1,
         sorting_idx=slice(0, 2),
         excluded_dir_names=(LYAPUNOV_DIRNAME,),
+        candidate_filter=candidate_filter,
     )
 
 
-def discover_latest_lyapunov_dir(dir: Path | str | None = None) -> Path:
+def discover_latest_lyapunov_dir(
+    dir: Path | str | None = None,
+    enforce_iso_setup_layout: bool = False,
+) -> Path:
     """Discover the directory containing the nth latest Lyapunov checkpoint.
 
     Parameters
@@ -167,14 +195,36 @@ def discover_latest_lyapunov_dir(dir: Path | str | None = None) -> Path:
         dir = require_dir(dir, name="Directory to search for Lyapunov checkpoint")
         if LYAPUNOV_DIRNAME in dir.parts:
             __logger__.warning(f"Provided directory '{dir}' already contains '{LYAPUNOV_DIRNAME}' in its path. Searching for Lyapunov checkpoint directly under the provided directory.")
-            return discover_model_dir(dir, LYAPUNOV_MODEL_FILENAME, n=-1, sorting_idx=slice(0, 2))
-    
-    # latest policy path must be found
-    policy_dir = discover_latest_policy_dir(dir)
-    return discover_model_dir(policy_dir / LYAPUNOV_DIRNAME, LYAPUNOV_MODEL_FILENAME, n=-1, sorting_idx=slice(0, 2))
+            return discover_model_dir(
+                dir,
+                LYAPUNOV_MODEL_FILENAME,
+                n=-1,
+                sorting_idx=slice(0, 2),
+                candidate_filter=_matches_iso_setup_layout if enforce_iso_setup_layout else None,
+            )
+        # If the provided dir already contains the policy checkpoint, use it
+        # directly instead of re-discovering (avoids ISO layout filter mismatch).
+        if (dir / POLICY_MODEL_FILENAME).is_file():
+            policy_dir = dir
+        else:
+            policy_dir = discover_latest_policy_dir(dir, enforce_iso_setup_layout=enforce_iso_setup_layout)
+    else:
+        policy_dir = discover_latest_policy_dir(dir, enforce_iso_setup_layout=enforce_iso_setup_layout)
+
+    return discover_model_dir(
+        policy_dir / LYAPUNOV_DIRNAME,
+        LYAPUNOV_MODEL_FILENAME,
+        n=-1,
+        sorting_idx=slice(0, 2),
+        candidate_filter=_matches_iso_setup_layout if enforce_iso_setup_layout else None,
+    )
 
 
-def discover_latest_policy_and_lyapunov_dirs(results_root: Path | str | None = None, max_search: int = 100) -> tuple[Path, Path]:
+def discover_latest_policy_and_lyapunov_dirs(
+    results_root: Path | str | None = None,
+    max_search: int = 100,
+    enforce_iso_setup_layout: bool = False,
+) -> tuple[Path, Path]:
     """Discover the directories containing the latest policy and Lyapunov checkpoints.
 
     Parameters
@@ -196,8 +246,18 @@ def discover_latest_policy_and_lyapunov_dirs(results_root: Path | str | None = N
     """
     for n in range(1, max_search + 1):
         try:
-            policy_dir = discover_model_dir(results_root, POLICY_MODEL_FILENAME, n=-n)
-            lyapunov_dir = discover_model_dir(policy_dir / LYAPUNOV_DIRNAME, LYAPUNOV_MODEL_FILENAME, n=-1)
+            policy_dir = discover_model_dir(
+                results_root,
+                POLICY_MODEL_FILENAME,
+                n=-n,
+                candidate_filter=_matches_iso_setup_layout if enforce_iso_setup_layout else None,
+            )
+            lyapunov_dir = discover_model_dir(
+                policy_dir / LYAPUNOV_DIRNAME,
+                LYAPUNOV_MODEL_FILENAME,
+                n=-1,
+                candidate_filter=_matches_iso_setup_layout if enforce_iso_setup_layout else None,
+            )
             return policy_dir, lyapunov_dir
         except FileNotFoundError:
             pass
