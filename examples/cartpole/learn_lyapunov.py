@@ -38,7 +38,7 @@ _DEFAULT_TRAIN_BOUND_FACTORS = (0.15, 0.15, 0.12, 0.15)
 class LyapunovLearningScriptConfig(ArgumentParserConfig):
     policy_dir: str = config_field(help=f"Policy run directory containing {POLICY_MODEL_FILENAME}.")
     device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
-    activation: str = config_field(default="tanh", help="Activation function for the Lyapunov feature net.", display_alias="act")
+    activation: str = config_field(default="relu", help="Activation function for the Lyapunov feature net.", display_alias="act")
     hidden_size: int = config_field(default=32, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
     layers: int = config_field(default=2, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
     use_angle_wrapper: bool = config_field(default=False, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
