@@ -42,7 +42,7 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     hidden_size: int = config_field(default=32, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
     layers: int = config_field(default=2, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
     use_angle_wrapper: bool = config_field(default=False, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
-    fix_r_factor: bool = config_field(default=True, help="Whether to fix the R factor in the Lyapunov candidate to 1.0.")
+    fix_r_factor: bool = config_field(default=False, help="Whether to fix the R factor in the Lyapunov candidate to 1.0.")
     last_layer_std: float = config_field(default=0.001, help="Standard deviation for the last layer of the Lyapunov feature net.")
     train_bound_factors: list[float] = config_field(
         default_factory=lambda: list(_DEFAULT_TRAIN_BOUND_FACTORS),
@@ -72,7 +72,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         policy_lr_factor=0.5,
         kappa=0.01,
         seed=1674653,
-        scale_anchor_num_points=1024,
+        scale_anchor_num_points=8192,
         scale_anchor_resample_interval=100,
         origin_exclusion=[0.01, 0.01, 0.001, 0.01],
         bins_per_dim=15,
@@ -81,7 +81,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         roa_weight=0.05,
         condition_ibp_weight=0.1,
         l1_weight=0.00001,
-        scale_weight=1.0,
+        scale_weight=10.0,
         equilibrium_weight=1.0,
         formal_positivity_weight=1.0,
         policy_regularization_weight=0.01,
