@@ -45,7 +45,8 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
     use_references : bool, optional
         Whether to use reference trajectories.
     near_duplicate_radius : float, optional
-        Radius for considering near-duplicate states. Must be positive.
+        Radius for considering near-duplicate states. Must be non-negative.
+        Set to ``0`` to disable near-duplicate filtering.
     batch_size : int, optional
         Training batch size. Must be positive.
     epochs : int, optional
@@ -120,7 +121,7 @@ class ImitationTrainingConfig(JsonDataclass, ArgumentParserConfig):
     near_duplicate_radius: float = config_field(
         default=1e-4,
         help="Radius for considering near-duplicate states.",
-        validators=(positive_validator,)
+        validators=(non_negative_validator,)
     )
 
     # Training
