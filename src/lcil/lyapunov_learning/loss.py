@@ -109,55 +109,76 @@ class StateBoundsModule(nn.Module):
         self.register_buffer("ubx", ubx)
 
 
-class LyapunovScaleAnchorLoss(StateBoundsModule):
+class BoundedStateSamplingModule(StateBoundsModule):
+    """Base module that provides uniform sampling of states from the training bounds."""
+
+    def __init__(
+        self,
+        state_bounds: th.Tensor,
+        num_samples: int = 1024,
+        resample_interval: int = 100,
+        device: th.device | str = "cpu"
+    ) -> None:
+        super().__init__(state_bounds=state_bounds, device=device)
+        self.num_samples = int(num_samples)
+        self.resample_interval = int(resample_interval)
+        self._step_counter = 0
+
+        self.register_buffer(
+            "samples",
+            th.zeros((self.num_samples, self.lbx.shape[0]), device=self.device)
+        )
+
+        self._register_new_samples()
+
+    def _needs_resample(self) -> bool:
+        """Check if a new batch of samples should be drawn based on the resample interval."""
+        return self.training and self.resample_interval > 0 and (self._step_counter % self.resample_interval == 0)
+
+    def _sample_uniform_states(self, num_points: int) -> th.Tensor:
+        """Sample a batch of states uniformly from the training bounds."""
+        rand_uniform = th.rand((num_points, self.lbx.shape[0]), device=self.device)
+        return self.lbx + rand_uniform * (self.ubx - self.lbx)
+
+    @th.no_grad()
+    def _register_new_samples(self) -> None:
+        """Register a new batch of uniform samples."""
+        self.samples.copy_(self._sample_uniform_states(self.num_samples))
+
+    def step_sampling(self) -> None:
+        """Register new samples if it is at intervalle, otherwise increment the step counter."""
+        if self._needs_resample():
+            self._register_new_samples()
+        self._step_counter += 1
+
+
+
+class LyapunovScaleAnchorLoss(BoundedStateSamplingModule):
     """Anchor the absolute scale of V on uniformly sampled reference states."""
     
     def __init__(
         self,
         lyap_model: nn.Module,
         state_bounds: th.Tensor,
-        num_anchor_points: int = 1000,
+        num_points: int = 1000,
         resample_interval: int = 100,
         device: th.device | str = "cpu",
         eps: float = 1e-6
     ) -> None:
-        super().__init__(state_bounds=state_bounds, device=device)
+        super().__init__(
+            state_bounds=state_bounds, num_samples=num_points, resample_interval=resample_interval, device=device
+        )
         self.lyap_model = lyap_model
         self.eps = float(eps)
-        self.num_points = int(num_anchor_points)
-        self.resample_interval = int(resample_interval)
-        self._step_counter = 0
 
-        self.register_buffer(
-            "anchor_states",
-            th.zeros((self.num_points, self.lbx.shape[0]), device=self.device)
-        )
         self.register_buffer(
             "target_log_value", 
             th.tensor(float("nan"), dtype=th.float32, device=self.device)
         )
 
-        with th.no_grad():
-            self._register_new_anchor_points(self._sample_new_anchor_points())
-
-    def _sample_new_anchor_points(self) -> th.Tensor:
-        """Sample a batch of anchor states for scale anchoring."""
-        rand_uniform = th.rand((self.anchor_states.shape[0], self.lbx.shape[0]), device=self.device, dtype=self.lbx.dtype)
-        return self.lbx + rand_uniform * (self.ubx - self.lbx)
-    
-    def _register_new_anchor_points(self, new_points: th.Tensor) -> None:
-        """Register a new batch of anchor states for scale anchoring."""
-        self.anchor_states.copy_(new_points)
-
     def forward(self) -> th.Tensor:
-        if self.training and self.resample_interval > 0:
-            if self._step_counter % self.resample_interval == 0:
-                with th.no_grad():
-                    new_pts = self._sample_new_anchor_points()
-                    self._register_new_anchor_points(new_pts)
-            self._step_counter += 1
-
-        v_reference = self.lyap_model(self.anchor_states)
+        self.step_sampling()
+        v_reference = self.lyap_model(self.samples)
         ref_mean = v_reference.mean().clamp_min(self.eps)
         current_log_value = th.log(ref_mean)
         
@@ -341,11 +362,11 @@ class ConditionIBPLoss(StateBoundsModule):
     def __init__(
         self,
         signed_margin_model: nn.Module,
-        state_bounds: th.Tensor,
+        train_bounds: th.Tensor,
         relative_eps: float = 1e-4,
         device="cpu"
     ):
-        super().__init__(state_bounds=state_bounds, device=device)
+        super().__init__(state_bounds=train_bounds, device=device)
         self.signed_margin_model = signed_margin_model
         self.relative_eps = float(relative_eps)
         self.bounded_model = self._build_bounded_module()
@@ -425,10 +446,10 @@ class FormalPositivityLoss(StateBoundsModule):
     def __init__(
         self, 
         lyap_model: nn.Module, 
-        state_bounds: th.Tensor, 
+        train_bounds: th.Tensor, 
         device: th.device | str = "cpu"
     ) -> None:
-        super().__init__(state_bounds=state_bounds, device=device)
+        super().__init__(state_bounds=train_bounds, device=device)
 
         self.lyap_model = lyap_model
 
@@ -502,12 +523,27 @@ class ParameterL1Loss(nn.Module):
         return sum(param.abs().sum() for param in self._train_params) * self._dyn_weight
 
 
-class PolicyRegularizationLoss(nn.Module):
-    """Regularize the policy to stay close to an initial reference policy."""
+class PolicyRegularizationLoss(BoundedStateSamplingModule):
+    """Regularize the policy to stay close to an initial reference policy.
 
-    def __init__(self, policy: nn.Module, device: th.device | str = "cpu", eps: float = 1e-8) -> None:
-        super().__init__()
-        self.init_policy = deepcopy(policy).to(device)
+    Samples its own uniform evaluation points from the training bounds so
+    that the regularization signal is unbiased across the domain, rather
+    than concentrated on counterexample regions.
+    """
+
+    def __init__(
+        self,
+        policy: nn.Module,
+        train_bounds: th.Tensor,
+        num_points: int = 1024,
+        resample_interval: int = 100,
+        device: th.device | str = "cpu",
+        eps: float = 1e-8,
+    ) -> None:
+        super().__init__(
+            state_bounds=train_bounds, num_samples=num_points, resample_interval=resample_interval, device=device
+        )
+        self.init_policy = deepcopy(policy).to(self.device)
         self.policy = policy
         self.eps = eps
         self._set_init_policy_mode()
@@ -517,11 +553,13 @@ class PolicyRegularizationLoss(nn.Module):
             param.requires_grad = False
         self.init_policy.eval()
 
-    def forward(self, x: th.Tensor) -> th.Tensor:
+    def forward(self) -> th.Tensor:
+        self.step_sampling()
+        x = self.samples
         with th.no_grad():
             orig_out = self.init_policy(x)
-        out = self.policy(x) 
-        
+        out = self.policy(x)
+
         squared_diff = th.square(out - orig_out)
         orig_squared_norm = th.sum(th.square(orig_out), dim=-1, keepdim=True)
         normalized_loss = th.mean(squared_diff / (orig_squared_norm.detach() + self.eps))
@@ -566,7 +604,7 @@ class LyapunovTrainingLoss(nn.Module):
         self.condition_ibp_loss = (
             ConditionIBPLoss(
                 signed_margin_model=self.signed_condition_margin,
-                state_bounds=config.state_bounds,
+                train_bounds=config.train_bounds,
                 device=self.device,
             )
             if self.signed_condition_margin is not None else None
@@ -582,7 +620,7 @@ class LyapunovTrainingLoss(nn.Module):
         self.positivity_loss = (
             FormalPositivityLoss(
                 lyap_model=lyap_model,
-                state_bounds=config.state_bounds,
+                train_bounds=config.train_bounds,
                 device=self.device
             )
             if config.formal_positivity_weight > 0.0 else None
@@ -598,8 +636,8 @@ class LyapunovTrainingLoss(nn.Module):
         self.scale_loss = (
             LyapunovScaleAnchorLoss(
                 lyap_model=lyap_model,
-                state_bounds=config.state_bounds,
-                num_anchor_points=config.scale_anchor_num_points,
+                state_bounds=config.train_bounds,
+                num_points=config.scale_anchor_num_points,
                 resample_interval=config.scale_anchor_resample_interval,
                 device=self.device,
             ) 
@@ -608,7 +646,13 @@ class LyapunovTrainingLoss(nn.Module):
 
         # Policy regularization loss
         self.policy_regularization_loss = (
-            PolicyRegularizationLoss(policy_model, device=device)
+            PolicyRegularizationLoss(
+                policy=policy_model,
+                train_bounds=config.train_bounds,
+                num_points=config.scale_anchor_num_points,
+                resample_interval=config.scale_anchor_resample_interval,
+                device=self.device,
+            )
             if self.config.policy_regularization_weight > 0.0 else None
         )
 
@@ -720,7 +764,7 @@ class LyapunovTrainingLoss(nn.Module):
         )
 
         policy_regularization_loss_value = (
-            self.policy_regularization_loss(x_batch)
+            self.policy_regularization_loss()
             if active_policy_regularization and self.policy_regularization_loss is not None else zero
         )
 

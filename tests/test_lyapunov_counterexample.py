@@ -56,7 +56,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
     def test_build_scaled_state_bounds_supports_scalar_and_vector_stages(self) -> None:
         base_bounds = np.array([[-2.0, -4.0], [2.0, 4.0]], dtype=np.float32)
 
-        scaled = LyapunovTrainer._build_scaled_state_bounds(
+        scaled = LyapunovTrainer._build_scaled_train_bounds(
             base_bounds=base_bounds,
             bound_scales=[0.5, [0.25, 0.75]],
         )

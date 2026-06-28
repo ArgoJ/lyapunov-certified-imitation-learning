@@ -46,16 +46,50 @@ def pathlike_validator(value: str | PathLike, name: str) -> None:
     except Exception as e:
         raise ValueError(f"{name} must be a valid file system path.") from e
 
+
+def ndarray_validator(value: Any, name: str) -> None:
+    if not isinstance(value, np.ndarray):
+        raise ValueError(f"{name} must be a numpy.ndarray.")
+
+
+def bounds_include_origin_validator(value: Any, name: str) -> None:
+    ndarray_validator(value, name)
+    if value.ndim != 2 or value.shape[0] != 2:
+        raise ValueError(
+            f"{name} must have shape (2, n), got {value.shape}."
+        )
+
+    lbx = value[0]
+    ubx = value[1]
+    if (lbx > ubx).any():
+        raise ValueError(f"{name} has invalid bounds: lbx must be <= ubx.")
+
+    if (lbx > 0).any() or (ubx < 0).any():
+        raise ValueError(
+            f"{name} must include the origin in every dimension (lbx <= 0 <= ubx)."
+        )
+
+def array_shape_validator(expected_shape: tuple[int, ...]) -> Callable[[Any, str], None]:
+    def validator(value: Any, name: str) -> None:
+        if not isinstance(value, np.ndarray):
+            raise ValueError(f"{name} must be a numpy.ndarray.")
+        if value.shape != expected_shape:
+            raise ValueError(
+                f"{name} must have shape {expected_shape}, got {value.shape}."
+            )
+    return validator
+
 def literal_validator(allowed_values: Sequence[Any]) -> Callable[[Any, str], None]:
     def validator(value: Any, name: str) -> None:
         if value not in allowed_values:
             raise ValueError(f"{name} must be one of {allowed_values}, got {value}.")
     return validator
 
-def optional_validator(base_validator: Callable[[Any, str], None]) -> Callable[[Any, str], None]:
+def optional_validator(*base_validators: Callable[[Any, str], None]) -> Callable[[Any, str], None]:
     def wrapper(value: Any, name: str) -> None:
         if value is not None:
-            base_validator(value, name)
+            for base_validator in base_validators:
+                base_validator(value, name)
     return wrapper
 
 def normalize_scalar_or_sequence(

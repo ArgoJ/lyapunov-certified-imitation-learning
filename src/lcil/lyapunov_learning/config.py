@@ -19,6 +19,8 @@ from ..utils.base_config import (
     growth_rate_validator,
     pathlike_validator,
     run_field_validators,
+    bounds_include_origin_validator,
+    array_shape_validator,
 )
 from ..utils.constants import *
 
@@ -33,6 +35,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Dimension of the system state.
     state_bounds : NDArray
         Lower and upper bounds for each state dimension, used for sampling and certification. [lbx, ubx]
+    train_bounds : NDArray
+        Lower and upper bounds for each state dimension, used for training. [lbx, ubx]
     initial_sample_size : int
         Number of initial random samples used for training.
     batch_size : int
@@ -131,8 +135,19 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Safety margin enforced on the verifier output during training.
     """
 
-    state_dim: int = config_field(cli=False, validators=(positive_validator,))
-    state_bounds: NDArray = config_field(cli=False)
+    state_dim: int = config_field(
+        cli=False, 
+        validators=(positive_validator,)
+    )
+    state_bounds: NDArray = config_field(
+        cli=False,
+        validators=(bounds_include_origin_validator,),
+    )
+    train_bounds: NDArray | None = config_field(
+        default=None,
+        help="Optional training bounds for sampling. If None, state_bounds are used.",
+        validators=(optional_validator(bounds_include_origin_validator),)
+    )
     initial_sample_size: int = config_field(
         default=1000, 
         help="Number of initial random samples used for training.",
@@ -424,7 +439,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="rel_eps",
         validators=(positive_validator,),
     )
-    NP_ARRAY_FIELDS = ("state_bounds",)
+    NP_ARRAY_FIELDS = ("state_bounds", "train_bounds")
     DEFAULT_FILE_NAME = TRAINING_CONFIG_FILENAME
 
     def __post_init__(self):
@@ -447,14 +462,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         object.__setattr__(self, "bins_per_dim", bins_per_dim)
         object.__setattr__(self, "origin_exclusion", normalized_origin_exclusion)
 
-        lbx = self.state_bounds[0]
-        ubx = self.state_bounds[1]
-        if (lbx >= 0).any() or (ubx <= 0).any() or (lbx > ubx).any():
-            raise ValueError(
-                "State bounds do not appear to include the origin. " 
-                "Ensure that state_bounds are correctly specified for Lyapunov training."
-            )
-
         if self.tb_log_dir is not None:
             object.__setattr__(self, "tb_log_dir", Path(self.tb_log_dir).resolve())
 
@@ -466,11 +473,11 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
                 max(self.rho_estimation_samples, 4 * self.rho_estimation_samples),
             )
 
-        if self.state_bounds.shape[1] != self.state_dim:
-            raise ValueError(
-                "state_bounds must match state_dim. "
-                f"Expected {self.state_dim}, got {self.state_bounds.shape[1]} (maybe transposed, bound shape: {self.state_bounds.shape})."
-            )
+        if self.train_bounds is None:
+            object.__setattr__(self, "train_bounds", self.state_bounds)
+
+        array_shape_validator((2, self.state_dim))(self.state_bounds, "state_bounds")
+        array_shape_validator((2, self.state_dim))(self.train_bounds, "train_bounds")
 
         # CEX mining parameters
         if self.cex_fraction_min > self.cex_fraction_max:

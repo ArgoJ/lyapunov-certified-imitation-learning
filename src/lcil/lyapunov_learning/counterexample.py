@@ -144,7 +144,7 @@ def estimate_rho_from_boundary(
     generator: th.Generator | None = None,
 ) -> tuple[BoundaryRhoDiagnostics, th.Tensor]:
     """Estimate rho and expose boundary-term diagnostics for logging."""
-    bounds = _bounds_tensor(config.state_bounds, device)
+    bounds = _bounds_tensor(config.train_bounds, device)
     lbx, ubx = bounds[0], bounds[1]
     boundary_x, face_dims, is_ub = sample_boundary_points(
         sample_size=config.rho_estimation_samples,
@@ -215,7 +215,7 @@ def find_counter_examples(
     negative on violating states within the current rho-sublevel set, zero on
     safe states inside the set, and positive outside the set.
     """
-    bounds = _bounds_tensor(config.state_bounds, device)
+    bounds = _bounds_tensor(config.train_bounds, device)
     lbx, ubx = bounds[0], bounds[1]
 
     adv_states = sample_uniform_box(config.adversarial_samples, lbx, ubx, device, generator)

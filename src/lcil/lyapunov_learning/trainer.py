@@ -91,13 +91,13 @@ class LyapunovTrainer:
         self._policy_start_epoch = self.config.outer_epochs - self.config.policy_epochs if self.config.policy_epochs is not None else float("inf")
         self._curr_policy_train_status = False
         self._set_train_modes()
-
         self.optimizer = self._build_optimizer()
-        self.lbx, self.ubx = get_th_lbx_ubx(self.config.state_bounds, self.device)
-        self.center = get_center(self.lbx, self.ubx)
+        
+        self.lbx_train, self.ubx_train = get_th_lbx_ubx(self.config.train_bounds, self.device)
+        self.center_train = get_center(self.lbx_train, self.ubx_train)
 
         self.region_builder = RegionBuilder(
-            bounds=self.config.state_bounds,
+            bounds=self.config.train_bounds,
             bins_per_dim=self.config.bins_per_dim,
             origin_exclusion=self.config.origin_exclusion,
             device=self.device,
@@ -108,7 +108,7 @@ class LyapunovTrainer:
         self.metrics: LyapunovTrainingMetrics | None = None
 
     @staticmethod
-    def _build_scaled_state_bounds(
+    def _build_scaled_train_bounds(
         base_bounds: NDArray,
         bound_scales: Sequence[float | Sequence[float] | NDArray],
     ) -> list[tuple[NDArray, NDArray]]:
@@ -223,8 +223,8 @@ class LyapunovTrainer:
             generator=self.torch_gen
         ) * 0.4 + 0.6
         z_candidates = directions * radii  # between 0.6 and 1.0 in random directions
-        half_width = 0.5 * (self.ubx - self.lbx)
-        random_candidates = z_candidates * half_width + self.center
+        half_width = 0.5 * (self.ubx_train - self.lbx_train)
+        random_candidates = z_candidates * half_width + self.center_train
 
         if injection_states is not None and injection_states.numel() > 0:
             return th.cat((random_candidates, injection_states), dim=0)
@@ -240,8 +240,8 @@ class LyapunovTrainer:
         )
         init_boundary_x, _, _ = sample_boundary_points(
             sample_size=int(self.config.rho_boundary_buffer_size),
-            lb=self.lbx,
-            ub=self.ubx,
+            lb=self.lbx_train,
+            ub=self.ubx_train,
             device=self.device,
             generator=self.torch_gen,
         )
@@ -249,7 +249,7 @@ class LyapunovTrainer:
         return boundary_buffer
 
     def _get_cegis_buffer(self) -> DynamicStateBuffer:
-        initial_x = sample_uniform_box(self.config.initial_sample_size, self.lbx, self.ubx, self.device)
+        initial_x = sample_uniform_box(self.config.initial_sample_size, self.lbx_train, self.ubx_train, self.device)
         cegis_buffer = DynamicStateBuffer(
             initial_states=initial_x,
             state_buffer_limit=self.config.state_buffer_limit,
@@ -291,9 +291,9 @@ class LyapunovTrainer:
             TimeRemainingColumn(),
         )
 
-    def _init_progress_task(self, progress: Progress, total_steps: int) -> int:
+    def _init_progress_task(self, progress: Progress, total_steps: int, description: str) -> int:
         return progress.add_task(
-            "Lyapunov Training Iterations",
+            description=description,
             total=float(total_steps),
             loss=float("nan"),
             rho=float(0.0),
@@ -387,7 +387,7 @@ class LyapunovTrainer:
         )
         return self.results
 
-    def train(self) -> LyapunovTrainingResult:
+    def train(self, description: str = "Lyapunov Learning") -> LyapunovTrainingResult:
         """Execute the CEGIS-style training loop."""
         self.metrics, cegis_buffer, boundary_buffer, ibp_regions = self._init_training_components()
 
@@ -402,7 +402,7 @@ class LyapunovTrainer:
 
         with GracefulInterruptHandler(logger=__logger__) as interrupt_handler:
             with self._build_progress_bar() as progress:
-                task = self._init_progress_task(progress, total_steps)
+                task = self._init_progress_task(progress, total_steps, description)
 
                 for outer_iter in range(self.config.outer_epochs):
                     self._update_policy_training_status(outer_iter)
@@ -503,8 +503,8 @@ class LyapunovTrainer:
         so each stage warm-starts from the weights learned on the previous one.
         The trainer instance is updated in-place to the final curriculum stage.
         """
-        base_bounds = self.config.state_bounds
-        scaled_bounds = self._build_scaled_state_bounds(
+        base_bounds = self.config.train_bounds
+        scaled_bounds = self._build_scaled_train_bounds(
             base_bounds=base_bounds,
             bound_scales=bound_scales,
         )
@@ -524,7 +524,7 @@ class LyapunovTrainer:
             rho_min = stage_records[-1].result.rho_estimate if stage_records else self.config.rho_min
             stage_config = replace(
                 self.config,
-                state_bounds=stage_bounds,
+                train_bounds=stage_bounds,
                 seed=stage_seed,
                 tb_log_dir=stage_tb_log_dir,
                 rho_min=rho_min,
@@ -532,6 +532,7 @@ class LyapunovTrainer:
                 policy_epochs=None if stage_index != last_stage_idx else self.config.policy_epochs,
 
             )
+            
             stage_trainer = type(self)(
                 policy_model=self.policy_model,
                 lyap_model=self.lyap_model,
@@ -540,7 +541,7 @@ class LyapunovTrainer:
                 rho_monitor=self.rho_monitor,
                 device=self.device,
             )
-            stage_result = stage_trainer.train()
+            stage_result = stage_trainer.train(description=f"Lyapunov Learning Stage [{stage_index + 1}/{len(scaled_bounds)}]")
             final_stage_trainer = stage_trainer
 
             if stage_result.aborted:
@@ -556,7 +557,7 @@ class LyapunovTrainer:
             stage_records.append(
                 LyapunovTrainingCurriculumStage(
                     stage_index=stage_index,
-                    state_bounds=stage_bounds.copy(),
+                    train_bounds=stage_bounds.copy(),
                     scale=stage_scale.copy(),
                     result=stage_result,
                 )
@@ -572,9 +573,9 @@ class LyapunovTrainer:
         )
         self.optimizer = final_stage_trainer.optimizer
         self.loss_module = final_stage_trainer.loss_module
-        self.lbx = final_stage_trainer.lbx
-        self.ubx = final_stage_trainer.ubx
-        self.center = final_stage_trainer.center
+        self.lbx_train = final_stage_trainer.lbx_train
+        self.ubx_train = final_stage_trainer.ubx_train
+        self.center_train = final_stage_trainer.center_train
         self.results = final_stage_trainer.results
         self.metrics = final_stage_trainer.metrics
 

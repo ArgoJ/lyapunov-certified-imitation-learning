@@ -63,6 +63,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
     return LyapunovTrainingConfig(
         state_dim=4,
         state_bounds=np.array([[-1.0, -1.0, -1.0, -1.0], [1.0, 1.0, 1.0, 1.0]], dtype=float),
+        train_bounds=None,
         initial_sample_size=4096,
         batch_size=2048,
         learning_rate=5e-4,
@@ -178,13 +179,13 @@ def main() -> None:
             ])
             riccati_p = compute_riccati_value_matrix(float(mpc_cfg.dt))
 
-        training_bounds = _scale_state_bounds(
+        train_bounds = _scale_state_bounds(
             state_bounds,
             script_config.train_bound_factors,
             field_name="train_bound_factors",
         )
         curriculum_scales = [float(scale) for scale in script_config.curriculum_scales]
-        __logger__.info("Using training bounds:\n%s", training_bounds)
+        __logger__.info("Using training bounds:\n%s", train_bounds)
         __logger__.info("Using curriculum scales: %s", curriculum_scales)
 
         base_path = run.output_dir.resolve()
@@ -215,7 +216,7 @@ def main() -> None:
         training_config = replace(
             train_config,
             state_dim=mpc_cfg.nx,
-            state_bounds=training_bounds,
+            train_bounds=train_bounds,
             seed=seed,
             tb_log_dir=actual_output_root / "tb" / sweep.sweep_id / run.run_name,
         )
@@ -243,7 +244,7 @@ def main() -> None:
                 {
                     "stage_index": stage.stage_index,
                     "scale": stage.scale.tolist(),
-                    "state_bounds": stage.state_bounds.tolist(),
+                    "train_bounds": stage.train_bounds.tolist(),
                     "rho_estimate": float(stage.result.rho_estimate),
                     "num_mined_counterexamples": int(stage.result.num_mined_counterexamples),
                     "train_time": float(stage.result.train_time),

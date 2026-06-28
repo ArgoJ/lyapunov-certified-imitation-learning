@@ -36,11 +36,11 @@ class LyapunovTrainingResult(JsonDataclass):
 @dataclass
 class LyapunovTrainingCurriculumStage(JsonDataclass):
     stage_index: int
-    state_bounds: NDArray
+    train_bounds: NDArray
     scale: NDArray
     result: LyapunovTrainingResult
 
-    NP_ARRAY_FIELDS = ("state_bounds", "scale")
+    NP_ARRAY_FIELDS = ("train_bounds", "scale")
     DEFAULT_FILE_NAME = TRAINING_CURRICULUM_STAGE_FILENAME
 
 
@@ -77,10 +77,10 @@ class LyapunovTrainingCurriculumResult(JsonDataclass):
         return self.stages[-1].result
 
     @property
-    def final_state_bounds(self) -> NDArray | None:
+    def final_train_bounds(self) -> NDArray | None:
         if not self.stages:
             return None
-        return self.stages[-1].state_bounds
+        return self.stages[-1].train_bounds
 
 
 @dataclass
