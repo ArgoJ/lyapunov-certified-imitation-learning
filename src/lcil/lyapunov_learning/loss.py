@@ -534,14 +534,14 @@ class PolicyRegularizationLoss(BoundedStateSamplingModule):
     def __init__(
         self,
         policy: nn.Module,
-        train_bounds: th.Tensor,
+        state_bounds: th.Tensor,
         num_points: int = 1024,
         resample_interval: int = 100,
         device: th.device | str = "cpu",
         eps: float = 1e-8,
     ) -> None:
         super().__init__(
-            state_bounds=train_bounds, num_samples=num_points, resample_interval=resample_interval, device=device
+            state_bounds=state_bounds, num_samples=num_points, resample_interval=resample_interval, device=device
         )
         self.init_policy = deepcopy(policy).to(self.device)
         self.policy = policy
@@ -587,8 +587,9 @@ class LyapunovTrainingLoss(nn.Module):
         self.condition_loss = RhoGatedConditionLoss(config, device=self.device)
         self.roa_loss = RoaSurrogateLoss(config)
 
-        # Only initialize when weight is positive
-        # =======================================
+        # =========================================================================
+        # Losses with optional components: Only initialize when weight > 0
+        # =========================================================================
 
         # Condition IBP loss with signed margin model
         self.signed_condition_margin = (
@@ -648,7 +649,7 @@ class LyapunovTrainingLoss(nn.Module):
         self.policy_regularization_loss = (
             PolicyRegularizationLoss(
                 policy=policy_model,
-                train_bounds=config.train_bounds,
+                state_bounds=config.state_bounds,
                 num_points=config.scale_anchor_num_points,
                 resample_interval=config.scale_anchor_resample_interval,
                 device=self.device,
