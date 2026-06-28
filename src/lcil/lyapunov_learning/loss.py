@@ -548,23 +548,36 @@ class PolicyRegularizationLoss(BoundedStateSamplingModule):
         self.policy = policy
         self.eps = eps
         self._set_init_policy_mode()
+        self.register_buffer("init_policy_values", th.zeros((self.num_samples, 1), device=self.device))
 
     def _set_init_policy_mode(self) -> None:
         for param in self.init_policy.parameters():
             param.requires_grad = False
         self.init_policy.eval()
+    
+    @th.no_grad()
+    def _update_init_policy_values(self) -> None:
+        """Evaluates the initial policy on current samples and caches the result."""
+        new_values = self.init_policy(self.samples)
+        self.init_policy_values.copy_(new_values)
+    
+    def step_sampling(self) -> None:
+        """Wrapper für step_sampling, der an das Resampling gekoppelt ist."""
+        needs_update = self._needs_resample() or self.init_policy_values is None
+        super().step_sampling()
+        if needs_update:
+            self._update_init_policy_values()
 
     def forward(self) -> th.Tensor:
         self.step_sampling()
-        x = self.samples
-        with th.no_grad():
-            orig_out = self.init_policy(x)
-        out = self.policy(x)
+        orig_out = self.init_policy_values
+        out = self.policy(self.samples)
 
         squared_diff = th.square(out - orig_out)
         orig_squared_norm = th.sum(th.square(orig_out), dim=-1, keepdim=True)
         normalized_loss = th.mean(squared_diff / (orig_squared_norm.detach() + self.eps))
         return normalized_loss
+
 
 class LyapunovTrainingLoss(nn.Module):
     """Full Lyapunov training objective with embedded models and sub-losses."""
