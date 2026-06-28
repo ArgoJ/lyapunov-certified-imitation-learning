@@ -74,26 +74,26 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         kappa=0.01,
         seed=1674653,
         loss_regularization_num_samples=4096,
-        loss_regularization_resample_interval=100,
+        loss_regularization_resample_interval=10,
         origin_exclusion=[0.01, 0.01, 0.001, 0.01],
         bins_per_dim=15,
 
         condition_weight=10.0,
         roa_weight=0.05,
-        condition_ibp_weight=0.2,       # Higher → aligns training closer to CROWN verification
+        condition_ibp_weight=0.2,
         l1_weight=0.00001,
-        scale_weight=0.0,               # Disabled: conflicts with condition loss (DI uses 0.0)
-        equilibrium_weight=0.0,          # Disabled: R^T R term already ensures V(0)≈0 (DI uses 0.0)
-        formal_positivity_weight=0.0,    # Disabled: extra IBP cost without benefit for ReLU (DI uses 0.0)
-        policy_regularization_weight=0.1,  # Slightly stronger anchoring (DI uses 0.1)
+        scale_weight=0.0,
+        equilibrium_weight=0.0,
+        formal_positivity_weight=0.0,
+        policy_regularization_weight=0.1,
 
         roa_candidate_size=8192,
         rho_estimation_samples=32768,
         rho_growth_gamma=1.1,
-        cex_every=10,                    # Mine counterexamples more frequently (DI uses 10)
-        cex_steps=20,                    # Slightly fewer PGD steps per mining (DI uses 20)
-        adversarial_samples=8192,        # More CEX candidates for 4D coverage
-        adversarial_step_size=0.005,     # Finer PGD steps for the smaller domain
+        cex_every=10,
+        cex_steps=20,
+        adversarial_samples=8192,
+        adversarial_step_size=0.005,
         condition_margin=0.001,
     )
 
