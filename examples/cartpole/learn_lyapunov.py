@@ -49,7 +49,7 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
         help="Per-dimension scaling applied to policy state bounds before Lyapunov training.",
     )
     curriculum_scales: list[float] = config_field(
-        default_factory=lambda: [0.1, 0.2, 0.4, 0.6, 0.8, 1.0],
+        default_factory=lambda: [0.3, 0.6, 0.8, 1.0],
         help=("Curriculum scales applied to the final training bounds."),
     )
 
@@ -216,6 +216,7 @@ def main() -> None:
         training_config = replace(
             train_config,
             state_dim=mpc_cfg.nx,
+            state_bounds=state_bounds,
             train_bounds=train_bounds,
             seed=seed,
             tb_log_dir=actual_output_root / "tb" / sweep.sweep_id / run.run_name,
