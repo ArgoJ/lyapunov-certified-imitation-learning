@@ -19,34 +19,28 @@ from .styles import *
 __logger__ = logging.getLogger(__name__)
 
 
-def _normalize_states(x: NDArray, state_bounds: NDArray | None) -> tuple[NDArray, str]:
+def _normalize_states(x: NDArray, state_bounds: NDArray) -> NDArray:
     """Normalisiert die Daten auf einen Bereich von ca. -1.0 bis 1.0."""
-    if state_bounds is not None:
-        bounds = np.asarray(state_bounds, dtype=np.float32)
-        if bounds.shape != (2, x.shape[1]):
-            raise ValueError(f"state_bounds must have shape (2, {x.shape[1]}).")
+    bounds = np.asarray(state_bounds, dtype=np.float32)
+    if bounds.shape != (2, x.shape[1]):
+        raise ValueError(f"state_bounds must have shape (2, {x.shape[1]}).")
         
-        lb, ub = bounds
-        center = 0.5 * (lb + ub)
-        half = 0.5 * (ub - lb)
-        half = np.where(half > 1e-8, half, 1.0)
-        
-        return (x - center[None, :]) / half[None, :], "Normalized by provided state bounds"
-    else:
-        mins = x.min(axis=0)
-        maxs = x.max(axis=0)
-        span = np.where((maxs - mins) > 1e-8, maxs - mins, 1.0)
-        
-        return 2.0 * (x - mins[None, :]) / span[None, :] - 1.0, "Normalized by observed per-dimension min/max"
+    lb, ub = bounds
+    center = 0.5 * (lb + ub)
+    half = 0.5 * (ub - lb)
+    half = np.where(half > 1e-8, half, 1.0)
+    
+    return (x - center[None, :]) / half[None, :]
 
 
 def _prepare_parallel_data(
     states: NDArray,
-    state_bounds: NDArray | None,
+    state_bounds: NDArray,
     state_labels: Sequence[str] | None,
     state_order: Sequence[int] | None,
+    origin_exclusion: Sequence[float] | None,
     max_lines: int | None,
-) -> tuple[NDArray, list[str], int, int, int, str]:
+) -> tuple[NDArray, list[str], int, int, int]:
     """Zentrale Funktion zur Vorbereitung (Validierung, Downsampling, Normalisierung) der Daten."""
     x = np.asarray(states, dtype=np.float32)
     if x.ndim != 2 or x.shape[0] == 0:
@@ -75,8 +69,19 @@ def _prepare_parallel_data(
         if state_bounds is not None:
             bounds_ordered = np.asarray(state_bounds, dtype=np.float32)[:, order]
 
-    x_norm, norm_note = _normalize_states(x, bounds_ordered)
-    return x_norm, labels, n_total, n, d, norm_note
+    x_norm = _normalize_states(x, bounds_ordered)
+    
+    origin_exc_bounds = None
+    if origin_exclusion is not None:
+        eps = np.asarray(origin_exclusion, dtype=np.float32)
+        if eps.ndim == 0:
+            eps = np.full(d, eps)
+        
+        upper_norm = _normalize_states(np.array([eps]), bounds_ordered)[0]
+        lower_norm = _normalize_states(np.array([-eps]), bounds_ordered)[0]
+        origin_exc_bounds = (lower_norm, upper_norm)
+        
+    return x_norm, origin_exc_bounds, labels, n_total, n, d
 
 
 # --- MATPLOTLIB IMPLEMENTIERUNG ---
@@ -85,10 +90,11 @@ def parallel_coordinates_matplot(
     state_bounds: NDArray | None = None,
     state_labels: Sequence[str] | None = None,
     state_order: Sequence[int] | None = None,
+    origin_exclusion: float | Sequence[float] | None = None,
     max_lines: int = 64,
 ):
-    x_norm, labels, _, n, d, _ = _prepare_parallel_data(
-        states, state_bounds, state_labels, state_order, max_lines
+    x_norm, origin_exc, labels, _, n, d = _prepare_parallel_data(
+        states, state_bounds, state_labels, state_order, origin_exclusion, max_lines
     )
 
     xs = np.arange(d)
@@ -99,6 +105,19 @@ def parallel_coordinates_matplot(
 
     for xi in xs:
         ax.axvline(xi, color="0.85", linewidth=0.8, zorder=0)
+
+    if origin_exc is not None:
+        lower_norm, upper_norm = origin_exc
+        for i, xi in enumerate(xs):
+            ax.plot(
+                [xi, xi], 
+                [lower_norm[i], upper_norm[i]], 
+                color="tab:gray", 
+                linewidth=8, 
+                alpha=0.6, 
+                zorder=2, 
+                solid_capstyle="butt"
+            )
 
     ax.axhline(-1.0, color="0.6", linestyle="--", linewidth=0.8)
     ax.axhline(0.0, color="0.2", linestyle="-", linewidth=0.8)
@@ -115,18 +134,19 @@ def parallel_coordinates_matplot(
 # --- PLOTLY IMPLEMENTIERUNG ---
 def parallel_coordinates_plotly(
     states: NDArray,
-    state_bounds: NDArray | None = None,
+    state_bounds: NDArray,
     state_labels: Sequence[str] | None = None,
     state_order: Sequence[int] | None = None,
     max_lines: int | None = None,
     line_color: str = STYLE_UNCERTIFIED,
     title: str | None = None,
     annotation_text: str | None = None,
+    origin_exclusion: float | Sequence[float] | None = None,
     html_path: Path | None = None,
 ) -> go.Figure | None:
 
-    x_norm, labels, n_total, n, d, norm_note = _prepare_parallel_data(
-        states, state_bounds, state_labels, state_order, max_lines
+    x_norm, origin_exc, labels, n_total, n, d = _prepare_parallel_data(
+        states, state_bounds, state_labels, state_order, origin_exclusion, max_lines
     )
 
     dimensions = []
@@ -143,7 +163,7 @@ def parallel_coordinates_plotly(
     title = title or f"Counterexamples (n={n})"
     if annotation_text is None:
         sampled_note = f"Showing {n}/{n_total} lines" if n < n_total else f"Showing all {n} lines"
-        lines = ["Parallel coordinates", norm_note, sampled_note]
+        lines = ["Parallel coordinates", sampled_note]
         latex_annotation = "<br>".join(_to_latex(line) for line in lines)
     else:
         latex_annotation = "<br>".join(_to_latex(line) for line in annotation_text.split("<br>"))
@@ -172,5 +192,29 @@ def parallel_coordinates_plotly(
         borderwidth=1,
         text=latex_annotation,
     )
+
+    if origin_exc is not None:
+        lower_norm, upper_norm = origin_exc
+        y_min, y_max = -1.1, 1.1
+        y_range = y_max - y_min
+        
+        for i in range(d):
+            y0_norm = (lower_norm[i] - y_min) / y_range
+            y1_norm = (upper_norm[i] - y_min) / y_range
+            x_pos = i / (d - 1) if d > 1 else 0.5
+            
+            fig.add_shape(
+                type="line",
+                xref="paper", 
+                yref="paper",
+                x0=x_pos, y0=y0_norm,
+                x1=x_pos, y1=y1_norm,
+                line=dict(
+                    color="gray",
+                    width=8, # Entspricht der Matplotlib linewidth=8
+                ),
+                opacity=0.6,
+                layer="below" # Hinter den Parcoord-Linien rendern
+            )
 
     return _handle_figure_output(fig, html_path, kind="Parallel Coordinates")

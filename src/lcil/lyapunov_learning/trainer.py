@@ -476,6 +476,7 @@ class LyapunovTrainer:
                             tag="Counterexamples",
                             states=cegis_buffer.cexs,
                             state_bounds=self.config.train_bounds,
+                            origin_exclusion=self.config.origin_exclusion,
                             global_step=outer_iter + 1,
                             max_lines=512,
                         )

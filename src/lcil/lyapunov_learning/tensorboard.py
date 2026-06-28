@@ -83,6 +83,7 @@ def tb_writer_add_parallel_coordinates(
     state_bounds: th.Tensor | NDArray | None = None,
     state_labels: Sequence[str] | None = None,
     state_order: Sequence[int] | None = None,
+    origin_exclusion: float | Sequence[float] | None = None,
     max_lines: int = 64,
 ) -> None:
     if tb_writer is None or states is None:
@@ -105,6 +106,7 @@ def tb_writer_add_parallel_coordinates(
         state_bounds=bounds_np,
         state_labels=state_labels,
         state_order=state_order,
+        origin_exclusion=origin_exclusion,
         max_lines=max_lines,
     )
     tb_writer.add_figure(tag, fig, global_step=global_step, close=True)

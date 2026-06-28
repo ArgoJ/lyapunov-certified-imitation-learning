@@ -75,7 +75,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         seed=1674653,
         loss_regularization_num_samples=4096,
         loss_regularization_resample_interval=10,
-        origin_exclusion=[0.01, 0.01, 0.001, 0.01],
+        origin_exclusion=[0.01, 0.1, 0.01, 0.1],
         bins_per_dim=15,
 
         condition_weight=10.0,
