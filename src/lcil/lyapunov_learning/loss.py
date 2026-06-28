@@ -143,7 +143,8 @@ class BoundedStateSamplingModule(StateBoundsModule):
     @th.no_grad()
     def _register_new_samples(self) -> None:
         """Register a new batch of uniform samples."""
-        self.samples.copy_(self._sample_uniform_states(self.num_samples))
+        new_samples = self._sample_uniform_states(self.num_samples)
+        self.samples.copy_(new_samples)
 
     def step_sampling(self) -> None:
         """Register new samples if it is at intervalle, otherwise increment the step counter."""
@@ -160,13 +161,13 @@ class LyapunovScaleAnchorLoss(BoundedStateSamplingModule):
         self,
         lyap_model: nn.Module,
         state_bounds: th.Tensor,
-        num_points: int = 1000,
+        num_samples: int = 1000,
         resample_interval: int = 100,
         device: th.device | str = "cpu",
         eps: float = 1e-6
     ) -> None:
         super().__init__(
-            state_bounds=state_bounds, num_samples=num_points, resample_interval=resample_interval, device=device
+            state_bounds=state_bounds, num_samples=num_samples, resample_interval=resample_interval, device=device
         )
         self.lyap_model = lyap_model
         self.eps = float(eps)
@@ -535,13 +536,13 @@ class PolicyRegularizationLoss(BoundedStateSamplingModule):
         self,
         policy: nn.Module,
         state_bounds: th.Tensor,
-        num_points: int = 1024,
+        num_samples: int = 1024,
         resample_interval: int = 100,
         device: th.device | str = "cpu",
         eps: float = 1e-8,
     ) -> None:
         super().__init__(
-            state_bounds=state_bounds, num_samples=num_points, resample_interval=resample_interval, device=device
+            state_bounds=state_bounds, num_samples=num_samples, resample_interval=resample_interval, device=device
         )
         self.init_policy = deepcopy(policy).to(self.device)
         self.policy = policy
@@ -638,8 +639,8 @@ class LyapunovTrainingLoss(nn.Module):
             LyapunovScaleAnchorLoss(
                 lyap_model=lyap_model,
                 state_bounds=config.train_bounds,
-                num_points=config.scale_anchor_num_points,
-                resample_interval=config.scale_anchor_resample_interval,
+                num_samples=config.loss_regularization_num_samples,
+                resample_interval=config.loss_regularization_resample_interval,
                 device=self.device,
             ) 
             if config.scale_weight > 0.0 else None
@@ -650,8 +651,8 @@ class LyapunovTrainingLoss(nn.Module):
             PolicyRegularizationLoss(
                 policy=policy_model,
                 state_bounds=config.state_bounds,
-                num_points=config.scale_anchor_num_points,
-                resample_interval=config.scale_anchor_resample_interval,
+                num_samples=config.loss_regularization_num_samples,
+                resample_interval=config.loss_regularization_resample_interval,
                 device=self.device,
             )
             if self.config.policy_regularization_weight > 0.0 else None

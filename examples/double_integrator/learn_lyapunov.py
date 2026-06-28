@@ -60,8 +60,8 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         policy_lr_factor=0.5,
         kappa=0.01,
         seed=1674653,
-        scale_anchor_num_points=1024,
-        scale_anchor_resample_interval=100,
+        loss_regularization_num_samples=1024,
+        loss_regularization_resample_interval=100,
         origin_exclusion=[0.05, 0.15],
         bins_per_dim=50,
 

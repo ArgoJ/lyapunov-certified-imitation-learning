@@ -64,11 +64,11 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Number of candidate states used in the ROA surrogate loss.
     roa_max_age : int
         Maximum age for states in the ROA surrogate buffer before they are removed.
-    scale_anchor_num_points : int
-        Number of anchor points used in the Lyapunov scale anchor loss.
-    scale_anchor_resample_interval : int
-        Number of optimization steps between resampling anchor points for the scale anchor loss. 
-        If 0, anchor points are only sampled once at initialization.
+    loss_regularization_num_samples : int
+        Number of uniformly sampled states used for global loss regularizers (scale anchoring, policy regularization).
+    loss_regularization_resample_interval : int
+        Number of optimization steps between resampling states for global loss regularizers. 
+        If 0, states are only sampled once at initialization.
     bins_per_dim : int | Sequence[int]
         Number of bins per dimension for region discretization when enforcing conditions over a grid.
     origin_exclusion : float | Sequence[float]
@@ -222,16 +222,16 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=True,
         help="Whether to detach V(x) in the denominator of the relative loss terms.",
     )
-    scale_anchor_num_points: int = config_field(
+    loss_regularization_num_samples: int = config_field(
         default=1024,
-        help="Number of anchor points used in the Lyapunov scale anchor loss.",
-        display_alias="scale_anchor_points",
+        help="Number of uniformly sampled states used for global loss regularizers (scale anchoring, policy regularization).",
+        display_alias="loss_num_samples",
         validators=(positive_validator,),
     )
-    scale_anchor_resample_interval: int = config_field(
+    loss_regularization_resample_interval: int = config_field(
         default=100,
-        help="Number of optimization steps between resampling anchor points " \
-             "for the scale anchor loss. If 0, anchor points are only sampled once at initialization.",
+        help="Number of optimization steps between resampling states " \
+             "for global loss regularizers. If 0, states are only sampled once at initialization.",
         validators=(non_negative_validator,),
     )
     bins_per_dim: int | Sequence[int] = config_field(
