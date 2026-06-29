@@ -15,7 +15,9 @@ from lcil.lyapunov_learning import (
     ThresholdMonitor,
     FromRolloutsPolicyWrapper,
 )
+from lcil.lyapunov_learning.counterexample import find_counter_examples
 from lcil.utils import GridSearchHelper, MLP, IntegrationMethod, config_field, ArgumentParserConfig
+from lcil.utils.lcil_plt.parallel_coodrdinates import parallel_coordinates_plotly
 from mpc_datagen import MPCDataset, mdg_plt
 
 from . import (
@@ -25,7 +27,12 @@ from . import (
     build_lyapunov_func,
     discover_latest_policy_dir,
 )
-from ..constants import *
+from ..constants import (
+    LYAPUNOV_DIRNAME,
+    POLICY_MODEL_FILENAME,
+    POLICY_ROLLOUT_FILENAME,
+    LYAPUNOV_ROLLOUT_FILENAME,
+)
 
 __logger__ = logging.getLogger("lcil.examples.double_integrator.learn_lyapunov")
 
@@ -237,7 +244,7 @@ def main() -> None:
             dyn_model=dyn_model,
             config=training_config,
             rho_monitor=ThresholdMonitor(
-                threshold=1.0,
+                threshold=training_config.rho_min,
                 patience=5,
             ),
             device=device,
@@ -254,18 +261,35 @@ def main() -> None:
         # ---------------------------------------------------------------------
         if rollout_dataset is not None:
             lyapunov_func = build_lyapunov_func(lyap_model, device)
-
             mdg_plt.lyapunov(
                 lyapunov_func=lyapunov_func,
                 dataset=rollout_dataset[:100],
                 state_indices=[0, 1],
-                state_labels=["$x$", "$v$"],
-                plot_3d=False,
-                html_path=(base_path / LYAPUNOV_ROLLOUT_FILENAME).with_suffix(".html"),
+                state_labels=[r"$p$", r"$v$"],
+                html_path=(base_path / LYAPUNOV_ROLLOUT_FILENAME).with_suffix(".html")
             )
+            
+        if not train_results.aborted:
+            __logger__.info("Mining final counterexamples for visualization...")
+            final_cex = find_counter_examples(
+                objective=lambda x: trainer.loss_module.mining_objective(
+                    x_batch=x,
+                    rho_estimate=train_results.rho_estimate,
+                ),
+                config=training_config,
+                device=device,
+                generator=trainer.torch_gen,
+            )
+            if final_cex.numel() > 0:
+                parallel_coordinates_plotly(
+                    states=final_cex.cpu().numpy(),
+                    state_bounds=training_config.train_bounds,
+                    state_labels=[r"$p$", r"$v$"],
+                    origin_exclusion=training_config.origin_exclusion,
+                    html_path=(base_path / "final_counterexamples.html"),
+                )
 
-    __logger__.info(f"\nGrid search complete. All results saved to: {sweep._sweep_base_path}")
-
+    __logger__.info(f"Grid search complete. All results saved to: {sweep.output_root}")
 
 if __name__ == "__main__":
     main()

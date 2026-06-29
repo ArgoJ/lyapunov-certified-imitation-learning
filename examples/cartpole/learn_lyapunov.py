@@ -16,7 +16,9 @@ from lcil.lyapunov_learning import (
     NeuralLyapunovCandidate,
     ThresholdMonitor,
 )
+from lcil.lyapunov_learning.counterexample import find_counter_examples
 from lcil.utils import ArgumentParserConfig, GridSearchHelper, MLP, config_field, IntegrationMethod
+from lcil.utils.lcil_plt.parallel_coodrdinates import parallel_coordinates_plotly
 
 from . import (
     CartpoleAngleWrapper,
@@ -272,6 +274,26 @@ def main() -> None:
                 state_labels=[r"$x$", r"$v$", r"$\theta$", r"$\dot{\theta}$"],
                 html_path=(base_path / LYAPUNOV_ROLLOUT_FILENAME).with_suffix(".html"),
             )
+            
+        if not train_results.aborted:
+            __logger__.info("Mining final counterexamples for visualization...")
+            final_cex = find_counter_examples(
+                objective=lambda x: trainer.loss_module.mining_objective(
+                    x_batch=x,
+                    rho_estimate=train_results.rho_estimate,
+                ),
+                config=training_config,
+                device=device,
+                generator=trainer.torch_gen,
+            )
+            if final_cex.numel() > 0:
+                parallel_coordinates_plotly(
+                    states=final_cex.cpu().numpy(),
+                    state_bounds=training_config.train_bounds,
+                    state_labels=[r"$x$", r"$v$", r"$\theta$", r"$\dot{\theta}$"],
+                    origin_exclusion=training_config.origin_exclusion,
+                    html_path=(base_path / "final_counterexamples.html"),
+                )
 
     __logger__.info("Grid search complete. All results saved to: %s", sweep.output_root)
 

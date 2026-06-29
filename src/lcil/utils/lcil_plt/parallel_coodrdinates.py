@@ -40,7 +40,7 @@ def _prepare_parallel_data(
     state_order: Sequence[int] | None,
     origin_exclusion: Sequence[float] | None,
     max_lines: int | None,
-) -> tuple[NDArray, list[str], int, int, int]:
+) -> tuple[NDArray, NDArray, list[str], int, int, int]:
     """Zentrale Funktion zur Vorbereitung (Validierung, Downsampling, Normalisierung) der Daten."""
     x = np.asarray(states, dtype=np.float32)
     if x.ndim != 2 or x.shape[0] == 0:
@@ -217,4 +217,4 @@ def parallel_coordinates_plotly(
                 layer="below" # Hinter den Parcoord-Linien rendern
             )
 
-    return _handle_figure_output(fig, html_path, kind="Parallel Coordinates")
+    return _handle_figure_output(fig, html_path, log_message=f"Parallel Coordinates")

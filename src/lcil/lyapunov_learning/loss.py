@@ -655,10 +655,14 @@ class LyapunovTrainingLoss(nn.Module):
         )
 
         # L1 regularization loss
-        self.l1_loss = (
-            ParameterL1Loss(self.lyap_model.parameters(), device=self.device) 
-            if config.l1_weight > 0.0 else None
-        )
+        if config.l1_weight > 0.0:
+            initial_l1_params = [
+                p for p in self.lyap_model.parameters()
+                if not (isinstance(self.lyap_model.r_factor, nn.Parameter) and p is self.lyap_model.r_factor)
+            ]
+            self.l1_loss = ParameterL1Loss(initial_l1_params, device=self.device)
+        else:
+            self.l1_loss = None
 
         # Scale anchor loss
         self.scale_loss = (
@@ -698,7 +702,11 @@ class LyapunovTrainingLoss(nn.Module):
     def set_explicit_l1_params(self, params: list[nn.Parameter]) -> None:
         """Update the explicitly tracked parameters for the L1 loss and adjust the weight accordingly."""
         if self.l1_loss is not None:
-            self.l1_loss.set_train_params(params)
+            filtered_params = [
+                p for p in params
+                if not (isinstance(self.lyap_model.r_factor, nn.Parameter) and p is self.lyap_model.r_factor)
+            ]
+            self.l1_loss.set_train_params(filtered_params)
 
     def mining_objective(
         self,
