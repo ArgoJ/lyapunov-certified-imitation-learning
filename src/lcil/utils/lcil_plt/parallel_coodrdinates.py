@@ -137,11 +137,11 @@ def parallel_coordinates_plotly(
     state_bounds: NDArray,
     state_labels: Sequence[str] | None = None,
     state_order: Sequence[int] | None = None,
+    origin_exclusion: float | Sequence[float] | None = None,
     max_lines: int | None = None,
     line_color: str = STYLE_UNCERTIFIED,
     title: str | None = None,
     annotation_text: str | None = None,
-    origin_exclusion: float | Sequence[float] | None = None,
     html_path: Path | None = None,
 ) -> go.Figure | None:
 
@@ -153,45 +153,35 @@ def parallel_coordinates_plotly(
     for i in range(d):
         dimensions.append(dict(
             range=[-1.1, 1.1],
-            label=_to_latex(labels[i]),
+            label=str(labels[i]),
             values=x_norm[:, i],
             tickvals=[-1.0, 0.0, 1.0],
-            ticktext=[_to_latex("-1"), _to_latex("0"), _to_latex("+1")],
+            ticktext=["-1", "0", "+1"],
         ))
-
-    # Text annotation
-    title = title or f"Counterexamples (n={n})"
-    if annotation_text is None:
-        sampled_note = f"Showing {n}/{n_total} lines" if n < n_total else f"Showing all {n} lines"
-        lines = ["Parallel coordinates", sampled_note]
-        latex_annotation = "<br>".join(_to_latex(line) for line in lines)
-    else:
-        latex_annotation = "<br>".join(_to_latex(line) for line in annotation_text.split("<br>"))
 
     fig = go.Figure(data=go.Parcoords(
         line=dict(color=line_color),
         dimensions=dimensions,
-        labelangle=-45,
+        labelfont=dict(size=20, color="black"),
+        tickfont=dict(size=15, color="#333333"),
     ))
 
     fig.update_layout(
-        title=_to_latex(title),
+        title=title or "",
         template="plotly_white",
-        width=max(700, 170 * d),
-        height=340,
-        margin=dict(l=60, r=20, t=60, b=70),
+        height=550,
+        margin=dict(l=60, r=60, t=140, b=60),
     )
 
-    fig.add_annotation(
-        x=0.01, y=0.99,
-        xref="paper", yref="paper",
-        xanchor="left", yanchor="top",
-        align="left", showarrow=False,
-        bgcolor=STYLE_ANNOTATION_BG,
-        bordercolor=STYLE_ANNOTATION_BORDER,
-        borderwidth=1,
-        text=latex_annotation,
-    )
+    if annotation_text is not None:
+        fig.add_annotation(
+            x=0.01, y=1.10,
+            xref="paper", yref="paper",
+            xanchor="left", yanchor="top",
+            showarrow=False,
+            text=annotation_text,
+        )
+
 
     if origin_exc is not None:
         lower_norm, upper_norm = origin_exc
@@ -205,16 +195,15 @@ def parallel_coordinates_plotly(
             
             fig.add_shape(
                 type="line",
-                xref="paper", 
-                yref="paper",
+                xref="paper", yref="paper",
                 x0=x_pos, y0=y0_norm,
                 x1=x_pos, y1=y1_norm,
                 line=dict(
                     color="gray",
-                    width=8, # Entspricht der Matplotlib linewidth=8
+                    width=8,
                 ),
                 opacity=0.6,
-                layer="below" # Hinter den Parcoord-Linien rendern
+                layer="below"
             )
 
     return _handle_figure_output(fig, html_path, log_message=f"Parallel Coordinates")

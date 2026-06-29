@@ -286,7 +286,8 @@ def main() -> None:
                     state_bounds=training_config.train_bounds,
                     state_labels=[r"$p$", r"$v$"],
                     origin_exclusion=training_config.origin_exclusion,
-                    html_path=(base_path / "final_counterexamples.html"),
+                    title="Counterexamples",
+                    html_path=(base_path / "counterexamples.html"),
                 )
 
     __logger__.info(f"Grid search complete. All results saved to: {sweep.output_root}")
