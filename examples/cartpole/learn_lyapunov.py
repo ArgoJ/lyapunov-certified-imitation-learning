@@ -44,6 +44,12 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     use_angle_wrapper: bool = config_field(default=False, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
     fix_r_factor: bool = config_field(default=False, help="Whether to fix the R factor in the Lyapunov candidate to 1.0.")
     last_layer_std: float = config_field(default=0.01, help="Standard deviation for the last layer of the Lyapunov feature net.")
+    riccati_scale: str | float = config_field(
+        default="spectral",
+        help="How to scale the Riccati P matrix before seeding R. "
+             "'none' = use raw P, 'spectral' = divide by spectral norm, "
+             "'frobenius' = divide by Frobenius norm, or a float for a custom divisor.",
+    )
     train_bound_factors: list[float] = config_field(
         default_factory=lambda: list(_DEFAULT_TRAIN_BOUND_FACTORS),
         help="Per-dimension scaling applied to policy state bounds before Lyapunov training.",
@@ -209,6 +215,7 @@ def main() -> None:
                 if script_config.use_angle_wrapper else lyap_feature),
             state_dim=mpc_cfg.nx,
             riccati_p=riccati_p,
+            riccati_scale=script_config.riccati_scale,
             fixed_r_factor=script_config.fix_r_factor,
             feature_last_init_std=script_config.last_layer_std,
         )
@@ -227,7 +234,7 @@ def main() -> None:
             lyap_model=lyap_model,
             dyn_model=dyn_model,
             config=training_config,
-            rho_monitor=ThresholdMonitor(threshold=1.0, patience=5),
+            rho_monitor=ThresholdMonitor(threshold=training_config.rho_min, patience=5),
             device=device,
         )
 

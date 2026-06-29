@@ -270,6 +270,7 @@ class RhoGatedConditionLoss(nn.Module):
         self.rho_min = float(config.rho_min)
         self.relative_eps = float(config.relative_condition_eps)
         self.invariance_weight = float(config.invariance_weight)
+        self.origin_focused_condition = bool(config.origin_focused_condition)
         self.relative_decrease_violation = RelativeLyapunovDecreaseViolation(
             kappa=config.kappa,
             condition_margin=config.condition_margin,
@@ -308,6 +309,18 @@ class RhoGatedConditionLoss(nn.Module):
         scaled_v = (v_curr.detach() / max(rho_value, self.relative_eps)).clamp(0.0, 1.0)
         return self.inside_sublevel_mask(v_curr=v_curr, rho_estimate=rho_estimate) * (1.0 - scaled_v)
 
+    def _compute_weights(self, v_curr: th.Tensor, rho_estimate: float) -> th.Tensor:
+        """Compute per-sample weights for the condition loss.
+
+        When ``origin_focused_condition`` is False, all points inside the
+        ρ-sublevel set receive equal weight. Otherwise, the origin-focused
+        scheme ``(1 − V/ρ)`` is used which concentrates the gradient signal
+        on low-V states.
+        """
+        if self.origin_focused_condition:
+            return self.origin_focused_weight(v_curr, rho_estimate)
+        return self.inside_sublevel_mask(v_curr=v_curr, rho_estimate=rho_estimate)
+
     def forward(
         self,
         v_curr: th.Tensor,
@@ -320,7 +333,7 @@ class RhoGatedConditionLoss(nn.Module):
             v_next=v_next,
             x_next=x_next,
         )
-        weights = self.origin_focused_weight(v_curr, rho_estimate)
+        weights = self._compute_weights(v_curr, rho_estimate)
         return weighted_mean(relative_violation, weights)
 
 

@@ -133,6 +133,10 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Numerical tolerance for condition satisfaction.
     condition_margin : float
         Safety margin enforced on the verifier output during training.
+    origin_focused_condition : bool
+        If True, origin-focused weighting (1 - V/ρ) is applied, concentrating
+        the gradient signal near the origin. If False, all points inside the 
+        ρ-sublevel set receive equal weight in the condition loss.
     """
 
     state_dim: int = config_field(
@@ -248,6 +252,11 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=None,
         help="TensorBoard logging directory.",
         validators=(optional_validator(pathlike_validator),)
+    )
+    origin_focused_condition: bool = config_field(
+        default=False,
+        help="If True, origin-focused weighting (1 - V/rho) is applied in the condition loss. "
+             "If False, all points inside the rho-sublevel set receive equal weight.",
     )
 
     # Weights
