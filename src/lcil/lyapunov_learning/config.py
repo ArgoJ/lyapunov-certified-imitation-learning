@@ -95,7 +95,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     policy_regularization_weight : float
         Weight for the policy regularization loss, which encourages the policy to stay close to the initial policy.
     r_factor_fro_norm_weight : float
-        Weight for the Frobenius norm regularization of the R factor in the Lyapunov model, if it exists. This helps prevent the R factor from growing too large.
+        Weight for the Frobenius norm regularization of the R factor in the Lyapunov model, if it exists. 
+        This helps prevent the R factor from collapsing or growing too large.
     
     rho_growth_gamma : float
         Growth factor for estimating sublevel values from boundary points.
@@ -319,9 +320,9 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         validators=(non_negative_validator,),
     )
     r_factor_fro_norm_weight: float = config_field(
-        default=1e-3,
+        default=100.0,
         help="Weight for the Frobenius norm regularization of the R factor in the Lyapunov model, if it exists. " \
-            "This helps prevent the R factor from growing too large.",
+            "This helps prevent the R factor from collapsing or growing too large.",
         display_alias="r_factor_fro_norm_w",
         validators=(non_negative_validator,),
     )

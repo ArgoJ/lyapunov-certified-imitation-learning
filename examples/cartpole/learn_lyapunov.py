@@ -94,7 +94,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         equilibrium_weight=0.0,
         formal_positivity_weight=0.0,
         policy_regularization_weight=0.1,
-        r_factor_fro_norm_weight=1e-3,
+        r_factor_fro_norm_weight=100.0,
 
         roa_candidate_size=8192,
         rho_estimation_samples=32768,
