@@ -78,14 +78,14 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
 
     condition_weight : float
         Weight of the Lyapunov decrease and set-invariance condition penalty term.
-    condition_ibp_weight : float
-        Weight of the IBP-based Lyapunov decrease penalty term.
+    condition_lirpa_weight : float
+        Weight of the LIRPA-based Lyapunov decrease penalty term.
     invariance_weight : float
         Weight of the set-invariance penalty term.
     equilibrium_weight : float
         Weight for keeping V(0) near zero.
     formal_positivity_weight : float
-        Weight for the IBP-based positivity penalty over the full training box.
+        Weight for the LIRPA-based positivity penalty over the full training box.
     roa_weight : float
         Weight for the ROA surrogate term.
     l1_weight : float
@@ -94,6 +94,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Weight for the Lyapunov scale anchor loss.
     policy_regularization_weight : float
         Weight for the policy regularization loss, which encourages the policy to stay close to the initial policy.
+    r_factor_fro_norm_weight : float
+        Weight for the Frobenius norm regularization of the R factor in the Lyapunov model, if it exists. This helps prevent the R factor from growing too large.
     
     rho_growth_gamma : float
         Growth factor for estimating sublevel values from boundary points.
@@ -184,7 +186,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     policy_epochs: int | None = config_field(
         default=None,
         help="Number of final outer epochs jointly optimizing policy and lyapunov parameters, " \
-             "starting at outer_epochs - policy_epochs. If None, the policy is never updated.",
+            "starting at outer_epochs - policy_epochs. If None, the policy is never updated.",
         display_alias="policy_epochs",
         validators=(optional_validator(positive_validator),)
     )
@@ -218,7 +220,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     roa_max_age: int = config_field(
         default=15,
         help="Maximum age for states in the ROA surrogate buffer before they are removed, " \
-        "used to ensure that the surrogate loss is computed based on up-to-date samples.",
+            "used to ensure that the surrogate loss is computed based on up-to-date samples.",
         display_alias="roa_age",
         validators=(positive_validator,),
     )
@@ -235,7 +237,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     loss_regularization_resample_interval: int = config_field(
         default=100,
         help="Number of optimization steps between resampling states " \
-             "for global loss regularizers. If 0, states are only sampled once at initialization.",
+            "for global loss regularizers. If 0, states are only sampled once at initialization.",
         validators=(non_negative_validator,),
     )
     bins_per_dim: int | Sequence[int] = config_field(
@@ -256,7 +258,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     origin_focused_condition: bool = config_field(
         default=False,
         help="If True, origin-focused weighting (1 - V/rho) is applied in the condition loss. "
-             "If False, all points inside the rho-sublevel set receive equal weight.",
+            "If False, all points inside the rho-sublevel set receive equal weight.",
     )
 
     # Weights
@@ -266,10 +268,10 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="condw",
         validators=(non_negative_validator,),
     )
-    condition_ibp_weight: float = config_field(
+    condition_lirpa_weight: float = config_field(
         default=1.0,
-        help="Weight of the IBP-based Lyapunov decrease penalty term.",
-        display_alias="cond_ibp_w",
+        help="Weight of the LiRPA-based Lyapunov decrease penalty term.",
+        display_alias="cond_lirpa_w",
         validators=(non_negative_validator,),
     )
     invariance_weight: float = config_field(
@@ -305,15 +307,22 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     scale_weight: float = config_field(
         default=1.0,
         help="Weight for the Lyapunov scale anchor loss, which encourages the Lyapunov " \
-        "function values to be close to a specified anchor value for better numerical conditioning.",
+            "function values to be close to a specified anchor value for better numerical conditioning.",
         display_alias="scalew",
         validators=(non_negative_validator,),
     )
     policy_regularization_weight: float = config_field(
         default=1.0,
         help="Weight for the policy regularization loss, which helps keep the policy close to " \
-             "the initial reference policy.",
+            "the initial reference policy.",
         display_alias="policy_reg_w",
+        validators=(non_negative_validator,),
+    )
+    r_factor_fro_norm_weight: float = config_field(
+        default=1e-3,
+        help="Weight for the Frobenius norm regularization of the R factor in the Lyapunov model, if it exists. " \
+            "This helps prevent the R factor from growing too large.",
+        display_alias="r_factor_fro_norm_w",
         validators=(non_negative_validator,),
     )
 
@@ -363,7 +372,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     rho_ema_decay: float = config_field(
         default=0.8,
         help="Exponential moving average decay for rho estimates across epochs, " \
-             "used to stabilize training when rho estimates are noisy.",
+            "used to stabilize training when rho estimates are noisy.",
         display_alias="\u03C1_ema_decay",
         validators=(fraction_validator,),
     )
@@ -424,7 +433,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     cex_max_age: int = config_field(
         default=5,
         help="Maximum age for counterexamples in the buffer before they are automatically removed, " \
-             "used to ensure that the training buffer contains up-to-date counterexamples.",
+            "used to ensure that the training buffer contains up-to-date counterexamples.",
         display_alias="cex_age",
         validators=(positive_validator,),
     )

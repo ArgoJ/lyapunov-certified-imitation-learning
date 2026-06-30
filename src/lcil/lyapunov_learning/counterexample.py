@@ -26,7 +26,6 @@ class BoundaryRhoDiagnostics:
     linear_term_mean: float
     feature_term_mean_share: float
     linear_term_mean_share: float
-    r_factor_fro_norm: float
 
 
 def _bounds_tensor(state_bounds: Sequence[float], device: th.device) -> th.Tensor:
@@ -122,10 +121,6 @@ def _boundary_term_diagnostics(
         feature_term_mean_share = feature_term_mean / total_mean
         linear_term_mean_share = linear_term_mean / total_mean
 
-    r_factor_fro_norm = nan
-    if hasattr(lyap_model, "r_factor"):
-        r_factor_fro_norm = float(th.linalg.norm(getattr(lyap_model, "r_factor"), ord="fro").item())
-
     return (
         float(th.quantile(feature_term, q=quantile).item()),
         float(th.quantile(linear_term, q=quantile).item()),
@@ -133,7 +128,6 @@ def _boundary_term_diagnostics(
         linear_term_mean,
         feature_term_mean_share,
         linear_term_mean_share,
-        r_factor_fro_norm,
     )
 
 
@@ -198,7 +192,6 @@ def estimate_rho_from_boundary(
         linear_term_mean=term_diagnostics[3],
         feature_term_mean_share=term_diagnostics[4],
         linear_term_mean_share=term_diagnostics[5],
-        r_factor_fro_norm=term_diagnostics[6],
     )
     return diagnostics, boundary_eval_x
 

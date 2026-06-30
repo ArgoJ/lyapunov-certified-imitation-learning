@@ -31,7 +31,6 @@ def tb_writer_add_metrics(
     tb_writer.add_scalar(rho_str + "LinearTermQuantile", metrics.rho_linear_term_quantile[outer_iter], tb_step)
     tb_writer.add_scalar(rho_str + "FeatureTermMeanShare", metrics.rho_feature_term_mean_share[outer_iter], tb_step)
     tb_writer.add_scalar(rho_str + "LinearTermMeanShare", metrics.rho_linear_term_mean_share[outer_iter], tb_step)
-    tb_writer.add_scalar(rho_str + "RFactorFroNorm", metrics.r_factor_fro_norm[outer_iter], tb_step)
     tb_writer.add_scalar(
         cex_str + "NumMinedCounterexamples",
         metrics.num_mined_counterexamples[outer_iter],
@@ -45,28 +44,27 @@ def tb_writer_add_metrics(
         tb_step = metrics.inner_tb_step(inner_iter)
         tb_writer.add_scalar(raw_loss_str + "Condition", metrics.condition_raw[inner_iter], tb_step)
         tb_writer.add_scalar(raw_loss_str + "Roa", metrics.roa_raw[inner_iter], tb_step)
-        tb_writer.add_scalar(raw_loss_str + "ConditionIBP", metrics.condition_ibp_raw[inner_iter], tb_step)
+        tb_writer.add_scalar(raw_loss_str + "ConditionLiRPA", metrics.condition_lirpa_raw[inner_iter], tb_step)
         tb_writer.add_scalar(raw_loss_str + "L1", metrics.l1_raw[inner_iter], tb_step)
         tb_writer.add_scalar(raw_loss_str + "Equilibrium", metrics.equilibrium_raw[inner_iter], tb_step)
         tb_writer.add_scalar(raw_loss_str + "FormalPositivity", metrics.formal_positivity_raw[inner_iter], tb_step)
         tb_writer.add_scalar(raw_loss_str + "Scale", metrics.scale_raw[inner_iter], tb_step)
+        tb_writer.add_scalar(raw_loss_str + "RFactorFroNorm", metrics.r_factor_fro_norm_raw[inner_iter], tb_step)
         tb_writer.add_scalar(
             raw_loss_str + "PolicyRegularization",
             metrics.policy_regularization_raw[inner_iter],
             tb_step,
         )
+
         tb_writer.add_scalar(weighted_loss_str + "Total", metrics.loss[inner_iter], tb_step)
         tb_writer.add_scalar(weighted_loss_str + "Condition", metrics.condition[inner_iter], tb_step)
         tb_writer.add_scalar(weighted_loss_str + "Roa", metrics.roa[inner_iter], tb_step)
-        tb_writer.add_scalar(weighted_loss_str + "ConditionIBP", metrics.condition_ibp[inner_iter], tb_step)
+        tb_writer.add_scalar(weighted_loss_str + "ConditionLiRPA", metrics.condition_lirpa[inner_iter], tb_step)
         tb_writer.add_scalar(weighted_loss_str + "L1", metrics.l1[inner_iter], tb_step)
         tb_writer.add_scalar(weighted_loss_str + "Equilibrium", metrics.equilibrium[inner_iter], tb_step)
-        tb_writer.add_scalar(
-            weighted_loss_str + "FormalPositivity",
-            metrics.formal_positivity[inner_iter],
-            tb_step,
-        )
+        tb_writer.add_scalar(weighted_loss_str + "FormalPositivity", metrics.formal_positivity[inner_iter], tb_step)
         tb_writer.add_scalar(weighted_loss_str + "Scale", metrics.scale[inner_iter], tb_step)
+        tb_writer.add_scalar(weighted_loss_str + "RFactorFroNorm", metrics.r_factor_fro_norm[inner_iter], tb_step)
         tb_writer.add_scalar(
             weighted_loss_str + "PolicyRegularization",
             metrics.policy_regularization[inner_iter],

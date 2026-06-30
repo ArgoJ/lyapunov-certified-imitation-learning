@@ -275,8 +275,8 @@ class LyapunovTrainer:
         )
         cegis_buffer = self._get_cegis_buffer()
         boundary_buffer = self._get_boundary_buffer()
-        ibp_regions = self.region_builder.build_regions()
-        return metrics, cegis_buffer, boundary_buffer, ibp_regions
+        lirpa_regions = self.region_builder.build_regions()
+        return metrics, cegis_buffer, boundary_buffer, lirpa_regions
 
     def _build_progress_bar(self) -> Progress:
         return Progress(
@@ -389,7 +389,7 @@ class LyapunovTrainer:
 
     def train(self, description: str = "Lyapunov Learning") -> LyapunovTrainingResult:
         """Execute the CEGIS-style training loop."""
-        self.metrics, cegis_buffer, boundary_buffer, ibp_regions = self._init_training_components()
+        self.metrics, cegis_buffer, boundary_buffer, lirpa_regions = self._init_training_components()
 
         mining_interval = max(1, int(self.config.cex_every))
         rho_estimate = None
@@ -436,7 +436,7 @@ class LyapunovTrainer:
                             x_batch=x_batch,
                             roa_candidates=roa_candidates,
                             rho_estimate=rho_estimate,
-                            ibp_regions=ibp_regions,
+                            lirpa_regions=lirpa_regions,
                             active_policy_regularization=self._curr_policy_train_status,
                         )
 
