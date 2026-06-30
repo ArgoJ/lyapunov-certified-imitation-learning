@@ -617,7 +617,7 @@ class RFactorFrobeniusLoss(nn.Module):
             self.register_buffer("init_norm", init_norm)
 
     def forward(self) -> th.Tensor:
-        current_norm = th.linalg.norm(self.lyap_model.r_factor, ord="fro").to(self.device)
+        current_norm = th.linalg.norm(self.lyap_model.r_factor, ord="fro")
         return th.square(current_norm - self.init_norm)
 
 class LyapunovTrainingLoss(nn.Module):
