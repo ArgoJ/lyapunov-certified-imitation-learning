@@ -272,7 +272,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         """
         config_values = {
             "state_dim": config.state_dim,
-            "cert_bounds": config.state_bounds if cert_bounds is None else cert_bounds,
+            "cert_bounds": config.train_bounds if cert_bounds is None else cert_bounds,
             "kappa": config.kappa,
             "rho_min": config.rho_min,
             "bins_per_dim": bins_per_dim,

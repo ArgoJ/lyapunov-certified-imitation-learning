@@ -68,7 +68,7 @@ def _build_certification_defaults(
     cert_bound_scales: list[float],
 ) -> LyapunovCertificationConfig:
     training_config = LyapunovTrainingConfig.load(lyapunov_dir)
-    cert_bounds = _scale_cert_bounds(training_config.state_bounds, cert_bound_scales)
+    cert_bounds = _scale_cert_bounds(training_config.train_bounds, cert_bound_scales)
     return LyapunovCertificationConfig.from_training_config(
         training_config,
         cert_bounds=cert_bounds,
