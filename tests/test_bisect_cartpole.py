@@ -91,7 +91,7 @@ class TestBisectInvertedPendulumOnCartIntegration(PlotAssertionsMixin):
             max_scale_steps=5,
             max_bisection_steps=5,
             bisection_tol=0.012,
-            cert_method="alpha-crown",
+            lirpa_method="alpha-crown",
             condition_tolerance=1e-5,
             max_recursion_depth=3,
             batch_size=4096,

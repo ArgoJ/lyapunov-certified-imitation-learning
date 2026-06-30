@@ -92,7 +92,7 @@ class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
             max_scale_steps=6,
             max_bisection_steps=6,
             bisection_tol=0.005,
-            cert_method="alpha-crown",
+            lirpa_method="alpha-crown",
             condition_tolerance=1e-6,
             max_recursion_depth=4,
             batch_size=2048,

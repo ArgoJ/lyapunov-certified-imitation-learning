@@ -103,7 +103,7 @@ class TestBisectCertifierIntegration(_BisectModuleLoaderMixin, PlotAssertionsMix
             origin_exclusion=0.0,
             max_scale_steps=6,
             max_bisection_steps=6,
-            cert_method="alpha-crown",
+            lirpa_method="alpha-crown",
             condition_tolerance=1e-6,
             suppress_native_output=True,
             batch_size=512,

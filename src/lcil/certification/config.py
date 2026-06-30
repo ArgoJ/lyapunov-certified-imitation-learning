@@ -57,7 +57,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         Maximum rho scaling attempts during certification.
     max_bisection_steps : int
         Maximum bisection iterations for certification.
-    cert_method : str
+    lirpa_method : str
         AutoLiRPA bound method (e.g., "crown", "alpha-crown").
     sublevel_tolerance : float
         Conservative slack used in the rho-sublevel gate of the single-output
@@ -275,7 +275,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         object.__setattr__(self, "center_refinement_factor", refinement_factors)
         object.__setattr__(self, "origin_exclusion", normalized_origin_exclusion)
         object.__setattr__(self, "split_dim_weights", split_dim_weights)
-        object.__setattr__(self, "cert_method", self.lirpa_method.strip().lower())
+        object.__setattr__(self, "lirpa_method", self.lirpa_method.strip().lower())
         object.__setattr__(self, "abcrown_bound_prop_method", self.abcrown_bound_prop_method.strip().lower())
 
         if all(e == 0.0 for e in self.origin_exclusion):
@@ -291,7 +291,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         bisection_tol: float = 1e-3,
         max_scale_steps: int = 20,
         max_bisection_steps: int = 40,
-        cert_method: str = "alpha-crown",
+        lirpa_method: str = "alpha-crown",
         sublevel_tolerance: float | None = None,
         condition_margin: float = 0.0,
         suppress_native_output: bool = True,
@@ -321,7 +321,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
             "bisection_tol": bisection_tol,
             "max_scale_steps": max_scale_steps,
             "max_bisection_steps": max_bisection_steps,
-            "cert_method": cert_method,
+            "lirpa_method": lirpa_method,
             "sublevel_tolerance": (
                 config.condition_tolerance
                 if sublevel_tolerance is None
