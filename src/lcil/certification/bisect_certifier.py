@@ -214,7 +214,8 @@ class BisectCertifier:
             lyap_model=self.lyap_model,
             state_dim=self.config.state_dim,
             batch_size=self.config.batch_size,
-            default_bound_method=self.config.cert_method,
+            default_bound_method=self.config.lirpa_method,
+            use_affine_l1_lower_bound=self.config.use_affine_l1_sublevel_bounds,
             device=self.device,
         )
 
@@ -263,6 +264,7 @@ class BisectCertifier:
             bins_per_dim=self.config.bins_per_dim,
             center_refinement_factor=self.config.center_refinement_factor,
             origin_exclusion=self.config.origin_exclusion,
+            split_dim_weights=self.config.split_dim_weights,
             device=self.device,
         )
 
@@ -297,7 +299,7 @@ class BisectCertifier:
 
         computed_region_bounds = self._get_region_bounder().compute_bounds_for_regions(
             target_regions,
-            method=self.config.cert_method,
+            method=self.config.lirpa_method,
         )
 
         cached_region_bounds = self.region_manager.cache_region_bounds(

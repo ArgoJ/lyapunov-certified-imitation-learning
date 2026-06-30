@@ -18,6 +18,7 @@ class RegionBuilder:
         bins_per_dim: int | Sequence[int],
         center_refinement_factor: float | Sequence[float] = 1.0,
         origin_exclusion: float | Sequence[float] | None = 0.0,
+        split_dim_weights: float | Sequence[float] = 1.0,
         *,
         device: th.device = th.device("cpu"),
     ) -> None:
@@ -27,7 +28,46 @@ class RegionBuilder:
         self.bins_per_dim = self._normalize_bins(bins_per_dim)
         self.center_refinement_factor = self._normalize_refinement_factors(center_refinement_factor)
         self.origin_exclusion = self._resolve_origin_exclusion(origin_exclusion)
+        self.split_dim_weights = self._normalize_split_dim_weights(split_dim_weights)
         self._check_exclusion_ratio()
+
+    def _normalize_split_dim_weights(
+        self,
+        split_dim_weights: float | Sequence[float],
+    ) -> th.Tensor:
+        """Normalize per-dimension split priority weights to a ``(state_dim,)`` tensor.
+
+        Larger weights make a dimension more likely to be chosen as the split
+        axis. Splits use ``argmax(weight_d * width_d)`` so that anisotropic
+        priorities (for example, prioritising fast or transcendental-coupled
+        states such as velocities and angles) trade off against the current box
+        width rather than overriding it outright.
+        """
+        if isinstance(split_dim_weights, (int, float)):
+            weights = th.full(
+                (self.state_dim,),
+                float(split_dim_weights),
+                dtype=th.float32,
+                device=self.device,
+            )
+        elif isinstance(split_dim_weights, Sequence):
+            weights = th.as_tensor(
+                [float(value) for value in split_dim_weights],
+                dtype=th.float32,
+                device=self.device,
+            )
+            if weights.numel() != self.state_dim:
+                raise ValueError(
+                    f"split_dim_weights must be scalar or match state_dim. Got length: {weights.numel()}"
+                )
+        else:
+            raise ValueError(
+                f"split_dim_weights must be scalar or match state_dim. Got type: {type(split_dim_weights)}"
+            )
+
+        if (weights <= 0.0).any():
+            raise ValueError(f"split_dim_weights must contain only positive values. Got: {weights}")
+        return weights
 
     @staticmethod
     def _resolve_bounds(bounds: Sequence[float], device: th.device) -> th.Tensor:
@@ -255,7 +295,9 @@ class RegionBuilder:
         widths = regions[:, 1] - regions[:, 0]
 
         if split_dims is None:
-            split_dims = th.argmax(widths, dim=1)
+            # Anisotropic split-dimension priorities are applied by weighting the widths before argmax.
+            weighted_widths = widths * self.split_dim_weights.reshape(1, -1)
+            split_dims = th.argmax(weighted_widths, dim=1)
         else:
             split_dims = split_dims.to(device=self.device, dtype=th.long).reshape(-1)
             if split_dims.numel() != len(regions):

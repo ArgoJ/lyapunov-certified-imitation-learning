@@ -89,6 +89,12 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     skip_boundary_core_cert : bool
         Whether to skip the boundary-region core-certification prepass and send
         boundary regions directly into complete certification.
+    split_dim_weights : float | Sequence[float]
+        Per-dimension weights used when choosing recursive split dimensions.
+        Larger weights make a dimension more likely to be split.
+    use_affine_l1_sublevel_bounds : bool
+        Whether to tighten lower bounds for neural Lyapunov candidates with the
+        affine L1 term before applying the sublevel gate.
     """
 
     state_dim: int = config_field(cli=False, validators=(positive_validator,))
@@ -127,7 +133,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="\u03C1_min",
         validators=(positive_validator,)
     )
-    cert_method: str = config_field(
+    lirpa_method: str = config_field(
         default="alpha-crown",
         help="AutoLiRPA certification backend method.",
         display_alias="method",
@@ -187,9 +193,30 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         help="Skip the boundary-region core-certification prepass and route boundary regions directly to complete certification.",
         display_alias="skip_core_cert"
     )
+    split_dim_weights: float | Sequence[float] = config_field(
+        default=1.0,
+        help="Per-dimension weights for recursive region splitting. Larger values prioritize splitting that dimension.",
+        validators=(sequence_validator(positive_validator),),
+    )
+    use_affine_l1_sublevel_bounds: bool = config_field(
+        default=True,
+        help="Tighten V lower bounds using the affine L1 Lyapunov term before sublevel classification.",
+        display_alias="affine_l1_gate",
+    )
 
 
     # AB-Crown specific
+    abcrown_bound_prop_method: str = config_field(
+        default="alpha-crown",
+        help="AB-CROWN bound propagation method for closed-loop region checks.",
+        display_alias="abcrown_method",
+    )
+    abcrown_input_split_partitions: int = config_field(
+        default=2,
+        help="Number of input split partitions used by AB-CROWN branch-and-bound.",
+        display_alias="abcrown_split_parts",
+        validators=(positive_validator,),
+    )
     abcrown_timeout: float | None = config_field(
         default=None,
         help="Optional per-region ABCrown branch-and-bound timeout in seconds.",
@@ -236,12 +263,20 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
             name="origin_exclusion",
             caster=float,
         )
+        split_dim_weights = normalize_scalar_or_sequence(
+            self.split_dim_weights,
+            state_dim=self.state_dim,
+            name="split_dim_weights",
+            caster=float,
+        )
 
         # object.__setattr__, because of frozen=True
         object.__setattr__(self, "bins_per_dim", bins_per_dim)
         object.__setattr__(self, "center_refinement_factor", refinement_factors)
         object.__setattr__(self, "origin_exclusion", normalized_origin_exclusion)
-        object.__setattr__(self, "cert_method", self.cert_method.strip().lower())
+        object.__setattr__(self, "split_dim_weights", split_dim_weights)
+        object.__setattr__(self, "cert_method", self.lirpa_method.strip().lower())
+        object.__setattr__(self, "abcrown_bound_prop_method", self.abcrown_bound_prop_method.strip().lower())
 
         if all(e == 0.0 for e in self.origin_exclusion):
             __logger__.warning("You may want to set a positive origin_exclusion to avoid numerical issues near the origin during certification.")
@@ -263,8 +298,12 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         batch_size: int = 512,
         abcrown_timeout: float | None = None,
         abcrown_max_domains: int | None = None,
+        abcrown_bound_prop_method: str = "alpha-crown",
+        abcrown_input_split_partitions: int = 2,
         max_recursion_depth: int = 10,
         skip_boundary_core_cert: bool = False,
+        split_dim_weights: float | Sequence[float] = 1.0,
+        use_affine_l1_sublevel_bounds: bool = True,
     ) -> "LyapunovCertificationConfig":
         """Build a certification config from a training config.
 
@@ -294,7 +333,11 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
             "batch_size": batch_size,
             "abcrown_timeout": abcrown_timeout,
             "abcrown_max_domains": abcrown_max_domains,
+            "abcrown_bound_prop_method": abcrown_bound_prop_method,
+            "abcrown_input_split_partitions": abcrown_input_split_partitions,
             "max_recursion_depth": max_recursion_depth,
             "skip_boundary_core_cert": skip_boundary_core_cert,
+            "split_dim_weights": split_dim_weights,
+            "use_affine_l1_sublevel_bounds": use_affine_l1_sublevel_bounds,
         }
         return LyapunovCertificationConfig(**config_values)

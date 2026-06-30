@@ -71,6 +71,7 @@ class TestRegionBuilder(PlotAssertionsMixin, unittest.TestCase):
         bins_per_dim: int | tuple[int, ...] = 2,
         center_refinement_factor: float | tuple[float, ...] = 1.0,
         origin_exclusion: float | tuple[float, ...] | None = 0.0,
+        split_dim_weights: float | tuple[float, ...] = 1.0,
     ) -> RegionBuilder:
         resolved_bounds = bounds
         if resolved_bounds is None:
@@ -80,6 +81,7 @@ class TestRegionBuilder(PlotAssertionsMixin, unittest.TestCase):
             bins_per_dim=bins_per_dim,
             center_refinement_factor=center_refinement_factor,
             origin_exclusion=origin_exclusion,
+            split_dim_weights=split_dim_weights,
             device=th.device("cpu"),
         )
 
@@ -325,6 +327,62 @@ class TestRegionBuilder(PlotAssertionsMixin, unittest.TestCase):
             dtype=th.float32,
         )
         th.testing.assert_close(split, expected)
+
+    def test_split_dim_weights_bias_selection_toward_prioritized_dimension(self) -> None:
+        # Dimension 0 is wider, but a large weight on dimension 1 must flip the
+        # anisotropic argmax(weight * width) selection to split dimension 1.
+        builder = self._make_builder(
+            origin_exclusion=0.0,
+            split_dim_weights=(1.0, 5.0),
+        )
+        regions = th.tensor(
+            [[[0.0, 0.0], [4.0, 2.0]]],
+            dtype=th.float32,
+        )
+
+        split = builder.split_regions(regions)
+
+        expected = th.tensor(
+            [
+                [[0.0, 0.0], [4.0, 1.0]],
+                [[0.0, 1.0], [4.0, 2.0]],
+            ],
+            dtype=th.float32,
+        )
+        th.testing.assert_close(split, expected)
+
+    def test_split_dim_weights_reduce_to_widest_dimension_when_uniform(self) -> None:
+        builder = self._make_builder(origin_exclusion=0.0, split_dim_weights=1.0)
+        regions = th.tensor([[[0.0, 0.0], [4.0, 1.0]]], dtype=th.float32)
+
+        split = builder.split_regions(regions)
+
+        expected = th.tensor(
+            [
+                [[0.0, 0.0], [2.0, 1.0]],
+                [[2.0, 0.0], [4.0, 1.0]],
+            ],
+            dtype=th.float32,
+        )
+        th.testing.assert_close(split, expected)
+
+    def test_normalize_split_dim_weights_handles_scalar_sequence_and_invalid_values(self) -> None:
+        builder = self._make_builder(bounds=[[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]])
+
+        th.testing.assert_close(
+            builder._normalize_split_dim_weights(2.0),
+            th.tensor([2.0, 2.0, 2.0], dtype=th.float32),
+        )
+        th.testing.assert_close(
+            builder._normalize_split_dim_weights((1.0, 2.0, 3.0)),
+            th.tensor([1.0, 2.0, 3.0], dtype=th.float32),
+        )
+
+        with self.assertRaisesRegex(ValueError, "match state_dim"):
+            builder._normalize_split_dim_weights((1.0, 2.0))
+
+        with self.assertRaisesRegex(ValueError, "positive values"):
+            builder._normalize_split_dim_weights((1.0, 0.0, 3.0))
 
     def test_split_regions_respects_explicit_split_dimensions_and_validates_them(self) -> None:
         builder = self._make_builder(origin_exclusion=0.0)
