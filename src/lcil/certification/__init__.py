@@ -2,7 +2,6 @@ from .bisect_certifier import (
     RegionCertificationResult,
     BisectCertifier
 )
-from .adaptive_certifier import AdaptiveCertifier
 from .empirical_certification_tester import (
     CertificationCategoryTestResult,
     CertificationTesterResult,
@@ -29,7 +28,6 @@ from .metrics import (
 __all__ = [
     "RegionCertificationResult",
     "BisectCertifier",
-    "AdaptiveCertifier",
     "CertificationCategoryTestResult",
     "CertificationTesterResult",
     "CertificationResultTester",
