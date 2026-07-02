@@ -136,6 +136,9 @@ class BoundedStateSamplingModule(StateBoundsModule):
         self.resample_interval = int(resample_interval)
         self._step_counter = 0
 
+        state_dim = self.lbx.shape[0]
+        self.sobol_engine = th.quasirandom.SobolEngine(dimension=state_dim, scramble=True)
+
         self.register_buffer(
             "samples",
             th.zeros((self.num_samples, self.lbx.shape[0]), device=self.device)
@@ -149,8 +152,9 @@ class BoundedStateSamplingModule(StateBoundsModule):
 
     def _sample_uniform_states(self, num_points: int) -> th.Tensor:
         """Sample a batch of states uniformly from the training bounds."""
-        rand_uniform = th.rand((num_points, self.lbx.shape[0]), device=self.device)
-        return self.lbx + rand_uniform * (self.ubx - self.lbx)
+        # rand_uniform = th.rand((num_points, self.lbx.shape[0]), device=self.device)
+        rand_sobol = self.sobol_engine.draw(num_points).to(self.device)
+        return self.lbx + rand_sobol * (self.ubx - self.lbx)
 
     @th.no_grad()
     def _register_new_samples(self) -> None:
