@@ -451,6 +451,7 @@ class LyapunovTrainer:
 
                         self.optimizer.zero_grad(set_to_none=True)
                         loss.backward()
+                        th.nn.utils.clip_grad_norm_(self._get_train_params(), max_norm=1.0)
                         self.optimizer.step()
 
                         # Update Progress Bar

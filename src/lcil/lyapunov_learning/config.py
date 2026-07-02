@@ -58,8 +58,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Exponential decay factor in the Lyapunov decrease condition.
     dropout : float
         Dropout probability for the Lyapunov model. Must be in the range [0, 1].
-    detach_relative_denominator : bool
-        Whether to detach the relative denominator in the Lyapunov loss computation.
     roa_candidate_size : int
         Number of candidate states used in the ROA surrogate loss.
     roa_max_age : int
@@ -224,10 +222,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
             "used to ensure that the surrogate loss is computed based on up-to-date samples.",
         display_alias="roa_age",
         validators=(positive_validator,),
-    )
-    detach_relative_denominator: bool = config_field(
-        default=True,
-        help="Whether to detach V(x) in the denominator of the relative loss terms.",
     )
     loss_regularization_num_samples: int = config_field(
         default=1024,
@@ -453,7 +447,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         validators=(non_negative_validator,),
     )
     relative_condition_eps: float = config_field(
-        default=1e-4,
+        default=1e-2,
         help="Numerical epsilon used in relative condition normalization.",
         display_alias="rel_eps",
         validators=(positive_validator,),

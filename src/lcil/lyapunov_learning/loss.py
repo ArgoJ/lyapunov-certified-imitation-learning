@@ -229,16 +229,14 @@ class RelativeLyapunovDecreaseViolation(LyapunovDecreaseViolation):
         self,
         kappa: float,
         condition_margin: float = 0.0,
-        relative_eps: float = 1e-4,
-        detach_relative_denominator: bool = True
+        relative_eps: float = 1e-2,
     ) -> None:
         super().__init__(kappa=kappa, condition_margin=condition_margin)
         self.relative_eps = float(relative_eps)
-        self.detach_relative_denominator = bool(detach_relative_denominator)
 
     def _relative_denominator(self, v_curr: th.Tensor) -> th.Tensor:
-        denom_source = v_curr.detach() if self.detach_relative_denominator else v_curr
-        return denom_source.abs().clamp_min(self.relative_eps)
+        denom_source = v_curr.detach()
+        return denom_source.abs() + self.relative_eps
 
     def forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
         decrease_violation = super().forward(v_curr=v_curr, v_next=v_next)
@@ -291,7 +289,6 @@ class RhoGatedConditionLoss(nn.Module):
             kappa=config.kappa,
             condition_margin=config.condition_margin,
             relative_eps=config.relative_condition_eps,
-            detach_relative_denominator=config.detach_relative_denominator,
         )
         self.relative_invariance_violation = RelativeInvarianceViolation(
             config.state_bounds,
@@ -393,7 +390,7 @@ class ConditionLirpaLoss(StateBoundsModule):
         self,
         signed_margin_model: nn.Module,
         train_bounds: th.Tensor,
-        relative_eps: float = 1e-4,
+        relative_eps: float = 1e-2,
         device="cpu"
     ):
         super().__init__(state_bounds=train_bounds, device=device)
@@ -440,7 +437,7 @@ class ConditionLirpaLoss(StateBoundsModule):
         with th.no_grad():
             v_centers = self.signed_margin_model.lyap_model(centers).squeeze(-1)
             
-        relative_violations = violations / v_centers.clamp_min(self.relative_eps)
+        relative_violations = violations / (v_centers.abs() + self.relative_eps)
         weights = self._calculate_weight(centers=centers)
         weighted_violations = weighted_mean(relative_violations, weights)
         return weighted_violations
@@ -623,6 +620,7 @@ class RFactorFrobeniusLoss(nn.Module):
     def forward(self) -> th.Tensor:
         current_norm = th.linalg.norm(self.lyap_model.r_factor, ord="fro")
         return th.square(current_norm - self.init_norm)
+
 
 class LyapunovTrainingLoss(nn.Module):
     """Full Lyapunov training objective with embedded models and sub-losses."""
@@ -890,5 +888,3 @@ class LyapunovTrainingLoss(nn.Module):
             active_policy_regularization=active_policy_regularization,
         )
         return parts.total
-
-
