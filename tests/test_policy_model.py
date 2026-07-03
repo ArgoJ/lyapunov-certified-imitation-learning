@@ -10,15 +10,30 @@ from pathlib import Path
 from torch.utils.data import DataLoader, TensorDataset
 
 from mpc_datagen import MPCConfig
-from lcil.imitation_learning import ImitationTrainingConfig, MLPPolicy, PolicyTrainer, TransformerPolicy
-from examples.double_integrator import load_policy_model
+from lcil.imitation_learning import BoundedPolicy, ImitationTrainingConfig, PolicyTrainer, TransformerPolicy
+from lcil.utils import MLP, load_mpc_config_json, save_mpc_config_json
+from lcil.utils.constants import MPC_CONFIG_FILENAME, POLICY_MODEL_FILENAME
 
 
-class TestMLPPolicyBounds(unittest.TestCase):
+def _build_mlp_feature_net(
+    layer_dims: list[int],
+    activations: list[str],
+    *,
+    dropout: float = 0.0,
+    normalization: str = "none",
+) -> MLP:
+    return MLP(
+        layer_dims=layer_dims,
+        activations=activations,
+        dropout=dropout,
+        normalization=normalization,
+    )
+
+
+class TestBoundedPolicyBounds(unittest.TestCase):
     def test_vector_bounds_match_output_dim(self) -> None:
-        model = MLPPolicy(
-            layer_sizes=[2, 16, 3],
-            activations=["relu", "identity"],
+        model = BoundedPolicy(
+            feature_net=_build_mlp_feature_net([2, 16, 3], ["relu", "identity"]),
             u_min=[-1.0, -2.0, -3.0],
             u_max=[1.0, 2.0, 3.0],
         )
@@ -32,23 +47,21 @@ class TestMLPPolicyBounds(unittest.TestCase):
 
     def test_mismatched_vector_bounds_raise(self) -> None:
         with self.assertRaises(ValueError):
-            MLPPolicy(
-                layer_sizes=[2, 16, 3],
-                activations=["relu", "identity"],
+            BoundedPolicy(
+                feature_net=_build_mlp_feature_net([2, 16, 3], ["relu", "identity"]),
                 u_min=[-1.0, -2.0],
                 u_max=[1.0, 2.0],
             )
 
     def test_forward_raw_returns_unclamped_output(self) -> None:
-        model = MLPPolicy(
-            layer_sizes=[1, 1],
-            activations=["identity"],
+        model = BoundedPolicy(
+            feature_net=_build_mlp_feature_net([1, 1], ["identity"]),
             u_min=-1.0,
             u_max=1.0,
         )
 
         with th.no_grad():
-            linear = model.mlp.net[0]
+            linear = model.feature_net.net[0]
             assert isinstance(linear, nn.Linear)
             linear.weight.fill_(2.0)
             linear.bias.fill_(0.0)
@@ -60,6 +73,24 @@ class TestMLPPolicyBounds(unittest.TestCase):
 
         self.assertTrue(th.allclose(bounded, th.tensor([[1.0]])))
         self.assertTrue(th.allclose(raw, th.tensor([[4.0]])))
+
+
+class TestBoundedPolicyReferences(unittest.TestCase):
+    def test_forward_raw_applies_reference_shift(self) -> None:
+        model = BoundedPolicy(
+            feature_net=_build_mlp_feature_net([1, 1], ["identity"]),
+            u_ref=[0.5],
+            x_ref=[1.0],
+        )
+
+        with th.no_grad():
+            linear = model.feature_net.net[0]
+            assert isinstance(linear, nn.Linear)
+            linear.weight.fill_(2.0)
+            linear.bias.fill_(0.0)
+
+        raw = model.forward_raw(th.tensor([[3.0]]))
+        self.assertTrue(th.allclose(raw, th.tensor([[4.5]])))
 
 
 class _WrappedRawPolicy(nn.Module):
@@ -107,104 +138,67 @@ class TestPolicyTrainerRawPredictions(unittest.TestCase):
         self.assertAlmostEqual(trainer.optimizer.param_groups[0]["weight_decay"], 1e-2)
 
 
-class TestMLPPolicyConfigSerialization(unittest.TestCase):
-    def test_save_stores_mpc_config_and_dataset_paths(self) -> None:
-        model = MLPPolicy(
-            layer_sizes=[2, 16, 1],
-            activations=["relu", "identity"],
-        )
-
-        cfg = MPCConfig(T_sim=40, N=20, nx=2, nu=1, dt=0.2)
-        cfg.constraints.lbx = np.array([-5.0, -3.0], dtype=float)
-        cfg.constraints.ubx = np.array([5.0, 3.0], dtype=float)
-        cfg.constraints.lbu = np.array([-1.0], dtype=float)
-        cfg.constraints.ubu = np.array([1.0], dtype=float)
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            checkpoint_path = tmp_path / "model.pt"
-
-            model.save(
-                checkpoint_path,
-                global_config=cfg,
-            )
-
-            payload = th.load(checkpoint_path, map_location="cpu", weights_only=True)
-        self.assertEqual(payload["train_data_config"], cfg.to_dict())
-
-    def test_load_reconstructs_mpc_config_from_dict(self) -> None:
-        model = MLPPolicy(
-            layer_sizes=[2, 16, 1],
-            activations=["relu", "identity"],
-        )
-
-        cfg = MPCConfig(T_sim=30, N=10, nx=2, nu=1, dt=0.15)
-        cfg.constraints.lbx = np.array([-2.0, -1.0], dtype=float)
-        cfg.constraints.ubx = np.array([2.0, 1.0], dtype=float)
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            checkpoint_path = Path(tmp_dir) / "model.pt"
-            model.save(checkpoint_path, global_config=cfg)
-            loaded = MLPPolicy.load(checkpoint_path)
-
-        self.assertIsInstance(loaded.global_config, MPCConfig)
-        assert loaded.global_config is not None
-        self.assertAlmostEqual(loaded.global_config.dt, cfg.dt)
-        np.testing.assert_allclose(loaded.global_config.constraints.lbx, cfg.constraints.lbx)
-        np.testing.assert_allclose(loaded.global_config.constraints.ubx, cfg.constraints.ubx)
-
-    def test_load_preserves_regularization_metadata(self) -> None:
-        model = MLPPolicy(
-            layer_sizes=[2, 16, 1],
-            activations=["relu", "identity"],
-            dropout=0.25,
-            normalization="layer_norm",
+class TestPolicySerialization(unittest.TestCase):
+    def test_save_writes_model_only_checkpoint(self) -> None:
+        model = BoundedPolicy(
+            feature_net=_build_mlp_feature_net([2, 16, 1], ["relu", "identity"]),
         )
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             checkpoint_path = Path(tmp_dir) / "model.pt"
             model.save(checkpoint_path)
-            loaded = MLPPolicy.load(checkpoint_path)
 
-        self.assertAlmostEqual(loaded.dropout, 0.25)
-        self.assertEqual(loaded.normalization, "layer_norm")
-        self.assertTrue(any(isinstance(module, nn.LayerNorm) for module in loaded.mlp.net))
-        self.assertTrue(any(isinstance(module, nn.Dropout) for module in loaded.mlp.net))
+            payload = th.load(checkpoint_path, map_location="cpu", weights_only=True)
+        self.assertEqual(payload["policy_type"], "BoundedPolicy")
+        self.assertNotIn("train_data_config", payload)
 
-
-class TestDoubleIntegratorPolicyLoader(unittest.TestCase):
-    def test_load_policy_model_auto_detects_mlp_checkpoint(self) -> None:
-        model = MLPPolicy(
-            layer_sizes=[2, 8, 1],
-            activations=["relu", "identity"],
+    def test_bounded_policy_round_trip_preserves_outputs(self) -> None:
+        model = BoundedPolicy(
+            feature_net=_build_mlp_feature_net([2, 16, 1], ["relu", "identity"]),
+            u_min=-1.0,
+            u_max=1.0,
         )
-        cfg = MPCConfig(T_sim=10, N=5, nx=2, nu=1, dt=0.1)
+        sample = th.randn(4, 2)
+        expected = model(sample)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             checkpoint_path = Path(tmp_dir) / "model.pt"
-            model.save(checkpoint_path, global_config=cfg)
-            loaded = load_policy_model(checkpoint_path, th.device("cpu"))
+            model.save(checkpoint_path)
+            loaded = BoundedPolicy.load(checkpoint_path)
 
-        self.assertIsInstance(loaded, MLPPolicy)
+        th.testing.assert_close(loaded(sample), expected)
 
-    def test_load_policy_model_auto_detects_transformer_checkpoint(self) -> None:
-        model = TransformerPolicy(
-            input_dim=2,
-            output_dim=1,
-            d_model=8,
-            nhead=2,
-            num_encoder_layers=1,
-            dim_feedforward=16,
-            max_seq_len=4,
+    def test_bounded_policy_round_trip_preserves_reference_shift(self) -> None:
+        model = BoundedPolicy(
+            feature_net=_build_mlp_feature_net([2, 16, 1], ["relu", "identity"]),
+            u_min=-1.0,
+            u_max=1.0,
         )
-        cfg = MPCConfig(T_sim=10, N=5, nx=2, nu=1, dt=0.1)
+        sample = th.randn(5, 2)
+        expected = model.forward_raw(sample)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             checkpoint_path = Path(tmp_dir) / "model.pt"
-            model.save(checkpoint_path, global_config=cfg)
-            loaded = load_policy_model(checkpoint_path, th.device("cpu"))
+            model.save(checkpoint_path)
+            loaded = BoundedPolicy.load(checkpoint_path)
 
-        self.assertIsInstance(loaded, TransformerPolicy)
+        th.testing.assert_close(loaded.forward_raw(sample), expected)
+
+
+class TestMPCConfigHelpers(unittest.TestCase):
+    def test_save_and_load_mpc_config_json_round_trip(self) -> None:
+        cfg = MPCConfig(T_sim=30, N=10, nx=2, nu=1, dt=0.15)
+        cfg.constraints.lbx = np.array([-2.0, -1.0], dtype=float)
+        cfg.constraints.ubx = np.array([2.0, 1.0], dtype=float)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / MPC_CONFIG_FILENAME
+            save_mpc_config_json(cfg, config_path)
+            loaded = load_mpc_config_json(config_path)
+
+        self.assertAlmostEqual(loaded.dt, cfg.dt)
+        np.testing.assert_allclose(loaded.constraints.lbx, cfg.constraints.lbx)
+        np.testing.assert_allclose(loaded.constraints.ubx, cfg.constraints.ubx)
 
 
 if __name__ == "__main__":

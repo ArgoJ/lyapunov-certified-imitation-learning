@@ -18,10 +18,11 @@ from lcil.lyapunov_learning import (
 from lcil.lyapunov_learning.counterexample import find_counter_examples
 from lcil.utils import GridSearchHelper, MLP, IntegrationMethod, config_field, ArgumentParserConfig
 from lcil.utils.lcil_plt.parallel_coodrdinates import parallel_coordinates_plotly
-from mpc_datagen import MPCDataset, mdg_plt
+from mpc_datagen import MPCDataset, MPCConfig, mdg_plt
 
 from . import (
     DoubleIntegratorDynamics,
+    load_mpc_config,
     load_policy_model,
     compute_riccati_value_matrix,
     build_lyapunov_func,
@@ -131,7 +132,7 @@ def parse_cli_args() -> GridSearchHelper[tuple[LyapunovLearningScriptConfig, Lya
 def load_policy_and_dataset(
     policy_dir: Path | str, 
     device: th.device
-) -> tuple[nn.Module, MPCDataset | None]:
+) -> tuple[nn.Module, MPCDataset | None, MPCConfig]:
     policy_dir = Path(policy_dir)
     policy_path = policy_dir / POLICY_MODEL_FILENAME
     
@@ -167,7 +168,7 @@ def load_policy_and_dataset(
     else:
         __logger__.info("Standard policy detected. Using directly for Lyapunov learning.")
 
-    return policy_model, rollout_dataset
+    return policy_model, rollout_dataset, load_mpc_config(policy_dir)
 
 
 def main() -> None:
@@ -180,8 +181,7 @@ def main() -> None:
     actual_output_root = Path(init_policy_dir) / LYAPUNOV_DIRNAME
     sweep.set_output_root(actual_output_root)
 
-    policy_model, rollout_dataset = load_policy_and_dataset(init_policy_dir, device)
-    policy_global_config = policy_model.global_config
+    policy_model, rollout_dataset, policy_global_config = load_policy_and_dataset(init_policy_dir, device)
     state_bounds = np.vstack([policy_global_config.constraints.lbx, policy_global_config.constraints.ubx])
     riccati_p = compute_riccati_value_matrix(float(policy_global_config.dt))
 
@@ -193,8 +193,7 @@ def main() -> None:
         policy_dir = script_config.policy_dir
         if policy_dir != init_policy_dir:
             __logger__.info(f"Loading policy model from {policy_dir} for this run...")
-            policy_model, rollout_dataset = load_policy_and_dataset(policy_dir, device)
-            policy_global_config = policy_model.global_config
+            policy_model, rollout_dataset, policy_global_config = load_policy_and_dataset(policy_dir, device)
             state_bounds = np.vstack([policy_global_config.constraints.lbx, policy_global_config.constraints.ubx])
             riccati_p = compute_riccati_value_matrix(float(policy_global_config.dt))
 

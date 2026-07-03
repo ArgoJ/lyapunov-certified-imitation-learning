@@ -22,6 +22,7 @@ from lcil.rollouts import build_rollout_dataset
 from . import (
     DoubleIntegratorDynamics,
     load_lyapunov_model,
+    load_mpc_config,
     load_policy_model,
     build_lyapunov_func,
     find_all_lyapunov_dirs,
@@ -174,11 +175,12 @@ def main() -> None:
             )
 
         policy_model = load_policy_model(policy_path, device)
+        mpc_cfg = load_mpc_config(policy_path)
         lyap_model = load_lyapunov_model(lyapunov_path, device)
         lyapunov_func = build_lyapunov_func(lyap_model, device)
 
         dyn_model = DoubleIntegratorDynamics(
-            dt=policy_model.global_config.dt,
+            dt=mpc_cfg.dt,
             abcrown_compatible_ops=True,
         ).to(device)
         dyn_model.eval()
@@ -204,6 +206,7 @@ def main() -> None:
         rollout_dataset = build_rollout_dataset(
             initial_states=test_results.rho_boundary.sampled_states,
             policy_model=policy_model,
+            mpc_config=mpc_cfg,
             dyn_model=dyn_model,
             lyap_model=lyap_model,
             rollout_steps=int(script_config.rollout_steps),
@@ -213,7 +216,7 @@ def main() -> None:
             cert_dir=cert_path,
             cert_result=cert_result,
             lyapunov_fn=lyap_model,
-            state_dim=int(policy_model.global_config.nx),
+            state_dim=int(mpc_cfg.nx),
             device=device,
         )
         _save_lyapunov_plot(

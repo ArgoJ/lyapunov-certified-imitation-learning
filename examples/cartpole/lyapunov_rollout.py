@@ -15,6 +15,7 @@ from . import (
     CartpoleDynamics,
     discover_latest_lyapunov_dir,
     discover_latest_policy_dir,
+    load_mpc_config,
     load_policy_model,
     load_lyapunov_model,
     require_dir,
@@ -86,14 +87,16 @@ def main() -> None:
         output_path = lyapunov_dir / LYAPUNOV_ROLLOUT_FILENAME
 
         policy_model = load_policy_model(policy_path, device)
+        mpc_cfg = load_mpc_config(lyapunov_dir)
         dyn_model = CartpoleDynamics(
-            dt=policy_model.global_config.dt,
+            dt=mpc_cfg.dt,
             abcrown_compatible_ops=True,
         )
         lyap_model = load_lyapunov_model(lyapunov_path, device)
 
         dataset = build_rollout_dataset(
             policy_model=policy_model,
+            mpc_config=mpc_cfg,
             dyn_model=dyn_model,
             lyap_model=lyap_model,
             device=device,

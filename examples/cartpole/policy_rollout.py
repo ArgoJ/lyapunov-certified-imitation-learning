@@ -16,6 +16,7 @@ from . import (
     CartpoleDynamics,
     compute_riccati_value_matrix,
     discover_latest_policy_dir,
+    load_mpc_config,
     load_policy_model,
 )
 from ..constants import POLICY_ROLLOUT_FILENAME
@@ -71,6 +72,7 @@ def main() -> None:
         policy_dir = Path(script_config.policy_dir).resolve()
 
         net = load_policy_model(policy_dir, device)
+        mpc_cfg = load_mpc_config(policy_dir)
 
         val_dataset_path = policy_dir / "val_dataset.pt"
         sampler = None
@@ -83,10 +85,11 @@ def main() -> None:
                 val_dataset_path,
             )
 
-        dt = getattr(getattr(net, "global_config", None), "dt", None)
+        dt = float(mpc_cfg.dt)
 
         solved_dataset = build_policy_rollout_dataset(
             policy_model=net,
+            mpc_config=mpc_cfg,
             dyn_model=CartpoleDynamics(dt=dt).to(device),
             rollout_steps=int(script_config.time_steps),
             device=device,

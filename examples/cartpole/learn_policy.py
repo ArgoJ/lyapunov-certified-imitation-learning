@@ -8,7 +8,7 @@ from datetime import datetime
 from mpc_datagen import MPCDataset
 
 from lcil.imitation_learning import *
-from lcil.utils import ArgumentParserConfig, EarlyStopping, GridSearchHelper, config_field
+from lcil.utils import ArgumentParserConfig, EarlyStopping, GridSearchHelper, config_field, MLP
 
 from . import (
     CARTPOLE_RESULTS_DIR,
@@ -98,9 +98,12 @@ def main() -> None:
         script_config, train_config = run.config
         __logger__.info("%s", run.progress_message())
 
+        x_ref = dataset_cfg.cost.yref[:dataset_cfg.nx]
+        u_ref = dataset_cfg.cost.yref[-dataset_cfg.nu:]
+
         loss_fn = BaselineDynamicsAwareLoss(
             base_loss=StateWeightedMSELoss(
-                x_reference=dataset_cfg.cost.yref[:dataset_cfg.nx],
+                x_reference=x_ref,
                 x_scale=dataset_cfg.constraints.ubx - dataset_cfg.constraints.lbx,
                 action_scale=None,
                 center_alpha=train_config.reference_center_alpha,
@@ -115,13 +118,17 @@ def main() -> None:
             dynamics_weight=train_config.dynamics_weight,
         )
 
-        feature_net = MLPPolicy(
-            [5 if script_config.use_angle_wrapper else 4] + [script_config.hidden_size] * script_config.layers + [dataset_cfg.nu],
-            [script_config.activation] * script_config.layers + ["identity"],
-            dropout=train_config.dropout,
+        feature_net = BoundedPolicy(
+            feature_net=MLP(
+                [5 if script_config.use_angle_wrapper else 4] + [script_config.hidden_size] * script_config.layers + [dataset_cfg.nu],
+                [script_config.activation] * script_config.layers + ["identity"],
+                dropout=train_config.dropout,
+                seed=train_config.seed,
+            ),
             u_min=dataset_cfg.constraints.lbu,
             u_max=dataset_cfg.constraints.ubu,
-            seed=train_config.seed,
+            u_ref=u_ref,
+            x_ref=x_ref,
         )
 
         current_train_cfg = replace(

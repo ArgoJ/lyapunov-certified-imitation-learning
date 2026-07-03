@@ -4,6 +4,7 @@ TRAINING_CONFIG_FILENAME = "training_config.json"
 TRAINING_METRICS_FILENAME = "training_metrics.npz"
 
 # Policy
+MPC_CONFIG_FILENAME = "mpc_config.json"
 POLICY_MODEL_FILENAME = "policy_model.pt"
 POLICY_ROLLOUT_FILENAME = "policy_rollouts.hdf5"
 

@@ -4,8 +4,9 @@ from pathlib import Path
 from typing import TypeVar
 from torch import nn
 
-from lcil.imitation_learning import MLPPolicy, TransformerPolicy
+from lcil.imitation_learning import BoundedPolicy, TransformerPolicy
 from lcil.lyapunov_learning import NeuralLyapunovCandidate
+from lcil.utils import load_mpc_config_for_run
 
 from .acados_ocp import get_batch_ocp_solver, get_model, get_ocp, get_ocp_solver
 from .double_integrator_dyn import DoubleIntegratorDynamics#
@@ -78,14 +79,16 @@ def _resolve_policy_model_cls(model_path: Path) -> type[nn.Module]:
     if not isinstance(checkpoint, dict):
         raise TypeError(f"Unsupported checkpoint format in '{model_path}'.")
 
-    if "layer_sizes" in checkpoint and "activations" in checkpoint:
-        return MLPPolicy
-    if "input_dim" in checkpoint and "output_dim" in checkpoint and "max_seq_len" in checkpoint:
-        return TransformerPolicy
+    policy_type = checkpoint.get("policy_type", None)
+    match policy_type:
+        case "BoundedPolicy":
+            return BoundedPolicy
+        case "TransformerPolicy":
+            return TransformerPolicy
 
     raise ValueError(
         f"Could not infer policy model type from checkpoint '{model_path}'. "
-        "Expected MLP or Transformer architecture metadata."
+        "Expected a checkpoint saved with explicit 'policy_type' metadata."
     )
 
 
@@ -99,6 +102,15 @@ def load_policy_model(
     checkpoint_path = model_loader._resolve_checkpoint_path(path, results_root=DOUBLE_INTEGRATOR_RESULTS_DIR)
     resolved_model_cls = _resolve_policy_model_cls(checkpoint_path) if model_cls is None else model_cls
     return model_loader[resolved_model_cls](checkpoint_path, device, DOUBLE_INTEGRATOR_RESULTS_DIR)
+
+
+def load_mpc_config(
+    path: Path | str | None,
+    model_name: str = POLICY_MODEL_FILENAME,
+):
+    model_loader = _GenericModelLoader(model_name)
+    checkpoint_path = model_loader._resolve_checkpoint_path(path, results_root=DOUBLE_INTEGRATOR_RESULTS_DIR)
+    return load_mpc_config_for_run(checkpoint_path.parent)
 
 
 def load_lyapunov_model(path, device, model_name: str = LYAPUNOV_MODEL_FILENAME) -> NeuralLyapunovCandidate:

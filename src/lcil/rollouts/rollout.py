@@ -4,6 +4,7 @@ import logging
 from torch import nn
 from numpy.typing import NDArray
 from mpc_datagen import MPCDataset
+from mpc_datagen.mpc_data import MPCConfig
 
 from .policy_rollout import PolicyRolloutConfig, PolicyRolloutGenerator, StateSampler
 from .lyapunov_rollout import LyapunovRollout
@@ -13,6 +14,7 @@ __logger__ = logging.getLogger(__name__)
 
 def build_policy_rollout_dataset(
     policy_model: nn.Module,
+    mpc_config: MPCConfig,
     dyn_model: nn.Module,
     rollout_steps: int,
     device: th.device,
@@ -21,7 +23,7 @@ def build_policy_rollout_dataset(
     n_samples: int | None = None,
 ) -> MPCDataset | None: 
     rollout_config = PolicyRolloutConfig.from_mpc_config(
-        policy_model.global_config,
+        mpc_config,
         t_sim=int(rollout_steps),
     )
 
@@ -45,6 +47,7 @@ def build_policy_rollout_dataset(
 
 def build_rollout_dataset(
     policy_model: nn.Module,
+    mpc_config: MPCConfig,
     dyn_model: nn.Module,
     lyap_model: nn.Module,
     rollout_steps: int,
@@ -83,6 +86,7 @@ def build_rollout_dataset(
     """
     rollout_dataset = build_policy_rollout_dataset(
         policy_model=policy_model,
+        mpc_config=mpc_config,
         dyn_model=dyn_model,
         rollout_steps=rollout_steps,
         device=device,

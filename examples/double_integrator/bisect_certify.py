@@ -20,6 +20,7 @@ from . import (
     DoubleIntegratorDynamics,
     discover_latest_lyapunov_dir,
     build_lyapunov_func,
+    load_mpc_config,
     load_lyapunov_model,
     load_policy_model,
     find_all_lyapunov_dirs,
@@ -118,10 +119,11 @@ def main() -> None:
         device = th.device(script_config.device)
         lyapunov_dir = Path(script_config.lyapunov_dir).resolve()
         policy_model = load_policy_model(lyapunov_dir, device, model_name=POLICY_MODEL_FILENAME)
+        mpc_cfg = load_mpc_config(lyapunov_dir, model_name=POLICY_MODEL_FILENAME)
         lyap_model = load_lyapunov_model(lyapunov_dir, device, model_name=LYAPUNOV_MODEL_FILENAME)
 
         dyn_model = DoubleIntegratorDynamics(
-            dt=policy_model.global_config.dt,
+            dt=mpc_cfg.dt,
             abcrown_compatible_ops=True,
         ).to(device)
         dyn_model.eval()

@@ -9,7 +9,7 @@ import numpy as np
 import torch as th
 
 from mpc_datagen import MPCDataset, mdg_plt
-from lcil.imitation_learning.models import MLPPolicy
+from lcil.imitation_learning.models import BoundedPolicy, TransformerPolicy
 from lcil.lyapunov_learning import (
     LyapunovTrainer,
     LyapunovTrainingConfig,
@@ -23,9 +23,9 @@ from lcil.utils.lcil_plt.parallel_coodrdinates import parallel_coordinates_plotl
 from . import (
     CartpoleAngleWrapper,
     CartpoleDynamics,
-    get_mpc_cfg_from_policy_model,
     compute_riccati_value_matrix,
     discover_latest_policy_dir,
+    load_mpc_config,
     load_policy_model,
 )
 from ..constants import LYAPUNOV_DIRNAME, LYAPUNOV_ROLLOUT_FILENAME, POLICY_MODEL_FILENAME, POLICY_ROLLOUT_FILENAME
@@ -139,7 +139,7 @@ def parse_cli_args() -> GridSearchHelper[tuple[LyapunovLearningScriptConfig, Lya
 def _load_policy_and_rollout_dataset(
     policy_dir: Path,
     device: th.device,
-) -> tuple[CartpoleAngleWrapper | MLPPolicy, MPCDataset | None]:
+) -> tuple[CartpoleAngleWrapper | BoundedPolicy, MPCDataset | None]:
     policy_model = load_policy_model(policy_dir, device)
     rollout_dataset_path = policy_dir / POLICY_ROLLOUT_FILENAME
     rollout_dataset = MPCDataset.load(rollout_dataset_path) if rollout_dataset_path.exists() else None
@@ -165,7 +165,7 @@ def main() -> None:
     sweep.set_output_root(actual_output_root)
 
     policy_model, rollout_dataset = _load_policy_and_rollout_dataset(init_policy_dir, device)
-    mpc_cfg = get_mpc_cfg_from_policy_model(policy_model)
+    mpc_cfg = load_mpc_config(init_policy_dir)
     state_bounds = np.vstack([
         mpc_cfg.constraints.lbx,
         mpc_cfg.constraints.ubx,
@@ -181,7 +181,7 @@ def main() -> None:
         if current_policy_dir != init_policy_dir:
             __logger__.info("Loading policy model from %s for this run...", current_policy_dir)
             policy_model, rollout_dataset = _load_policy_and_rollout_dataset(current_policy_dir, device)
-            mpc_cfg = get_mpc_cfg_from_policy_model(policy_model)
+            mpc_cfg = load_mpc_config(current_policy_dir)
             state_bounds = np.vstack([
                 mpc_cfg.constraints.lbx,
                 mpc_cfg.constraints.ubx,

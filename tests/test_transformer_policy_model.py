@@ -6,8 +6,6 @@ from pathlib import Path
 import numpy as np
 import torch as th
 
-from mpc_datagen import MPCConfig
-
 from lcil.imitation_learning import TransformerPolicy
 
 
@@ -131,7 +129,7 @@ class TestTransformerPolicySequenceIO(unittest.TestCase):
 
 
 class TestTransformerPolicyConfigSerialization(unittest.TestCase):
-    def test_save_and_load_round_trip_config_and_outputs(self) -> None:
+    def test_save_and_load_round_trip_outputs(self) -> None:
         model = TransformerPolicy(
             input_dim=2,
             output_dim=1,
@@ -149,24 +147,17 @@ class TestTransformerPolicyConfigSerialization(unittest.TestCase):
         )
         model.eval()
 
-        cfg = MPCConfig(T_sim=30, N=10, nx=2, nu=1, dt=0.15)
-        cfg.constraints.lbx = np.array([-2.0, -1.0], dtype=float)
-        cfg.constraints.ubx = np.array([2.0, 1.0], dtype=float)
-
         sample = th.randn(3, 2)
         expected = model(sample)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             checkpoint_path = Path(tmp_dir) / "transformer_model.pt"
-            model.save(checkpoint_path, global_config=cfg)
+            model.save(checkpoint_path)
             loaded = TransformerPolicy.load(checkpoint_path)
 
         loaded.eval()
         actual = loaded(sample)
 
-        self.assertIsInstance(loaded.global_config, MPCConfig)
-        assert loaded.global_config is not None
-        self.assertAlmostEqual(loaded.global_config.dt, cfg.dt)
         self.assertEqual(loaded.max_seq_len, 4)
         self.assertFalse(loaded.causal)
         self.assertEqual(loaded.output_mode, "per_step")

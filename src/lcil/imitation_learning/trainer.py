@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import inspect
@@ -32,6 +33,7 @@ from ..utils import (
     none_to_float,
 )
 from ..utils.constants import *
+from ..utils.mdg_helpers import save_mpc_config_for_run
 
 __logger__ = logging.getLogger(__name__)
 
@@ -544,10 +546,11 @@ class PolicyTrainer:
 
         # Policy model saving
         model_path = save_folder / POLICY_MODEL_FILENAME
-        self.model.save(
-            model_path,
-            global_config=global_config,
-        )
+        self.model.save(model_path)
+
+        # MPC config saving
+        if global_config is not None:
+            save_mpc_config_for_run(global_config, save_folder)
 
         # Metrics
         metrics_path = save_folder / TRAINING_METRICS_FILENAME

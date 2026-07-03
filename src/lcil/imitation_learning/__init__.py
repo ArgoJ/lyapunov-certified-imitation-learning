@@ -8,7 +8,7 @@ from .dataset import (
 )
 from .trainer import PolicyTrainer
 from .config import ImitationTrainingConfig
-from .models import MLPPolicy, TransformerPolicy
+from .models import BoundedPolicy, TransformerPolicy
 from .loss import (
     ScaledMSELoss,
     ActionWeightedMSELoss,
@@ -32,7 +32,7 @@ __all__ = [
     "ImitationTrainingConfig",
     
     # Models
-    "MLPPolicy",
+    "BoundedPolicy",
     "TransformerPolicy",
     
     # Losses

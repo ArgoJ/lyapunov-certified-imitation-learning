@@ -17,6 +17,7 @@ from lcil.rollouts import (
 from . import (
     DoubleIntegratorDynamics,
     discover_latest_policy_dir,
+    load_mpc_config,
     load_policy_model,
     compute_riccati_value_matrix,
 )
@@ -56,6 +57,7 @@ def main() -> None:
     n_samples = args.n_samples
 
     net = load_policy_model(policy_dir / POLICY_MODEL_FILENAME, device)
+    mpc_cfg = load_mpc_config(policy_dir)
 
     val_dataset_path = policy_dir / "val_dataset.pt"
     __logger__.info(f"dataset path: {val_dataset_path}")
@@ -68,7 +70,7 @@ def main() -> None:
             "Policy model does not have a validation dataset path. "
             "FeasibleSetSampler will not be able to sample from the dataset for rollouts."
         )
-    dt = net.global_config.dt
+    dt = float(mpc_cfg.dt)
 
     simulator = DoubleIntegratorDynamics(
         dt=dt,
@@ -77,6 +79,7 @@ def main() -> None:
 
     solved_dataset = build_policy_rollout_dataset(
         policy_model=net,
+        mpc_config=mpc_cfg,
         dyn_model=simulator,
         rollout_steps=40.0,
         device=device,

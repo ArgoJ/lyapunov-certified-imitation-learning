@@ -12,6 +12,7 @@ from lcil.utils import (
     GridSearchHelper,
     config_field,
     ArgumentParserConfig,
+    MLP,
 )
 from lcil.imitation_learning import *
 
@@ -104,18 +105,22 @@ def main() -> None:
         
         base_path = run.output_dir.resolve()
         
-        net = MLPPolicy(
-            [dataset_cfg.nx] + [script_config.hidden_size] * script_config.layers + [dataset_cfg.nu],
-            [script_config.activation] * script_config.layers + ["identity"],
-            dropout=train_config.dropout,
-            normalization="none",
-            u_min=dataset_cfg.constraints.lbu,
-            u_max=dataset_cfg.constraints.ubu,
-        )
-
         current_train_cfg = replace(
             train_config,
+            seed=train_config.seed + run.index if train_config.seed is not None else None,
             tb_log_dir=sweep._sweep_base_path.parent / "tb" / sweep.sweep_id / run.run_name
+        )
+
+        net = BoundedPolicy(
+            feature_net=MLP(
+                [dataset_cfg.nx] + [script_config.hidden_size] * script_config.layers + [dataset_cfg.nu],
+                [script_config.activation] * script_config.layers + ["identity"],
+                dropout=current_train_cfg.dropout,
+                normalization="none",
+                seed=current_train_cfg.seed,
+            ),
+            u_min=dataset_cfg.constraints.lbu,
+            u_max=dataset_cfg.constraints.ubu,
         )
 
         loss_fn = BaselineDynamicsAwareLoss(

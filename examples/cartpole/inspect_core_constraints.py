@@ -20,6 +20,7 @@ from . import (
     CartpoleDynamics,
     discover_latest_lyapunov_dir,
     discover_latest_policy_dir,
+    load_mpc_config,
     load_policy_model,
     load_lyapunov_model,
 )
@@ -149,8 +150,9 @@ def main() -> None:
 
         policy_model = load_policy_model(policy_dir, device)
         lyap_model = load_lyapunov_model(lyapunov_dir, device)
+        mpc_cfg = load_mpc_config(policy_dir)
 
-        dyn_model = CartpoleDynamics(dt=policy_model.net.global_config.dt).to(device)
+        dyn_model = CartpoleDynamics(dt=mpc_cfg.dt).to(device)
         dyn_model.eval()
 
         inspector = CoreConstraintInspector(

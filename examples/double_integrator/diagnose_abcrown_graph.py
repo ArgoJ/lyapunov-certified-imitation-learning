@@ -14,7 +14,7 @@ import torch as th
 from auto_LiRPA import BoundedModule
 from mpc_datagen import MPCConfig
 
-from lcil.imitation_learning import MLPPolicy, TransformerPolicy
+from lcil.imitation_learning import BoundedPolicy, TransformerPolicy
 from lcil.certification.models import LyapunovCoreVerifier
 from lcil.lyapunov_learning import NeuralLyapunovCandidate, QuadraticLyapunovCandidate
 from lcil.utils.base_models import MLP
@@ -404,18 +404,20 @@ def _build_synthetic_global_config(script_config: DiagnoseABCrownScriptConfig) -
 def _build_fresh_policy_model(
     script_config: DiagnoseABCrownScriptConfig,
     device: th.device,
-) -> MLPPolicy | TransformerPolicy:
+) -> tuple[BoundedPolicy | TransformerPolicy, MPCConfig]:
     global_config = _build_synthetic_global_config(script_config)
 
     if script_config.policy_arch == "mlp":
         hidden_sizes = tuple(int(size) for size in script_config.policy_hidden_sizes)
         layer_sizes = [int(script_config.state_dim), *hidden_sizes, int(script_config.control_dim)]
         activations = [str(script_config.policy_activation)] * len(hidden_sizes) + ["identity"]
-        policy_model: MLPPolicy | TransformerPolicy = MLPPolicy(
-            layer_sizes=layer_sizes,
-            activations=activations,
-            dropout=float(script_config.policy_dropout),
-            normalization=str(script_config.policy_normalization),
+        policy_model: BoundedPolicy | TransformerPolicy = BoundedPolicy(
+            feature_net=MLP(
+                layer_dims=layer_sizes,
+                activations=activations,
+                dropout=float(script_config.policy_dropout),
+                normalization=str(script_config.policy_normalization),
+            ),
             u_min=global_config.constraints.lbu,
             u_max=global_config.constraints.ubu,
         )
@@ -436,8 +438,7 @@ def _build_fresh_policy_model(
             u_max=global_config.constraints.ubu,
         )
 
-    policy_model.global_config = global_config
-    return policy_model.to(device).eval()
+    return policy_model.to(device).eval(), global_config
 
 
 def _build_fresh_lyapunov_model(
@@ -475,7 +476,7 @@ def main() -> int:
     script_config = parse_args()
     device = th.device(script_config.device)
 
-    policy_model = _build_fresh_policy_model(script_config, device)
+    policy_model, mpc_cfg = _build_fresh_policy_model(script_config, device)
     lyap_model = _build_fresh_lyapunov_model(script_config, device)
     kappa = float(script_config.kappa)
     condition_margin = float(script_config.condition_margin)
@@ -483,7 +484,7 @@ def main() -> int:
     lyapunov_source = f"fresh:{script_config.lyapunov_arch}"
 
     dyn_model = DoubleIntegratorDynamics(
-        dt=policy_model.global_config.dt,
+        dt=mpc_cfg.dt,
         abcrown_compatible_ops=True,
     ).to(device)
     dyn_model.eval()
@@ -497,7 +498,7 @@ def main() -> int:
     ).to(device)
     verifier.eval()
 
-    x = th.zeros((1, int(policy_model.global_config.nx)), dtype=th.float32, device=device)
+    x = th.zeros((1, int(mpc_cfg.nx)), dtype=th.float32, device=device)
 
     __logger__.info("Policy source: %s", policy_source)
     __logger__.info("Lyapunov source: %s", lyapunov_source)
@@ -505,7 +506,7 @@ def main() -> int:
         "Verifier summary: policy=%s lyapunov=%s state_dim=%d input_shape=%s device=%s.",
         type(policy_model).__name__,
         type(lyap_model).__name__,
-        int(policy_model.global_config.nx),
+        int(mpc_cfg.nx),
         tuple(x.shape),
         device,
     )

@@ -5,130 +5,162 @@ import logging
 from pathlib import Path
 from typing import Any, Literal
 
-from mpc_datagen import MPCConfig
-
 from ..utils.base_models import (
-    MLP,
     CertifiableTransformerEncoder,
     CertifiableTransformerEncoderLayer,
-    build_generator
+    build_generator,
+    load_feature_net,
+    save_feature_net
 )
 
 __logger__ = logging.getLogger(__name__)
 
 
-class MLPPolicy(nn.Module):
+def _resolve_bound_shape(
+    bound: float | list[float] | th.Tensor | None,
+    output_dim: int,
+    name: str,
+) -> th.Tensor | None:
+    if bound is None:
+        return None
+
+    bound_tensor = th.as_tensor(bound, dtype=th.float32)
+    if bound_tensor.ndim == 0:
+        return bound_tensor
+
+    flat_bound = bound_tensor.flatten()
+    if flat_bound.numel() != output_dim:
+        raise ValueError(
+            f"{name} must be a scalar or have {output_dim} elements, got {flat_bound.numel()}."
+        )
+    return flat_bound
+
+
+def _resolve_feature_net_dim(feature_net: nn.Module, attr_name: str, layer_index: int) -> int:
+    value = getattr(feature_net, attr_name, None)
+    if value is not None:
+        return int(value)
+
+    layer_dims = getattr(feature_net, "layer_dims", None)
+    if layer_dims is None:
+        raise AttributeError(
+            f"Feature net of type '{type(feature_net).__name__}' must define '{attr_name}' "
+            "or 'layer_dims'."
+        )
+    return int(layer_dims[layer_index])
+
+
+def _load_feature_net_and_payload(
+    path: str | Path,
+    map_location: th.device | str = "cpu",
+    strict: bool = True,
+    feature_net_cls: type[nn.Module] | None = None,
+    feature_net_args: tuple[Any, ...] | None = None,
+    feature_net_kwargs: dict[str, Any] | None = None,
+) -> tuple[nn.Module, dict[str, Any]]:
+    checkpoint_path = Path(path)
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Policy checkpoint not found at '{checkpoint_path}'.")
+
+    payload = th.load(checkpoint_path, map_location=map_location, weights_only=True)
+    
+    if not isinstance(payload, dict) or "state_dict" not in payload:
+        raise TypeError("Unsupported checkpoint format. Expected a dict with 'state_dict'.")
+
+    feature_net_path = checkpoint_path.with_name(payload["feature_net_path"])
+    feature_net = load_feature_net(
+        feature_net_path,
+        map_location=map_location,
+        strict=strict,
+        feature_net_cls=feature_net_cls,
+        feature_net_args=feature_net_args,
+        feature_net_kwargs=feature_net_kwargs,
+    )
+    return feature_net, payload
+
+
+
+class BoundedPolicy(nn.Module):
     """MLP policy model for imitation learning."""
 
     def __init__(
         self,
-        layer_sizes: list[int],
-        activations: list[str],
-        dropout: float = 0.0,
-        normalization: Literal["none", "layer_norm"] = "none",
+        feature_net: nn.Module,
         u_min: float | list[float] | th.Tensor | None = None,
         u_max: float | list[float] | th.Tensor | None = None,
-        seed: int | None = None,
+        u_ref: float | list[float] | th.Tensor | None = None,
+        x_ref: float | list[float] | th.Tensor | None = None,
     ) -> None:
         """
         Initialize the MLP policy.
         
         Parameters
         ----------
-        layer_sizes : list of int
-            List of layer sizes, including input and output dimensions. For example, [2, 16, 16, 1] would create a network with input dimension 2, two hidden layers of size 16, and output dimension 1.
-        activations : list of str
-            List of activation function names for each hidden layer. The length should be one less than the length of layer_sizes. Supported activations include "relu", "tanh", "sigmoid", "identity", etc.
-        dropout : float, optional
-            Dropout probability applied after each hidden activation.
-        normalization : {"none", "layer_norm"}, optional
-            Optional normalization applied on hidden-layer pre-activations.
+        feature_net : nn.Module
+            Feature extraction network that maps raw inputs to features.
         u_min : float or list[float] or torch.Tensor or None, optional
             Lower control bound(s). If provided, policy outputs are clamped from below.
             Can be a scalar or per-control-dimension bounds.
         u_max : float or list[float] or torch.Tensor or None, optional
             Upper control bound(s). If provided, policy outputs are clamped from above.
             Can be a scalar or per-control-dimension bounds.
+        u_ref : float or list[float] or torch.Tensor or None, optional
+            Reference control(s). If provided, policy outputs are shifted by this reference.
+            Can be a scalar or per-control-dimension references.
+        x_ref : float or list[float] or torch.Tensor or None, optional
+            Reference state(s). If provided, policy inputs are shifted by this reference.
+            Can be a scalar or per-state-dimension references.
         """
         super().__init__()
-        self.layer_sizes = list(layer_sizes)
-        self.activations = list(activations)
-        self.dropout = float(dropout)
-        self.normalization = str(normalization).strip().lower()
-        self.mlp = MLP(
-            layer_dims=layer_sizes,
-            activations=activations,
-            dropout=self.dropout,
-            normalization=self.normalization,
-            seed=seed,
-        )
+        self.feature_net = feature_net
 
-        output_dim = layer_sizes[-1]
-        u_min_tensor = self._validate_bound_shape(bound=u_min, output_dim=output_dim, name="u_min")
-        u_max_tensor = self._validate_bound_shape(bound=u_max, output_dim=output_dim, name="u_max")
+        output_dim = _resolve_feature_net_dim(feature_net, "output_dim", -1)
+        u_min_tensor = _resolve_bound_shape(bound=u_min, output_dim=output_dim, name="u_min")
+        u_max_tensor = _resolve_bound_shape(bound=u_max, output_dim=output_dim, name="u_max")
+        u_ref_tensor = _resolve_bound_shape(bound=u_ref, output_dim=output_dim, name="u_ref")
+        if x_ref is not None:
+            input_dim = _resolve_feature_net_dim(feature_net, "input_dim", 0)
+            x_ref_tensor = _resolve_bound_shape(bound=x_ref, output_dim=input_dim, name="x_ref")
+        else:
+            x_ref_tensor = None
 
         self.register_buffer("_u_min", u_min_tensor)
         self.register_buffer("_u_max", u_max_tensor)
-
-        self.global_config: MPCConfig | dict[str, Any] | None = None
-
-    @staticmethod
-    def _validate_bound_shape(
-        bound: float | list[float] | th.Tensor | None,
-        output_dim: int,
-        name: str,
-    ) -> th.Tensor | None:
-        if bound is None:
-            return None
-
-        bound_tensor = th.as_tensor(bound, dtype=th.float32)
-        if bound_tensor.ndim == 0:
-            return bound_tensor
-
-        flat_bound = bound_tensor.flatten()
-        if flat_bound.numel() != output_dim:
-            raise ValueError(
-                f"{name} must be a scalar or have {output_dim} elements, got {flat_bound.numel()}."
-            )
-        return flat_bound
+        self.register_buffer("_u_ref", u_ref_tensor)
+        self.register_buffer("_x_ref", x_ref_tensor)
 
     def forward_raw(self, x: th.Tensor) -> th.Tensor:
         """Return the unconstrained policy output used during imitation fitting."""
-        return self.mlp(x)
-
+        if self._x_ref is not None and self._u_ref is not None:
+            return self.feature_net(x) - self.feature_net(self._x_ref) + self._u_ref
+        return self.feature_net(x)
+    
     def forward(self, x: th.Tensor) -> th.Tensor:
         raw_u = self.forward_raw(x)
+        if self._u_min is None and self._u_max is None:
+            return raw_u
+        if self._u_min is None:
+            return th.clamp(raw_u, max=self._u_max)
+        if self._u_max is None:
+            return th.clamp(raw_u, min=self._u_min)
         return th.clamp(raw_u, min=self._u_min, max=self._u_max)
 
-    def save(
-        self,
-        path: str | Path,
-        global_config: MPCConfig | dict[str, Any] | None = None,
-    ) -> None:
+    def save(self, path: str | Path) -> None:
         checkpoint_path = Path(path)
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        if global_config is not None:
-            self.global_config = global_config
 
-        if isinstance(self.global_config, MPCConfig):
-            resolved_global_cfg = self.global_config.to_dict()
-        else:
-            resolved_global_cfg = self.global_config
+        feature_net_path = checkpoint_path.with_name(
+            checkpoint_path.stem + "_feature_net.pt"
+        )
+        save_feature_net(self.feature_net, feature_net_path)
 
-        # Pytorch checkpoint with model state and architecture metadata
         model_payload = {
+            "policy_type": self.__class__.__name__,
             "state_dict": self.state_dict(),
-            "layer_sizes": list(self.layer_sizes),
-            "activations": list(self.activations),
-            "dropout": self.dropout,
-            "normalization": self.normalization,
-            "train_data_config": resolved_global_cfg
+            "feature_net_path": feature_net_path.name,
         }
         th.save(model_payload, checkpoint_path)
-
         __logger__.info(f"Saved policy weights and config to {checkpoint_path.parent}")
-
 
     @classmethod
     def load(
@@ -136,46 +168,28 @@ class MLPPolicy(nn.Module):
         path: str | Path,
         map_location: th.device | str = "cpu",
         strict: bool = True,
-    ) -> "MLPPolicy":
-        checkpoint_path = Path(path)
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Policy checkpoint not found at '{checkpoint_path}'.")
-
-        checkpoint = th.load(checkpoint_path, map_location=map_location, weights_only=True)
+        feature_net_cls: type[nn.Module] | None = None,
+        feature_net_args: tuple[Any, ...] | None = None,
+        feature_net_kwargs: dict[str, Any] | None = None,
+    ) -> "BoundedPolicy":
+        feature_net, payload = _load_feature_net_and_payload(
+            path,
+            map_location=map_location,
+            strict=strict,
+            feature_net_cls=feature_net_cls,
+            feature_net_args=feature_net_args,
+            feature_net_kwargs=feature_net_kwargs,
+        )
         
-        if not isinstance(checkpoint, dict) or "state_dict" not in checkpoint:
-            raise TypeError("Unsupported checkpoint format. Expected a dict with 'state_dict'.")
-
-        state_dict = checkpoint["state_dict"]
-        layer_sizes = checkpoint.get("layer_sizes", None)
-        activations = checkpoint.get("activations", None)
-        dropout = float(checkpoint.get("dropout", 0.0))
-        normalization = str(checkpoint.get("normalization", "none"))
-        raw_global_cfg = checkpoint.get("train_data_config", None)
-
-        if layer_sizes is None or activations is None:
-            raise ValueError("Missing architecture metadata in model.pt.")
-
-        global_cfg = None if raw_global_cfg is None else MPCConfig.from_dict(raw_global_cfg)
-
-        # Model instantiation
+        state_dict = payload["state_dict"]
         u_min = state_dict.get("_u_min", None)
         u_max = state_dict.get("_u_max", None)
-
-        model = cls(
-            layer_sizes=layer_sizes,
-            activations=activations,
-            dropout=dropout,
-            normalization=normalization,
-            u_min=u_min,
-            u_max=u_max,
-        )
+        u_ref = state_dict.get("_u_ref", None)
+        x_ref = state_dict.get("_x_ref", None)
+        model = cls(feature_net=feature_net, u_min=u_min, u_max=u_max, u_ref=u_ref, x_ref=x_ref)
         model.load_state_dict(state_dict, strict=strict)
-        model.global_config = global_cfg
-
-        __logger__.debug(f"Loaded {cls.__name__} from {checkpoint_path}")
+        __logger__.debug(f"Loaded {cls.__name__} from {path}")
         return model
-
 
 
 class TransformerPolicy(nn.Module):
@@ -268,6 +282,7 @@ class TransformerPolicy(nn.Module):
         self.causal = bool(causal)
         self.output_mode = output_mode
         self.device = th.device(device)
+        self.seed: int | None = seed
 
         encoder_layer = CertifiableTransformerEncoderLayer(
             d_model=self.d_model,
@@ -290,13 +305,10 @@ class TransformerPolicy(nn.Module):
 
         self._init_weights()
 
-        u_min_tensor = self._validate_bound_shape(bound=u_min, output_dim=self.output_dim, name="u_min")
-        u_max_tensor = self._validate_bound_shape(bound=u_max, output_dim=self.output_dim, name="u_max")
+        u_min_tensor = _resolve_bound_shape(bound=u_min, output_dim=self.output_dim, name="u_min")
+        u_max_tensor = _resolve_bound_shape(bound=u_max, output_dim=self.output_dim, name="u_max")
         self.register_buffer("_u_min", u_min_tensor)
         self.register_buffer("_u_max", u_max_tensor)
-
-        self.global_config: MPCConfig | dict[str, Any] | None = None
-        self.seed: int | None = seed
 
     def _init_weights(self) -> None:
         """Apply lightweight initialization for learnable projections and norms."""
@@ -311,26 +323,6 @@ class TransformerPolicy(nn.Module):
             elif isinstance(module, nn.LayerNorm):
                 nn.init.ones_(module.weight)
                 nn.init.zeros_(module.bias)
-
-    @staticmethod
-    def _validate_bound_shape(
-        bound: float | list[float] | th.Tensor | None,
-        output_dim: int,
-        name: str,
-    ) -> th.Tensor | None:
-        if bound is None:
-            return None
-
-        bound_tensor = th.as_tensor(bound, dtype=th.float32)
-        if bound_tensor.ndim == 0:
-            return bound_tensor
-
-        flat_bound = bound_tensor.flatten()
-        if flat_bound.numel() != output_dim:
-            raise ValueError(
-                f"{name} must be a scalar or have {output_dim} elements, got {flat_bound.numel()}."
-            )
-        return flat_bound
 
     def _prepare_inputs(self, x: th.Tensor) -> tuple[th.Tensor, bool]:
         if x.ndim == 2:
@@ -394,20 +386,12 @@ class TransformerPolicy(nn.Module):
     def save(
         self,
         path: str | Path,
-        global_config: MPCConfig | dict[str, Any] | None = None,
     ) -> None:
         checkpoint_path = Path(path)
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if global_config is not None:
-            self.global_config = global_config
-
-        if isinstance(self.global_config, MPCConfig):
-            resolved_global_cfg = self.global_config.to_dict()
-        else:
-            resolved_global_cfg = self.global_config
-
         model_payload = {
+            "policy_type": self.__class__.__name__,
             "state_dict": self.state_dict(),
             "input_dim": self.input_dim,
             "output_dim": self.output_dim,
@@ -420,7 +404,6 @@ class TransformerPolicy(nn.Module):
             "max_seq_len": self.max_seq_len,
             "causal": self.causal,
             "output_mode": self.output_mode,
-            "train_data_config": resolved_global_cfg,
         }
         th.save(model_payload, checkpoint_path)
 
@@ -442,8 +425,6 @@ class TransformerPolicy(nn.Module):
             raise TypeError("Unsupported checkpoint format. Expected a dict with 'state_dict'.")
 
         state_dict = checkpoint["state_dict"]
-        raw_global_cfg = checkpoint.get("train_data_config", None)
-        global_cfg = None if raw_global_cfg is None else MPCConfig.from_dict(raw_global_cfg)
 
         required_fields = (
             "input_dim",
@@ -482,7 +463,6 @@ class TransformerPolicy(nn.Module):
             u_max=state_dict.get("_u_max", None),
         )
         model.load_state_dict(state_dict, strict=strict)
-        model.global_config = global_cfg
 
         __logger__.info(f"Loaded {cls.__name__} from {checkpoint_path}")
         return model
