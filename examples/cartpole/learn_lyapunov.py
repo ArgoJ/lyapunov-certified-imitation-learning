@@ -244,7 +244,7 @@ def main() -> None:
         curriculum_result = trainer.train_with_scaled_bounds(curriculum_scales)
         train_results = curriculum_result.final_result
 
-        trainer.save(base_path)
+        trainer.save(base_path, mpc_config=mpc_cfg)
         if train_results.aborted:
             __logger__.warning("Skipping run %s: %s", run.run_name, train_results.abort_reason)
 

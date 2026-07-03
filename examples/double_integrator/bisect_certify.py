@@ -57,7 +57,6 @@ def _build_certification_defaults(
         cert_bounds=training_config.train_bounds, # TODO: apply percentage of these bounds
         bins_per_dim=1,
         center_refinement_factor=1.0,
-        origin_exclusion=0.0,
         lirpa_method="crown",
         condition_margin=float(training_config.condition_margin),
         suppress_native_output=True,

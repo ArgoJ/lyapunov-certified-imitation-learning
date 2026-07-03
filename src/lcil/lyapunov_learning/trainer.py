@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from numpy.typing import NDArray
 from pathlib import Path
 from dataclasses import replace
+from mpc_datagen.mpc_data import MPCConfig
 from rich.progress import (
     Progress,
     TextColumn,
@@ -55,6 +56,7 @@ from ..utils import (
     build_generator,
     none_to_float,
     timeit,
+    save_mpc_config_for_run,
 )
 from ..utils.constants import *
 
@@ -590,6 +592,7 @@ class LyapunovTrainer:
     def save(
         self,
         save_folder: os.PathLike,
+        mpc_config: MPCConfig | None = None,
     ) -> None:
         """Utility function to save training results and model checkpoints.
 
@@ -597,6 +600,8 @@ class LyapunovTrainer:
         ----------
         save_folder : PathLike[str]
             Folder where the models and config should be saved.
+        mpc_config : MPCConfig | None, optional
+            Optional MPC configuration saved alongside the copied policy checkpoint.
         """
         save_folder = Path(save_folder).resolve()
         save_folder.mkdir(parents=True, exist_ok=True)
@@ -611,6 +616,10 @@ class LyapunovTrainer:
 
         save_model_checkpoint(self.lyap_model, lyap_model_path)
         save_model_checkpoint(self.policy_model, policy_model_path)
+
+        if mpc_config is not None:
+            save_mpc_config_for_run(mpc_config, save_folder)
+        
 
         # Metric saving
         if self.metrics is not None:

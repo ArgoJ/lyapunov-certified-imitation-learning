@@ -232,7 +232,7 @@ def main() -> None:
             state_dim=policy_global_config.nx,
             state_bounds=state_bounds,
             seed=seed,
-            tb_log_dir=base_path.parent / "tb" / run.run_name,
+            tb_log_dir=actual_output_root / "tb" / sweep.sweep_id / run.run_name,
         )
 
         # ---------------------------------------------------------------------
@@ -251,7 +251,7 @@ def main() -> None:
         )
         
         train_results = trainer.train()
-        trainer.save(base_path)
+        trainer.save(base_path, mpc_config=policy_global_config)
         if train_results.aborted:
             __logger__.warning(f"Skipping run {run.run_name}: {train_results.abort_reason}")
             continue

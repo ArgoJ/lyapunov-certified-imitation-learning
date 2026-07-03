@@ -121,6 +121,8 @@ def main() -> None:
             ),
             u_min=dataset_cfg.constraints.lbu,
             u_max=dataset_cfg.constraints.ubu,
+            u_ref=dataset_cfg.cost.yref[-dataset_cfg.nu:],
+            x_ref=dataset_cfg.cost.yref[:dataset_cfg.nx],
         )
 
         loss_fn = BaselineDynamicsAwareLoss(
