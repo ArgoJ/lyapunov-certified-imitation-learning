@@ -166,7 +166,7 @@ class BaseABCrownCertifier(ABC):
             .set(general__complete_verifier="input_bab")
             .set(general__enable_incomplete_verification=False)
             .set(solver__batch_size=int(self.config.batch_size))
-            .set(solver__bound_prop_method=self.config.abcrown_bound_prop_method)
+            .set(solver__bound_prop_method="crown")
             .set(bab__branching__method="sb")
             .set(bab__branching__input_split__enable=True)
             .set(bab__branching__input_split__ibp_enhancement=True)

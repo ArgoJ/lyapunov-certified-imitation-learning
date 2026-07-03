@@ -206,11 +206,6 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
 
 
     # AB-Crown specific
-    abcrown_bound_prop_method: str = config_field(
-        default="crown",
-        help="AB-CROWN bound propagation method for closed-loop region checks.",
-        display_alias="abcrown_method",
-    )
     abcrown_input_split_partitions: int = config_field(
         default=2,
         help="Number of input split partitions used by AB-CROWN branch-and-bound.",
@@ -276,10 +271,6 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         object.__setattr__(self, "origin_exclusion", normalized_origin_exclusion)
         object.__setattr__(self, "split_dim_weights", split_dim_weights)
         object.__setattr__(self, "lirpa_method", self.lirpa_method.strip().lower())
-        object.__setattr__(self, "abcrown_bound_prop_method", self.abcrown_bound_prop_method.strip().lower())
-
-        if self.abcrown_bound_prop_method == "alpha-crown":
-            raise ValueError(f"Invalid abcrown_bound_prop_method: {self.abcrown_bound_prop_method}")
 
         if all(e == 0.0 for e in self.origin_exclusion):
             __logger__.warning("You may want to set a positive origin_exclusion to avoid numerical issues near the origin during certification.")
@@ -301,7 +292,6 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         batch_size: int = 512,
         abcrown_timeout: float | None = None,
         abcrown_max_domains: int | None = None,
-        abcrown_bound_prop_method: str = "crown",
         abcrown_input_split_partitions: int = 2,
         max_recursion_depth: int = 10,
         skip_boundary_core_cert: bool = False,
@@ -336,7 +326,6 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
             "batch_size": batch_size,
             "abcrown_timeout": abcrown_timeout,
             "abcrown_max_domains": abcrown_max_domains,
-            "abcrown_bound_prop_method": abcrown_bound_prop_method,
             "abcrown_input_split_partitions": abcrown_input_split_partitions,
             "max_recursion_depth": max_recursion_depth,
             "skip_boundary_core_cert": skip_boundary_core_cert,
