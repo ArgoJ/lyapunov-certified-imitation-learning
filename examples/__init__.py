@@ -8,4 +8,5 @@ from .example_utils import (
     discover_model_dir,
     default_cert_result_path,
     GenericModelLoader,
+    sample_uncertified_regions,
 )

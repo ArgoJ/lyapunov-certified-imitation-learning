@@ -40,7 +40,8 @@ def _prepare_parallel_data(
     state_order: Sequence[int] | None,
     origin_exclusion: Sequence[float] | None,
     max_lines: int | None,
-) -> tuple[NDArray, NDArray, list[str], int, int, int]:
+    cond_violations: NDArray | None = None,
+) -> tuple[NDArray, tuple[NDArray, NDArray] | None, list[str], int, int, int, NDArray | None]:
     """Zentrale Funktion zur Vorbereitung (Validierung, Downsampling, Normalisierung) der Daten."""
     x = np.asarray(states, dtype=np.float32)
     if x.ndim != 2 or x.shape[0] == 0:
@@ -48,10 +49,18 @@ def _prepare_parallel_data(
 
     n_total, d = x.shape
 
+    v = None
+    if cond_violations is not None:
+        v = np.asarray(cond_violations, dtype=np.float32)
+        if v.ndim != 1 or v.shape[0] != n_total:
+            raise ValueError(f"violations must have shape ({n_total},), got {v.shape}.")
+
     # Downsampling
     if max_lines is not None and n_total > max_lines:
         idx = np.linspace(0, n_total - 1, num=max_lines, dtype=int)
         x = x[idx]
+        if v is not None:
+            v = v[idx]
     n = x.shape[0]
 
     # resolve labels
@@ -81,7 +90,7 @@ def _prepare_parallel_data(
         lower_norm = _normalize_states(np.array([-eps]), bounds_ordered)[0]
         origin_exc_bounds = (lower_norm, upper_norm)
         
-    return x_norm, origin_exc_bounds, labels, n_total, n, d
+    return x_norm, origin_exc_bounds, labels, n_total, n, d, v
 
 
 # --- MATPLOTLIB IMPLEMENTIERUNG ---
@@ -93,7 +102,7 @@ def parallel_coordinates_matplot(
     origin_exclusion: float | Sequence[float] | None = None,
     max_lines: int = 64,
 ):
-    x_norm, origin_exc, labels, _, n, d = _prepare_parallel_data(
+    x_norm, origin_exc, labels, _, n, d, _ = _prepare_parallel_data(
         states, state_bounds, state_labels, state_order, origin_exclusion, max_lines
     )
 
@@ -143,10 +152,11 @@ def parallel_coordinates_plotly(
     title: str | None = None,
     annotation_text: str | None = None,
     html_path: Path | None = None,
+    cond_violations: NDArray | None = None,
 ) -> go.Figure | None:
 
-    x_norm, origin_exc, labels, n_total, n, d = _prepare_parallel_data(
-        states, state_bounds, state_labels, state_order, origin_exclusion, max_lines
+    x_norm, origin_exc, labels, n_total, n, d, v = _prepare_parallel_data(
+        states, state_bounds, state_labels, state_order, origin_exclusion, max_lines, cond_violations
     )
 
     dimensions = []
@@ -159,8 +169,24 @@ def parallel_coordinates_plotly(
             ticktext=["-1", "0", "+1"],
         ))
 
+    if v is not None:
+        dimensions.append(dict(
+            label="Violation",
+            values=v,
+        ))
+
+    line_dict = dict(color=line_color)
+    if v is not None:
+        line_dict = dict(
+            color=v,
+            colorscale="Inferno",
+            showscale=True,
+            cmin=float(np.min(v)),
+            cmax=float(np.max(v)),
+        )
+
     fig = go.Figure(data=go.Parcoords(
-        line=dict(color=line_color),
+        line=line_dict,
         dimensions=dimensions,
         labelfont=dict(size=20, color="black"),
         tickfont=dict(size=15, color="#333333"),

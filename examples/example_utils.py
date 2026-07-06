@@ -433,3 +433,65 @@ def get_initial_states(dataset: MPCDataset) -> NDArray:
         else:
             initial_states.append(np.full((dataset.global_config.nx,), np.nan))
     return np.array(initial_states)
+
+
+def sample_uncertified_regions(
+    uncert_regions: NDArray, 
+    samples_per_region: int = 50,
+    seed: int | None = None
+) -> NDArray:
+    """Sample points uniformly from uncertified regions defined by their lower and upper bounds.
+
+    Parameters
+    ----------
+    uncert_regions : NDArray
+        Array of shape (num_regions, 2, d) with [lower_bounds, upper_bounds].
+    samples_per_region : int, optional
+        Number of state samples per region, by default 50
+    seed : int | None, optional
+        Optional random seed for reproducible results, by default None
+
+    Returns
+    -------
+    NDArray
+        Array of shape (num_regions * samples_per_region, d) with sampled points.
+
+    Raises
+    ------
+    ValueError
+        If `uncert_regions` does not have the expected shape (num_regions, 2, d).
+    """
+    if uncert_regions is None or uncert_regions.size == 0:
+        return np.empty((0, 0), dtype=np.float32)
+        
+    if uncert_regions.ndim != 3 or uncert_regions.shape[1] != 2:
+        raise ValueError("uncert_regions must have the shape (num_regions, 2, d).")
+
+    num_regions, _, d = uncert_regions.shape
+    rng = np.random.default_rng(seed)
+
+    low = uncert_regions[:, 0, :][:, np.newaxis, :]
+    high = uncert_regions[:, 1, :][:, np.newaxis, :]
+
+    rand_vals = rng.uniform(0.0, 1.0, size=(num_regions, samples_per_region, d))
+    sampled_regions = low + rand_vals * (high - low)
+
+    return sampled_regions.reshape(-1, d)
+
+
+def get_condition_violations(
+    lyap_model: nn.Module,
+    dyn_model: nn.Module,
+    policy_model: nn.Module,
+    kappa: float,
+    states: NDArray,
+    device: th.device,
+) -> NDArray:
+    with th.no_grad():
+        states_th = th.as_tensor(states, dtype=th.float32, device=device)
+        u_th = policy_model(states_th)
+        next_states_th = dyn_model(states_th, u_th)
+        v_curr = lyap_model(states_th).squeeze(-1)
+        v_next = lyap_model(next_states_th).squeeze(-1)
+        cond_violations = (v_next - (1.0 - kappa) * v_curr).cpu().numpy()
+    return cond_violations

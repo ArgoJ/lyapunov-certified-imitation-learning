@@ -641,3 +641,71 @@ class RegionManager:
             failed_regions,
             resolved_regions,
         )
+
+    def get_best_fallback_rho(self, rho_min: float, sublevel_tolerance: float) -> float:
+        table = self.region_table
+        if table.ids.numel() == 0:
+            return float(rho_min)
+
+        tol = float(sublevel_tolerance)
+        rho_min = float(rho_min)
+
+        valid_parent_ids = table.parent_ids[table.parent_ids >= 0]
+        is_leaf = ~th.isin(table.ids, valid_parent_ids)
+
+        if not is_leaf.any():
+            return rho_min
+
+        leaf_lower = table.lower_v[is_leaf]
+        leaf_upper = table.upper_v[is_leaf]
+        leaf_core_safe = table.core_status[is_leaf] == int(CoreStatus.SAFE)
+        leaf_complete_safe_max_rho = table.complete_safe_max_rho[is_leaf]
+
+        side_lengths = (table.regions[:, 1, :] - table.regions[:, 0, :]).clamp_min(0.0)
+        region_volumes = side_lengths.prod(dim=1).to(th.float64)
+        leaf_volumes = region_volumes[is_leaf]
+
+        candidate_rhos = th.cat([
+            th.tensor([rho_min], dtype=th.float32, device=self.device),
+            table.complete_safe_max_rho,
+            table.lower_v - tol,
+            table.upper_v - tol,
+        ])
+        candidate_rhos = th.unique(candidate_rhos)
+        candidate_rhos = candidate_rhos[
+            th.isfinite(candidate_rhos) & (candidate_rhos >= rho_min)
+        ]
+
+        if candidate_rhos.numel() == 0:
+            return rho_min
+
+        best_rho = rho_min
+        best_volume = -1.0
+        eps = 1e-12
+
+        for rho_tensor in candidate_rhos.tolist():
+            rho = float(rho_tensor)
+            threshold = rho + tol
+
+            relevant = leaf_lower <= threshold
+            if not relevant.any():
+                continue
+
+            certified = (
+                ((leaf_upper <= threshold) & leaf_core_safe)
+                | (leaf_complete_safe_max_rho >= rho)
+            )
+
+            has_holes = (relevant & ~certified).any()
+            if has_holes:
+                continue
+
+            covered_volume = float(leaf_volumes[relevant].sum().item())
+
+            if covered_volume > best_volume + eps:
+                best_volume = covered_volume
+                best_rho = rho
+            elif abs(covered_volume - best_volume) <= eps and rho > best_rho:
+                best_rho = rho
+
+        return best_rho

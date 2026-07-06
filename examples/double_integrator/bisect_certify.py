@@ -25,6 +25,8 @@ from . import (
     load_lyapunov_model,
     load_policy_model,
     find_all_lyapunov_dirs,
+    sample_uncertified_regions,
+    get_condition_violations,
 )
 from ..constants import *
 
@@ -184,17 +186,32 @@ def main() -> None:
             html_path=save_dir / "certification_lyapunov_plot.html",
         )
 
-        # Diagnostic: parallel coordinates of uncertified region centers
-        uncert_regions = cert_results.uncertified_regions
+        # Diagnostic: parallel coordinates of uncertified region samples
+        uncert_regions = cert_results.certified_sublevel_regions
         if uncert_regions is not None and len(uncert_regions) > 0:
-            uncert_centers = 0.5 * (uncert_regions[:, 0, :] + uncert_regions[:, 1, :])
+            uncert_states = sample_uncertified_regions(
+                uncert_regions, 
+                samples_per_region=50, 
+                seed=3654743
+            )
+            
+            cond_violations = get_condition_violations(
+                lyap_model=lyap_model,
+                dyn_model=dyn_model,
+                policy_model=policy_model,
+                kappa=certification_config.kappa,
+                states=uncert_states,
+                device=device,
+            )
+
             parallel_coordinates_plotly(
-                states=uncert_centers,
+                states=uncert_states,
                 state_bounds=certification_config.cert_bounds,
                 state_labels=["$x$", "$v$"],
                 origin_exclusion=certification_config.origin_exclusion,
-                title=f"Uncertified Region Centers (n={len(uncert_centers)}, \u03c1={cert_results.rho:.4f})",
+                title=f"Uncertified Region Samples (n={len(uncert_states)}, \u03c1={cert_results.rho:.4f})",
                 html_path=save_dir / "uncertified_regions_parallel_coords.html",
+                cond_violations=cond_violations,
             )
 
         del policy_model

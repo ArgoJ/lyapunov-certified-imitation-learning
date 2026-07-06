@@ -65,3 +65,7 @@ line-length = 100
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
+
+[tool.pyrefly]
+project-includes = ["src", "examples"]
+search-path = [".", "src", "examples"]

@@ -17,6 +17,8 @@ from ..example_utils import (
     require_file,
     require_dir,
     get_initial_states,
+    sample_uncertified_regions,
+    get_condition_violations,
 )
 from ..constants import *
 
@@ -69,7 +71,7 @@ def discover_latest_policy_and_lyapunov_dirs(
     )
 
 
-def discover_latest_cert_lyapunov_path(lyapunov_root: Path | str | None = None) -> Path:
+def discover_latest_cert_lyapunov_path(lyapunov_root: Path | None = None) -> Path:
     resolved_lyapunov_root = discover_latest_lyapunov_dir() if lyapunov_root is None else lyapunov_root
     return _discover_latest_cert_lyapunov_path(resolved_lyapunov_root.parent)
 

@@ -760,7 +760,10 @@ class BisectCertifier:
             return None
 
         # Fallback detail collection
-        fallback_rho = max(float(rho_estimate), self.config.rho_min)
+        fallback_rho = self.region_manager.get_best_fallback_rho(
+            rho_min=self.config.rho_min,
+            sublevel_tolerance=self.config.sublevel_tolerance
+        )
         __logger__.info("Collecting diagnostic details at fallback rho=%.6f.", fallback_rho)
         
         return self._collect_certification_details(rho=fallback_rho)

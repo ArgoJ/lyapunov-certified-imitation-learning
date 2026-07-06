@@ -3,7 +3,7 @@ import unittest
 import torch as th
 
 from lcil.certification.lirpa_lyapunov_bounds import LyapunovRegionBounds
-from lcil.certification.region_manager import RegionManager
+from lcil.certification.region_manager import RegionManager, RegionTable, CoreStatus
 
 
 class _StubRegionBuilder:
@@ -220,6 +220,58 @@ class TestRegionManager(unittest.TestCase):
         th.testing.assert_close(split_resolved, resolved_regions)
         self.assertIsNone(split_dims)
         self.assertEqual(adjacency_tolerance, 1e-6)
+
+    def test_get_best_fallback_rho_calculates_max_volume_without_holes(self) -> None:
+        ids = th.tensor([0, 1, 2, 3, 4], dtype=th.long)
+        parent_ids = th.tensor([-1, 0, 0, 0, 0], dtype=th.long)
+        
+        regions = th.tensor([
+            [[0.0, 0.0], [3.0, 3.0]], # Parent
+            [[0.0, 0.0], [1.0, 1.0]], # Leaf 1, Vol = 1
+            [[1.0, 0.0], [3.0, 1.0]], # Leaf 2, Vol = 2
+            [[0.0, 1.0], [2.0, 3.0]], # Leaf 3, Vol = 4
+            [[2.0, 1.0], [3.0, 3.0]], # Leaf 4, Vol = 2
+        ], dtype=th.float32)
+        
+        lower_v = th.tensor([0.1, 0.1, 0.3, 0.5, 0.6], dtype=th.float32)
+        upper_v = th.tensor([0.9, 0.3, 0.5, 0.8, 0.9], dtype=th.float32)
+        
+        core_status = th.tensor([
+            CoreStatus.UNCHECKED,
+            CoreStatus.SAFE,       # L1
+            CoreStatus.UNCHECKED,  # L2
+            CoreStatus.SAFE,       # L3
+            CoreStatus.UNCHECKED,  # L4
+        ], dtype=th.long)
+        
+        complete_safe_max_rho = th.tensor([
+            -1.0,
+            -1.0,
+            1.0, # L2 completely safe up to rho=1.0
+            -1.0,
+            -1.0,
+        ], dtype=th.float32)
+        
+        depth = th.tensor([0, 1, 1, 1, 1], dtype=th.long)
+        
+        self.manager.region_table = RegionTable(
+            ids=ids,
+            regions=regions,
+            lower_v=lower_v,
+            upper_v=upper_v,
+            parent_ids=parent_ids,
+            depth=depth,
+            core_status=core_status,
+            complete_safe_max_rho=complete_safe_max_rho,
+        )
+        
+        best_rho = self.manager.get_best_fallback_rho(rho_min=0.0, sublevel_tolerance=0.0)
+        
+        # Candidate rhos will include lower_v, upper_v, complete_safe_max_rho
+        # rho=0.5 -> has holes (L3 is relevant but upper=0.8 > 0.5, so not certified)
+        # rho=0.6 -> has holes (L4 is relevant but not certified)
+        # rho=0.3 -> L1 (upper=0.3<=0.3, safe), L2 (complete_safe_max_rho=1.0 >= 0.3). No holes. Vol = 3.
+        self.assertAlmostEqual(best_rho, 0.3, places=5)
 
 
 if __name__ == "__main__":
