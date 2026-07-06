@@ -257,7 +257,7 @@ class InvarianceViolation(StateBoundsModule):
         return upper_violation + lower_violation
 
 
-class RelativeInvarianceViolation(InvarianceViolation):
+class RelativeInvarianceViolation(StateBoundsModule):
     """Compute a relative version of the forward-invariance violation."""
 
     def __init__(
