@@ -13,6 +13,7 @@ from mpc_datagen import mdg_plt
 from lcil.certification import BisectCertifier, LyapunovCertificationConfig
 from lcil.lyapunov_learning import LyapunovTrainingConfig, LyapunovTrainingResult
 from lcil.utils import ArgumentParserConfig, config_field, lcil_plt, IntegrationMethod
+from lcil.utils.lcil_plt import parallel_coordinates_plotly
 
 from . import (
     CartpoleDynamics,
@@ -43,6 +44,10 @@ class BisectCertifyScriptConfig(ArgumentParserConfig):
         help="Per-dimension scaling applied to Lyapunov training state bounds to define certification bounds.",
     )
     save_dir: str | None = config_field(default=None, help="Optional directory where certification details are written.")
+    collect_details_on_failed: bool = config_field(
+        default=False,
+        help="Collect and visualize diagnostic details (uncertified regions) even when global certification fails.",
+    )
 
 
 def _build_script_defaults() -> BisectCertifyScriptConfig:
@@ -185,7 +190,10 @@ def main() -> None:
             device=device,
         )
 
-        cert_results = certifier.certify(rho_estimate)
+        cert_results = certifier.certify(
+            rho_estimate,
+            collect_details_on_failed=script_config.collect_details_on_failed,
+        )
         certifier.save(save_dir)
 
         if cert_results is None:
@@ -211,6 +219,19 @@ def main() -> None:
             plot_3d=False,
             html_path=save_dir / "certification_lyapunov_plot.html",
         )
+
+        # Diagnostic: parallel coordinates of uncertified region centers
+        uncert_regions = cert_results.uncertified_regions
+        if uncert_regions is not None and len(uncert_regions) > 0:
+            uncert_centers = 0.5 * (uncert_regions[:, 0, :] + uncert_regions[:, 1, :])
+            parallel_coordinates_plotly(
+                states=uncert_centers,
+                state_bounds=certification_config.cert_bounds,
+                state_labels=_STATE_LABELS,
+                origin_exclusion=certification_config.origin_exclusion,
+                title=f"Uncertified Region Centers (n={len(uncert_centers)}, \u03c1={cert_results.rho:.4f})",
+                html_path=save_dir / "uncertified_regions_parallel_coords.html",
+            )
 
         del policy_model
         del lyap_model
