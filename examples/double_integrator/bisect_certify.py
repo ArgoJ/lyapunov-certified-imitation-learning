@@ -187,7 +187,7 @@ def main() -> None:
         )
 
         # Diagnostic: parallel coordinates of uncertified region samples
-        uncert_regions = cert_results.certified_sublevel_regions
+        uncert_regions = cert_results.uncertified_regions
         if uncert_regions is not None and len(uncert_regions) > 0:
             uncert_states = sample_uncertified_regions(
                 uncert_regions, 
