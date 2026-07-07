@@ -1,10 +1,7 @@
 from .trainer import LyapunovTrainer, LyapunovTrainingResult
 from .config import LyapunovTrainingConfig
 from .utils import ThresholdMonitor, TrainingAbortedError
-from .models import (
-    NeuralLyapunovCandidate,
-    QuadraticLyapunovCandidate,
-)
+from .models import NeuralLyapunovCandidate
 from .loss import LyapunovTrainingLoss
 from .policy_wrapper import PolicyWrapper, RepeatCurrentPolicyWrapper, FromRolloutsPolicyWrapper
 from .counterexample import (
@@ -18,7 +15,6 @@ __all__ = [
     "LyapunovTrainingResult",
     "LyapunovTrainingConfig",
     "NeuralLyapunovCandidate",
-    "QuadraticLyapunovCandidate",
     "LyapunovTrainingLoss",
     "PolicyWrapper",
     "RepeatCurrentPolicyWrapper",

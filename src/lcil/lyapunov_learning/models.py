@@ -218,7 +218,7 @@ class NeuralLyapunovCandidate(nn.Module):
         x_star_batch = self.x_star.expand(x.shape[0], -1)
         delta = x - x_star_batch
         pd_matrix = self._pd_matrix()
-        linear_term = th.abs(delta @ pd_matrix.transpose(0, 1)).sum(dim=1, keepdim=True)
+        linear_term = th.abs(delta @ pd_matrix).sum(dim=1, keepdim=True)
         return linear_term
 
     def forward(self, x: th.Tensor) -> th.Tensor:
@@ -283,37 +283,3 @@ class NeuralLyapunovCandidate(nn.Module):
         model.load_state_dict(payload["state_dict"], strict=strict)
         model.eval()
         return model
-
-
-
-class QuadraticLyapunovCandidate(nn.Module):
-    """Quadratic Lyapunov candidate from Eq. (10) in the paper."""
-
-    def __init__(
-        self,
-        state_dim: int,
-        eps: float = 1e-3,
-        x_star: th.Tensor | None = None,
-    ):
-        super().__init__()
-        self.state_dim = state_dim
-        self.eps = float(eps)
-        self.r_factor = nn.Parameter(th.eye(state_dim))
-        if x_star is None:
-            x_star = th.zeros(state_dim, dtype=th.float32)
-        self.register_buffer("x_star", x_star.reshape(1, state_dim))
-
-    def _pd_matrix(self) -> th.Tensor:
-        eye = th.eye(
-            self.state_dim,
-            dtype=self.r_factor.dtype,
-            device=self.r_factor.device,
-        )
-        return self.eps * eye + self.r_factor.transpose(0, 1) @ self.r_factor
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        goal = self.x_star.to(dtype=x.dtype, device=x.device)
-        delta = x - goal.expand(x.shape[0], -1)
-        pd_matrix = self._pd_matrix()
-        value = (delta @ pd_matrix) * delta
-        return value.sum(dim=1, keepdim=True)

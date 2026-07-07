@@ -16,7 +16,7 @@ from mpc_datagen import MPCConfig
 
 from lcil.imitation_learning import BoundedPolicy, TransformerPolicy
 from lcil.certification.models import LyapunovCoreVerifier
-from lcil.lyapunov_learning import NeuralLyapunovCandidate, QuadraticLyapunovCandidate
+from lcil.lyapunov_learning import NeuralLyapunovCandidate
 from lcil.utils.base_models import MLP
 from lcil.utils.base_config import ArgumentParserConfig, config_field
 
@@ -66,10 +66,6 @@ class DiagnoseABCrownScriptConfig(ArgumentParserConfig):
     policy_arch: Literal["transformer", "mlp"] = config_field(
         default="transformer",
         help="Policy architecture used when model_source=fresh.",
-    )
-    lyapunov_arch: Literal["neural", "quadratic"] = config_field(
-        default="neural",
-        help="Lyapunov architecture used when model_source=fresh.",
     )
     state_dim: int = config_field(default=2, help="State dimension for fresh models.")
     control_dim: int = config_field(default=1, help="Control dimension for fresh models.")
@@ -444,17 +440,9 @@ def _build_fresh_policy_model(
 def _build_fresh_lyapunov_model(
     script_config: DiagnoseABCrownScriptConfig,
     device: th.device,
-) -> NeuralLyapunovCandidate | QuadraticLyapunovCandidate:
+) -> NeuralLyapunovCandidate:
     state_dim = int(script_config.state_dim)
     lyapunov_eps = float(script_config.lyapunov_eps)
-
-    if script_config.lyapunov_arch == "quadratic":
-        lyap_model: NeuralLyapunovCandidate | QuadraticLyapunovCandidate = QuadraticLyapunovCandidate(
-            state_dim=state_dim,
-            eps=lyapunov_eps,
-        )
-        return lyap_model.to(device).eval()
-
     hidden_sizes = tuple(int(size) for size in script_config.lyapunov_hidden_sizes)
     layer_dims = [state_dim, *hidden_sizes, 1]
     activations = [str(script_config.lyapunov_activation)] * len(hidden_sizes) + ["identity"]
