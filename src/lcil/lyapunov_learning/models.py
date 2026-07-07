@@ -119,6 +119,10 @@ class NeuralLyapunovCandidate(nn.Module):
 
     def _setup_r_factor(self, riccati_p: th.Tensor | None, riccati_scale: str | float, fixed: bool) -> None:
         """Set up the R factor for the Lyapunov candidate."""
+        self._cached_pd_matrix: th.Tensor | None = None
+        self._cached_pd_version: int = -1
+        self._cached_eps: float | None = None
+
         if fixed:
             self.register_buffer("r_factor", th.eye(self.state_dim))
         else:
@@ -130,7 +134,6 @@ class NeuralLyapunovCandidate(nn.Module):
             self.r_factor.register_post_accumulate_grad_hook(
                 self._check_r_factor_conditioning
             )
-
 
     def _check_r_factor_conditioning(self, _param: th.Tensor) -> None:
         """Warn if εI + RᵀR becomes ill-conditioned."""
@@ -163,15 +166,41 @@ class NeuralLyapunovCandidate(nn.Module):
         
         factor = th.diag(th.sqrt(eigvals.clamp_min(0.0))) @ eigvecs.transpose(0, 1)
         return factor
-
+    
     def _pd_matrix(self) -> th.Tensor:
-        """Return the positive definite matrix εI + RᵀR."""
+        """Return the positive definite matrix εI + RᵀR with lazy caching."""
+        needs_grad = (
+            isinstance(self.r_factor, nn.Parameter) 
+            and self.r_factor.requires_grad 
+            and th.is_grad_enabled()
+        )
+        current_version = self.r_factor._version
+
+        # Cache Hit Check
+        if not needs_grad and self._cached_pd_matrix is not None:
+            if (
+                self._cached_pd_version == current_version 
+                and self._cached_eps == self.eps
+                and self._cached_pd_matrix.device == self.r_factor.device
+                and self._cached_pd_matrix.dtype == self.r_factor.dtype
+            ):
+                return self._cached_pd_matrix
+
+        # Compute Matrix
         eye = th.eye(
             self.state_dim,
             dtype=self.r_factor.dtype,
             device=self.r_factor.device,
         )
-        return self.eps * eye + self.r_factor.transpose(0, 1) @ self.r_factor
+        pd = self.eps * eye + self.r_factor.transpose(0, 1) @ self.r_factor
+
+        # Update Cache
+        if not needs_grad:
+            self._cached_pd_matrix = pd.detach()
+            self._cached_pd_version = current_version
+            self._cached_eps = self.eps
+
+        return pd
 
     def set_x_star(self, x_star: th.Tensor) -> None:
         """Set the equilibrium point x* for the Lyapunov candidate."""
