@@ -113,7 +113,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         second_boundary = th.tensor([[9.0, 0.0], [10.0, 0.0]], dtype=th.float32)
         face_dims = th.zeros(2, dtype=th.long)
         is_ub = th.ones(2, dtype=th.bool)
-        boundary_buffer = BoundaryStateBuffer(state_dim=2, max_size=2, device="cpu")
+        boundary_buffer = BoundaryStateBuffer(state_dim=2, state_buffer_limit=2, device="cpu")
 
         with patch(
             "lcil.lyapunov_learning.counterexample.sample_boundary_points",
@@ -140,10 +140,9 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
-            train_policy_model=False,
             adversarial_samples=256,
-            cex_steps=0,
-            adversarial_step_size=0.0,
+            cex_steps=1,
+            adversarial_step_size=0.01,
             condition_tolerance=1e-6,
         )
         loss_module = LyapunovTrainingLoss(
@@ -220,8 +219,8 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         initial_states = th.zeros((4, 1), dtype=th.float32)
         state_buffer = DynamicStateBuffer(
             initial_states=initial_states,
-            max_size=16,
-            cex_buffer_size=3,
+            state_buffer_limit=16,
+            cex_buffer_limit=3,
             device=th.device("cpu"),
         )
 
@@ -245,7 +244,8 @@ class TestLyapunovCounterexamples(unittest.TestCase):
     def test_dynamic_state_buffer_sample_returns_requested_batch_size(self) -> None:
         state_buffer = DynamicStateBuffer(
             initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
-            max_size=4,
+            state_buffer_limit=4,
+            cex_buffer_limit=3,
             device=th.device("cpu"),
         )
 
@@ -257,7 +257,8 @@ class TestLyapunovCounterexamples(unittest.TestCase):
     def test_dynamic_state_buffer_sample_uses_regular_and_cex_pools_separately(self) -> None:
         state_buffer = DynamicStateBuffer(
             initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
-            max_size=8,
+            state_buffer_limit=8,
+            cex_buffer_limit=3,
             device=th.device("cpu"),
         )
         state_buffer.register_cex(th.tensor([[10.0]], dtype=th.float32))
@@ -273,14 +274,16 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "initial_states cannot be empty"):
             DynamicStateBuffer(
                 initial_states=th.empty((0, 1), dtype=th.float32),
-                max_size=4,
+                state_buffer_limit=4,
+                cex_buffer_limit=3,
                 device=th.device("cpu"),
             )
 
     def test_dynamic_state_buffer_sample_clamps_out_of_range_cex_fraction(self) -> None:
         state_buffer = DynamicStateBuffer(
             initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
-            max_size=4,
+            state_buffer_limit=4,
+            cex_buffer_limit=3,
             device=th.device("cpu"),
         )
         state_buffer.register_cex(th.tensor([[10.0]], dtype=th.float32))
@@ -296,10 +299,9 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
-            train_policy_model=False,
             adversarial_samples=256,
-            cex_steps=0,
-            adversarial_step_size=0.0,
+            cex_steps=1,
+            adversarial_step_size=0.01,
             condition_tolerance=1e-6,
         )
         trainer = LyapunovTrainer(
@@ -326,7 +328,6 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             outer_epochs=3,
             steps_per_epoch=1,
             cex_every=100,
-            train_policy_model=False,
         )
         trainer = LyapunovTrainer(
             policy_model=_ZeroPolicy(),
@@ -368,7 +369,6 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-2.0], [2.0]], dtype=np.float32),
-            train_policy_model=False,
         )
         trainer = LyapunovTrainer(
             policy_model=_ZeroPolicy(),
@@ -418,7 +418,6 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-2.0], [2.0]], dtype=np.float32),
-            train_policy_model=False,
         )
         trainer = LyapunovTrainer(
             policy_model=_ZeroPolicy(),
@@ -454,7 +453,6 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
-            train_policy_model=False,
         )
         loss_module = LyapunovTrainingLoss(
             policy_model=_ZeroPolicy(),
@@ -472,7 +470,6 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
-            train_policy_model=False,
         )
         with patch.object(
             FormalPositivityLoss,
@@ -499,7 +496,6 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-2.0], [2.0]], dtype=np.float32),
-            train_policy_model=False,
         )
         trainer = LyapunovTrainer(
             policy_model=_ZeroPolicy(),
@@ -537,7 +533,6 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
-            train_policy_model=False,
         )
         trainer = LyapunovTrainer(
             policy_model=_ZeroPolicy(),

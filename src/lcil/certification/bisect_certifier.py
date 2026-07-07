@@ -53,6 +53,7 @@ class RegionCertificationResult:
     outside_sublevel_regions: NDArray
     uncertified_regions: NDArray
     certified_sublevel_regions: NDArray
+    certified_boundary_regions: NDArray
 
     def save(self, path: str | Path) -> None:
         """Persist certification details to a NumPy ``.npz`` archive."""
@@ -66,6 +67,7 @@ class RegionCertificationResult:
             outside_sublevel_regions=self.outside_sublevel_regions,
             uncertified_regions=self.uncertified_regions,
             certified_sublevel_regions=self.certified_sublevel_regions,
+            certified_boundary_regions=self.certified_boundary_regions,
             failed_regions=self.uncertified_regions,
             certified_regions=self.certified_sublevel_regions,
         )
@@ -81,6 +83,7 @@ class RegionCertificationResult:
             "outside_sublevel_regions",
             "uncertified_regions",
             "certified_sublevel_regions",
+            "certified_boundary_regions",
         }
         missing_keys = required_keys.difference(data.files)
         if missing_keys:
@@ -94,6 +97,7 @@ class RegionCertificationResult:
             outside_sublevel_regions=np.asarray(data["outside_sublevel_regions"]),
             uncertified_regions=np.asarray(data["uncertified_regions"]),
             certified_sublevel_regions=np.asarray(data["certified_sublevel_regions"]),
+            certified_boundary_regions=np.asarray(data["certified_boundary_regions"]),
         )
 
 
@@ -713,7 +717,11 @@ class BisectCertifier:
             show_progress=self._show_progress(PROGRESS_LEVEL.TOP)
         )
 
-        certified_sublevel_regions_np = self._regions_tensor_to_np(recursive_result.resolved)
+        bs_bounds = self.region_manager.get_cached_region_bounds(recursive_result.resolved)
+        inside_mask, boundary_mask, _ = bs_bounds.sublevel_masks(rho + self.config.sublevel_tolerance)
+        
+        certified_sublevel_regions_np = self._regions_tensor_to_np(recursive_result.resolved[inside_mask])
+        certified_boundary_regions_np = self._regions_tensor_to_np(recursive_result.resolved[boundary_mask])
         uncertified_regions_np = self._regions_tensor_to_np(recursive_result.unresolved)
         outside_sublevel_regions_np = self._regions_tensor_to_np(recursive_result.irrelevant)
 
@@ -730,6 +738,7 @@ class BisectCertifier:
             outside_sublevel_regions=outside_sublevel_regions_np,
             uncertified_regions=uncertified_regions_np,
             certified_sublevel_regions=certified_sublevel_regions_np,
+            certified_boundary_regions=certified_boundary_regions_np,
         )
         __logger__.debug(
             "Certification detail pass at rho=%.6f: success=%s, certified_sublevel=%d, uncertified=%d, outside_sublevel=%d.",

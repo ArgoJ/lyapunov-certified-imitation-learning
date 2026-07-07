@@ -291,7 +291,7 @@ class RhoGatedConditionLoss(nn.Module):
             relative_eps=config.relative_condition_eps,
         )
         self.relative_invariance_violation = RelativeInvarianceViolation(
-            config.state_bounds,
+            config.train_bounds,
             device=device,
             relative_eps=config.relative_condition_eps,
         )
@@ -331,8 +331,15 @@ class RhoGatedConditionLoss(nn.Module):
         on low-V states.
         """
         if self.origin_focused_condition:
-            return self.origin_focused_weight(v_curr, rho_estimate)
-        return self.inside_sublevel_mask(v_curr=v_curr, rho_estimate=rho_estimate)
+            weights = self.origin_focused_weight(v_curr, rho_estimate)
+        else:
+            weights = self.inside_sublevel_mask(v_curr=v_curr, rho_estimate=rho_estimate)
+            
+        if weights.sum() <= 1e-6 and len(v_curr) > 0:
+            min_idx = v_curr.argmin()
+            weights[min_idx] = 1.0
+            
+        return weights
 
     def forward(
         self,
@@ -364,7 +371,7 @@ class SignedConditionMargin(nn.Module):
         self.lyap_model = lyap_model
         self.dyn_model = dyn_model
 
-        self.invariance_violation = InvarianceViolation(config.state_bounds, device=device)
+        self.invariance_violation = InvarianceViolation(config.train_bounds, device=device)
         
         self.kappa = float(config.kappa)
         self.condition_margin = float(config.condition_margin)

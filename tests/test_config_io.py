@@ -62,7 +62,7 @@ class TestConfigRoundtrip(unittest.TestCase):
             stages=[
                 LyapunovTrainingCurriculumStage(
                     stage_index=0,
-                    state_bounds=np.array([[-1.0, -0.5], [1.0, 0.5]], dtype=float),
+                    train_bounds=np.array([[-1.0, -0.5], [1.0, 0.5]], dtype=float),
                     scale=np.array([0.5, 0.5], dtype=float),
                     result=LyapunovTrainingResult(
                         rho_estimate=0.8,
@@ -90,7 +90,7 @@ class TestConfigRoundtrip(unittest.TestCase):
         self.assertEqual(loaded_result.__class__, curriculum_result.__class__)
         self.assertEqual(loaded_result.to_dict(), curriculum_result.to_dict())
         self.assertEqual(len(loaded_result.stages), 1)
-        self.assertIsInstance(loaded_result.stages[0].state_bounds, np.ndarray)
+        self.assertIsInstance(loaded_result.stages[0].train_bounds, np.ndarray)
         self.assertIsInstance(loaded_result.stages[0].scale, np.ndarray)
         self.assertIsInstance(loaded_result.stages[0].result, LyapunovTrainingResult)
 

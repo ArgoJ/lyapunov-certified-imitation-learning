@@ -9,7 +9,7 @@ from lcil.imitation_learning import (
     DynamicsAwareLoss,
     ImitationTrainingConfig,
     BaselineDynamicsAwareLoss,
-    ReferenceWeightedMSELoss,
+    ScaledMSELoss,
     SequenceStateActionDataset,
     PolicyTrainer,
     TransformerPolicy
@@ -93,7 +93,7 @@ class TestSequencePolicyTrainer(unittest.TestCase):
             output_mode="last",
         )
         loss_fn = BaselineDynamicsAwareLoss(
-            base_loss=ReferenceWeightedMSELoss(reference=[0.0]),
+            base_loss=ScaledMSELoss(scale=[1.0]),
             dynamics_loss=DynamicsAwareLoss(
                 dynamics=AdditiveDynamics(),
                 x_min=th.tensor([-1.0]),
