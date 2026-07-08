@@ -271,7 +271,7 @@ def main() -> None:
             
         if not train_results.aborted:
             __logger__.info("Mining final counterexamples for visualization...")
-            final_cex = find_counter_examples(
+            final_cex, final_violation = find_counter_examples(
                 objective=lambda x: trainer.loss_module.mining_objective(
                     x_batch=x,
                     rho_estimate=train_results.rho_estimate,
@@ -288,6 +288,7 @@ def main() -> None:
                     origin_exclusion=training_config.origin_exclusion,
                     title="Counterexamples",
                     html_path=(base_path / "counterexamples.html"),
+                    cond_violations=final_violation,
                 )
 
     __logger__.info(f"Grid search complete. All results saved to: {sweep.output_root}")

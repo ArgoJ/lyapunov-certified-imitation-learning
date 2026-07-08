@@ -254,20 +254,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="TensorBoard logging directory.",
         validators=(optional_validator(pathlike_validator),)
     )
-    rho_gate_sharpness: float = config_field(
-        default=10.0,
-        help="Steepness of the sigmoid gate in the condition loss. "
-            "Higher values approximate a hard gate; lower values yield softer weighting.",
-        display_alias="ρ_gate_β",
-        validators=(positive_validator,),
-    )
-    rho_resample_margin: float = config_field(
-        default=1.5,
-        help="Multiplicative margin over rho for rejection-resampling the state buffer. "
-            "States with V(x) <= margin * rho are retained.",
-        display_alias="ρ_resamp_m",
-        validators=(positive_validator,),
-    )
 
     # Weights
     condition_weight: float = config_field(
@@ -334,7 +320,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         validators=(non_negative_validator,),
     )
 
-    # Rho estimation parameters
+    # Rho parameters
     rho_growth_gamma: float = config_field(
         default=1.1,
         help="Growth factor used when estimating rho from boundary points.",
@@ -384,12 +370,26 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="\u03C1_ema_decay",
         validators=(fraction_validator,),
     )
+    rho_gate_sharpness: float = config_field(
+        default=10.0,
+        help="Steepness of the sigmoid gate in the condition loss. "
+            "Higher values approximate a hard gate; lower values yield softer weighting.",
+        display_alias="\u03C1_gate_β",
+        validators=(positive_validator,),
+    )
+    rho_resample_margin: float = config_field(
+        default=1.5,
+        help="Multiplicative margin over rho for rejection-resampling the state buffer. "
+            "States with V(x) <= margin * rho are retained.",
+        display_alias="\u03C1_resamp_m",
+        validators=(positive_validator,),
+    )
 
     # PGD counterexample mining parameters
     adversarial_samples: int = config_field(
         default=4096,
         help="Number of PGD seed states for counterexample mining.",
-        display_alias="cex_samples",
+        display_alias="adv_samples",
         validators=(positive_validator,),
     )
     adversarial_step_size: float = config_field(

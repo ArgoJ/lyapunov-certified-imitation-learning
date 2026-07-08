@@ -99,6 +99,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         roa_candidate_size=8192,
         rho_estimation_samples=32768,
         rho_growth_gamma=1.1,
+        rho_ema_decay=0.95,
         cex_every=10,
         cex_steps=20,
         adversarial_samples=8192,
@@ -278,7 +279,7 @@ def main() -> None:
             
         if not train_results.aborted:
             __logger__.info("Mining final counterexamples for visualization...")
-            final_cex = find_counter_examples(
+            final_cex, final_violations = find_counter_examples(
                 objective=lambda x: trainer.loss_module.mining_objective(
                     x_batch=x,
                     rho_estimate=train_results.rho_estimate,
@@ -294,6 +295,7 @@ def main() -> None:
                     state_labels=[r"$x$", r"$v$", r"$\theta$", r"$\dot{\theta}$"],
                     origin_exclusion=training_config.origin_exclusion,
                     html_path=(base_path / "final_counterexamples.html"),
+                    cond_violations=final_violations,
                 )
 
     __logger__.info("Grid search complete. All results saved to: %s", sweep.output_root)
