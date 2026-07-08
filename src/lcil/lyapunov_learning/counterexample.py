@@ -201,7 +201,7 @@ def find_counter_examples(
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),
     generator: th.Generator | None = None,
-) -> th.Tensor:
+) -> tuple[th.Tensor, th.Tensor]:
     """Find rho-gated training counterexamples via PGD on a minimization objective.
 
     The objective should follow the external training semantics: it must be
@@ -248,4 +248,6 @@ def find_counter_examples(
         inside_exclusion = th.all(th.abs(best_states) <= exclusion, dim=-1)
         counter_mask = (best_objective < 1e-9) & (~inside_exclusion)
 
-    return best_states[counter_mask].clone().detach()
+    cex_states = best_states[counter_mask].clone().detach()
+    cex_violations = (-best_objective[counter_mask]).clamp_min(0.0).clone().detach()
+    return cex_states, cex_violations

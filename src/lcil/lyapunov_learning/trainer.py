@@ -32,6 +32,8 @@ from .counterexample import (
     sample_boundary_points,
 )
 from .results import (
+    MiningStepResult,
+    BoundaryStepResult,
     LyapunovTrainingResult,
     LyapunovTrainingMetrics,
     LyapunovTrainingCurriculumResult,
@@ -267,6 +269,10 @@ class LyapunovTrainer:
             device=self.device,
         )
         return cegis_buffer
+
+    def _calc_cex_fraction(self, fraction):
+        return self.config.cex_fraction_min + fraction \
+            * (self.config.cex_fraction_max - self.config.cex_fraction_min)
     
     # ==========================================
     # --- TRAINING HELPER METHODS ---
@@ -315,7 +321,7 @@ class LyapunovTrainer:
 
     def _evaluate_boundary_and_roa(
         self, boundary_buffer: BoundaryStateBuffer, current_rho_estimate: float | None
-    ) -> tuple[float, th.Tensor, BoundaryRhoDiagnostics]:
+    ) -> BoundaryStepResult:
         
         rho_diagnostics, boundary_states = estimate_rho_from_boundary(
             lyap_model=self.lyap_model,
@@ -327,7 +333,7 @@ class LyapunovTrainer:
         roa_candidates = self._build_roa_candidates(injection_states=boundary_buffer.states)
         
         new_rho_estimate = get_ema(current_rho_estimate, rho_diagnostics.rho, self.config.rho_ema_decay)
-        return new_rho_estimate, roa_candidates, rho_diagnostics
+        return BoundaryStepResult(new_rho_estimate, roa_candidates, rho_diagnostics)
 
     def _should_abort_training(self, rho_estimate: float) -> bool:
         if self.rho_monitor is not None:
@@ -344,30 +350,38 @@ class LyapunovTrainer:
         rho_estimate: float,
         state_buffer: DynamicStateBuffer,
         cex_fraction_ema: float | None,
-    ) -> tuple[float, float | None]:
+    ) -> MiningStepResult:
         
         # Only mine at intervals
         if not self._is_mining_step(outer_iter, mining_interval):
             if cex_fraction_ema is None:
-                return 0.0, None
-            current_fraction = self.config.cex_fraction_min + \
-                cex_fraction_ema * (self.config.cex_fraction_max - self.config.cex_fraction_min)
-            return current_fraction, cex_fraction_ema
+                return MiningStepResult.empty()
+            current_fraction = self._calc_cex_fraction(cex_fraction_ema)
+            return MiningStepResult(current_fraction, cex_fraction_ema, None, None)
 
         # New mining
-        new_cex = self._mine_new_counterexamples(rho_estimate=rho_estimate)
+        new_cex_states, new_cex_violations = self._mine_new_counterexamples(rho_estimate=rho_estimate)
         state_buffer.register_cex(
-            new_cex,
-            objective=lambda x: self.loss_module.buffer_sorting_objective(x, rho_estimate=rho_estimate))
+            new_cex_states,
+            objective=lambda x: self.loss_module.buffer_sorting_objective(
+                x_batch=x,
+                rho_estimate=rho_estimate,
+            )
+        )
         
-        if new_cex.numel() == 0:
+        if new_cex_states.numel() == 0:
             __logger__.info("No new counterexamples mined at outer iteration %d.", outer_iter)
 
-        frac_yield = new_cex.shape[0] / self.config.adversarial_samples
+        frac_yield = new_cex_states.shape[0] / self.config.adversarial_samples
         new_ema = get_ema(cex_fraction_ema, frac_yield, self.config.cex_fraction_ema_decay)
-        new_fraction = self.config.cex_fraction_min + new_ema * (self.config.cex_fraction_max - self.config.cex_fraction_min)
+        new_fraction = self._calc_cex_fraction(new_ema)
 
-        return new_fraction, new_ema
+        return MiningStepResult(
+            new_fraction,
+            new_ema,
+            new_cex_states,
+            new_cex_violations
+        )
 
     def _finalize_training(
         self, 
@@ -404,8 +418,7 @@ class LyapunovTrainer:
 
         mining_interval = max(1, int(self.config.cex_every))
         rho_estimate = None
-        cex_fraction_ema = None
-        cex_fraction = 0.0
+        mining_result = MiningStepResult.empty()
         total_steps = self.config.outer_epochs * self.config.steps_per_epoch
 
         tb_writer = tb_writer_build(self.config.tb_log_dir)
@@ -418,9 +431,10 @@ class LyapunovTrainer:
                 for outer_iter in range(self.config.outer_epochs):
                     self._update_policy_training_status(outer_iter)
 
-                    rho_estimate, roa_candidates, rho_diagnostics = self._evaluate_boundary_and_roa(
+                    boundary_result = self._evaluate_boundary_and_roa(
                         boundary_buffer, rho_estimate
                     )
+                    rho_estimate = boundary_result.rho_estimate
 
                     if self._should_abort_training(rho_estimate):
                         abort_reason = (
@@ -436,16 +450,19 @@ class LyapunovTrainer:
                             abort_reason=abort_reason
                         )
 
-                    cex_fraction, cex_fraction_ema = self._mine_cegis_step(
-                        outer_iter, mining_interval, rho_estimate, cegis_buffer, cex_fraction_ema
+                    mining_result = self._mine_cegis_step(
+                        outer_iter, mining_interval, rho_estimate, cegis_buffer, mining_result.cex_fraction_ema
                     )
 
                     # Inner training loop
                     for inner_step in range(self.config.steps_per_epoch):
-                        x_batch = cegis_buffer.sample(self.config.batch_size, cex_fraction=cex_fraction)
+                        x_batch = cegis_buffer.sample(
+                            self.config.batch_size,
+                            cex_fraction=mining_result.cex_fraction
+                        )
                         loss = self.loss_module(
                             x_batch=x_batch,
-                            roa_candidates=roa_candidates,
+                            roa_candidates=boundary_result.roa_candidates,
                             rho_estimate=rho_estimate,
                             lirpa_regions=lirpa_regions,
                             active_policy_regularization=self._curr_policy_train_status,
@@ -472,25 +489,27 @@ class LyapunovTrainer:
                             loss=none_to_float(loss.item()),
                             rho=none_to_float(rho_estimate),
                             cex_pool=none_to_float(cegis_buffer.cex_count),
-                            cex_samples=none_to_float(cex_fraction * self.config.batch_size),
+                            cex_samples=none_to_float(mining_result.cex_fraction * self.config.batch_size),
                         )
 
                     self.metrics.fill_outer(
                         outer_iter=outer_iter,
                         state_buffer=cegis_buffer,
                         num_mined_counterexamples=cegis_buffer.cex_count,
-                        rho_diagnostics=rho_diagnostics,
+                        rho_diagnostics=boundary_result.rho_diagnostics,
                     )
                     tb_writer_add_metrics(tb_writer, self.metrics)
-                    if self._is_mining_step(outer_iter, mining_interval) and cegis_buffer.cexs.numel() > 0:
+                    if self._is_mining_step(outer_iter, mining_interval) and \
+                            mining_result.mined_cex_states.numel() > 0:
                         tb_writer_add_parallel_coordinates(
                             tb_writer,
                             tag="Counterexamples",
-                            states=cegis_buffer.cexs,
+                            states=mining_result.mined_cex_states,
                             state_bounds=self.config.train_bounds,
                             origin_exclusion=self.config.origin_exclusion,
                             global_step=outer_iter + 1,
                             max_lines=512,
+                            cond_violations=mining_result.mined_cex_violations,
                         )
                     
 

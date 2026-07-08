@@ -10,6 +10,16 @@ from .results import LyapunovTrainingMetrics
 from ..utils.lcil_plt.parallel_coodrdinates import parallel_coordinates_matplot
 
 
+def safe_th2np(tensor: th.Tensor | NDArray | None):
+    if tensor is None:
+        return None
+    if isinstance(tensor, th.Tensor):
+        return tensor.detach().cpu().numpy()
+    if isinstance(tensor, np.ArrayLike):
+        return np.asarray(tensor)
+    raise ValueError(f"Expected tensor, numpy array or None, got {type(tensor)}")
+
+
 def tb_writer_add_metrics(
     tb_writer: SummaryWriter | None,
     metrics: LyapunovTrainingMetrics,
@@ -83,21 +93,14 @@ def tb_writer_add_parallel_coordinates(
     state_order: Sequence[int] | None = None,
     origin_exclusion: float | Sequence[float] | None = None,
     max_lines: int = 64,
+    cond_violations: th.Tensor | NDArray | None = None,
 ) -> None:
     if tb_writer is None or states is None:
         return
 
-    if isinstance(states, th.Tensor):
-        x_np = states.detach().cpu().numpy()
-    else:
-        x_np = np.asarray(states)
-
-    bounds_np = None
-    if state_bounds is not None:
-        if isinstance(state_bounds, th.Tensor):
-            bounds_np = state_bounds.detach().cpu().numpy()
-        else:
-            bounds_np = np.asarray(state_bounds)
+    x_np = safe_th2np(states)
+    bounds_np = safe_th2np(state_bounds)
+    violations_np = safe_th2np(cond_violations)
 
     fig = parallel_coordinates_matplot(
         states=x_np,
@@ -106,6 +109,7 @@ def tb_writer_add_parallel_coordinates(
         state_order=state_order,
         origin_exclusion=origin_exclusion,
         max_lines=max_lines,
+        cond_violation=violations_np,
     )
     tb_writer.add_figure(tag, fig, global_step=global_step, close=True)
 

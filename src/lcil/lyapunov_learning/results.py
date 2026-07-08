@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import numpy as np
+import torch as th
+
 from numpy.typing import NDArray
 from pathlib import Path
 from dataclasses import dataclass
@@ -14,6 +16,24 @@ from ..utils import (
     timeit,
 )
 from ..utils.constants import *
+
+@dataclass
+class MiningStepResult:
+    cex_fraction: float
+    cex_fraction_ema: float | None
+    mined_cex_states: th.Tensor | None
+    mined_cex_violations: th.Tensor | None
+
+    @classmethod
+    def empty(cls):
+        return cls(0.0, None, None, None)
+
+
+@dataclass
+class BoundaryStepResult:
+    rho_estimate: float
+    roa_candidates: th.Tensor
+    rho_diagnostics: BoundaryRhoDiagnostics
 
 
 @dataclass

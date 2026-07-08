@@ -5,6 +5,8 @@ import logging
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 
+from matplotlib.collections import LineCollection
+from matplotlib.colors import Normalize
 from pathlib import Path
 from numpy.typing import NDArray
 from typing import Sequence
@@ -101,7 +103,7 @@ def parallel_coordinates_matplot(
     state_order: Sequence[int] | None = None,
     origin_exclusion: float | Sequence[float] | None = None,
     max_lines: int = 64,
-    cond_violatoin: NDArray | None = None
+    cond_violation: NDArray | None = None
 ):
     x_norm, origin_exc, labels, _, n, d, v = _prepare_parallel_data(
         states=states,
@@ -110,14 +112,23 @@ def parallel_coordinates_matplot(
         state_order=state_order,
         origin_exclusion=origin_exclusion,
         max_lines=max_lines,
-        cond_violations=cond_violatoin,
+        cond_violations=cond_violation,
     )
 
     xs = np.arange(d)
     fig, ax = plt.subplots(figsize=(max(6, 1.2 * d), 3.0), constrained_layout=True)
 
-    for i in range(n):
-        ax.plot(xs, x_norm[i], color="tab:red", alpha=0.15, linewidth=0.8)
+    if v is None:
+        for i in range(n):
+            ax.plot(xs, x_norm[i], color="tab:red", alpha=0.15, linewidth=0.8)
+    else:
+        segments = [np.column_stack([xs, x_norm[i]]) for i in range(n)]
+        norm = Normalize(vmin=float(np.min(v)), vmax=float(np.max(v)) + 1e-12)
+        lc = LineCollection(segments, cmap="inferno", norm=norm, linewidths=1.2, alpha=0.35)
+        lc.set_array(v)
+        ax.add_collection(lc)
+        ax.autoscale_view()
+        fig.colorbar(lc, ax=ax, label="condition violation")
 
     for xi in xs:
         ax.axvline(xi, color="0.85", linewidth=0.8, zorder=0)

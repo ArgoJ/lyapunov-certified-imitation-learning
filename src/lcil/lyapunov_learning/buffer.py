@@ -75,6 +75,12 @@ class AgedTensorPool:
         self.states = th.empty((0, state_dim), dtype=self.dtype, device=self.device)
         self.ages = th.empty((0,), dtype=th.long, device=self.device)
 
+    def states_of_age(self, age: int) -> th.Tensor:
+        """Return all currently stored states with the given age."""
+        if len(self) == 0:
+            return self.states
+        return self.states[self.ages == age]
+
     def step_time_and_clean(self) -> None:
         """Increments the age of all states and strictly drops expired ones."""
         if self.states.shape[0] == 0:
@@ -91,7 +97,7 @@ class AgedTensorPool:
         if new_states.numel() == 0:
             return
             
-        new_states = new_states.to(self.device)
+        new_states = new_states.to(device=self.device, dtype=self.dtype)
         new_ages = th.zeros(new_states.shape[0], dtype=th.long, device=self.device)
 
         self.states = th.cat((self.states, new_states), dim=0)
@@ -214,12 +220,21 @@ class DynamicStateBuffer:
         self.generator = generator
         self.filter_eps = filter_eps
 
-        self._cex_pool = AgedTensorPool(initial_states.shape[1], max_age=max_cex_age, device=device, dtype=initial_states.dtype)
+        self._cex_pool = AgedTensorPool(
+            initial_states.shape[1], 
+            max_age=max_cex_age,
+            device=device,
+            dtype=initial_states.dtype,
+        )
 
     @property
     def cexs(self) -> th.Tensor:
         """Access to the CEX pool's states."""
         return self._cex_pool.states
+
+    @property
+    def newest_cexs(self) -> th.Tensor:
+        return self._cex_pool.states_of_age(0)
     
     @property
     def state_count(self) -> int:
