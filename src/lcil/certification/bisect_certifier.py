@@ -31,7 +31,7 @@ from ..utils.constants import *
 __logger__ = logging.getLogger(__name__)
 
 
-class PROGRESS_LEVEL(Enum):
+class ProgressLevel(Enum):
     NONE = 0
     TOP = 1
     ALL = 2
@@ -157,7 +157,7 @@ class BisectCertifier:
         dyn_model: nn.Module,
         config: LyapunovCertificationConfig,
         device: th.device = th.device("cpu"),
-        progress_level: int | PROGRESS_LEVEL = PROGRESS_LEVEL.ALL,
+        progress_level: int | ProgressLevel = ProgressLevel.ALL,
     ):
         """Initialize a Lyapunov certifier.
 
@@ -183,15 +183,15 @@ class BisectCertifier:
         self.device = device
 
         try:
-            self.progress_level = PROGRESS_LEVEL(progress_level)
+            self.progress_level = ProgressLevel(progress_level)
         except ValueError:
-            valid_values = [e.value for e in PROGRESS_LEVEL]
+            valid_values = [e.value for e in ProgressLevel]
             raise ValueError(
                 f"progress_level must be a PROGRESS_LEVEL enum or one of its integer values: {valid_values}."
             )
         
-        if self._show_progress(PROGRESS_LEVEL.TOP):
-            color = "cyan" if self.progress_level == PROGRESS_LEVEL.TOP else "green"
+        if self._show_progress(ProgressLevel.TOP):
+            color = "cyan" if self.progress_level == ProgressLevel.TOP else "green"
             __logger__.info("Enabling progress bars for %s: [%s]%s", self.__class__.__name__, color, self.progress_level)
 
         self.policy_model = policy_model.to(self.device).eval()
@@ -339,7 +339,7 @@ class BisectCertifier:
             return np.empty((0, 2, self.config.state_dim), dtype=np.float32)
         return regions.cpu().numpy()
 
-    def _show_progress(self, required_level: PROGRESS_LEVEL) -> bool:
+    def _show_progress(self, required_level: ProgressLevel) -> bool:
         """Whether to show progress for a task at the given required level."""
         return self.progress_level.value >= required_level.value
 
@@ -347,6 +347,53 @@ class BisectCertifier:
     # ========================================
     # CERTIFICATION
     # ========================================
+    def _run_core_certification(
+        self,
+        regions: th.Tensor,
+        rho: float,
+        *,
+        early_exit: bool,
+        progress: Progress | None,
+    ):
+        if len(regions) == 0:
+            return None
+        result = self._get_core_region_certifier().certify_regions(
+            regions=regions,
+            rho=rho,
+            early_exit=early_exit,
+            progress=progress,
+        )
+        return self.region_manager.apply_core_certification_result(
+            regions,
+            verified_mask=result.verified_mask,
+            counterexample_mask=result.counterexample_mask,
+            unknown_mask=result.unknown_mask,
+        )
+
+    def _run_complete_certification(
+        self,
+        regions: th.Tensor,
+        rho: float,
+        *,
+        early_exit: bool,
+        progress: Progress | None,
+    ):
+        if len(regions) == 0:
+            return None
+        result = self._get_region_certifier().certify_regions(
+            regions=regions,
+            rho=rho,
+            early_exit=early_exit,
+            progress=progress,
+        )
+        update = self.region_manager.apply_complete_certification_result(
+            regions,
+            verified_mask=result.verified_mask,
+            failed_mask=result.failed_mask,
+            rho=rho,
+        )
+        return result, update
+
     def _process_regions(
             self, 
             bs: th.Tensor,
@@ -378,11 +425,18 @@ class BisectCertifier:
         unresolved_parts: list[th.Tensor] = []
         irrelevant_regions = self.region_manager.empty_regions()
         counterexample_found = False
-
-        def append_nonempty(region_parts: list[th.Tensor], regions: th.Tensor) -> None:
-            """Append ``regions`` only when the batch is non-empty."""
+        
+        def append_resolved(regions: th.Tensor) -> None:
             if len(regions) > 0:
-                region_parts.append(regions)
+                resolved_parts.append(regions)
+
+        def append_unresolved(regions: th.Tensor) -> None:
+            if len(regions) > 0:
+                unresolved_parts.append(regions)
+
+        def counterexample_found_or(condition: bool):
+            nonlocal counterexample_found
+            counterexample_found = counterexample_found or condition
 
         def finish() -> RecursiveCertificationResult:
             return RecursiveCertificationResult(
@@ -395,10 +449,7 @@ class BisectCertifier:
         if len(bs) == 0:
             return finish()
 
-        bs, region_bounds = self._ensure_region_bounds(
-            bs,
-            make_current=bs is self.regions,
-        )
+        bs, region_bounds = self._ensure_region_bounds(bs, make_current=bs is self.regions)
         partition = self.region_manager.partition_certification_regions(
             bs,
             region_bounds=region_bounds,
@@ -410,18 +461,17 @@ class BisectCertifier:
         if not partition.has_relevant_regions:
             return finish()
 
-        append_nonempty(resolved_parts, partition.cached_complete_safe_regions)
-        append_nonempty(resolved_parts, partition.cached_core_safe_regions)
+        append_resolved(partition.cached_complete_safe_regions)
+        append_resolved(partition.cached_core_safe_regions)
 
         cached_inside_core_cex_bs = partition.cached_inside_counterexample_regions
         if len(cached_inside_core_cex_bs) > 0:
-            append_nonempty(unresolved_parts, cached_inside_core_cex_bs)
+            append_unresolved(cached_inside_core_cex_bs)
             counterexample_found = True
             if early_exit:
                 return finish()
 
-        cached_inside_core_unknown_bs = partition.cached_inside_unknown_regions
-        append_nonempty(unresolved_parts, cached_inside_core_unknown_bs)
+        append_unresolved(partition.cached_inside_unknown_regions)
 
         inside_core_unchecked_bs = partition.inside_core_unchecked_regions
         boundary_core_unchecked_bs = partition.boundary_core_unchecked_regions
@@ -429,100 +479,46 @@ class BisectCertifier:
 
         if self.config.skip_boundary_core_cert and len(boundary_core_unchecked_bs) > 0:
             boundary_complete_candidates = self.region_manager.pack_regions(
-                (
-                    boundary_complete_candidates,
-                    boundary_core_unchecked_bs,
-                )
-            )
+                (boundary_complete_candidates, boundary_core_unchecked_bs))
             boundary_core_unchecked_bs = self.region_manager.empty_regions()
 
-        __logger__.debug(
-            "rho=%.6f batch routing: total=%d outside=%d cached_complete=%d cached_core_safe_after_rho_gate=%d inside_core_cex=%d inside_core_unknown=%d inside_core_unchecked=%d boundary_core_unchecked=%d boundary_complete=%d.",
-            float(rho),
-            len(bs),
-            len(partition.irrelevant_regions),
-            len(partition.cached_complete_safe_regions),
-            len(partition.cached_core_safe_regions),
-            len(cached_inside_core_cex_bs),
-            len(cached_inside_core_unknown_bs),
-            len(inside_core_unchecked_bs),
-            len(boundary_core_unchecked_bs),
-            len(boundary_complete_candidates),
+        inside_core_update = self._run_core_certification(
+            inside_core_unchecked_bs,
+            rho,
+            early_exit=early_exit,
+            progress=progress,
         )
-
-        if len(inside_core_unchecked_bs) > 0:
-            inside_core_result = self._get_core_region_certifier().certify_regions(
-                regions=inside_core_unchecked_bs,
-                rho=rho,
-                early_exit=early_exit,
-                progress=progress,
-            )
-            inside_core_update = self.region_manager.apply_core_certification_result(
-                inside_core_unchecked_bs,
-                verified_mask=inside_core_result.verified_mask,
-                counterexample_mask=inside_core_result.counterexample_mask,
-                unknown_mask=inside_core_result.unknown_mask,
-            )
-            append_nonempty(
-                resolved_parts,
-                inside_core_update.verified_regions,
-            )
-            append_nonempty(
-                unresolved_parts,
-                inside_core_update.failed_regions,
-            )
-            counterexample_found = counterexample_found or inside_core_update.counterexample_found
+        if inside_core_update is not None:
+            append_resolved(inside_core_update.verified_regions)
+            append_unresolved(inside_core_update.failed_regions)
+            counterexample_found_or(inside_core_update.counterexample_found)
             if early_exit and inside_core_update.counterexample_found:
                 return finish()
 
-        if len(boundary_core_unchecked_bs) > 0:
-            boundary_core_result = self._get_core_region_certifier().certify_regions(
-                regions=boundary_core_unchecked_bs,
-                rho=rho,
-                early_exit=False,
-                progress=progress,
-            )
-            boundary_core_update = self.region_manager.apply_core_certification_result(
-                boundary_core_unchecked_bs,
-                verified_mask=boundary_core_result.verified_mask,
-                counterexample_mask=boundary_core_result.counterexample_mask,
-                unknown_mask=boundary_core_result.unknown_mask,
-            )
-            append_nonempty(
-                resolved_parts,
-                boundary_core_update.verified_regions,
-            )
+        boundary_core_update = self._run_core_certification(
+            boundary_core_unchecked_bs,
+            rho,
+            early_exit=False,
+            progress=progress,
+        )
+        if boundary_core_update is not None:
+            append_resolved(boundary_core_update.verified_regions)
             boundary_complete_candidates = self.region_manager.pack_regions(
-                (
-                    boundary_complete_candidates,
-                    boundary_core_update.failed_regions,
-                )
-            )
+                (boundary_complete_candidates, boundary_core_update.failed_regions))
 
         if len(boundary_complete_candidates) == 0:
             return finish()
 
-        complete_result = self._get_region_certifier().certify_regions(
-            regions=boundary_complete_candidates,
-            rho=rho,
+        complete_result, complete_update = self._run_complete_certification(
+            boundary_complete_candidates,
+            rho,
             early_exit=early_exit,
             progress=progress,
         )
-        complete_update = self.region_manager.apply_complete_certification_result(
-            boundary_complete_candidates,
-            verified_mask=complete_result.verified_mask,
-            failed_mask=complete_result.failed_mask,
-            rho=rho,
-        )
-        append_nonempty(
-            resolved_parts,
-            complete_update.verified_regions,
-        )
-        append_nonempty(
-            unresolved_parts,
-            complete_update.failed_regions,
-        )
-        counterexample_found = counterexample_found or complete_result.any_counterexample
+        if complete_update is not None and complete_result is not None:
+            append_resolved(complete_update.verified_regions)
+            append_unresolved(complete_update.failed_regions)
+            counterexample_found_or(complete_result.any_counterexample)
         return finish()
 
     def _certify_recursive_regions(
@@ -649,7 +645,7 @@ class BisectCertifier:
         """Check whether all regions satisfy Lyapunov conditions at ``rho``."""
         result = self._certify_recursive_regions(
             rho=rho,
-            show_progress=self._show_progress(PROGRESS_LEVEL.ALL),
+            show_progress=self._show_progress(ProgressLevel.ALL),
             early_exit=True,
             progress=progress,
         )
@@ -662,7 +658,7 @@ class BisectCertifier:
         self.cache_region_bounds()
 
         progress = None
-        if self._show_progress(PROGRESS_LEVEL.TOP):
+        if self._show_progress(ProgressLevel.TOP):
             progress = Progress(
                 TextColumn("[bold]{task.description}"),
                 BarColumn(),
@@ -714,7 +710,7 @@ class BisectCertifier:
         """
         recursive_result = self._certify_recursive_regions(
             rho=rho,
-            show_progress=self._show_progress(PROGRESS_LEVEL.TOP)
+            show_progress=self._show_progress(ProgressLevel.TOP)
         )
 
         bs_bounds = self.region_manager.get_cached_region_bounds(recursive_result.resolved)
