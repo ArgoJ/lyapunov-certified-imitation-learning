@@ -340,7 +340,7 @@ class LyapunovTrainer:
         boundary_buffer.update(boundary_states, value_fn=self.lyap_model)
         roa_candidates = self._build_roa_candidates(injection_states=boundary_buffer.states)
         
-        new_rho_estimate = get_ema(current_rho_estimate, rho_diagnostics.rho, self.config.rho_ema_decay)
+        new_rho_estimate = get_ema(current_rho_estimate, rho_diagnostics.rho.rho, self.config.rho_ema_decay)
         return BoundaryStepResult(new_rho_estimate, roa_candidates, rho_diagnostics)
 
     def _should_abort_training(self, rho_estimate: float) -> bool:
