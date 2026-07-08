@@ -15,9 +15,10 @@ def safe_th2np(tensor: th.Tensor | NDArray | None):
         return None
     if isinstance(tensor, th.Tensor):
         return tensor.detach().cpu().numpy()
-    if isinstance(tensor, np.ArrayLike):
+    try:
         return np.asarray(tensor)
-    raise ValueError(f"Expected tensor, numpy array or None, got {type(tensor)}")
+    except Exception as e:
+        raise ValueError(f"Cannot convert {type(tensor)} to numpy array. Error: {e}")
 
 
 def tb_writer_add_metrics(

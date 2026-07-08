@@ -9,9 +9,9 @@ import torch.nn as nn
 
 from collections.abc import Sequence
 from numpy.typing import NDArray
+from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
 from dataclasses import replace
-from mpc_datagen.mpc_data import MPCConfig
 from rich.progress import (
     Progress,
     TextColumn,
@@ -20,12 +20,12 @@ from rich.progress import (
     TimeRemainingColumn,
     MofNCompleteColumn,
 )
+from mpc_datagen.mpc_data import MPCConfig
 
 from .config import LyapunovTrainingConfig
 from .buffer import BoundaryStateBuffer, DynamicStateBuffer
 from .loss import LyapunovTrainingLoss
 from .counterexample import (
-    BoundaryRhoDiagnostics,
     estimate_rho_from_boundary,
     find_counter_examples,
     sample_uniform_box,
@@ -110,6 +110,7 @@ class LyapunovTrainer:
         self.rho_monitor = rho_monitor
         self.results: LyapunovTrainingResult | None = None
         self.metrics: LyapunovTrainingMetrics | None = None
+        self.tb_writer: SummaryWriter | None = None
 
     @staticmethod
     def _build_scaled_train_bounds(
@@ -199,6 +200,19 @@ class LyapunovTrainer:
             at_iter, policy_lr, self.config.policy_lr_factor
         )
 
+    def _open_tb_writer(self) -> None:
+        if self.tb_writer is None:
+            self.tb_writer = tb_writer_build(self.config.tb_log_dir)
+
+    def _close_tb_writer(self) -> None:
+        tb_writer_close(self.tb_writer)
+        self.tb_writer = None
+    
+    
+    # ==========================================
+    # --- TRAINING HELPER METHODS ---
+    # ==========================================
+
     def _mine_new_counterexamples(self, rho_estimate: float) -> th.Tensor:
         """Mine rho-gated counterexamples using the external training semantics."""
         return find_counter_examples(
@@ -270,14 +284,6 @@ class LyapunovTrainer:
         )
         return cegis_buffer
 
-    def _calc_cex_fraction(self, fraction):
-        return self.config.cex_fraction_min + fraction \
-            * (self.config.cex_fraction_max - self.config.cex_fraction_min)
-    
-    # ==========================================
-    # --- TRAINING HELPER METHODS ---
-    # ==========================================
-
     def _init_training_components(
         self
     ) -> tuple[LyapunovTrainingMetrics, DynamicStateBuffer, BoundaryStateBuffer, th.Tensor]:
@@ -340,20 +346,23 @@ class LyapunovTrainer:
             return self.rho_monitor.update(rho_estimate)
         return False
 
-    def _is_mining_step(self, outer_iter: int, mining_interval: int) -> bool:
-        return (outer_iter + 1) % mining_interval == 0
+    def _is_mining_step(self, outer_iter: int) -> bool:
+        return (outer_iter + 1) % self.config.cex_every == 0
+    
+    def _calc_cex_fraction(self, fraction):
+        return self.config.cex_fraction_min + fraction \
+            * (self.config.cex_fraction_max - self.config.cex_fraction_min)
 
     def _mine_cegis_step(
         self,
         outer_iter: int,
-        mining_interval: int,
         rho_estimate: float,
         state_buffer: DynamicStateBuffer,
         cex_fraction_ema: float | None,
     ) -> MiningStepResult:
         
         # Only mine at intervals
-        if not self._is_mining_step(outer_iter, mining_interval):
+        if not self._is_mining_step(outer_iter):
             if cex_fraction_ema is None:
                 return MiningStepResult.empty()
             current_fraction = self._calc_cex_fraction(cex_fraction_ema)
@@ -382,6 +391,21 @@ class LyapunovTrainer:
             new_cex_states,
             new_cex_violations
         )
+
+    def _fill_tb_writer(self, outer_iter: int, mining_result: MiningStepResult):
+        tb_writer_add_metrics(self.tb_writer, self.metrics)
+        if self._is_mining_step(outer_iter) and \
+                mining_result.mined_cex_states.numel() > 0:
+            tb_writer_add_parallel_coordinates(
+                self.tb_writer,
+                tag="Counterexamples",
+                states=mining_result.mined_cex_states,
+                state_bounds=self.config.train_bounds,
+                origin_exclusion=self.config.origin_exclusion,
+                global_step=outer_iter + 1,
+                max_lines=512,
+                cond_violations=mining_result.mined_cex_violations,
+            )
 
     def _finalize_training(
         self, 
@@ -415,13 +439,11 @@ class LyapunovTrainer:
             self.rho_monitor.reset()
 
         self.metrics, cegis_buffer, boundary_buffer, lirpa_regions = self._init_training_components()
-
-        mining_interval = max(1, int(self.config.cex_every))
         rho_estimate = None
         mining_result = MiningStepResult.empty()
         total_steps = self.config.outer_epochs * self.config.steps_per_epoch
 
-        tb_writer = tb_writer_build(self.config.tb_log_dir)
+        self._open_tb_writer()
         start_time = time.time()
 
         with GracefulInterruptHandler(logger=__logger__) as interrupt_handler:
@@ -442,7 +464,7 @@ class LyapunovTrainer:
                             f"{self.rho_monitor.consecutive_low} consecutive rho estimates "
                             f"below {self.rho_monitor.threshold:.3f}."
                         )
-                        tb_writer_close(tb_writer)
+                        self._close_tb_writer()
                         return self._finalize_training(
                             cex_count=cegis_buffer.cex_count,
                             rho_estimate=none_to_float(rho_estimate),
@@ -451,7 +473,7 @@ class LyapunovTrainer:
                         )
 
                     mining_result = self._mine_cegis_step(
-                        outer_iter, mining_interval, rho_estimate, cegis_buffer, mining_result.cex_fraction_ema
+                        outer_iter, rho_estimate, cegis_buffer, mining_result.cex_fraction_ema
                     )
 
                     # Inner training loop
@@ -498,22 +520,9 @@ class LyapunovTrainer:
                         num_mined_counterexamples=cegis_buffer.cex_count,
                         rho_diagnostics=boundary_result.rho_diagnostics,
                     )
-                    tb_writer_add_metrics(tb_writer, self.metrics)
-                    if self._is_mining_step(outer_iter, mining_interval) and \
-                            mining_result.mined_cex_states.numel() > 0:
-                        tb_writer_add_parallel_coordinates(
-                            tb_writer,
-                            tag="Counterexamples",
-                            states=mining_result.mined_cex_states,
-                            state_bounds=self.config.train_bounds,
-                            origin_exclusion=self.config.origin_exclusion,
-                            global_step=outer_iter + 1,
-                            max_lines=512,
-                            cond_violations=mining_result.mined_cex_violations,
-                        )
-                    
+                    self._fill_tb_writer(outer_iter, mining_result=mining_result)
 
-        tb_writer_close(tb_writer)
+        self._close_tb_writer()
         final_abort_reason = None
         if interrupt_handler.aborted:
             final_abort_reason = "Lyapunov training interrupted by user."

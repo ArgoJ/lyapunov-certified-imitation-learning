@@ -246,7 +246,8 @@ def find_counter_examples(
         # Filter cex origin exclusion
         exclusion = th.as_tensor(config.origin_exclusion, dtype=best_states.dtype, device=device)
         inside_exclusion = th.all(th.abs(best_states) <= exclusion, dim=-1)
-        counter_mask = (best_objective < 1e-9) & (~inside_exclusion)
+        cex_tol = 1e-9
+        counter_mask = (best_objective < -cex_tol) & (~inside_exclusion)
 
     cex_states = best_states[counter_mask].clone().detach()
     cex_violations = (-best_objective[counter_mask]).clamp_min(0.0).clone().detach()
