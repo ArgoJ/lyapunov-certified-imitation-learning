@@ -23,7 +23,7 @@ from rich.progress import (
 from mpc_datagen.mpc_data import MPCConfig
 
 from .config import LyapunovTrainingConfig
-from .buffer import BoundaryStateBuffer, DynamicStateBuffer
+from .buffer import BoundaryStateBuffer, CEGISBuffer
 from .loss import LyapunovTrainingLoss
 from .counterexample import (
     estimate_rho_from_boundary,
@@ -266,16 +266,18 @@ class LyapunovTrainer:
         boundary_buffer.update(init_boundary_x, value_fn=self.lyap_model)
         return boundary_buffer
 
-    def _get_cegis_buffer(self) -> DynamicStateBuffer:
+    def _get_cegis_buffer(self) -> CEGISBuffer:
         initial_x = sample_uniform_box(
             self.config.initial_sample_size, 
             self.lbx_train, self.ubx_train, 
             self.device, generator=self.torch_gen,
         )
-        cegis_buffer = DynamicStateBuffer(
+        cegis_buffer = CEGISBuffer(
             initial_states=initial_x,
             state_buffer_limit=self.config.state_buffer_limit,
             cex_buffer_limit=self.config.cex_buffer_limit,
+            lb=self.lbx_train,
+            ub=self.ubx_train,
             min_cex_fraction=self.config.cex_fraction_min,
             max_cex_fraction=self.config.cex_fraction_max,
             max_cex_age=self.config.cex_max_age,
@@ -286,7 +288,7 @@ class LyapunovTrainer:
 
     def _init_training_components(
         self
-    ) -> tuple[LyapunovTrainingMetrics, DynamicStateBuffer, BoundaryStateBuffer, th.Tensor]:
+    ) -> tuple[LyapunovTrainingMetrics, CEGISBuffer, BoundaryStateBuffer, th.Tensor]:
         metrics = LyapunovTrainingMetrics.from_num_steps(
             num_outer_epochs=self.config.outer_epochs,
             steps_per_epoch=self.config.steps_per_epoch,
@@ -357,7 +359,7 @@ class LyapunovTrainer:
         self,
         outer_iter: int,
         rho_estimate: float,
-        state_buffer: DynamicStateBuffer,
+        state_buffer: CEGISBuffer,
         cex_fraction_ema: float | None,
     ) -> MiningStepResult:
         
@@ -474,6 +476,13 @@ class LyapunovTrainer:
 
                     mining_result = self._mine_cegis_step(
                         outer_iter, rho_estimate, cegis_buffer, mining_result.cex_fraction_ema
+                    )
+
+                    # Resample regular states to focus on the current ρ-sublevel region
+                    cegis_buffer.resample_states(
+                        value_fn=self.lyap_model,
+                        rho_estimate=rho_estimate,
+                        rho_margin=self.config.rho_resample_margin,
                     )
 
                     # Inner training loop

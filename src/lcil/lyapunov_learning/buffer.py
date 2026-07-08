@@ -158,7 +158,7 @@ class BoundaryStateBuffer:
         self._pool.filter_by_indices(keep_indices)
 
 
-class DynamicStateBuffer:
+class CEGISBuffer:
     """A dynamic replay buffer for CEGIS counterexamples and initial states, strictly kept on the specified device."""
 
     def __init__(
@@ -166,6 +166,8 @@ class DynamicStateBuffer:
         initial_states: th.Tensor,
         state_buffer_limit: int,
         cex_buffer_limit: int,
+        lb: th.Tensor,
+        ub: th.Tensor,
         min_cex_fraction: float = 0.0,
         max_cex_fraction: float = 1.0,
         generator: th.Generator | None = None,
@@ -183,6 +185,10 @@ class DynamicStateBuffer:
             Maximum number of states to retain in the buffer.
         cex_buffer_limit : int
             Maximum number of counterexample states to retain in the buffer.
+        lb : th.Tensor
+            Lower bounds of shape (state_dim,) for uniform resampling.
+        ub : th.Tensor
+            Upper bounds of shape (state_dim,) for uniform resampling.
         min_cex_fraction : float, optional
             Minimum fraction of counterexample states in sampled batches, by default 0.0
         max_cex_fraction : float, optional
@@ -214,6 +220,8 @@ class DynamicStateBuffer:
         self.states = initial_states.to(device)
         self.state_buffer_limit = state_buffer_limit
         self.cex_buffer_limit = cex_buffer_limit
+        self.lb = lb.to(device)
+        self.ub = ub.to(device)
         self.device = device
         self.min_cex_fraction = min_cex_fraction
         self.max_cex_fraction = max_cex_fraction
@@ -246,6 +254,70 @@ class DynamicStateBuffer:
 
     def __len__(self) -> int:
         return self.state_count + self.cex_count
+
+    @th.no_grad()
+    def resample_states(
+        self,
+        value_fn: Callable[[th.Tensor], th.Tensor],
+        rho_estimate: float,
+        rho_margin: float = 1.5,
+    ) -> None:
+        """Replace the regular state pool with rejection-sampled states focused on the ρ-sublevel region.
+
+        Samples uniformly from the training bounds, evaluates ``V(x)`` via
+        *value_fn*, and keeps states with ``V(x) ≤ rho_margin * ρ``.  If fewer
+        than 50% of the target count pass the acceptance test, the remaining
+        slots are filled with the lowest-V rejected candidates to ensure the
+        buffer never starves.
+
+        Parameters
+        ----------
+        value_fn : Callable[[th.Tensor], th.Tensor]
+            Maps ``(N, state_dim) → (N, 1)`` Lyapunov values.
+        rho_estimate : float
+            Current ρ estimate from boundary analysis.
+        rho_margin : float, optional
+            Multiplicative factor over ρ for the acceptance threshold, by default 1.5.
+        """
+        target_count = self.state_buffer_limit
+        # Oversample to increase acceptance yield
+        oversample_factor = 4
+        n_candidates = target_count * oversample_factor
+
+        candidates = self.lb + th.rand(
+            n_candidates, self.lb.shape[0], device=self.device, generator=self.generator,
+        ) * (self.ub - self.lb)
+
+        v_candidates = value_fn(candidates).flatten()
+        threshold = rho_margin * rho_estimate
+
+        accepted_mask = v_candidates <= threshold
+        accepted = candidates[accepted_mask]
+
+        min_fill = target_count // 2
+        if accepted.shape[0] >= target_count:
+            # More than enough accepted – keep the ones with lowest V
+            _, topk_idx = th.topk(v_candidates[accepted_mask], k=target_count, largest=False)
+            self.states = accepted[topk_idx]
+        elif accepted.shape[0] >= min_fill:
+            # Enough for minimum fill, pad with lowest-V rejected
+            rejected_mask = ~accepted_mask
+            rejected_v = v_candidates[rejected_mask]
+            n_pad = target_count - accepted.shape[0]
+            _, pad_idx = th.topk(rejected_v, k=min(n_pad, rejected_v.shape[0]), largest=False)
+            self.states = th.cat([accepted, candidates[rejected_mask][pad_idx]], dim=0)
+        else:
+            # Very few accepted – take all accepted + fill rest with lowest-V overall
+            _, topk_idx = th.topk(v_candidates, k=target_count, largest=False)
+            self.states = candidates[topk_idx]
+
+        __logger__.debug(
+            "Resampled state buffer: %d/%d accepted (threshold=%.4f), final size=%d",
+            int(accepted_mask.sum().item()),
+            n_candidates,
+            threshold,
+            self.states.shape[0],
+        )
 
     def register_cex(
         self,

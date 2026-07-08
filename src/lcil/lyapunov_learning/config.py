@@ -134,10 +134,14 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Numerical tolerance for condition satisfaction.
     condition_margin : float
         Safety margin enforced on the verifier output during training.
-    origin_focused_condition : bool
-        If True, origin-focused weighting (1 - V/ρ) is applied, concentrating
-        the gradient signal near the origin. If False, all points inside the 
-        ρ-sublevel set receive equal weight in the condition loss.
+    rho_gate_sharpness : float
+        Steepness of the sigmoid gate used to soft-weight samples by their
+        distance to the ρ-sublevel boundary. Higher values approximate a hard
+        gate; lower values allow more gradient signal from points outside ρ.
+    rho_resample_margin : float
+        Multiplicative margin over ρ for rejection-resampling the state buffer.
+        States with ``V(x) ≤ rho_resample_margin * ρ`` are retained during
+        periodic resampling to focus training on the relevant sublevel region.
     """
 
     state_dim: int = config_field(
@@ -250,10 +254,19 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="TensorBoard logging directory.",
         validators=(optional_validator(pathlike_validator),)
     )
-    origin_focused_condition: bool = config_field(
-        default=False,
-        help="If True, origin-focused weighting (1 - V/rho) is applied in the condition loss. "
-            "If False, all points inside the rho-sublevel set receive equal weight.",
+    rho_gate_sharpness: float = config_field(
+        default=10.0,
+        help="Steepness of the sigmoid gate in the condition loss. "
+            "Higher values approximate a hard gate; lower values yield softer weighting.",
+        display_alias="ρ_gate_β",
+        validators=(positive_validator,),
+    )
+    rho_resample_margin: float = config_field(
+        default=1.5,
+        help="Multiplicative margin over rho for rejection-resampling the state buffer. "
+            "States with V(x) <= margin * rho are retained.",
+        display_alias="ρ_resamp_m",
+        validators=(positive_validator,),
     )
 
     # Weights

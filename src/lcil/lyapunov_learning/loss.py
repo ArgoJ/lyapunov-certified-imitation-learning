@@ -280,14 +280,20 @@ class RelativeInvarianceViolation(StateBoundsModule):
 
 
 class RhoGatedConditionLoss(nn.Module):
-    """Compute a rho-gated relative condition loss with explicit V-size regularization."""
+    """Compute a rho-gated relative condition loss with soft sigmoid weighting.
+
+    Instead of a hard binary mask ``V(x) ≤ ρ``, a smooth sigmoid gate
+    ``σ(β · (ρ - V) / ρ)`` is used so that points near the sublevel boundary
+    still contribute gradient signal.  The sharpness parameter ``β`` controls
+    the transition width.
+    """
 
     def __init__(self, config: LyapunovTrainingConfig, device: th.device | str = "cpu") -> None:
         super().__init__()
         self.rho_min = float(config.rho_min)
         self.relative_eps = float(config.relative_condition_eps)
         self.invariance_weight = float(config.invariance_weight)
-        self.origin_focused_condition = bool(config.origin_focused_condition)
+        self.gate_sharpness = float(config.rho_gate_sharpness)
         self.relative_decrease_violation = RelativeLyapunovDecreaseViolation(
             kappa=config.kappa,
             condition_margin=config.condition_margin,
@@ -308,31 +314,12 @@ class RhoGatedConditionLoss(nn.Module):
         rel_decrease = self.relative_decrease_violation(v_curr=v_curr, v_next=v_next)
         rel_invariance = self.relative_invariance_violation(x_next=x_next)
         return rel_decrease + self.invariance_weight * rel_invariance
-    
-    def inside_sublevel_mask(self, v_curr: th.Tensor, rho_estimate: float) -> th.Tensor:
+
+    def soft_sublevel_weight(self, v_curr: th.Tensor, rho_estimate: float) -> th.Tensor:
+        """Smooth sigmoid weight: ≈1 inside ρ, ≈0.5 at ρ boundary, ≈0 far outside."""
         rho_value = safe_rho(rho_estimate, self.rho_min)
-        return (v_curr <= rho_value).to(dtype=v_curr.dtype)
-
-    def origin_focused_weight(
-        self,
-        v_curr: th.Tensor,
-        rho_estimate: float,
-    ) -> th.Tensor:
-        rho_value = safe_rho(rho_estimate, self.rho_min)
-        scaled_v = (v_curr.detach() / max(rho_value, self.relative_eps)).clamp(0.0, 1.0)
-        return self.inside_sublevel_mask(v_curr=v_curr, rho_estimate=rho_estimate) * (1.0 - scaled_v)
-
-    def _compute_weights(self, v_curr: th.Tensor, rho_estimate: float) -> th.Tensor:
-        """Compute per-sample weights for the condition loss.
-
-        When ``origin_focused_condition`` is False, all points inside the
-        ρ-sublevel set receive equal weight. Otherwise, the origin-focused
-        scheme ``(1 − V/ρ)`` is used which concentrates the gradient signal
-        on low-V states.
-        """
-        if self.origin_focused_condition:
-            return self.origin_focused_weight(v_curr, rho_estimate)
-        return self.inside_sublevel_mask(v_curr=v_curr, rho_estimate=rho_estimate)
+        margin = (rho_value - v_curr.detach()) / max(rho_value, self.relative_eps)
+        return th.sigmoid(self.gate_sharpness * margin)
 
     def forward(
         self,
@@ -346,8 +333,14 @@ class RhoGatedConditionLoss(nn.Module):
             v_next=v_next,
             x_next=x_next,
         )
-        weights = self._compute_weights(v_curr, rho_estimate)
+        weights = self.soft_sublevel_weight(v_curr, rho_estimate)
+
+        # logging
+        # num_active = int((weights > 0.5).sum().item())
+        # effective_weight_mass = float(weights.sum().item())
+        # __logger__.info("active=%d, effective mass=%.3f", num_active, effective_weight_mass)
         return weighted_mean(relative_violation, weights)
+
 
 
 class SignedConditionMargin(nn.Module):

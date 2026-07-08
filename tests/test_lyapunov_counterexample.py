@@ -16,7 +16,7 @@ from shared_utils import (
 )
 
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
-from lcil.lyapunov_learning.buffer import BoundaryStateBuffer, DynamicStateBuffer
+from lcil.lyapunov_learning.buffer import BoundaryStateBuffer, CEGISBuffer
 from lcil.lyapunov_learning.counterexample import (
     BoundaryRhoDiagnostics,
     estimate_rho_from_boundary,
@@ -217,7 +217,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
 
     def test_dynamic_state_buffer_keeps_most_violating_counterexamples(self) -> None:
         initial_states = th.zeros((4, 1), dtype=th.float32)
-        state_buffer = DynamicStateBuffer(
+        state_buffer = CEGISBuffer(
             initial_states=initial_states,
             state_buffer_limit=16,
             cex_buffer_limit=3,
@@ -242,7 +242,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         self.assertTrue(th.allclose(retained, expected))
 
     def test_dynamic_state_buffer_sample_returns_requested_batch_size(self) -> None:
-        state_buffer = DynamicStateBuffer(
+        state_buffer = CEGISBuffer(
             initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
             state_buffer_limit=4,
             cex_buffer_limit=3,
@@ -255,7 +255,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         self.assertTrue(th.all((batch == 1.0) | (batch == 2.0)).item())
 
     def test_dynamic_state_buffer_sample_uses_regular_and_cex_pools_separately(self) -> None:
-        state_buffer = DynamicStateBuffer(
+        state_buffer = CEGISBuffer(
             initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
             state_buffer_limit=8,
             cex_buffer_limit=3,
@@ -272,7 +272,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
 
     def test_dynamic_state_buffer_rejects_empty_initial_states(self) -> None:
         with self.assertRaisesRegex(ValueError, "initial_states cannot be empty"):
-            DynamicStateBuffer(
+            CEGISBuffer(
                 initial_states=th.empty((0, 1), dtype=th.float32),
                 state_buffer_limit=4,
                 cex_buffer_limit=3,
@@ -280,7 +280,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             )
 
     def test_dynamic_state_buffer_sample_clamps_out_of_range_cex_fraction(self) -> None:
-        state_buffer = DynamicStateBuffer(
+        state_buffer = CEGISBuffer(
             initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
             state_buffer_limit=4,
             cex_buffer_limit=3,

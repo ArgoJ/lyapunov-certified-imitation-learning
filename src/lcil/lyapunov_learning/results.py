@@ -8,7 +8,7 @@ from numpy.typing import NDArray
 from pathlib import Path
 from dataclasses import dataclass
 
-from .buffer import DynamicStateBuffer
+from .buffer import CEGISBuffer
 from .loss import LyapunovTrainingLossParts
 from .counterexample import BoundaryRhoDiagnostics
 from ..utils import (
@@ -227,7 +227,7 @@ class LyapunovTrainingMetrics:
     def fill_outer(
         self,
         outer_iter: int,
-        state_buffer: DynamicStateBuffer,
+        state_buffer: CEGISBuffer,
         num_mined_counterexamples: int,
         rho_diagnostics: BoundaryRhoDiagnostics,
     ) -> None:
