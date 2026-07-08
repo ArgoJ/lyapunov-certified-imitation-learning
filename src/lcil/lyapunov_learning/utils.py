@@ -47,7 +47,7 @@ class ThresholdMonitor:
     threshold: float = 1.0
     patience: int = 10
     value_history: list[float] = field(default_factory=list, init=False)
-    consecutive_low: int = field(default_factory=int, init=False)
+    consecutive_low: int = field(default_factory=0, init=False)
 
     def __post_init__(self) -> None:
         if self.patience <= 0:
@@ -69,3 +69,7 @@ class ThresholdMonitor:
     def should_stop(self) -> bool:
         """Return whether the low-value stopping criterion is active."""
         return self.consecutive_low >= self.patience
+    
+    def reset(self) -> None:
+        self.consecutive_low = 0
+        self.value_history.clear()

@@ -251,7 +251,11 @@ class LyapunovTrainer:
         return boundary_buffer
 
     def _get_cegis_buffer(self) -> DynamicStateBuffer:
-        initial_x = sample_uniform_box(self.config.initial_sample_size, self.lbx_train, self.ubx_train, self.device)
+        initial_x = sample_uniform_box(
+            self.config.initial_sample_size, 
+            self.lbx_train, self.ubx_train, 
+            self.device, generator=self.torch_gen,
+        )
         cegis_buffer = DynamicStateBuffer(
             initial_states=initial_x,
             state_buffer_limit=self.config.state_buffer_limit,
@@ -352,7 +356,9 @@ class LyapunovTrainer:
 
         # New mining
         new_cex = self._mine_new_counterexamples(rho_estimate=rho_estimate)
-        state_buffer.register_cex(new_cex, objective=self.loss_module.buffer_sorting_objective)
+        state_buffer.register_cex(
+            new_cex,
+            objective=lambda x: self.loss_module.buffer_sorting_objective(x, rho_estimate=rho_estimate))
         
         if new_cex.numel() == 0:
             __logger__.info("No new counterexamples mined at outer iteration %d.", outer_iter)
@@ -391,6 +397,9 @@ class LyapunovTrainer:
 
     def train(self, description: str = "Lyapunov Learning") -> LyapunovTrainingResult:
         """Execute the CEGIS-style training loop."""
+        if self.rho_monitor is not None:
+            self.rho_monitor.reset()
+
         self.metrics, cegis_buffer, boundary_buffer, lirpa_regions = self._init_training_components()
 
         mining_interval = max(1, int(self.config.cex_every))

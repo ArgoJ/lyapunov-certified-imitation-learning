@@ -12,6 +12,12 @@ from ..utils import timeit
 __logger__ = logging.getLogger(__name__)
 
 @th.no_grad()
+def normalize_states(states: th.Tensor, lb: th.Tensor, ub: th.Tensor) -> th.Tensor:
+    """Normalizes the states by bounds"""
+    return ((states - lb) / (ub - lb).clamp_min(1e-6))
+    
+
+@th.no_grad()
 def get_spatial_diversity_indices(
     states: th.Tensor,
     values: th.Tensor,
@@ -232,14 +238,12 @@ class DynamicStateBuffer:
         objective: Callable[[th.Tensor], th.Tensor],
     ) -> None:
         """Registers new counterexamples and retains the strongest filtered violations."""
-        if new_cexs.numel() == 0:
-            return
-
         self._cex_pool.step_time_and_clean()
-        self._cex_pool.add_fresh(new_cexs)
 
-        if len(self._cex_pool) == 0:
+        if new_cexs.numel() == 0 and len(self._cex_pool) == 0:
             return
+
+        self._cex_pool.add_fresh(new_cexs)
 
         with th.no_grad():
             violation_scores = -objective(self.cexs).flatten()
@@ -305,4 +309,6 @@ class DynamicStateBuffer:
         )
         regular_states = self.states[reg_idx]
 
-        return th.cat((injected_cexs, regular_states), dim=0)
+        batch = th.cat((injected_cexs, regular_states), dim=0)
+        perm = th.randperm(batch.shape[0], device=batch.device, generator=self.generator)
+        return batch[perm]

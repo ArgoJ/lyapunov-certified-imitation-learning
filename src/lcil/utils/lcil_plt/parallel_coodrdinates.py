@@ -101,9 +101,16 @@ def parallel_coordinates_matplot(
     state_order: Sequence[int] | None = None,
     origin_exclusion: float | Sequence[float] | None = None,
     max_lines: int = 64,
+    cond_violatoin: NDArray | None = None
 ):
-    x_norm, origin_exc, labels, _, n, d, _ = _prepare_parallel_data(
-        states, state_bounds, state_labels, state_order, origin_exclusion, max_lines
+    x_norm, origin_exc, labels, _, n, d, v = _prepare_parallel_data(
+        states=states,
+        state_bounds=state_bounds,
+        state_labels=state_labels,
+        state_order=state_order,
+        origin_exclusion=origin_exclusion,
+        max_lines=max_lines,
+        cond_violations=cond_violatoin,
     )
 
     xs = np.arange(d)

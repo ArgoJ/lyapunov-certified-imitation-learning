@@ -108,6 +108,9 @@ def weighted_mean(values: th.Tensor, weights: th.Tensor) -> th.Tensor:
     weights = weights.to(dtype=values.dtype)
     return (values * weights).sum() / weights.sum().clamp_min(1e-6)
 
+def safe_rho(rho: float, rho_min: float):
+    return max(float(rho), rho_min)
+
 
 class StateBoundsModule(nn.Module):
     """Base module that stores the shared training-state bounds."""
@@ -306,11 +309,8 @@ class RhoGatedConditionLoss(nn.Module):
         rel_invariance = self.relative_invariance_violation(x_next=x_next)
         return rel_decrease + self.invariance_weight * rel_invariance
     
-    def rho_value(self, rho_estimate: float) -> float:
-        return max(float(rho_estimate), self.rho_min)
-    
     def inside_sublevel_mask(self, v_curr: th.Tensor, rho_estimate: float) -> th.Tensor:
-        rho_value = self.rho_value(rho_estimate)
+        rho_value = safe_rho(rho_estimate, self.rho_min)
         return (v_curr <= rho_value).to(dtype=v_curr.dtype)
 
     def origin_focused_weight(
@@ -318,7 +318,7 @@ class RhoGatedConditionLoss(nn.Module):
         v_curr: th.Tensor,
         rho_estimate: float,
     ) -> th.Tensor:
-        rho_value = self.rho_value(rho_estimate)
+        rho_value = safe_rho(rho_estimate, self.rho_min)
         scaled_v = (v_curr.detach() / max(rho_value, self.relative_eps)).clamp(0.0, 1.0)
         return self.inside_sublevel_mask(v_curr=v_curr, rho_estimate=rho_estimate) * (1.0 - scaled_v)
 
@@ -331,15 +331,8 @@ class RhoGatedConditionLoss(nn.Module):
         on low-V states.
         """
         if self.origin_focused_condition:
-            weights = self.origin_focused_weight(v_curr, rho_estimate)
-        else:
-            weights = self.inside_sublevel_mask(v_curr=v_curr, rho_estimate=rho_estimate)
-            
-        if weights.sum() <= 1e-6 and len(v_curr) > 0:
-            min_idx = v_curr.argmin()
-            weights[min_idx] = 1.0
-            
-        return weights
+            return self.origin_focused_weight(v_curr, rho_estimate)
+        return self.inside_sublevel_mask(v_curr=v_curr, rho_estimate=rho_estimate)
 
     def forward(
         self,
@@ -458,7 +451,7 @@ class RoaSurrogateLoss(nn.Module):
         self.rho_min = float(config.rho_min)
 
     def forward(self, v_candidates: th.Tensor, rho_estimate: float) -> th.Tensor:
-        rho_value = max(float(rho_estimate), self.rho_min)
+        rho_value = safe_rho(rho_estimate, self.rho_min)
         return th.relu(v_candidates / rho_value - 1.0).mean()
 
 
@@ -572,14 +565,12 @@ class PolicyRegularizationLoss(BoundedStateSamplingModule):
         num_samples: int = 1024,
         resample_interval: int = 100,
         device: th.device | str = "cpu",
-        eps: float = 1e-8,
     ) -> None:
         super().__init__(
             state_bounds=state_bounds, num_samples=num_samples, resample_interval=resample_interval, device=device
         )
         self.init_policy = deepcopy(policy).to(self.device)
         self.policy = policy
-        self.eps = eps
         self._set_init_policy_mode()
         self.register_buffer("init_policy_values", th.zeros((self.num_samples, 1), device=self.device))
 
@@ -608,7 +599,8 @@ class PolicyRegularizationLoss(BoundedStateSamplingModule):
 
         squared_diff = th.square(out - orig_out)
         orig_squared_norm = th.sum(th.square(orig_out), dim=-1, keepdim=True)
-        normalized_loss = th.mean(squared_diff / (orig_squared_norm.detach() + self.eps))
+        normalized_loss = th.mean(
+            squared_diff / orig_squared_norm.detach().clamp_min(1e-3))
         return normalized_loss
 
 
@@ -741,12 +733,24 @@ class LyapunovTrainingLoss(nn.Module):
         v_next = self.lyap_model(x_next)
         return v_batch, x_next, v_next
     
-    
     def _parameters_excluding_r_factor(self, params: list[nn.Parameter]) -> list[nn.Parameter]:
         """Return a list of parameters excluding the R factor if it exists."""
         if _module_has_r_factor(self.lyap_model):
             return [p for p in params if p is not self.lyap_model.r_factor]
         return params
+    
+    def _get_active_regions(self, regions: th.Tensor, rho: float):
+        """Uses """
+        centers = 0.5 * (regions[:, 0, :] + regions[:, 1, :])
+        x_L = regions[:, 0, :]
+        x_U = regions[:, 1, :]
+
+        with th.no_grad():
+            v_centers = self.lyap_model(centers).squeeze(-1)
+            v_l = self.lyap_model(x_L).squeeze(-1)
+            v_u = self.lyap_model(x_U).squeeze(-1)
+            v_test = th.minimum(v_centers, th.minimum(v_l, v_u))
+        return regions[v_test <= rho]
 
     def set_explicit_l1_params(self, params: list[nn.Parameter]) -> None:
         """Update the explicitly tracked parameters for the L1 loss and adjust the weight accordingly."""
@@ -754,27 +758,20 @@ class LyapunovTrainingLoss(nn.Module):
             filtered_params = self._parameters_excluding_r_factor(params)
             self.l1_loss.set_train_params(filtered_params)
 
-    def mining_objective(
-        self,
-        x_batch: th.Tensor,
-        rho_estimate: float,
-    ) -> th.Tensor:
-        """Return the mining objective value for a batch of states, used for prioritization in the replay buffer."""
+    def mining_objective(self, x_batch: th.Tensor, rho_estimate: float) -> th.Tensor:
+        """Return the mining objective value for a batch of states, 
+        used for prioritization in the replay buffer."""
         v_batch, x_next, v_next = self._closed_loop_values(x_batch)
         relative_violation = self.condition_loss.relative_condition_violation(
             v_curr=v_batch,
             v_next=v_next,
             x_next=x_next,
         )
-        rho_value = self.condition_loss.rho_value(rho_estimate)
+        rho_value = safe_rho(rho_estimate, self.config.rho_min)
         inside_mask = (v_batch <= rho_value).to(dtype=v_batch.dtype)
-        outside_penalty = th.relu(v_batch - rho_value) / max(
-            rho_value,
-            self.condition_loss.relative_eps,
-        )
-        return outside_penalty - inside_mask * relative_violation
+        return - inside_mask * relative_violation
     
-    def buffer_sorting_objective(self, x_batch: th.Tensor) -> th.Tensor:
+    def buffer_sorting_objective(self, x_batch: th.Tensor, rho_estimate: float) -> th.Tensor:
         """Return the pure relative violation score for sorting in the buffer."""
         v_batch, x_next, v_next = self._closed_loop_values(x_batch)
         relative_violation = self.condition_loss.relative_condition_violation(
@@ -782,7 +779,10 @@ class LyapunovTrainingLoss(nn.Module):
             v_next=v_next,
             x_next=x_next,
         )
-        return -relative_violation
+        keep_factor = 1.2
+        rho_value = safe_rho(rho_estimate, self.config.rho_min)
+        keep_mask = (v_batch <= keep_factor * rho_value).to(dtype=v_batch.dtype)
+        return -keep_mask * relative_violation
     
     def compute_loss_parts(
         self,
@@ -812,16 +812,9 @@ class LyapunovTrainingLoss(nn.Module):
 
         condition_lirpa_loss_value = zero
         if self.condition_lirpa_loss is not None and lirpa_regions is not None:
-            centers = 0.5 * (lirpa_regions[:, 0, :] + lirpa_regions[:, 1, :])
-
-            with th.no_grad():
-                v_centers = self.lyap_model(centers).squeeze(-1)
-                
-            rho_safe = max(float(rho_estimate), 1e-6)
-            expansion_factor = 1.1 
-            active_mask = v_centers <= (rho_safe * expansion_factor)
-
-            active_regions = lirpa_regions[active_mask]
+            active_regions = self._get_active_regions(
+                lirpa_regions,
+                rho=safe_rho(rho_estimate, self.config.rho_min))
             if active_regions.shape[0] > 0:
                 condition_lirpa_loss_value = self.condition_lirpa_loss(regions=active_regions)
 
