@@ -780,7 +780,7 @@ class BisectCertifier:
     def save(
         self,
         save_folder: str | os.PathLike,
-    ) -> Path:
+    ) -> Path | None:
         """Save certification details and config to disk."""
         save_path = Path(save_folder).resolve()
         save_path.mkdir(parents=True, exist_ok=True)

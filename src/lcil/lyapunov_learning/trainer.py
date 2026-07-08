@@ -527,7 +527,7 @@ class LyapunovTrainer:
                         outer_iter=outer_iter,
                         state_buffer=cegis_buffer,
                         num_mined_counterexamples=cegis_buffer.cex_count,
-                        rho_diagnostics=boundary_result.rho_diagnostics,
+                        boundary_eval=boundary_result.rho_evaluation,
                     )
                     self._fill_tb_writer(outer_iter, mining_result=mining_result)
 

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from .buffer import CEGISBuffer
 from .loss import LyapunovTrainingLossParts
-from .counterexample import BoundaryRhoDiagnostics
+from .counterexample import BoundaryRhoEvaluation
 from ..utils import (
     JsonDataclass,
     timeit,
@@ -33,7 +33,7 @@ class MiningStepResult:
 class BoundaryStepResult:
     rho_estimate: float
     roa_candidates: th.Tensor
-    rho_diagnostics: BoundaryRhoDiagnostics
+    rho_evaluation: BoundaryRhoEvaluation
 
 
 @dataclass
@@ -229,21 +229,21 @@ class LyapunovTrainingMetrics:
         outer_iter: int,
         state_buffer: CEGISBuffer,
         num_mined_counterexamples: int,
-        rho_diagnostics: BoundaryRhoDiagnostics,
+        boundary_eval: BoundaryRhoEvaluation,
     ) -> None:
         self.buffer_size[outer_iter] = float(state_buffer.state_count)
         self.num_mined_counterexamples[outer_iter] = float(num_mined_counterexamples)
         self.outer_iterations_completed = outer_iter + 1
 
-        self.rho_estimate[outer_iter] = rho_diagnostics.rho
-        self.rho_boundary_quantile[outer_iter] = rho_diagnostics.boundary_quantile
-        self.rho_boundary_mean[outer_iter] = rho_diagnostics.boundary_mean
-        self.rho_feature_term_quantile[outer_iter] = rho_diagnostics.feature_term_quantile
-        self.rho_linear_term_quantile[outer_iter] = rho_diagnostics.linear_term_quantile
-        self.rho_feature_term_mean[outer_iter] = rho_diagnostics.feature_term_mean
-        self.rho_linear_term_mean[outer_iter] = rho_diagnostics.linear_term_mean
-        self.rho_feature_term_mean_share[outer_iter] = rho_diagnostics.feature_term_mean_share
-        self.rho_linear_term_mean_share[outer_iter] = rho_diagnostics.linear_term_mean_share
+        self.rho_estimate[outer_iter] = boundary_eval.rho.rho
+        self.rho_boundary_quantile[outer_iter] = boundary_eval.rho.boundary_quantile
+        self.rho_boundary_mean[outer_iter] = boundary_eval.rho.boundary_mean
+        self.rho_feature_term_quantile[outer_iter] = boundary_eval.terms.feature_term_quantile
+        self.rho_linear_term_quantile[outer_iter] = boundary_eval.terms.linear_term_quantile
+        self.rho_feature_term_mean[outer_iter] = boundary_eval.terms.feature_term_mean
+        self.rho_linear_term_mean[outer_iter] = boundary_eval.terms.linear_term_mean
+        self.rho_feature_term_mean_share[outer_iter] = boundary_eval.terms.feature_term_mean_share
+        self.rho_linear_term_mean_share[outer_iter] = boundary_eval.terms.linear_term_mean_share
 
     def save(self, path: os.PathLike) -> None:
         metrics_path = Path(path)

@@ -13,19 +13,37 @@ from ..utils import timeit
 __logger__ = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class BoundaryRhoDiagnostics:
-    """Diagnostics for the boundary-based rho estimate."""
-
-    rho: float
-    boundary_quantile: float
-    boundary_mean: float
+@dataclass(frozen=True, slots=True)
+class BoundaryTermDiagnostics:
     feature_term_quantile: float
     linear_term_quantile: float
     feature_term_mean: float
     linear_term_mean: float
     feature_term_mean_share: float
     linear_term_mean_share: float
+
+    @classmethod
+    def nan(cls) -> "BoundaryTermDiagnostics":
+        nan = float("nan")
+        return cls(
+            feature_term_quantile=nan,
+            linear_term_quantile=nan,
+            feature_term_mean=nan,
+            linear_term_mean=nan,
+            feature_term_mean_share=nan,
+            linear_term_mean_share=nan,
+        )
+
+@dataclass(frozen=True, slots=True)
+class BoundaryRhoEstimate:
+    rho: float
+    boundary_quantile: float
+    boundary_mean: float
+
+@dataclass(frozen=True, slots=True)
+class BoundaryRhoEvaluation:
+    rho: BoundaryRhoEstimate
+    terms: BoundaryTermDiagnostics
 
 
 def _bounds_tensor(state_bounds: Sequence[float], device: th.device) -> th.Tensor:
@@ -94,40 +112,40 @@ def _boundary_term_diagnostics(
     lyap_model: nn.Module,
     boundary_x: th.Tensor,
     quantile: float,
-) -> tuple[float, float, float, float, float, float, float]:
-    """Return Lyapunov term diagnostics when the model exposes them."""
-    nan = float("nan")
-    if not all(hasattr(lyap_model, attr) 
-        for attr in ("feature_net", "x_star", "_pd_matrix", "get_feature_term", "get_linear_term")):
-        return nan, nan, nan, nan, nan, nan, nan
+) -> BoundaryTermDiagnostics:
+    if not all(
+        hasattr(lyap_model, attr)
+        for attr in ("feature_net", "x_star", "_pd_matrix", "get_feature_term", "get_linear_term")
+    ):
+        return BoundaryTermDiagnostics.nan()
 
     pd_matrix_fn = getattr(lyap_model, "_pd_matrix")
     get_feature_term_fn = getattr(lyap_model, "get_feature_term")
     get_linear_term_fn = getattr(lyap_model, "get_linear_term")
-    if not callable(pd_matrix_fn) or not callable(get_feature_term_fn) or \
-       not callable(get_linear_term_fn):
-        return nan, nan, nan, nan, nan, nan, nan
+    if not callable(pd_matrix_fn) or not callable(get_feature_term_fn) or not callable(get_linear_term_fn):
+        return BoundaryTermDiagnostics.nan()
 
     feature_term = get_feature_term_fn(boundary_x)
     linear_term = get_linear_term_fn(boundary_x)
-    total_mean = float((feature_term + linear_term).mean().item())
+
     feature_term_mean = float(feature_term.mean().item())
     linear_term_mean = float(linear_term.mean().item())
+    total_mean = feature_term_mean + linear_term_mean
 
     if total_mean <= 0.0:
-        feature_term_mean_share = nan
-        linear_term_mean_share = nan
+        feature_term_mean_share = float("nan")
+        linear_term_mean_share = float("nan")
     else:
         feature_term_mean_share = feature_term_mean / total_mean
         linear_term_mean_share = linear_term_mean / total_mean
 
-    return (
-        float(th.quantile(feature_term, q=quantile).item()),
-        float(th.quantile(linear_term, q=quantile).item()),
-        feature_term_mean,
-        linear_term_mean,
-        feature_term_mean_share,
-        linear_term_mean_share,
+    return BoundaryTermDiagnostics(
+        feature_term_quantile=float(th.quantile(feature_term, q=quantile).item()),
+        linear_term_quantile=float(th.quantile(linear_term, q=quantile).item()),
+        feature_term_mean=feature_term_mean,
+        linear_term_mean=linear_term_mean,
+        feature_term_mean_share=feature_term_mean_share,
+        linear_term_mean_share=linear_term_mean_share,
     )
 
 
@@ -136,7 +154,7 @@ def estimate_rho_from_boundary(
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),
     generator: th.Generator | None = None,
-) -> tuple[BoundaryRhoDiagnostics, th.Tensor]:
+) -> tuple[BoundaryRhoEvaluation, th.Tensor]:
     """Estimate rho and expose boundary-term diagnostics for logging."""
     bounds = _bounds_tensor(config.train_bounds, device)
     lbx, ubx = bounds[0], bounds[1]
@@ -182,18 +200,15 @@ def estimate_rho_from_boundary(
         )
 
     rho_boundary = max(config.rho_min, config.rho_growth_gamma * boundary_quantile)
-    diagnostics = BoundaryRhoDiagnostics(
-        rho=float(rho_boundary),
-        boundary_quantile=boundary_quantile,
-        boundary_mean=boundary_mean,
-        feature_term_quantile=term_diagnostics[0],
-        linear_term_quantile=term_diagnostics[1],
-        feature_term_mean=term_diagnostics[2],
-        linear_term_mean=term_diagnostics[3],
-        feature_term_mean_share=term_diagnostics[4],
-        linear_term_mean_share=term_diagnostics[5],
+    evaluation = BoundaryRhoEvaluation(
+        rho=BoundaryRhoEstimate(
+            rho=float(rho_boundary),
+            boundary_quantile=boundary_quantile,
+            boundary_mean=boundary_mean,
+        ),
+        terms=term_diagnostics,
     )
-    return diagnostics, boundary_eval_x
+    return evaluation, boundary_eval_x
 
 
 def find_counter_examples(
