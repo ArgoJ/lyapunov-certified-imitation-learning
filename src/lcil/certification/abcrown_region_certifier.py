@@ -5,11 +5,12 @@ import logging
 import torch as th
 import torch.nn as nn
 
-from rich.progress import Progress
+from .progress import CertificationProgress
 from abc import ABC, abstractmethod
 from typing import Any
 from contextlib import nullcontext
 from dataclasses import dataclass
+from enum import Enum
 from pkg_logger import suppress_native_output
 
 from .config import LyapunovCertificationConfig
@@ -45,8 +46,13 @@ def _is_unknown_status(status: str) -> bool:
 
 
 # ========================================================
-# DATACLASSES
+# DATACLASSES & ENUMS
 # ========================================================
+class EarlyExitLevel(Enum):
+    NONE = 0
+    ON_COUNTEREXAMPLE = 1
+    ON_UNKNOWN = 2
+
 @dataclass(frozen=True)
 class ABCrownRegionVerification:
     """Status-aware verification result for a single packed region."""
@@ -251,8 +257,8 @@ class BaseABCrownCertifier(ABC):
         regions: th.Tensor,
         rho: float,
         *,
-        early_exit: bool = False,
-        progress: Progress | None = None,
+        early_exit: EarlyExitLevel = EarlyExitLevel.NONE,
+        progress: CertificationProgress | None = None,
     ) -> ABCrownRegionBatchVerification:
         if regions.ndim != 3 or regions.shape[1] != 2 or regions.shape[2] != self.config.state_dim:
             raise ValueError(
@@ -266,23 +272,21 @@ class BaseABCrownCertifier(ABC):
         counterexample_mask = th.zeros((len(regions),), dtype=th.bool, device=self.device)
         unknown_mask = th.zeros((len(regions),), dtype=th.bool, device=self.device)
 
-        is_progress = isinstance(progress, Progress)
-        desc = f"Certify Regions"
-        task = progress.add_task(desc, total=len(regions), detail="") if is_progress else None
+        if progress is not None:
+            progress.start_certify("Certify Regions", total=len(regions))
 
         verified_count = 0
         cex_count = 0
         unknown_count = 0
 
         def update_progress(advance: int = 1) -> None:
-            if is_progress and task is not None:
-                details = (
-                    f"[green]safe: {verified_count}[/green], "
-                    f"[yellow]unknown: {unknown_count}[/yellow], "
-                    f"[red]cex: {cex_count}[/red]"
+            if progress is not None:
+                progress.update_certify(
+                    advance=advance,
+                    verified_count=verified_count,
+                    unknown_count=unknown_count,
+                    cex_count=cex_count,
                 )
-                progress.update(task, advance=advance, detail=details)
-                progress.refresh()
 
         try:
             update_progress(0)
@@ -302,12 +306,14 @@ class BaseABCrownCertifier(ABC):
                     unknown_count += 1
                     
                 update_progress(1)
-                if early_exit and verification_result.counterexample_found:
+                if early_exit != EarlyExitLevel.NONE and verification_result.counterexample_found:
+                    break
+                if early_exit == EarlyExitLevel.ON_UNKNOWN and not verification_result.verified:
                     break
                 
         finally:
-            if is_progress and task is not None:
-                progress.remove_task(task)
+            if progress is not None:
+                progress.stop_certify()
 
         return ABCrownRegionBatchVerification(
             verified_mask=verified_mask,
