@@ -45,8 +45,10 @@ def discover_latest_policy_dir(results_root: Path | str | None = None):
 
 
 def discover_latest_lyapunov_dir(policy_dir: Path | str | None = None):
-    resolved_policy_dir = discover_latest_policy_dir() if policy_dir is None else policy_dir
-    return _discover_latest_lyapunov_dir(resolved_policy_dir)
+    if policy_dir is None:
+        _, lyapunov_dir = discover_latest_policy_and_lyapunov_dirs()
+        return lyapunov_dir
+    return _discover_latest_lyapunov_dir(policy_dir)
 
 
 def discover_latest_policy_and_lyapunov_dirs(results_root: Path | str | None = None, max_search: int = 100):
@@ -54,8 +56,9 @@ def discover_latest_policy_and_lyapunov_dirs(results_root: Path | str | None = N
 
 
 def discover_latest_cert_lyapunov_path(lyapunov_root: Path | str | None = None) -> Path:
-    resolved_lyapunov_root = discover_latest_lyapunov_dir() if lyapunov_root is None else lyapunov_root
-    return _discover_latest_cert_lyapunov_path(resolved_lyapunov_root.parent)
+    if lyapunov_root is None:
+        return _discover_latest_cert_lyapunov_path(CARTPOLE_RESULTS_DIR)
+    return _discover_latest_cert_lyapunov_path(lyapunov_root)
 
 
 def _resolve_policy_model_cls(model_path: Path) -> type[nn.Module]:

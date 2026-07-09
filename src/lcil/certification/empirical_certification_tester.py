@@ -172,12 +172,19 @@ class CertificationResultTester:
         candidate_batch_size = max(sample_size * self._CANDIDATE_MULTIPLIER, sample_size)
         rho_scalar = float(rho)
 
+        candidate_values = th.zeros(candidate_batch_size, dtype=th.float32, device=self.device)
         with th.no_grad():
             for _ in range(self._MAX_SAMPLING_ROUNDS):
                 candidates = self._sample_uniform_states(candidate_batch_size)
                 candidate_values = self.lyap_model(candidates).reshape(-1)
                 inside_mask = candidate_values <= rho_scalar
                 inside_origin_exclusion = self._inside_origin_exclusion_mask(candidates)
+                if inside_mask.any() and (~inside_mask | inside_origin_exclusion).all():
+                    __logger__.warning(
+                        "All samples inside V(x) <= rho=%.6f are also inside origin exclusion.",
+                        rho_scalar,
+                    )
+                    
                 valid_mask = inside_mask & (~inside_origin_exclusion)
 
                 if not bool(valid_mask.any()):
@@ -198,7 +205,8 @@ class CertificationResultTester:
 
         if kept_states.shape[0] == 0:
             __logger__.warning(
-                "Could not find any sampled states inside V(x) <= rho=%.6f within the certification bounds.",
+                "Could not find any sampled states inside (V(x)=%.6f) <!= (rho=%.6f) within the certification bounds.",
+                candidate_values.min().float(),
                 rho_scalar,
             )
             return kept_states, kept_values
