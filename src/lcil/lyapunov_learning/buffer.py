@@ -280,7 +280,6 @@ class CEGISBuffer:
             Multiplicative factor over ρ for the acceptance threshold, by default 1.5.
         """
         target_count = self.state_buffer_limit
-        # Oversample to increase acceptance yield
         oversample_factor = 4
         n_candidates = target_count * oversample_factor
 
@@ -296,18 +295,15 @@ class CEGISBuffer:
 
         min_fill = target_count // 2
         if accepted.shape[0] >= target_count:
-            # More than enough accepted – keep the ones with lowest V
             _, topk_idx = th.topk(v_candidates[accepted_mask], k=target_count, largest=False)
             self.states = accepted[topk_idx]
         elif accepted.shape[0] >= min_fill:
-            # Enough for minimum fill, pad with lowest-V rejected
             rejected_mask = ~accepted_mask
             rejected_v = v_candidates[rejected_mask]
             n_pad = target_count - accepted.shape[0]
             _, pad_idx = th.topk(rejected_v, k=min(n_pad, rejected_v.shape[0]), largest=False)
             self.states = th.cat([accepted, candidates[rejected_mask][pad_idx]], dim=0)
         else:
-            # Very few accepted – take all accepted + fill rest with lowest-V overall
             _, topk_idx = th.topk(v_candidates, k=target_count, largest=False)
             self.states = candidates[topk_idx]
 

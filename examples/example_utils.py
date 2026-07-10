@@ -70,7 +70,7 @@ def discover_model_dir(
     results_root: Path,
     checkpoint_name: str,
     n: int = -1,
-    sorting_idx: int | slice = 0,
+    sorting_idx: int | slice = slice(0, 2),
     excluded_dir_names: tuple[str, ...] = (),
     candidate_filter: Callable[[Path, Path], bool] | None = None,
 ) -> Path:
@@ -250,12 +250,15 @@ def discover_latest_policy_and_lyapunov_dirs(
                 results_root,
                 POLICY_MODEL_FILENAME,
                 n=-n,
+                sorting_idx=slice(0, 2),
+                excluded_dir_names=(LYAPUNOV_DIRNAME,),
                 candidate_filter=_matches_iso_setup_layout if enforce_iso_setup_layout else None,
             )
             lyapunov_dir = discover_model_dir(
                 policy_dir / LYAPUNOV_DIRNAME,
                 LYAPUNOV_MODEL_FILENAME,
                 n=-1,
+                sorting_idx=slice(0, 2),
                 candidate_filter=_matches_iso_setup_layout if enforce_iso_setup_layout else None,
             )
             return policy_dir, lyapunov_dir

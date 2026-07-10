@@ -221,8 +221,11 @@ class LyapunovDecreaseViolation(nn.Module):
         self.kappa = float(kappa)
         self.condition_margin = float(condition_margin)
 
+    def raw_forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
+        return lyapunov_decrease(v_curr, v_next, self.kappa, self.condition_margin)
+
     def forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
-        return th.relu(lyapunov_decrease(v_curr, v_next, self.kappa, self.condition_margin))
+        return th.relu(self.raw_forward(v_curr, v_next))
 
 
 class RelativeLyapunovDecreaseViolation(LyapunovDecreaseViolation):
@@ -240,12 +243,19 @@ class RelativeLyapunovDecreaseViolation(LyapunovDecreaseViolation):
     def _relative_denominator(self, v_curr: th.Tensor) -> th.Tensor:
         denom_source = v_curr.detach()
         return denom_source.abs() + self.relative_eps
+    
+    def _relative_decrease(self, v_curr: th.Tensor, decrease: th.Tensor) -> th.Tensor:
+        denom_source = self._relative_denominator(v_curr)
+        relative_decrease = decrease / denom_source
+        return relative_decrease
+    
+    def raw_forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
+        raw_decrease_violation = super().raw_forward(v_curr, v_next)
+        return self._relative_decrease(v_curr, raw_decrease_violation)
 
     def forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
         decrease_violation = super().forward(v_curr=v_curr, v_next=v_next)
-        denom_source = self._relative_denominator(v_curr)
-        relative_violation = decrease_violation / denom_source
-        return relative_violation
+        return self._relative_decrease(v_curr, decrease_violation)
 
 
 class InvarianceViolation(StateBoundsModule):
@@ -305,6 +315,17 @@ class RhoGatedConditionLoss(nn.Module):
             relative_eps=config.relative_condition_eps,
         )
 
+    def raw_relative_condition_violation(
+        self,
+        v_curr: th.Tensor,
+        v_next: th.Tensor,
+        x_next: th.Tensor,
+    ) -> th.Tensor:
+        """Compute the raw (pre-ReLU) relative condition violation."""
+        raw_decrease_violation = self.relative_decrease_violation.raw_forward(v_curr, v_next)
+        rel_invariance = self.relative_invariance_violation(x_next=x_next)
+        return raw_decrease_violation + self.invariance_weight * rel_invariance
+
     def relative_condition_violation(
         self,
         v_curr: th.Tensor,
@@ -315,10 +336,12 @@ class RhoGatedConditionLoss(nn.Module):
         rel_invariance = self.relative_invariance_violation(x_next=x_next)
         return rel_decrease + self.invariance_weight * rel_invariance
 
-    def soft_sublevel_weight(self, v_curr: th.Tensor, rho_estimate: float) -> th.Tensor:
+    def soft_sublevel_weight(self, v_curr: th.Tensor, rho_estimate: float, detach: bool = True) -> th.Tensor:
         """Smooth sigmoid weight: ≈1 inside ρ, ≈0.5 at ρ boundary, ≈0 far outside."""
+        if detach:
+            v_curr = v_curr.detach()
         rho_value = safe_rho(rho_estimate, self.rho_min)
-        margin = (rho_value - v_curr.detach()) / max(rho_value, self.relative_eps)
+        margin = (rho_value - v_curr) / max(rho_value, self.relative_eps)
         return th.sigmoid(self.gate_sharpness * margin)
 
     def forward(
@@ -750,32 +773,26 @@ class LyapunovTrainingLoss(nn.Module):
         if self.l1_loss is not None:
             filtered_params = self._parameters_excluding_r_factor(params)
             self.l1_loss.set_train_params(filtered_params)
+    
+    def _raw_condition_violation(self, x_batch: th.Tensor) -> tuple[th.Tensor, th.Tensor]:
+        """Return the raw relative condition violation and the Lyapunov values of the current states."""
+        v_batch, x_next, v_next = self._closed_loop_values(x_batch)
+        raw_relative_violation = self.condition_loss.raw_relative_condition_violation(
+            v_curr=v_batch, v_next=v_next, x_next=x_next)
+        return raw_relative_violation, v_batch
 
     def mining_objective(self, x_batch: th.Tensor, rho_estimate: float) -> th.Tensor:
         """Return the mining objective value for a batch of states, 
-        used for prioritization in the replay buffer."""
-        v_batch, x_next, v_next = self._closed_loop_values(x_batch)
-        relative_violation = self.condition_loss.relative_condition_violation(
-            v_curr=v_batch,
-            v_next=v_next,
-            x_next=x_next,
-        )
-        rho_value = safe_rho(rho_estimate, self.config.rho_min)
-        inside_mask = (v_batch <= rho_value).to(dtype=v_batch.dtype)
-        return - inside_mask * relative_violation
+        used for prioritization in the replay buffer and PGD."""
+        raw_relative_violation, v_batch = self._raw_condition_violation(x_batch)
+        soft_mask = self.condition_loss.soft_sublevel_weight(v_batch, rho_estimate, detach=False)
+        return - soft_mask * raw_relative_violation
     
     def buffer_sorting_objective(self, x_batch: th.Tensor, rho_estimate: float) -> th.Tensor:
         """Return the pure relative violation score for sorting in the buffer."""
-        v_batch, x_next, v_next = self._closed_loop_values(x_batch)
-        relative_violation = self.condition_loss.relative_condition_violation(
-            v_curr=v_batch,
-            v_next=v_next,
-            x_next=x_next,
-        )
-        keep_factor = 1.2
-        rho_value = safe_rho(rho_estimate, self.config.rho_min)
-        keep_mask = (v_batch <= keep_factor * rho_value).to(dtype=v_batch.dtype)
-        return -keep_mask * relative_violation
+        raw_relative_violation, v_batch = self._raw_condition_violation(x_batch)
+        soft_mask = self.condition_loss.soft_sublevel_weight(v_batch, rho_estimate * 1.2)
+        return - soft_mask * raw_relative_violation
     
     def compute_loss_parts(
         self,
