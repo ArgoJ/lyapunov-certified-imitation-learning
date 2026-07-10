@@ -373,18 +373,14 @@ class SignedConditionMargin(nn.Module):
         lyap_model: nn.Module,
         dyn_model: nn.Module,
         config: LyapunovTrainingConfig,
-        device="cpu"
     ) -> None:
         super().__init__()
         self.policy_model = policy_model
         self.lyap_model = lyap_model
         self.dyn_model = dyn_model
-
-        self.invariance_violation = InvarianceViolation(config.train_bounds, device=device)
         
         self.kappa = float(config.kappa)
         self.condition_margin = float(config.condition_margin)
-        self.invariance_weight = float(config.invariance_weight)
 
     def forward(self, x: th.Tensor) -> th.Tensor:
         v_curr = self.lyap_model(x)
@@ -392,10 +388,8 @@ class SignedConditionMargin(nn.Module):
         x_next = self.dyn_model(x, u)
         v_next = self.lyap_model(x_next)
 
-        inv = self.invariance_violation(x_next=x_next)
         signed_margin = (
             -lyapunov_decrease(v_curr, v_next, self.kappa, self.condition_margin)
-            - self.invariance_weight * inv
         )
 
         return signed_margin
@@ -665,14 +659,13 @@ class LyapunovTrainingLoss(nn.Module):
         self.condition_loss = RhoGatedConditionLoss(self.config, device=self.device)
         self.roa_loss = RoaSurrogateLoss(self.config)
 
-        # Condition IBP loss with signed margin model
+        # Lyapunov decrease loss with signed margin model
         self.signed_condition_margin = (
             SignedConditionMargin(
                 policy_model=self.policy_model,
                 lyap_model=self.lyap_model,
                 dyn_model=self.dyn_model,
                 config=self.config,
-                device=self.device,
             )
             if self.config.condition_lirpa_weight > 0.0 else None
         )
