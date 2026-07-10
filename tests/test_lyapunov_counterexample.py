@@ -155,8 +155,9 @@ class TestLyapunovCounterexamples(unittest.TestCase):
 
         th.manual_seed(0)
         rho_estimate = 0.1
-        gated_cex = find_counter_examples(
+        gated_cex, _ = find_counter_examples(
             objective=lambda x: loss_module.mining_objective(x_batch=x, rho_estimate=rho_estimate),
+            condition_evaluator=lambda x: loss_module.get_counterexample_mask(x, rho_estimate),
             config=config,
         )
         gated_values = loss_module.lyap_model(gated_cex).flatten()

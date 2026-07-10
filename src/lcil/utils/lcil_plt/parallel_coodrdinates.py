@@ -124,7 +124,7 @@ def parallel_coordinates_matplot(
     else:
         segments = [np.column_stack([xs, x_norm[i]]) for i in range(n)]
         norm = Normalize(vmin=float(np.min(v)), vmax=float(np.max(v)) + 1e-12)
-        lc = LineCollection(segments, cmap="inferno", norm=norm, linewidths=1.2, alpha=0.35)
+        lc = LineCollection(segments, cmap="inferno_r", norm=norm, linewidths=1.2, alpha=0.35)
         lc.set_array(v)
         ax.add_collection(lc)
         ax.autoscale_view()
@@ -197,7 +197,7 @@ def parallel_coordinates_plotly(
     if v is not None:
         line_dict = dict(
             color=v,
-            colorscale="Inferno",
+            colorscale="Inferno_r",
             showscale=True,
             cmin=float(np.min(v)),
             cmax=float(np.max(v)),

@@ -781,6 +781,26 @@ class LyapunovTrainingLoss(nn.Module):
             v_curr=v_batch, v_next=v_next, x_next=x_next)
         return raw_relative_violation, v_batch
 
+    def get_counterexample_mask(
+        self, 
+        candidate_states: th.Tensor, 
+        rho_estimate: float, 
+        violation_tolerance: float = 1e-6
+    ) -> tuple[th.Tensor, th.Tensor]:
+        """Evaluate candidate counterexamples and return their raw condition violations and a boolean validity mask.
+        
+        A valid counterexample must be strictly inside the rho-sublevel set and have a positive violation.
+        """
+        if candidate_states.numel() == 0:
+            return th.empty(0, device=candidate_states.device), th.empty(0, dtype=th.bool, device=candidate_states.device)
+            
+        with th.no_grad():
+            true_violations, v_batch = self._raw_condition_violation(candidate_states)
+            true_violations = true_violations.squeeze(-1)
+            v_batch = v_batch.squeeze(-1)
+            real_mask = (v_batch <= rho_estimate) & (true_violations > violation_tolerance)
+            return true_violations, real_mask
+
     def mining_objective(self, x_batch: th.Tensor, rho_estimate: float) -> th.Tensor:
         """Return the mining objective value for a batch of states, 
         used for prioritization in the replay buffer and PGD."""

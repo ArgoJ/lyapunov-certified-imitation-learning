@@ -211,17 +211,19 @@ def estimate_rho_from_boundary(
     return evaluation, boundary_eval_x
 
 
+
 def find_counter_examples(
-    objective: Callable[[th.Tensor], th.Tensor] | nn.Module,
+    objective: Callable[[th.Tensor], th.Tensor],
+    condition_evaluator: Callable[[th.Tensor], tuple[th.Tensor, th.Tensor]],
     config: LyapunovTrainingConfig,
     device: th.device = th.device("cpu"),
     generator: th.Generator | None = None,
 ) -> tuple[th.Tensor, th.Tensor]:
-    """Find rho-gated training counterexamples via PGD on a minimization objective.
+    """Find rho-gated training counterexamples via PGD.
 
-    The objective should follow the external training semantics: it must be
-    negative on violating states within the current rho-sublevel set, zero on
-    safe states inside the set, and positive outside the set.
+    Performs adversarial mining using the provided objective,
+    then filters the results using the condition evaluator to return 
+    only true counterexamples strictly inside the current rho-sublevel set.
     """
     bounds = _bounds_tensor(config.train_bounds, device)
     lbx, ubx = bounds[0], bounds[1]
@@ -258,12 +260,15 @@ def find_counter_examples(
             adv_states = candidate_states
 
     with th.no_grad():
+        # Evaluate true violations and get the validity mask
+        true_violations, condition_mask = condition_evaluator(best_states)
+        
         # Filter cex origin exclusion
         exclusion = th.as_tensor(config.origin_exclusion, dtype=best_states.dtype, device=device)
         inside_exclusion = th.all(th.abs(best_states) <= exclusion, dim=-1)
-        cex_tol = 1e-9
-        counter_mask = (best_objective < -cex_tol) & (~inside_exclusion)
+        
+        counter_mask = condition_mask & (~inside_exclusion)
 
     cex_states = best_states[counter_mask].clone().detach()
-    cex_violations = (-best_objective[counter_mask]).clamp_min(0.0).clone().detach()
+    cex_violations = true_violations[counter_mask].clone().detach()
     return cex_states, cex_violations
