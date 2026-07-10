@@ -213,12 +213,13 @@ class LyapunovTrainer:
     # --- TRAINING HELPER METHODS ---
     # ==========================================
 
-    def _mine_new_counterexamples(self, rho_estimate: float) -> tuple[th.Tensor, th.Tensor]:
+    def _mine_new_counterexamples(self, rho_estimate: float, initial_states: th.Tensor | None = None) -> tuple[th.Tensor, th.Tensor]:
         """Mine rho-gated counterexamples using the external training semantics."""
         return find_counter_examples(
             objective=lambda x: self.loss_module.mining_objective(x, rho_estimate),
             condition_evaluator=lambda x: self.loss_module.get_counterexample_mask(x, rho_estimate),
             config=self.config,
+            initial_states=initial_states,
             device=self.device,
             generator=self.torch_gen,
         )
@@ -369,7 +370,10 @@ class LyapunovTrainer:
             return MiningStepResult(current_fraction, cex_fraction_ema, None, None)
 
         # New mining
-        new_cex_states, new_cex_violations = self._mine_new_counterexamples(rho_estimate=rho_estimate)
+        new_cex_states, new_cex_violations = self._mine_new_counterexamples(
+            rho_estimate=rho_estimate, 
+            initial_states=state_buffer.states
+        )
         state_buffer.register_cex(
             new_cex_states,
             objective=lambda x: self.loss_module.buffer_sorting_objective(

@@ -216,6 +216,7 @@ def find_counter_examples(
     objective: Callable[[th.Tensor], th.Tensor],
     condition_evaluator: Callable[[th.Tensor], tuple[th.Tensor, th.Tensor]],
     config: LyapunovTrainingConfig,
+    initial_states: th.Tensor | None = None,
     device: th.device = th.device("cpu"),
     generator: th.Generator | None = None,
 ) -> tuple[th.Tensor, th.Tensor]:
@@ -228,7 +229,18 @@ def find_counter_examples(
     bounds = _bounds_tensor(config.train_bounds, device)
     lbx, ubx = bounds[0], bounds[1]
 
-    adv_states = sample_uniform_box(config.adversarial_samples, lbx, ubx, device, generator)
+    if initial_states is not None and initial_states.numel() > 0:
+        n_init = initial_states.shape[0]
+        indices = th.randint(
+            low=0, 
+            high=n_init, 
+            size=(config.adversarial_samples,), 
+            device=device, 
+            generator=generator
+        )
+        adv_states = initial_states[indices].clone()
+    else:
+        adv_states = sample_uniform_box(config.adversarial_samples, lbx, ubx, device, generator)
     step = config.adversarial_step_size * (ubx - lbx).unsqueeze(0)
 
     with th.no_grad():

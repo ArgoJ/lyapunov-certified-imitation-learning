@@ -288,16 +288,16 @@ class CEGISBuffer:
         ) * (self.ub - self.lb)
 
         v_candidates = value_fn(candidates).flatten()
-        threshold = rho_margin * rho_estimate
+        rho_with_margin = rho_margin * rho_estimate
 
-        accepted_mask = v_candidates <= threshold
+        accepted_mask = v_candidates <= rho_with_margin
         accepted = candidates[accepted_mask]
 
-        min_fill = target_count // 2
+        min_accepted = target_count // 2
         if accepted.shape[0] >= target_count:
             _, topk_idx = th.topk(v_candidates[accepted_mask], k=target_count, largest=False)
             self.states = accepted[topk_idx]
-        elif accepted.shape[0] >= min_fill:
+        elif accepted.shape[0] >= min_accepted:
             rejected_mask = ~accepted_mask
             rejected_v = v_candidates[rejected_mask]
             n_pad = target_count - accepted.shape[0]
@@ -311,7 +311,7 @@ class CEGISBuffer:
             "Resampled state buffer: %d/%d accepted (threshold=%.4f), final size=%d",
             int(accepted_mask.sum().item()),
             n_candidates,
-            threshold,
+            rho_with_margin,
             self.states.shape[0],
         )
 
