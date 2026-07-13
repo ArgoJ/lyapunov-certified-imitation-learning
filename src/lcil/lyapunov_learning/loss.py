@@ -804,7 +804,7 @@ class LyapunovTrainingLoss(nn.Module):
     def buffer_sorting_objective(self, x_batch: th.Tensor, rho_estimate: float) -> th.Tensor:
         """Return the pure relative violation score for sorting in the buffer."""
         raw_relative_violation, v_batch = self._raw_condition_violation(x_batch)
-        soft_mask = self.condition_loss.soft_sublevel_weight(v_batch, rho_estimate * 1.2)
+        soft_mask = self.condition_loss.soft_sublevel_weight(v_batch, rho_estimate * 1.3)
         return - soft_mask * raw_relative_violation
     
     def compute_loss_parts(
