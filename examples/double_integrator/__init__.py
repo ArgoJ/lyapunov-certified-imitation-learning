@@ -19,6 +19,7 @@ from ..example_utils import (
     get_initial_states,
     sample_uncertified_regions,
     get_condition_violations,
+    discover_source_rollout_path,
 )
 from ..constants import *
 

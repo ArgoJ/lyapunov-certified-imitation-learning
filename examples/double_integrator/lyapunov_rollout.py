@@ -23,6 +23,7 @@ from . import (
     find_all_lyapunov_dirs,
     build_lyapunov_func,
     get_initial_states,
+    discover_source_rollout_path,
 )
 from ..constants import *
 
@@ -56,23 +57,12 @@ def parse_args() -> LyapunovRolloutScriptConfig:
     return script_defaults.from_namespace(args)
 
 
-def _infer_source_rollout_path(lyapunov_dir: Path) -> Path:
-    for candidate_dir in [lyapunov_dir, *lyapunov_dir.parents]:
-        rollout_path = candidate_dir / POLICY_ROLLOUT_FILENAME
-        if rollout_path.is_file():
-            return rollout_path.resolve()
-
-    raise FileNotFoundError(
-        f"Could not find '{POLICY_ROLLOUT_FILENAME}' in '{lyapunov_dir}' or any parent directory."
-    )
-
-
 def main() -> None:
     script_config = parse_args()
     device = th.device(script_config.device)
 
     lyapunov_dir = require_dir(script_config.lyapunov_dir, name="Lyapunov run directory")
-    source_rollout_path = _infer_source_rollout_path(lyapunov_dir)
+    source_rollout_path = discover_source_rollout_path(lyapunov_dir)
     rollout_dataset = MPCDataset.load(source_rollout_path)
     initial_states = get_initial_states(rollout_dataset)
     del rollout_dataset

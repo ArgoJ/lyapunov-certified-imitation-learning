@@ -498,3 +498,14 @@ def get_condition_violations(
         v_next = lyap_model(next_states_th).squeeze(-1)
         cond_violations = (v_next - (1.0 - kappa) * v_curr).cpu().numpy()
     return cond_violations
+
+
+def discover_source_rollout_path(lyapunov_dir: Path) -> Path:
+    for candidate_dir in [lyapunov_dir, *lyapunov_dir.parents]:
+        rollout_path = candidate_dir / POLICY_ROLLOUT_FILENAME
+        if rollout_path.is_file():
+            return rollout_path.resolve()
+
+    raise FileNotFoundError(
+        f"Could not find '{POLICY_ROLLOUT_FILENAME}' in '{lyapunov_dir}' or the parent directories."
+    )
