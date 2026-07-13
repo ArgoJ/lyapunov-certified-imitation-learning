@@ -292,20 +292,30 @@ class CEGISBuffer:
 
         accepted_mask = v_candidates <= rho_with_margin
         accepted = candidates[accepted_mask]
+        rejected = candidates[~accepted_mask]
+        rejected_v = v_candidates[~accepted_mask]
 
         min_accepted = target_count // 2
         if accepted.shape[0] >= target_count:
-            _, topk_idx = th.topk(v_candidates[accepted_mask], k=target_count, largest=False)
-            self.states = accepted[topk_idx]
+            perm = th.randperm(
+                accepted.shape[0],
+                device=self.device,
+                generator=self.generator,
+            )
+            self.states = accepted[perm[:target_count]]
+
         elif accepted.shape[0] >= min_accepted:
-            rejected_mask = ~accepted_mask
-            rejected_v = v_candidates[rejected_mask]
             n_pad = target_count - accepted.shape[0]
-            _, pad_idx = th.topk(rejected_v, k=min(n_pad, rejected_v.shape[0]), largest=False)
-            self.states = th.cat([accepted, candidates[rejected_mask][pad_idx]], dim=0)
+            _, pad_idx = th.topk(
+                rejected_v,
+                k=min(n_pad, rejected.shape[0]),
+                largest=False,
+            )
+            self.states = th.cat((accepted, rejected[pad_idx]), dim=0)
+
         else:
-            _, topk_idx = th.topk(v_candidates, k=target_count, largest=False)
-            self.states = candidates[topk_idx]
+            _, idx = th.topk(v_candidates, k=target_count, largest=False)
+            self.states = candidates[idx]
 
         __logger__.debug(
             "Resampled state buffer: %d/%d accepted (threshold=%.4f), final size=%d",
