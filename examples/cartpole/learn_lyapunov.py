@@ -45,7 +45,7 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     layers: int = config_field(default=2, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
     use_angle_wrapper: bool = config_field(default=False, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
     fix_r_factor: bool = config_field(default=False, help="Whether to fix the R factor in the Lyapunov candidate to 1.0.")
-    last_layer_std: float = config_field(default=0.01, help="Standard deviation for the last layer of the Lyapunov feature net.")
+    last_layer_std: float = config_field(default=0.001, help="Standard deviation for the last layer of the Lyapunov feature net.")
     riccati_scale: str | float = config_field(
         default="spectral",
         help="How to scale the Riccati P matrix before seeding R. "
@@ -72,14 +72,14 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         state_dim=4,
         state_bounds=np.array([[-1.0, -1.0, -1.0, -1.0], [1.0, 1.0, 1.0, 1.0]], dtype=float),
         train_bounds=None,
-        initial_sample_size=4096,
+        initial_sample_size=8192,
         batch_size=2048,
         learning_rate=5e-4,
         outer_epochs=500,
         steps_per_epoch=10,
         policy_epochs=400,
         policy_lr_factor=0.5,
-        kappa=0.01,
+        kappa=0.05,
         seed=1674653,
         loss_regularization_num_samples=4096,
         loss_regularization_resample_interval=10,
@@ -94,16 +94,18 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         equilibrium_weight=0.0,
         formal_positivity_weight=0.0,
         policy_regularization_weight=0.1,
-        r_factor_fro_norm_weight=100.0,
+        r_factor_fro_norm_weight=10.0,
 
         roa_candidate_size=8192,
         rho_estimation_samples=32768,
+        rho_estimate_quantile=0.01,
+        rho_descent_steps=20,
         rho_growth_gamma=1.1,
         rho_ema_decay=0.95,
         cex_every=10,
         cex_steps=20,
-        adversarial_samples=8192,
-        adversarial_step_size=0.005,
+        adversarial_samples=32768,
+        adversarial_step_size=0.0001,
         condition_margin=0.001,
     )
 
