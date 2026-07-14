@@ -13,10 +13,28 @@ import torch.nn.functional as F
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 
 __logger__ = logging.getLogger(__name__)
+
+
+ConvexActivationStrings : TypeAlias = Literal[
+    "identity",
+    "linear",
+    "relu",
+    "softplus",
+    "elu",
+    "leaky_relu",
+]
+
+NonConvexActivationStrings : TypeAlias = Literal[
+    "tanh",
+    "sigmoid",
+]
+
+ActivationStrings: TypeAlias = ConvexActivationStrings | NonConvexActivationStrings
+
 
 
 def _env_flag_enabled(name: str) -> bool:
@@ -39,7 +57,7 @@ def build_generator(seed: int | None, device: th.device) -> th.Generator | None:
     return generator
 
 
-def _get_activation(name: str) -> nn.Module:
+def _get_activation(name: ActivationStrings) -> nn.Module:
     name = name.strip().lower()
     match name:
         case "identity" | "linear":
@@ -236,7 +254,9 @@ def load_feature_net(
     feature_net.eval()
     return feature_net
 
-
+# ===========================================================================
+# MODULES
+# ===========================================================================
 class LinearDynamics(nn.Module):
     r"""Simple linear dynamics model :math:`\dot{x} = A x + B u`."""
 
@@ -534,11 +554,11 @@ class ResidualBlock(nn.Module):
     ----------
     dim : int
         Input/output feature dimension.
-    activation : str
+    activation : ActivationStrings
         Activation name applied between the two linear layers.
     """
 
-    def __init__(self, dim: int, activation: str):
+    def __init__(self, dim: int, activation: ActivationStrings):
         super().__init__()
         self.linear1 = nn.Linear(dim, dim)
         self.linear2 = nn.Linear(dim, dim)
@@ -572,7 +592,7 @@ class MLP(nn.Module):
     ----------
     layer_dims : list[int]
         Layer sizes including input and output dimensions.
-    activations : list[str]
+    activations : list[ActivationStrings]
         Activation names for each layer transition.
     dropout : float, optional
         Dropout probability applied after each hidden activation.
@@ -583,7 +603,7 @@ class MLP(nn.Module):
     def __init__(
         self, 
         layer_dims: list[int],
-        activations: list[str],
+        activations: list[ActivationStrings],
         dropout: float = 0.0,
         normalization: Literal["none", "layer_norm"] = "none",
         seed: int | None = None,
@@ -643,14 +663,14 @@ class ResNet(nn.Module):
     ----------
     layer_dims : list[int]
         Layer sizes including input and output dimensions.
-    activations : list[str]
+    activations : list[ActivationStrings]
         Activation names for each layer transition.
     """
 
     def __init__(
         self, 
         layer_dims: list[int],
-        activations: list[str],
+        activations: list[ActivationStrings],
         seed: int | None = None,
     ):
         super(ResNet, self).__init__()
@@ -695,14 +715,14 @@ class ICNN(nn.Module):
     ----------
     layer_dims : list[int]
         Layer sizes including input and output dimensions.
-    activations : list[str]
+    activations : list[ConvexActivationStrings]
         Activation names for each layer transition.
     """
 
     def __init__(
         self, 
         layer_dims: list[int],
-        activations: list[str],
+        activations: list[ConvexActivationStrings],
         seed: int | None = None,
     ):
         super(ICNN, self).__init__()

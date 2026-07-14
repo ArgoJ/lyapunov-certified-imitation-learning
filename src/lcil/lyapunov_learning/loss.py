@@ -15,7 +15,7 @@ from .utils import get_th_lbx_ubx, get_center
 __logger__ = logging.getLogger(__name__)
 
 
-def _module_has_r_factor(module: nn.Module) -> bool:
+def _has_learnable_r_factor(module: nn.Module) -> bool:
     """Check if the Lyapunov model has an R factor attribute."""
     return hasattr(module, "r_factor") and isinstance(module.r_factor, nn.Parameter)
 
@@ -723,7 +723,7 @@ class LyapunovTrainingLoss(nn.Module):
         # R factor Frobenius loss
         self.r_factor_frobenius_loss = (
             RFactorFrobeniusLoss(lyap_model=self.lyap_model, device=self.device)
-            if _module_has_r_factor(self.lyap_model) and self.config.r_factor_fro_norm_weight > 0.0 else None
+            if _has_learnable_r_factor(self.lyap_model) and self.config.r_factor_fro_norm_weight > 0.0 else None
         )
 
     def _closed_loop_values(
@@ -739,7 +739,7 @@ class LyapunovTrainingLoss(nn.Module):
     
     def _parameters_excluding_r_factor(self, params: list[nn.Parameter]) -> list[nn.Parameter]:
         """Return a list of parameters excluding the R factor if it exists."""
-        if _module_has_r_factor(self.lyap_model):
+        if _has_learnable_r_factor(self.lyap_model):
             return [p for p in params if p is not self.lyap_model.r_factor]
         return params
     
