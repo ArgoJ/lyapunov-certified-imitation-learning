@@ -15,7 +15,7 @@ from .utils import get_th_lbx_ubx, get_center
 __logger__ = logging.getLogger(__name__)
 
 
-def _module_has_r_factor(module: nn.Module) -> bool:
+def _has_learnable_r_factor(module: nn.Module) -> bool:
     """Check if the Lyapunov model has an R factor attribute."""
     return hasattr(module, "r_factor") and isinstance(module.r_factor, nn.Parameter)
 
@@ -315,17 +315,6 @@ class RhoGatedConditionLoss(nn.Module):
             relative_eps=config.relative_condition_eps,
         )
 
-    def raw_relative_condition_violation(
-        self,
-        v_curr: th.Tensor,
-        v_next: th.Tensor,
-        x_next: th.Tensor,
-    ) -> th.Tensor:
-        """Compute the raw (pre-ReLU) relative condition violation."""
-        raw_decrease_violation = self.relative_decrease_violation.raw_forward(v_curr, v_next)
-        rel_invariance = self.relative_invariance_violation(x_next=x_next)
-        return raw_decrease_violation + self.invariance_weight * rel_invariance
-
     def relative_condition_violation(
         self,
         v_curr: th.Tensor,
@@ -589,11 +578,17 @@ class PolicyRegularizationLoss(BoundedStateSamplingModule):
         for param in self.init_policy.parameters():
             param.requires_grad = False
         self.init_policy.eval()
-    
+
+    def _forward_maybe_raw(self, policy: nn.Module, x_batch: th.Tensor) -> th.Tensor:
+        """Evaluate the policy on a batch of states, optionally returning raw outputs."""
+        if hasattr(policy, "forward_raw") and callable(getattr(policy, "forward_raw")):
+            return policy.forward_raw(x_batch)
+        return policy(x_batch)
+
     @th.no_grad()
     def _update_init_policy_values(self) -> None:
         """Evaluates the initial policy on current samples and caches the result."""
-        new_values = self.init_policy(self.samples)
+        new_values = self._forward_maybe_raw(self.init_policy, self.samples)
         self.init_policy_values.copy_(new_values)
     
     def step_sampling(self) -> None:
@@ -606,7 +601,7 @@ class PolicyRegularizationLoss(BoundedStateSamplingModule):
     def forward(self) -> th.Tensor:
         self.step_sampling()
         orig_out = self.init_policy_values
-        out = self.policy(self.samples)
+        out = self._forward_maybe_raw(self.policy, self.samples)
 
         squared_diff = th.square(out - orig_out)
         orig_squared_norm = th.sum(th.square(orig_out), dim=-1, keepdim=True)
@@ -729,7 +724,7 @@ class LyapunovTrainingLoss(nn.Module):
         # R factor Frobenius loss
         self.r_factor_frobenius_loss = (
             RFactorFrobeniusLoss(lyap_model=self.lyap_model, device=self.device)
-            if _module_has_r_factor(self.lyap_model) and self.config.r_factor_fro_norm_weight > 0.0 else None
+            if _has_learnable_r_factor(self.lyap_model) and self.config.r_factor_fro_norm_weight > 0.0 else None
         )
 
     def _closed_loop_values(
@@ -745,7 +740,7 @@ class LyapunovTrainingLoss(nn.Module):
     
     def _parameters_excluding_r_factor(self, params: list[nn.Parameter]) -> list[nn.Parameter]:
         """Return a list of parameters excluding the R factor if it exists."""
-        if _module_has_r_factor(self.lyap_model):
+        if _has_learnable_r_factor(self.lyap_model):
             return [p for p in params if p is not self.lyap_model.r_factor]
         return params
     
@@ -768,12 +763,12 @@ class LyapunovTrainingLoss(nn.Module):
             filtered_params = self._parameters_excluding_r_factor(params)
             self.l1_loss.set_train_params(filtered_params)
     
-    def _raw_condition_violation(self, x_batch: th.Tensor) -> tuple[th.Tensor, th.Tensor]:
-        """Return the raw relative condition violation and the Lyapunov values of the current states."""
-        v_batch, x_next, v_next = self._closed_loop_values(x_batch)
-        raw_relative_violation = self.condition_loss.raw_relative_condition_violation(
-            v_curr=v_batch, v_next=v_next, x_next=x_next)
-        return raw_relative_violation, v_batch
+    def _rel_condition_violation(self, x_batch: th.Tensor) -> tuple[th.Tensor, th.Tensor]:
+        """Return the relative condition violation and the Lyapunov values of the current states."""
+        v_curr, x_next, v_next = self._closed_loop_values(x_batch)
+        rel_violation = self.condition_loss.relative_condition_violation(
+            v_curr=v_curr, v_next=v_next, x_next=x_next)
+        return rel_violation, v_curr
 
     def get_counterexample_mask(
         self, 
@@ -786,27 +781,30 @@ class LyapunovTrainingLoss(nn.Module):
         A valid counterexample must be strictly inside the rho-sublevel set and have a positive violation.
         """
         if candidate_states.numel() == 0:
-            return th.empty(0, device=candidate_states.device), th.empty(0, dtype=th.bool, device=candidate_states.device)
-            
+            return (
+                th.empty(0, device=candidate_states.device),
+                th.empty(0, dtype=th.bool, device=candidate_states.device),
+            )
+
         with th.no_grad():
-            true_violations, v_batch = self._raw_condition_violation(candidate_states)
-            true_violations = true_violations.squeeze(-1)
-            v_batch = v_batch.squeeze(-1)
-            real_mask = (v_batch <= rho_estimate) & (true_violations > violation_tolerance)
-            return true_violations, real_mask
+            violation, v_curr = self._rel_condition_violation(candidate_states)
+            violation = violation.squeeze(-1)
+            inside_sublevel = v_curr.squeeze(-1) <= rho_estimate
+            mask = inside_sublevel & (violation > violation_tolerance)
+        return violation, mask
 
     def mining_objective(self, x_batch: th.Tensor, rho_estimate: float) -> th.Tensor:
         """Return the mining objective value for a batch of states, 
         used for prioritization in the replay buffer and PGD."""
-        raw_relative_violation, v_batch = self._raw_condition_violation(x_batch)
-        soft_mask = self.condition_loss.soft_sublevel_weight(v_batch, rho_estimate, detach=False)
-        return - soft_mask * raw_relative_violation
+        rel_violation, v_batch = self._rel_condition_violation(x_batch)
+        soft_mask = self.condition_loss.soft_sublevel_weight(v_batch, rho_estimate)
+        return - soft_mask * rel_violation
     
     def buffer_sorting_objective(self, x_batch: th.Tensor, rho_estimate: float) -> th.Tensor:
         """Return the pure relative violation score for sorting in the buffer."""
-        raw_relative_violation, v_batch = self._raw_condition_violation(x_batch)
-        soft_mask = self.condition_loss.soft_sublevel_weight(v_batch, rho_estimate * 1.2)
-        return - soft_mask * raw_relative_violation
+        rel_violation, v_batch = self._rel_condition_violation(x_batch)
+        soft_mask = self.condition_loss.soft_sublevel_weight(v_batch, rho_estimate * 1.3)
+        return - soft_mask * rel_violation
     
     def compute_loss_parts(
         self,

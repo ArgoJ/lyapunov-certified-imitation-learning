@@ -54,6 +54,8 @@ def _prepare_parallel_data(
     v = None
     if cond_violations is not None:
         v = np.asarray(cond_violations, dtype=np.float32)
+        if v.ndim == 2 and v.shape[1] == 1:
+            v = v.squeeze(-1)
         if v.ndim != 1 or v.shape[0] != n_total:
             raise ValueError(f"violations must have shape ({n_total},), got {v.shape}.")
 

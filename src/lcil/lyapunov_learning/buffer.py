@@ -260,7 +260,7 @@ class CEGISBuffer:
         self,
         value_fn: Callable[[th.Tensor], th.Tensor],
         rho_estimate: float,
-        rho_margin: float = 1.5,
+        rho_margin: float = 2.0,
     ) -> None:
         """Replace the regular state pool with rejection-sampled states focused on the ρ-sublevel region.
 
@@ -277,7 +277,7 @@ class CEGISBuffer:
         rho_estimate : float
             Current ρ estimate from boundary analysis.
         rho_margin : float, optional
-            Multiplicative factor over ρ for the acceptance threshold, by default 1.5.
+            Multiplicative factor over ρ for the acceptance threshold, by default 2.0.
         """
         target_count = self.state_buffer_limit
         oversample_factor = 4
@@ -288,32 +288,16 @@ class CEGISBuffer:
         ) * (self.ub - self.lb)
 
         v_candidates = value_fn(candidates).flatten()
-        rho_with_margin = rho_margin * rho_estimate
 
-        accepted_mask = v_candidates <= rho_with_margin
-        accepted = candidates[accepted_mask]
+        rho_target = rho_margin * rho_estimate
+        margin = (rho_target - v_candidates) / max(rho_estimate, 1e-9)
 
-        min_accepted = target_count // 2
-        if accepted.shape[0] >= target_count:
-            _, topk_idx = th.topk(v_candidates[accepted_mask], k=target_count, largest=False)
-            self.states = accepted[topk_idx]
-        elif accepted.shape[0] >= min_accepted:
-            rejected_mask = ~accepted_mask
-            rejected_v = v_candidates[rejected_mask]
-            n_pad = target_count - accepted.shape[0]
-            _, pad_idx = th.topk(rejected_v, k=min(n_pad, rejected_v.shape[0]), largest=False)
-            self.states = th.cat([accepted, candidates[rejected_mask][pad_idx]], dim=0)
-        else:
-            _, topk_idx = th.topk(v_candidates, k=target_count, largest=False)
-            self.states = candidates[topk_idx]
+        sharpness = 10.0
+        weights = th.sigmoid(sharpness * margin)
+        weights = weights + 1e-6 
 
-        __logger__.debug(
-            "Resampled state buffer: %d/%d accepted (threshold=%.4f), final size=%d",
-            int(accepted_mask.sum().item()),
-            n_candidates,
-            rho_with_margin,
-            self.states.shape[0],
-        )
+        idx = th.multinomial(weights, target_count, replacement=False)
+        self.states = candidates[idx]
 
     def register_cex(
         self,
