@@ -102,7 +102,6 @@ class CertificationResultTester:
             lyap_model=self.lyap_model,
             dyn_model=self.dyn_model,
             kappa=config.kappa,
-            condition_margin=config.condition_margin,
         ).to(self.device).eval()
 
     def _hard_condition_violation(self, verifier_output: th.Tensor) -> th.Tensor:

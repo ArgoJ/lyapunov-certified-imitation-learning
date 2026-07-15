@@ -132,8 +132,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Maximum size of the training buffer for counterexamples.
     condition_tolerance : float
         Numerical tolerance for condition satisfaction.
-    condition_margin : float
-        Safety margin enforced on the verifier output during training.
     rho_gate_sharpness : float
         Steepness of the sigmoid gate used to soft-weight samples by their
         distance to the ρ-sublevel boundary. Higher values approximate a hard
@@ -452,12 +450,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="Numerical tolerance for Lyapunov condition satisfaction.",
         display_alias="cond_tol",
         validators=(positive_validator,),
-    )
-    condition_margin: float = config_field(
-        default=0.0,
-        help="Safety margin enforced on the verifier output during training.",
-        display_alias="margin",
-        validators=(non_negative_validator,),
     )
     relative_condition_eps: float = config_field(
         default=1e-2,

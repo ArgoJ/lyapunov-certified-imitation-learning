@@ -66,9 +66,6 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
     condition_tolerance : float
         Numerical tolerance on the fused verifier output. Positive values allow
         a small residual certification slack for numerical stability.
-    condition_margin : float
-        Optional additive safety margin on the decrease term during
-        certification. Defaults to ``0.0`` to keep certification unchanged.
     suppress_native_output : bool
         Whether to suppress native solver output (e.g., from AutoLiRPA or ABCrown) 
         during certification.
@@ -148,12 +145,6 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         default=1e-6,
         help="Numerical tolerance on the fused verifier output.",
         display_alias="cond_tol",
-        validators=(non_negative_validator,)
-    )
-    condition_margin: float = config_field(
-        default=0.0,
-        help="Optional additive safety margin on the decrease term during certification.",
-        display_alias="margin",
         validators=(non_negative_validator,)
     )
 
@@ -287,7 +278,6 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         max_bisection_steps: int = 40,
         lirpa_method: str = "alpha-crown",
         sublevel_tolerance: float | None = None,
-        condition_margin: float = 0.0,
         suppress_native_output: bool = True,
         batch_size: int = 512,
         abcrown_timeout: float | None = None,
@@ -321,7 +311,6 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
                 else sublevel_tolerance
             ),
             "condition_tolerance": config.condition_tolerance,
-            "condition_margin": condition_margin,
             "suppress_native_output": suppress_native_output,
             "batch_size": batch_size,
             "abcrown_timeout": abcrown_timeout,

@@ -65,7 +65,6 @@ def _build_certification_defaults(
         bins_per_dim=1,
         center_refinement_factor=1.0,
         lirpa_method="crown",
-        condition_margin=float(training_config.condition_margin),
         suppress_native_output=True,
         batch_size=32,
         abcrown_timeout=60.0,

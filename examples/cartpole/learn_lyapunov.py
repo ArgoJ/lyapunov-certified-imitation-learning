@@ -106,7 +106,6 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         cex_steps=20,
         adversarial_samples=32768,
         adversarial_step_size=0.0001,
-        condition_margin=0.001,
     )
 
 
@@ -130,7 +129,6 @@ def parse_cli_args() -> GridSearchHelper[tuple[LyapunovLearningScriptConfig, Lya
             "*weight",
             "rho_growth_gamma",
             "rho_estimate_quantile",
-            "condition_margin",
             "policy_epochs",
         },
     )

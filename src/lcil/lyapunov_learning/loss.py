@@ -98,10 +98,9 @@ def lyapunov_decrease(
     v_curr: th.Tensor,
     v_next: th.Tensor,
     kappa: float,
-    condition_margin: float = 0.0,
 ) -> th.Tensor:
     """Compute the one-step Lyapunov decrease value."""
-    return v_next - (1.0 - kappa) * v_curr + condition_margin
+    return v_next - (1.0 - kappa) * v_curr
 
 def weighted_mean(values: th.Tensor, weights: th.Tensor) -> th.Tensor:
     """Compute a weighted mean of the given values with the provided weights."""
@@ -216,13 +215,12 @@ class LyapunovScaleAnchorLoss(BoundedStateSamplingModule):
 class LyapunovDecreaseViolation(nn.Module):
     """Compute the one-step Lyapunov decrease violation."""
 
-    def __init__(self, kappa: float, condition_margin: float = 0.0) -> None:
+    def __init__(self, kappa: float) -> None:
         super().__init__()
         self.kappa = float(kappa)
-        self.condition_margin = float(condition_margin)
 
     def raw_forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
-        return lyapunov_decrease(v_curr, v_next, self.kappa, self.condition_margin)
+        return lyapunov_decrease(v_curr, v_next, self.kappa)
 
     def forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
         return th.relu(self.raw_forward(v_curr, v_next))
@@ -234,10 +232,9 @@ class RelativeLyapunovDecreaseViolation(LyapunovDecreaseViolation):
     def __init__(
         self,
         kappa: float,
-        condition_margin: float = 0.0,
         relative_eps: float = 1e-2,
     ) -> None:
-        super().__init__(kappa=kappa, condition_margin=condition_margin)
+        super().__init__(kappa=kappa)
         self.relative_eps = float(relative_eps)
 
     def _relative_denominator(self, v_curr: th.Tensor) -> th.Tensor:
@@ -306,7 +303,6 @@ class RhoGatedConditionLoss(nn.Module):
         self.gate_sharpness = float(config.rho_gate_sharpness)
         self.relative_decrease_violation = RelativeLyapunovDecreaseViolation(
             kappa=config.kappa,
-            condition_margin=config.condition_margin,
             relative_eps=config.relative_condition_eps,
         )
         self.relative_invariance_violation = RelativeInvarianceViolation(
@@ -369,7 +365,6 @@ class SignedConditionMargin(nn.Module):
         self.dyn_model = dyn_model
         
         self.kappa = float(config.kappa)
-        self.condition_margin = float(config.condition_margin)
 
     def forward(self, x: th.Tensor) -> th.Tensor:
         v_curr = self.lyap_model(x)
@@ -378,7 +373,7 @@ class SignedConditionMargin(nn.Module):
         v_next = self.lyap_model(x_next)
 
         signed_margin = (
-            -lyapunov_decrease(v_curr, v_next, self.kappa, self.condition_margin)
+            -lyapunov_decrease(v_curr, v_next, self.kappa)
         )
 
         return signed_margin

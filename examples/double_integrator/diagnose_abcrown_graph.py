@@ -467,7 +467,6 @@ def main() -> int:
     policy_model, mpc_cfg = _build_fresh_policy_model(script_config, device)
     lyap_model = _build_fresh_lyapunov_model(script_config, device)
     kappa = float(script_config.kappa)
-    condition_margin = float(script_config.condition_margin)
     policy_source = f"fresh:{script_config.policy_arch}"
     lyapunov_source = f"fresh:{script_config.lyapunov_arch}"
 

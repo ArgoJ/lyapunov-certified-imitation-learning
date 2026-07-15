@@ -18,7 +18,6 @@ class LyapunovCoreVerifier(nn.Module):
         lyap_model: nn.Module,
         dyn_model: nn.Module,
         kappa: float,
-        condition_margin: float = 0.0,
     ):
         """
         Initialize the shared closed-loop Lyapunov core.
@@ -33,16 +32,12 @@ class LyapunovCoreVerifier(nn.Module):
             The forward dynamics model of the system (x_next = f(x, u)).
         kappa : float
             The required proportional decay rate for the Lyapunov function (0 < kappa <= 1).
-        condition_margin : float, optional
-            Optional additive margin on the decrease condition. Positive values make
-            certification stricter while keeping the same logical structure.
         """
         super().__init__()
         self.policy = policy_model
         self.lyap = lyap_model
         self.dyn = dyn_model
         self.kappa = float(kappa)
-        self.condition_margin = float(condition_margin)
 
         remove_dropout(self.policy)
         remove_dropout(self.lyap)
@@ -62,7 +57,7 @@ class LyapunovCoreVerifier(nn.Module):
     def forward(self, x: th.Tensor) -> th.Tensor:
         """Return condition margin, ``V(x)``, and ``x_next``."""
         v_curr, x_next, v_next = self._closed_loop_terms(x)
-        decrease_margin = (1.0 - self.kappa) * v_curr - v_next - self.condition_margin
+        decrease_margin = (1.0 - self.kappa) * v_curr - v_next
         return th.cat((decrease_margin, v_curr, x_next), dim=1)
 
 

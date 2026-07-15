@@ -349,7 +349,6 @@ class BaseLyapunovCoreABCrownCertifier(BaseABCrownCertifier):
             lyap_model=self.lyap_model,
             dyn_model=self.dyn_model,
             kappa=self.config.kappa,
-            condition_margin=self.config.condition_margin,
         )
 
     def _output_dim(self) -> int:
