@@ -438,10 +438,11 @@ class ConditionLirpaLoss(StateBoundsModule):
         bounded_x = self.bounded_input(x_L=x_L, x_U=x_U)
         lb, _ = self.bounded_model.compute_bounds(
             x=(bounded_x,),
-            method="crown",
+            method="IBP+backward",
             bound_upper=False,
         )
-        violations = th.relu(-lb).squeeze()
+        raw_violations = th.relu(-lb).squeeze()
+        violations = th.log1p(raw_violations)
 
         centers = 0.5 * (x_L + x_U)
         with th.no_grad():
