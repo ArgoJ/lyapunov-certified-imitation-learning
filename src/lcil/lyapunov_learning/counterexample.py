@@ -268,7 +268,6 @@ def find_counter_examples(
     with th.no_grad():
         exclusion = th.as_tensor(config.origin_exclusion, dtype=best_states.dtype, device=device)
         inside_exclusion = th.all(th.abs(best_states) <= exclusion, dim=-1)
-
         counter_mask = (best_violations > 0.0) & (~inside_exclusion)
 
     cex_states = best_states[counter_mask].clone().detach()

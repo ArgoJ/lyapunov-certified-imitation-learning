@@ -136,6 +136,8 @@ class BoundedStateSamplingModule(StateBoundsModule):
         super().__init__(state_bounds=state_bounds, device=device)
         self.num_samples = int(num_samples)
         self.resample_interval = int(resample_interval)
+        self._max_resample_interval = int(3 * self.resample_interval)
+        self._min_resample_interval = self.resample_interval // 3
         self._step_counter = 0
 
         state_dim = self.lbx.shape[0]
@@ -145,30 +147,40 @@ class BoundedStateSamplingModule(StateBoundsModule):
             "samples",
             th.zeros((self.num_samples, self.lbx.shape[0]), device=self.device)
         )
-
         self._register_new_samples()
 
     def _needs_resample(self) -> bool:
         """Check if a new batch of samples should be drawn based on the resample interval."""
-        return self.training and self.resample_interval > 0 and (self._step_counter % self.resample_interval == 0)
+        if self.resample_interval <= 0 or not self.training:
+            return False
+        if self._step_counter >= self._max_resample_interval:
+            return True
+
+        resample_probability = 1.0 / self.resample_interval
+        return (
+            self._step_counter > self._min_resample_interval
+            and bool(th.rand((), device=self.device) < resample_probability)
+        )
 
     def _sample_uniform_states(self, num_points: int) -> th.Tensor:
         """Sample a batch of states uniformly from the training bounds."""
-        # rand_uniform = th.rand((num_points, self.lbx.shape[0]), device=self.device)
         rand_sobol = self.sobol_engine.draw(num_points).to(self.device)
         return self.lbx + rand_sobol * (self.ubx - self.lbx)
 
     @th.no_grad()
     def _register_new_samples(self) -> None:
         """Register a new batch of uniform samples."""
-        new_samples = self._sample_uniform_states(self.num_samples)
-        self.samples.copy_(new_samples)
+        self.samples.copy_(self._sample_uniform_states(self.num_samples))
 
-    def step_sampling(self) -> None:
+    def step_sampling(self) -> bool:
         """Register new samples if it is at intervalle, otherwise increment the step counter."""
         if self._needs_resample():
             self._register_new_samples()
+            self._step_counter = 0
+            return True
+
         self._step_counter += 1
+        return False
 
 
 
@@ -586,12 +598,12 @@ class PolicyRegularizationLoss(BoundedStateSamplingModule):
         new_values = self._forward_maybe_raw(self.init_policy, self.samples)
         self.init_policy_values.copy_(new_values)
     
-    def step_sampling(self) -> None:
+    def step_sampling(self) -> bool:
         """Wrapper für step_sampling, der an das Resampling gekoppelt ist."""
-        needs_update = self._needs_resample() or self.init_policy_values is None
-        super().step_sampling()
+        needs_update = super().step_sampling() or self.init_policy_values is None
         if needs_update:
             self._update_init_policy_values()
+        return needs_update
 
     def forward(self) -> th.Tensor:
         self.step_sampling()
