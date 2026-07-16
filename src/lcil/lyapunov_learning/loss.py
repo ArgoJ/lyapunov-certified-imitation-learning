@@ -102,6 +102,18 @@ def lyapunov_decrease(
     """Compute the one-step Lyapunov decrease value."""
     return v_next - (1.0 - kappa) * v_curr
 
+def relative_denominator(v_curr: th.Tensor, eps: float) -> th.Tensor:
+    return v_curr.detach().abs().clamp_min(eps)
+
+def relative_lyapunov_decrease(
+    v_curr: th.Tensor,
+    v_next: th.Tensor,
+    kappa: float,
+    eps: float,
+) -> th.Tensor:
+    return lyapunov_decrease(v_curr, v_next, kappa) / relative_denominator(v_curr, eps)
+    
+
 def weighted_mean(values: th.Tensor, weights: th.Tensor) -> th.Tensor:
     """Compute a weighted mean of the given values with the provided weights."""
     weights = weights.to(dtype=values.dtype)
@@ -231,14 +243,11 @@ class LyapunovDecreaseViolation(nn.Module):
         super().__init__()
         self.kappa = float(kappa)
 
-    def raw_forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
-        return lyapunov_decrease(v_curr, v_next, self.kappa)
-
     def forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
-        return th.relu(self.raw_forward(v_curr, v_next))
+        return th.relu(lyapunov_decrease(v_curr, v_next, self.kappa))
 
 
-class RelativeLyapunovDecreaseViolation(LyapunovDecreaseViolation):
+class RelativeLyapunovDecreaseViolation(nn.Module):
     """Compute a relative version of the one-step Lyapunov decrease violation."""
 
     def __init__(
@@ -246,25 +255,12 @@ class RelativeLyapunovDecreaseViolation(LyapunovDecreaseViolation):
         kappa: float,
         relative_eps: float = 1e-2,
     ) -> None:
-        super().__init__(kappa=kappa)
+        super().__init__()
+        self.kappa = float(kappa)
         self.relative_eps = float(relative_eps)
 
-    def _relative_denominator(self, v_curr: th.Tensor) -> th.Tensor:
-        denom_source = v_curr.detach()
-        return denom_source.abs() + self.relative_eps
-    
-    def _relative_decrease(self, v_curr: th.Tensor, decrease: th.Tensor) -> th.Tensor:
-        denom_source = self._relative_denominator(v_curr)
-        relative_decrease = decrease / denom_source
-        return relative_decrease
-    
-    def raw_forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
-        raw_decrease_violation = super().raw_forward(v_curr, v_next)
-        return self._relative_decrease(v_curr, raw_decrease_violation)
-
     def forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
-        decrease_violation = super().forward(v_curr=v_curr, v_next=v_next)
-        return self._relative_decrease(v_curr, decrease_violation)
+        return th.relu(relative_lyapunov_decrease(v_curr, v_next, self.kappa, self.relative_eps))
 
 
 class InvarianceViolation(StateBoundsModule):
@@ -395,14 +391,22 @@ class SignedConditionMargin(nn.Module):
 class ConditionLirpaLoss(StateBoundsModule):
     def __init__(
         self,
-        signed_margin_model: nn.Module,
-        train_bounds: th.Tensor,
-        relative_eps: float = 1e-2,
-        device="cpu"
+        policy_model: nn.Module,
+        lyap_model: nn.Module,
+        dyn_model: nn.Module,
+        config: LyapunovTrainingConfig,
+        device: th.device = th.device("cpu"),
     ):
-        super().__init__(state_bounds=train_bounds, device=device)
-        self.signed_margin_model = signed_margin_model
-        self.relative_eps = float(relative_eps)
+        super().__init__(state_bounds=config.train_bounds, device=device)
+
+        self.signed_margin_model = SignedConditionMargin(
+            policy_model=policy_model,
+            lyap_model=lyap_model,
+            dyn_model=dyn_model,
+            config=config,
+        )
+        self.relative_eps = float(config.relative_condition_eps)
+        self.use_relative_decrease = bool(config.use_relative_decrease)
         self.bounded_model = self._build_bounded_module()
 
     def _build_bounded_module(self) -> BoundedModule:
@@ -442,12 +446,16 @@ class ConditionLirpaLoss(StateBoundsModule):
         violations = th.log1p(raw_violations)
 
         centers = 0.5 * (x_L + x_U)
-        with th.no_grad():
-            v_centers = self.signed_margin_model.lyap_model(centers).squeeze(-1)
+        
+        if self.use_relative_decrease:
+            with th.no_grad():
+                v_centers = self.signed_margin_model.lyap_model(centers).squeeze(-1)
+            final_violations = violations / relative_denominator(v_centers, self.relative_eps)
+        else:
+            final_violations = violations
             
-        relative_violations = violations / (v_centers.abs() + self.relative_eps)
         weights = self._calculate_weight(centers=centers)
-        weighted_violations = weighted_mean(relative_violations, weights)
+        weighted_violations = weighted_mean(final_violations, weights)
         return weighted_violations
 
 
@@ -460,7 +468,7 @@ class RoaSurrogateLoss(nn.Module):
 
     def forward(self, v_candidates: th.Tensor, rho_estimate: float) -> th.Tensor:
         rho_value = safe_rho(rho_estimate, self.rho_min)
-        return th.relu(v_candidates / rho_value - 1.0).mean()
+        return th.log1p(th.relu(v_candidates / rho_value - 1.0)).mean()
 
 
 class EquilibriumLoss(nn.Module):
@@ -669,22 +677,14 @@ class LyapunovTrainingLoss(nn.Module):
         self.roa_loss = RoaSurrogateLoss(self.config)
 
         # Lyapunov decrease loss with signed margin model
-        self.signed_condition_margin = (
-            SignedConditionMargin(
+        self.condition_lirpa_loss = (
+            ConditionLirpaLoss(
                 policy_model=self.policy_model,
                 lyap_model=self.lyap_model,
                 dyn_model=self.dyn_model,
                 config=self.config,
             )
             if self.config.condition_lirpa_weight > 0.0 else None
-        )
-        self.condition_lirpa_loss = (
-            ConditionLirpaLoss(
-                signed_margin_model=self.signed_condition_margin,
-                train_bounds=self.config.train_bounds,
-                device=self.device,
-            )
-            if self.signed_condition_margin is not None else None
         )
         
         # Equilibrium loss

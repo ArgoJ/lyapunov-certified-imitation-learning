@@ -166,7 +166,21 @@ def estimate_rho_from_boundary(
         generator=generator,
     )
 
+    # n = ubx.shape[0]
+    # center = (lbx + ubx) / 2.0
+    # face_centers_tensor = center.repeat(2 * n, 1)
+    # bounds_interleaved = th.stack([lbx, ubx], dim=1).flatten()
+    # mask = th.eye(n, dtype=th.bool, device=device).repeat_interleave(2, dim=0)
+    # face_centers_tensor[mask] = bounds_interleaved
+    
+    # # Batch aus Zufallspunkten und exakten Mittelpunkten zusammenbauen
+    # boundary_eval_x = th.cat([boundary_x, face_centers_tensor], dim=0)
+
     step = config.rho_step_size * (ubx - lbx).unsqueeze(0)
+    with th.no_grad():
+        best_boundary_x = boundary_x.clone()
+        best_boundary_values = lyap_model(boundary_x).flatten()
+
     for _ in range(config.rho_descent_steps):
         boundary_x.requires_grad_(True)
         boundary_values = lyap_model(boundary_x)
@@ -178,16 +192,24 @@ def estimate_rho_from_boundary(
         )[0]
 
         with th.no_grad():
-            boundary_x = boundary_x - step * grad.sign()
-            boundary_x = project_to_boundary_faces(
-                boundary_x,
+            candidate_x = boundary_x - step * grad.sign()
+            candidate_x = project_to_boundary_faces(
+                candidate_x,
                 lb=lbx,
                 ub=ubx,
                 face_dims=face_dims,
                 is_ub=is_ub,
             )
+            
+            candidate_values = lyap_model(candidate_x).flatten()
+            improved = candidate_values < best_boundary_values
+            best_boundary_x[improved] = candidate_x[improved]
+            best_boundary_values[improved] = candidate_values[improved]
+            boundary_x = candidate_x
 
-    boundary_eval_x = boundary_x.detach()
+    boundary_eval_x = best_boundary_x.detach()
+    boundary_values = best_boundary_values.detach()
+
     with th.no_grad():
         boundary_values = lyap_model(boundary_eval_x).flatten()
         boundary_quantile = float(th.quantile(boundary_values, q=float(config.rho_estimate_quantile)).item())
