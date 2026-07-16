@@ -11,6 +11,7 @@ from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
 from .config import LyapunovTrainingConfig
 from .utils import get_th_lbx_ubx, get_center
+from .sampling import sample_sobol_box
 
 __logger__ = logging.getLogger(__name__)
 
@@ -176,8 +177,13 @@ class BoundedStateSamplingModule(StateBoundsModule):
 
     def _sample_uniform_states(self, num_points: int) -> th.Tensor:
         """Sample a batch of states uniformly from the training bounds."""
-        rand_sobol = self.sobol_engine.draw(num_points).to(self.device)
-        return self.lbx + rand_sobol * (self.ubx - self.lbx)
+        return sample_sobol_box(
+            sample_size=num_points,
+            lb=self.lbx,
+            ub=self.ubx,
+            sobol_engine=self.sobol_engine,
+            device=self.device,
+        )
 
     @th.no_grad()
     def _register_new_samples(self) -> None:

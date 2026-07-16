@@ -8,6 +8,13 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 from .config import LyapunovTrainingConfig
+from .sampling import (
+    _bounds_tensor,
+    project_to_box,
+    sample_uniform_box,
+    sample_boundary_points,
+    project_to_boundary_faces,
+)
 from ..utils import timeit
 
 __logger__ = logging.getLogger(__name__)
@@ -44,70 +51,6 @@ class BoundaryRhoEstimate:
 class BoundaryRhoEvaluation:
     rho: BoundaryRhoEstimate
     terms: BoundaryTermDiagnostics
-
-
-def _bounds_tensor(state_bounds: Sequence[float], device: th.device) -> th.Tensor:
-    bounds = th.as_tensor(state_bounds, dtype=th.float32, device=device)
-    if bounds.ndim != 2 or bounds.shape[0] != 2:
-        raise ValueError("state_bounds must be a sequence of shape (2, nx) [lb, ub].")
-    return bounds
-
-
-def project_to_box(state: th.Tensor, lb: th.Tensor, ub: th.Tensor) -> th.Tensor:
-    """Project states to the asymmetric box B = {x | lb <= x <= ub}."""
-    return th.maximum(th.minimum(state, ub), lb)
-
-
-def sample_uniform_box(
-    sample_size: int,
-    lb: th.Tensor,
-    ub: th.Tensor,
-    device: th.device,
-    generator: th.Generator | None = None,
-) -> th.Tensor:
-    """Sample uniformly from the asymmetric box B = {x | lb <= x <= ub}."""
-    u = th.rand(sample_size, lb.numel(), device=device, generator=generator)
-    return u * (ub - lb) + lb
-
-
-def sample_boundary_points(
-    sample_size: int,
-    lb: th.Tensor,
-    ub: th.Tensor,
-    device: th.device,
-    generator: th.Generator | None = None,
-) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
-    """Sample points uniformly distributed over the actual surface area of the box."""
-    points = sample_uniform_box(sample_size, lb, ub, device, generator)
-    widths = ub - lb
-    face_areas = th.prod(widths) / widths
-    probs = face_areas / th.sum(face_areas)
-    
-    # Choose the dimensions weighted by their actual geometric area
-    face_dims = th.multinomial(probs, sample_size, replacement=True, generator=generator)
-    
-    # 50/50 Chance for Upper or Lower Bound
-    is_ub = th.rand(sample_size, device=device, generator=generator) >= 0.5
-    batch_idx = th.arange(sample_size, device=device)
-    points[batch_idx, face_dims] = th.where(is_ub, ub[face_dims], lb[face_dims])
-    
-    return points, face_dims, is_ub
-
-
-def project_to_boundary_faces(
-    points: th.Tensor,
-    lb: th.Tensor,
-    ub: th.Tensor,
-    face_dims: th.Tensor,
-    is_ub: th.Tensor,
-) -> th.Tensor:
-    """Project points onto the original boundary faces after a gradient step."""
-    points = project_to_box(points, lb, ub)
-    batch_idx = th.arange(points.shape[0], device=points.device)
-    points[batch_idx, face_dims] = th.where(is_ub, ub[face_dims], lb[face_dims])
-    return points
-
-
 def _boundary_term_diagnostics(
     lyap_model: nn.Module,
     boundary_x: th.Tensor,

@@ -28,6 +28,12 @@ def get_center(lbx: th.Tensor, ubx: th.Tensor) -> th.Tensor:
     return (lbx + ubx) / 2.0
 
 
+def get_bounded_fraction(base: float, min: float, max: float) -> float:
+    if not (min <= base <= max):
+        return max(min, min(base, max))
+    return base
+
+
 class TrainingAbortedError(RuntimeError):
     """Raised when Lyapunov training aborts before producing a valid result."""
 

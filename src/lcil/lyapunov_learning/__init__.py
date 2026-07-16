@@ -7,8 +7,8 @@ from .policy_wrapper import PolicyWrapper, RepeatCurrentPolicyWrapper, FromRollo
 from .counterexample import (
     estimate_rho_from_boundary,
     find_counter_examples,
-    sample_uniform_box,
 )
+from .sampling import sample_uniform_box
 
 __all__ = [
     "LyapunovTrainer",

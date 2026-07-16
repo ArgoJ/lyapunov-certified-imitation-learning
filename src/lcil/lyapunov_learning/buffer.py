@@ -7,6 +7,8 @@ import numpy as np
 from collections.abc import Callable
 from scipy.spatial import cKDTree
 
+from .utils import get_bounded_fraction
+from .sampling import sample_rejection_states, sample_mixed_batch, sample_uniform_box, sample_box_rejection_states
 from ..utils import timeit
 
 __logger__ = logging.getLogger(__name__)
@@ -279,25 +281,21 @@ class CEGISBuffer:
         rho_margin : float, optional
             Multiplicative factor over ρ for the acceptance threshold, by default 2.0.
         """
-        target_count = self.state_buffer_limit
-        oversample_factor = 4
-        n_candidates = target_count * oversample_factor
-
-        candidates = self.lb + th.rand(
-            n_candidates, self.lb.shape[0], device=self.device, generator=self.generator,
-        ) * (self.ub - self.lb)
-
-        v_candidates = value_fn(candidates).flatten()
-
         rho_target = rho_margin * rho_estimate
-        margin = (rho_target - v_candidates) / max(rho_estimate, 1e-9)
+        rho_scale = max(rho_estimate, 1e-9)
+        
+        def score_fn(x: th.Tensor) -> th.Tensor:
+            return (rho_target - value_fn(x).flatten()) / rho_scale
 
-        sharpness = 10.0
-        weights = th.sigmoid(sharpness * margin)
-        weights = weights + 1e-6 
-
-        idx = th.multinomial(weights, target_count, replacement=False)
-        self.states = candidates[idx]
+        self.states = sample_box_rejection_states(
+            lb=self.lb,
+            ub=self.ub,
+            target_count=self.state_buffer_limit,
+            score_fn=score_fn,
+            oversample_factor=4,
+            device=self.device,
+            generator=self.generator,
+        )
 
     def register_cex(
         self,
@@ -336,46 +334,16 @@ class CEGISBuffer:
         cex_fraction: float, optional
             Fraction of the batch reserved for recent CEXs. default is 0.25
         """
-        if batch_size <= 0:
-            raise ValueError("batch_size must be positive.")
-        if not (self.min_cex_fraction <= cex_fraction <= self.max_cex_fraction):
-            cex_fraction = max(self.min_cex_fraction, min(cex_fraction, self.max_cex_fraction))
-
-        state_count = self.state_count
-        cex_count = self.cex_count
-
-        if cex_count == 0:
-            batch_idx = th.randint(
-                low=0,
-                high=state_count,
-                size=(batch_size,),
-                device=self.device,
-                generator=self.generator
-            )
-            return self.states[batch_idx]
-
-        max_inject = int(batch_size * cex_fraction)
-        n_inject = min(cex_count, max_inject)
-
-        cex_idx = th.randint(
-            low=0,
-            high=cex_count,
-            size=(n_inject,),
-            device=self.device,
-            generator=self.generator
+        cex_fraction = get_bounded_fraction(
+            base=cex_fraction,
+            min=self.min_cex_fraction,
+            max=self.max_cex_fraction,
         )
-        injected_cexs = self.cexs[cex_idx]
-
-        n_regular = batch_size - n_inject
-        reg_idx = th.randint(
-            low=0,
-            high=state_count,
-            size=(n_regular,),
+        return sample_mixed_batch(
+            regular_states=self.states,
+            cexs=self.cexs,
+            batch_size=batch_size,
+            cex_fraction=cex_fraction,
             device=self.device,
-            generator=self.generator
+            generator=self.generator,
         )
-        regular_states = self.states[reg_idx]
-
-        batch = th.cat((injected_cexs, regular_states), dim=0)
-        perm = th.randperm(batch.shape[0], device=batch.device, generator=self.generator)
-        return batch[perm]
