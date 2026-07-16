@@ -7,6 +7,7 @@ from plot_assertions_mixin import PlotAssertionsMixin
 from lcil.lyapunov_learning.sampling import (
     sample_uniform_box,
     sample_boundary_points,
+    sample_box_shell,
     sample_ellipsoid_boundary,
     sample_sobol_box,
     sample_box_rejection_states,
@@ -15,6 +16,7 @@ from lcil.lyapunov_learning.sampling import (
 def plot_sampling_methods(
     uniform_pts: th.Tensor,
     boundary_pts: th.Tensor,
+    box_shell_pts: th.Tensor,
     ellipsoid_pts: th.Tensor,
     sobol_pts: th.Tensor,
     rejection_pts: th.Tensor,
@@ -34,6 +36,7 @@ def plot_sampling_methods(
         
     add_trace(uniform_pts, "Uniform Box (sample_uniform_box)")
     add_trace(boundary_pts, "Box Boundary (sample_boundary_points)", marker_symbol="cross")
+    add_trace(box_shell_pts, "Box Shell (sample_box_shell)")
     add_trace(ellipsoid_pts, "Ellipsoid Boundary (sample_ellipsoid_boundary)")
     add_trace(sobol_pts, "Sobol Box (sample_sobol_box)", marker_symbol="diamond", opacity=0.9)
     add_trace(rejection_pts, "Box Rejection (Center weighted)")
@@ -63,7 +66,16 @@ class TestSamplingMethods(PlotAssertionsMixin):
         # 2. Boundary Points
         boundary_pts, _, _ = sample_boundary_points(sample_size, lb, ub, device=device)
         
-        # 3. Ellipsoid Boundary
+        # 3. Box Shell
+        box_shell_pts = sample_box_shell(
+            sample_size=sample_size,
+            state_dim=2,
+            center=center,
+            half_width=half_width,
+            device=device,
+        )
+        
+        # 4. Ellipsoid Boundary
         ellipsoid_pts = sample_ellipsoid_boundary(
             sample_size=sample_size,
             state_dim=2,
@@ -72,7 +84,7 @@ class TestSamplingMethods(PlotAssertionsMixin):
             device=device,
         )
         
-        # 4. Sobol Box
+        # 5. Sobol Box
         sobol_engine = th.quasirandom.SobolEngine(dimension=2, scramble=True)
         sobol_pts = sample_sobol_box(sample_size, lb, ub, sobol_engine, device=device)
         
@@ -106,6 +118,7 @@ class TestSamplingMethods(PlotAssertionsMixin):
             plot_kwargs={
                 "uniform_pts": uniform_pts,
                 "boundary_pts": boundary_pts,
+                "box_shell_pts": box_shell_pts,
                 "ellipsoid_pts": ellipsoid_pts,
                 "sobol_pts": sobol_pts,
                 "rejection_pts": rejection_pts,

@@ -168,6 +168,39 @@ def sample_sobol_box(
     rand_sobol = sobol_engine.draw(sample_size).to(device)
     return lb + rand_sobol * (ub - lb)
 
+def sample_box_shell(
+    sample_size: int,
+    state_dim: int,
+    center: th.Tensor,
+    half_width: th.Tensor,
+    min_scale: float = 0.6,
+    max_scale: float = 1.0,
+    device: th.device | str = "cpu",
+    generator: th.Generator | None = None,
+) -> th.Tensor:
+    """Create diverse candidate states in a box-shaped shell."""
+    # Uniformly sample in the unit hypercube [-1, 1]^N
+    directions = th.rand(
+        sample_size,
+        state_dim,
+        device=device,
+        generator=generator,
+    ) * 2.0 - 1.0
+    
+    # Project to the surface of the unit hypercube (L-infinity norm = 1)
+    directions = directions / directions.abs().max(dim=1, keepdim=True)[0].clamp(min=1e-8)
+    
+    # Scale randomly between min_scale and max_scale
+    scales = th.rand(
+        sample_size,
+        1,
+        device=device,
+        generator=generator
+    ) * (max_scale - min_scale) + min_scale
+    
+    z_candidates = directions * scales
+    return z_candidates * half_width + center
+
 
 def sample_ellipsoid_boundary(
     sample_size: int,
@@ -179,7 +212,7 @@ def sample_ellipsoid_boundary(
     device: th.device | str = "cpu",
     generator: th.Generator | None = None,
 ) -> th.Tensor:
-    """Create diverse candidate states near the boundary of the asymmetric box."""
+    """Create diverse candidate states near the boundary of the asymmetric box (ellipsoidal)."""
     directions = th.randn(
         sample_size,
         state_dim,

@@ -32,7 +32,7 @@ from .counterexample import (
 from .sampling import (
     sample_uniform_box,
     sample_boundary_points,
-    sample_ellipsoid_boundary,
+    sample_box_shell,
 )
 from .results import (
     MiningStepResult,
@@ -243,13 +243,13 @@ class LyapunovTrainer:
     def _build_roa_candidates(self, injection_states: th.Tensor) -> th.Tensor:
         """Create diverse candidate states near the boundary of the asymmetric B."""
         half_width = 0.5 * (self.ubx_train - self.lbx_train)
-        random_candidates = sample_ellipsoid_boundary(
+        random_candidates = sample_box_shell(
             sample_size=self.config.roa_candidate_size,
             state_dim=self.config.state_dim,
             center=self.center_train,
             half_width=half_width,
-            min_radius=0.6,
-            max_radius=1.0,
+            min_scale=0.6,
+            max_scale=1.0,
             device=self.device,
             generator=self.torch_gen,
         )
