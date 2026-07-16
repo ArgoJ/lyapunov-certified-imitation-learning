@@ -272,6 +272,10 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
 
     # Condition Loss
+    use_relative_decrease: bool = config_field(
+        default=True,
+        help="Whether to use relative Lyapunov decrease violation.",
+    )
     relative_condition_eps: float = config_field(
         default=1e-2,
         help="Numerical epsilon used in relative condition normalization.",

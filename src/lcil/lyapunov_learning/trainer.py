@@ -165,12 +165,15 @@ class LyapunovTrainer:
         for param in self.dyn_model.parameters():
             param.requires_grad_(False)
         self.dyn_model.eval()
-        self._set_policy_train_mode(train_mode=False)
+        self._set_policy_train_mode(False)
+        self._set_policy_requires_grad(False)
         
     def _set_policy_train_mode(self, train_mode: bool) -> None:
-        for param in self.policy_model.parameters():
-            param.requires_grad_(train_mode)
         self.policy_model.train(train_mode)
+
+    def _set_policy_requires_grad(self, requires_grad: bool) -> None:
+        for param in self.policy_model.parameters():
+            param.requires_grad_(requires_grad)
 
     def _get_train_params(self) -> tuple[nn.Parameter, ...]:
         """Utility to gather trainable parameters based on the config."""
@@ -182,22 +185,33 @@ class LyapunovTrainer:
         )
 
     def _build_optimizer(self) -> th.optim.Adam:
-        return th.optim.Adam(self._get_train_params(), self.config.learning_rate)
+        policy_lr = self.config.learning_rate * self.config.policy_lr_factor
+        return th.optim.Adam(
+            [
+                {
+                    "params": self.lyap_model.parameters(),
+                    "lr": self.config.learning_rate,
+                },
+                {
+                    "params": self.policy_model.parameters(),
+                    "lr": policy_lr,
+                },
+            ],
+        )
 
     def _enable_policy_training(self, at_iter: int = 0) -> None:
         self._curr_policy_train_status = True
         self._set_policy_train_mode(train_mode=True)
-
-        policy_lr = self.config.learning_rate * self.config.policy_lr_factor
-        self.optimizer.add_param_group({
-            "params": self.policy_model.parameters(),
-            "lr": policy_lr,
-        })
-        self.loss_module.set_explicit_l1_params(list(self.policy_model.parameters()) + list(self.lyap_model.parameters()))
+        self.loss_module.set_explicit_l1_params(
+            list(self.policy_model.parameters()) 
+            + list(self.lyap_model.parameters())
+        )
 
         __logger__.info(
             "Policy training enabled at iteration %d! Added to optimizer with LR: %.2e (Factor: %s)",
-            at_iter, policy_lr, self.config.policy_lr_factor
+            at_iter,
+            self.config.learning_rate * self.config.policy_lr_factor,
+            self.config.policy_lr_factor,
         )
 
     def _open_tb_writer(self) -> None:
@@ -347,7 +361,7 @@ class LyapunovTrainer:
         return False
 
     def _is_mining_step(self, outer_iter: int) -> bool:
-        return (outer_iter + 1) % self.config.cex_every == 0
+        return outer_iter % self.config.cex_every == 0
     
     def _calc_cex_fraction(self, fraction):
         return self.config.cex_fraction_min + fraction \
@@ -491,6 +505,10 @@ class LyapunovTrainer:
 
                     # Inner training loop
                     for inner_step in range(self.config.steps_per_epoch):
+                        global_step = outer_iter * self.config.steps_per_epoch + inner_step
+                        update_policy = self._curr_policy_train_status and global_step % 5 == 0
+                        self._set_policy_requires_grad(update_policy)
+
                         x_batch = cegis_buffer.sample(
                             self.config.batch_size,
                             cex_fraction=mining_result.cex_fraction
@@ -500,7 +518,7 @@ class LyapunovTrainer:
                             roa_candidates=boundary_result.roa_candidates,
                             rho_estimate=rho_estimate,
                             lirpa_regions=lirpa_regions,
-                            active_policy_regularization=self._curr_policy_train_status,
+                            active_policy_regularization=update_policy,
                         )
 
                         loss_parts = self.loss_module.last_loss_parts
@@ -508,7 +526,7 @@ class LyapunovTrainer:
                             raise RuntimeError("Lyapunov loss parts were not computed during the forward pass.")
 
                         self.metrics.fill_inner(
-                            inner_iter=outer_iter * self.config.steps_per_epoch + inner_step,
+                            inner_iter=global_step,
                             loss_parts=loss_parts,
                         )
 
