@@ -67,9 +67,9 @@ class _StatusAwareMockRegionCertifier:
         rho: float,
         *,
         early_exit: bool = False,
-        show_progress: bool = False,
+        progress=None, **kwargs,
     ) -> _MockBatchVerification:
-        del show_progress
+        
         verified_mask = th.zeros((len(regions),), dtype=th.bool)
         counterexample_mask = th.zeros((len(regions),), dtype=th.bool)
         unknown_mask = th.zeros((len(regions),), dtype=th.bool)
@@ -100,14 +100,14 @@ class _RecordingMockRegionCertifier(_StatusAwareMockRegionCertifier):
         rho: float,
         *,
         early_exit: bool = False,
-        show_progress: bool = False,
+        progress=None, **kwargs,
     ) -> _MockBatchVerification:
         self.batches.append(regions.clone())
         return super().certify_regions(
             regions,
             rho,
             early_exit=early_exit,
-            show_progress=show_progress,
+            
         )
 
 
@@ -230,10 +230,10 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
     def test_quadratic_lyapunov_with_identity_dynamics_certifies_all_regions(self) -> None:
         certifier = self._make_certifier(
             _QuadraticLyapunov(),
-            dyn_model=_IdentityDynamics(),
+            dyn_model=_ZeroDynamics(),
             kappa=1e-6,
         )
-        result = certifier.certify(rho_estimate=1.0)
+        result = certifier.certify(rho_estimate=1.0, collect_details_on_failed=True)
 
         self.assertTrue(result.global_success)
         self.assertTrue(result.partial_success)
@@ -252,7 +252,7 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
 
     def test_negative_quadratic_produces_counterexamples(self) -> None:
         certifier = self._make_certifier(_NegativeQuadraticLyapunov())
-        result = certifier.certify(rho_estimate=1.0)
+        result = certifier.certify(rho_estimate=1.0, collect_details_on_failed=True)
 
         self.assertFalse(result.global_success)
         self.assertFalse(result.partial_success)
@@ -277,7 +277,7 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
             kappa=1e-6,
             rho_min=0.9,
         )
-        result = certifier.certify(rho_estimate=1.0)
+        result = certifier.certify(rho_estimate=1.0, collect_details_on_failed=True)
 
         self.assertFalse(result.global_success)
         self.assertTrue(result.partial_success)

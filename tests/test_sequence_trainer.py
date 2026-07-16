@@ -60,6 +60,7 @@ class TestSequencePolicyTrainer(unittest.TestCase):
         self.assertEqual(actions.shape, (2, 1))
         self.assertEqual(pred_actions.shape, (2, 1))
 
+        trainer.training_config.tb_log_dir = None
         metrics = trainer.train()
 
         self.assertEqual(metrics.epochs_completed, 1)
@@ -108,6 +109,7 @@ class TestSequencePolicyTrainer(unittest.TestCase):
             loss_fn=loss_fn,
         )
 
+        trainer.training_config.tb_log_dir = None
         metrics = trainer.train()
 
         self.assertEqual(metrics.epochs_completed, 1)
