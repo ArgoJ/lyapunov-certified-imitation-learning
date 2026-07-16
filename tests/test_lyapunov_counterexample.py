@@ -18,7 +18,9 @@ from shared_utils import (
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
 from lcil.lyapunov_learning.buffer import BoundaryStateBuffer, CEGISBuffer
 from lcil.lyapunov_learning.counterexample import (
-    BoundaryRhoDiagnostics,
+    BoundaryRhoEstimate,
+    BoundaryTermDiagnostics,
+    BoundaryRhoEvaluation,
     estimate_rho_from_boundary,
     find_counter_examples,
 )
@@ -104,7 +106,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             state_dim=2,
             state_bounds=np.array([[-12.0, -1.0], [12.0, 1.0]], dtype=np.float32),
             rho_estimation_samples=2,
-            rho_boundary_buffer_size=2,
+            roa_boundary_buffer_size=2,
             rho_descent_steps=0,
             rho_growth_gamma=1.0,
             rho_estimate_quantile=1.0,
@@ -140,9 +142,9 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
-            adversarial_samples=256,
-            cex_steps=1,
-            adversarial_step_size=0.01,
+            state_buffer_limit=256,
+            cex_descent_steps=1,
+            cex_step_size=0.01,
             condition_tolerance=1e-6,
         )
         loss_module = LyapunovTrainingLoss(
@@ -181,7 +183,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
-            initial_sample_size=4,
+            state_buffer_limit=4,
             batch_size=2,
             outer_epochs=2,
             steps_per_epoch=1,
@@ -300,9 +302,9 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
-            adversarial_samples=256,
-            cex_steps=1,
-            adversarial_step_size=0.01,
+            state_buffer_limit=256,
+            cex_descent_steps=1,
+            cex_step_size=0.01,
             condition_tolerance=1e-6,
         )
         trainer = LyapunovTrainer(
@@ -324,7 +326,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
-            initial_sample_size=4,
+            state_buffer_limit=4,
             batch_size=2,
             outer_epochs=3,
             steps_per_epoch=1,
@@ -337,22 +339,25 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             config=config,
             rho_monitor=ThresholdMonitor(threshold=1.0, patience=2),
         )
-        rho_diagnostics = BoundaryRhoDiagnostics(
-            rho=0.5,
-            boundary_quantile=0.5,
-            boundary_mean=0.5,
-            feature_term_quantile=0.0,
-            linear_term_quantile=0.5,
-            feature_term_mean=0.0,
-            linear_term_mean=0.5,
-            feature_term_mean_share=0.0,
-            linear_term_mean_share=1.0,
-            r_factor_fro_norm=0.0,
+        rho_eval = BoundaryRhoEvaluation(
+            rho=BoundaryRhoEstimate(
+                rho=0.5,
+                boundary_quantile=0.5,
+                boundary_mean=0.5,
+            ),
+            terms=BoundaryTermDiagnostics(
+                feature_term_quantile=0.0,
+                linear_term_quantile=0.5,
+                feature_term_mean=0.0,
+                linear_term_mean=0.5,
+                feature_term_mean_share=0.0,
+                linear_term_mean_share=1.0,
+            ),
         )
 
         with patch(
-            "lcil.lyapunov_learning.trainer.estimate_rho_from_boundary_diagnostics",
-            return_value=rho_diagnostics,
+            "lcil.lyapunov_learning.trainer.estimate_rho_from_boundary",
+            return_value=(rho_eval, th.zeros((1, 1))),
         ):
             train_result = trainer.train()
 

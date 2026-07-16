@@ -37,8 +37,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Lower and upper bounds for each state dimension, used for sampling and certification. [lbx, ubx]
     train_bounds : NDArray
         Lower and upper bounds for each state dimension, used for training. [lbx, ubx]
-    initial_sample_size : int
-        Number of initial random samples used for training.
     batch_size : int
         Batch size for training iterations.
     outer_epochs : int
@@ -62,9 +60,9 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Number of candidate states used in the ROA surrogate loss.
     roa_max_age : int
         Maximum age for states in the ROA surrogate buffer before they are removed.
-    loss_regularization_num_samples : int
+    regularization_num_samples : int
         Number of uniformly sampled states used for global loss regularizers (scale anchoring, policy regularization).
-    loss_regularization_resample_interval : int
+    regularization_resample_interval : int
         Number of optimization steps between resampling states for global loss regularizers. 
         If 0, states are only sampled once at initialization.
     bins_per_dim : int | Sequence[int]
@@ -98,12 +96,12 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     
     rho_growth_gamma : float
         Growth factor for estimating sublevel values from boundary points.
-    rho_boundary_samples : int
+    rho_estimation_samples : int
         Number of boundary points used to estimate the sublevel value.
-    rho_boundary_buffer_size : int | None
+    roa_boundary_buffer_size : int | None
         Optional cache size for retaining boundary points with the smallest
         Lyapunov values across outer iterations. If ``None``, a small multiple
-        of ``rho_boundary_samples`` is used.
+        of ``rho_estimation_samples`` is used.
     rho_descent_steps : int
         Number of projected gradient steps for boundary-value descent.
     rho_step_size : float
@@ -112,11 +110,9 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Quantile in ``(0, 1]`` used for robust boundary-value aggregation when estimating rho.
     rho_min : float
         Minimum admissible sublevel value.
-    adversarial_samples : int
-        Number of PGD seeds for counterexample mining.
-    adversarial_step_size : float
+    cex_step_size : float
         Relative PGD step size for counterexample mining.
-    cex_steps : int
+    cex_descent_steps : int
         PGD steps for counterexample search.
     cex_every : int
         Frequency of counterexample mining in outer epochs.
@@ -130,8 +126,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Maximum size of the training buffer for regular samples.
     cex_buffer_limit : int
         Maximum size of the training buffer for counterexamples.
-    condition_tolerance : float
-        Numerical tolerance for condition satisfaction.
     rho_gate_sharpness : float
         Steepness of the sigmoid gate used to soft-weight samples by their
         distance to the ρ-sublevel boundary. Higher values approximate a hard
@@ -154,12 +148,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=None,
         help="Optional training bounds for sampling. If None, state_bounds are used.",
         validators=(optional_validator(bounds_include_origin_validator),)
-    )
-    initial_sample_size: int = config_field(
-        default=1000, 
-        help="Number of initial random samples used for training.",
-        display_alias="init_samples",
-        validators=(positive_validator,),
     )
     batch_size: int = config_field(
         default=512,
@@ -211,41 +199,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=0.0,
         help="Dropout probability for the Lyapunov model.",
         validators=(fraction_validator,),
-    )
-    roa_candidate_size: int = config_field(
-        default=1024,
-        help="Number of candidate states used in the ROA surrogate loss.",
-        display_alias="roa_cand",
-        validators=(positive_validator,),
-    )
-    roa_max_age: int = config_field(
-        default=15,
-        help="Maximum age for states in the ROA surrogate buffer before they are removed, " \
-            "used to ensure that the surrogate loss is computed based on up-to-date samples.",
-        display_alias="roa_age",
-        validators=(positive_validator,),
-    )
-    loss_regularization_num_samples: int = config_field(
-        default=1024,
-        help="Number of uniformly sampled states used for global loss regularizers (scale anchoring, policy regularization).",
-        display_alias="loss_num_samples",
-        validators=(positive_validator,),
-    )
-    loss_regularization_resample_interval: int = config_field(
-        default=100,
-        help="Number of optimization steps between resampling states " \
-            "for global loss regularizers. If 0, states are only sampled once at initialization.",
-        validators=(non_negative_validator,),
-    )
-    bins_per_dim: int | Sequence[int] = config_field(
-        default=10,
-        help="Number of bins per dimension for region discretization.",
-        validators=(sequence_validator(positive_validator),),
-    )
-    origin_exclusion: float | Sequence[float] = config_field(
-        default=0.0,
-        help="Origin exclusion per dimension of bounds.",
-        validators=(sequence_validator(non_negative_validator),),
     )
     tb_log_dir: str | os.PathLike | None = config_field(
         default=None,
@@ -318,7 +271,117 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         validators=(non_negative_validator,),
     )
 
-    # Rho parameters
+    # Condition Loss
+    relative_condition_eps: float = config_field(
+        default=1e-2,
+        help="Numerical epsilon used in relative condition normalization.",
+        display_alias="rel_eps",
+        validators=(positive_validator,),
+    )
+    
+    # Counterexample mining
+    state_buffer_limit: int = config_field(
+        default=10000,
+        help="Maximum size of the training buffer.",
+        display_alias="buff",
+        validators=(positive_validator,),
+    )
+    cex_buffer_limit: int = config_field(
+        default=10000,
+        help="Maximum size of the counterexample buffer.",
+        display_alias="cex_buff",
+        validators=(positive_validator,),
+    )
+    cex_step_size: float = config_field(
+        default=0.05,
+        help="Relative PGD step size for counterexample mining.",
+        display_alias="cex_step_size",
+        validators=(positive_validator,),
+    )
+    cex_descent_steps: int = config_field(
+        default=10,
+        help="PGD steps used during counterexample search.",
+        validators=(positive_validator,),
+    )
+    cex_every: int = config_field(
+        default=1,
+        help="Frequency of counterexample mining in outer epochs.",
+        validators=(positive_validator,),
+    )
+    cex_fraction_min: float = config_field(
+        default=0.2,
+        help="Minimum fraction of counterexamples in a batch.",
+        display_alias="cex_frac_min",
+        validators=(fraction_validator,),
+    )
+    cex_fraction_max: float = config_field(
+        default=0.5,
+        help="Maximum fraction of counterexamples in a batch.",
+        display_alias="cex_frac_max",
+        validators=(fraction_validator,),
+    )
+    cex_fraction_ema_decay: float = config_field(
+        default=0.8,
+        help="Exponential moving average decay for counterexample fraction.",
+        display_alias="cex_frac_ema_decay",
+        validators=(fraction_validator,),
+    )
+    cex_max_age: int = config_field(
+        default=5,
+        help="Maximum age for counterexamples in the buffer before they are automatically removed, " \
+            "used to ensure that the training buffer contains up-to-date counterexamples.",
+        display_alias="cex_age",
+        validators=(positive_validator,),
+    )
+
+    # Lirpa Condition Loss
+    bins_per_dim: int | Sequence[int] = config_field(
+        default=10,
+        help="Number of bins per dimension for region discretization.",
+        validators=(sequence_validator(positive_validator),),
+    )
+    origin_exclusion: float | Sequence[float] = config_field(
+        default=0.0,
+        help="Origin exclusion per dimension of bounds.",
+        validators=(sequence_validator(non_negative_validator),),
+    )
+    
+    # ROA Loss
+    roa_boundary_buffer_size: int | None = config_field(
+        default=None,
+        help="Optional cache size for retaining low-value boundary points.",
+        display_alias="roa_buff",
+        validators=(optional_validator(positive_validator),)
+    )
+    roa_candidate_size: int = config_field(
+        default=1024,
+        help="Number of candidate states used in the ROA surrogate loss.",
+        display_alias="roa_cand",
+        validators=(positive_validator,),
+    )
+    roa_max_age: int = config_field(
+        default=15,
+        help="Maximum age for states in the ROA surrogate buffer before they are removed, " \
+            "used to ensure that the surrogate loss is computed based on up-to-date samples.",
+        display_alias="roa_age",
+        validators=(positive_validator,),
+    )
+
+    # Regularization Losses
+    regularization_num_samples: int = config_field(
+        default=1024,
+        help="Number of uniformly sampled states used for global loss regularizers (scale anchoring, policy regularization).",
+        display_alias="loss_num_samples",
+        validators=(positive_validator,),
+    )
+    regularization_resample_interval: int = config_field(
+        default=100,
+        help="Number of optimization steps between resampling states " \
+            "for global loss regularizers. If 0, states are only sampled once at initialization.",
+        validators=(non_negative_validator,),
+    )
+
+    # Rho estimation
     rho_growth_gamma: float = config_field(
         default=1.1,
         help="Growth factor used when estimating rho from boundary points.",
@@ -330,12 +393,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="Number of boundary points used to estimate rho.",
         display_alias="\u03C1_num",
         validators=(positive_validator,),
-    )
-    rho_boundary_buffer_size: int | None = config_field(
-        default=None,
-        help="Optional cache size for retaining low-value boundary points.",
-        display_alias="\u03C1_buff",
-        validators=(optional_validator(positive_validator),)
     )
     rho_descent_steps: int = config_field(
         default=15,
@@ -382,81 +439,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="\u03C1_resamp_m",
         validators=(positive_validator,),
     )
-
-    # PGD counterexample mining parameters
-    adversarial_samples: int = config_field(
-        default=4096,
-        help="Number of PGD seed states for counterexample mining.",
-        display_alias="adv_samples",
-        validators=(positive_validator,),
-    )
-    adversarial_step_size: float = config_field(
-        default=0.05,
-        help="Relative PGD step size for counterexample mining.",
-        display_alias="adv_step_size",
-        validators=(positive_validator,),
-    )
-    cex_steps: int = config_field(
-        default=10,
-        help="PGD steps used during counterexample search.",
-        validators=(positive_validator,),
-    )
-    cex_every: int = config_field(
-        default=1,
-        help="Frequency of counterexample mining in outer epochs.",
-        validators=(positive_validator,),
-    )
-    cex_fraction_min: float = config_field(
-        default=0.2,
-        help="Minimum fraction of counterexamples in a batch.",
-        display_alias="cex_frac_min",
-        validators=(fraction_validator,),
-    )
-    cex_fraction_max: float = config_field(
-        default=0.5,
-        help="Maximum fraction of counterexamples in a batch.",
-        display_alias="cex_frac_max",
-        validators=(fraction_validator,),
-    )
-    cex_fraction_ema_decay: float = config_field(
-        default=0.8,
-        help="Exponential moving average decay for counterexample fraction.",
-        display_alias="cex_frac_ema_decay",
-        validators=(fraction_validator,),
-    )
-    state_buffer_limit: int = config_field(
-        default=10000,
-        help="Maximum size of the training buffer.",
-        display_alias="buff",
-        validators=(positive_validator,),
-    )
-    cex_buffer_limit: int = config_field(
-        default=10000,
-        help="Maximum size of the counterexample buffer.",
-        display_alias="cex_buff",
-        validators=(positive_validator,),
-    )
-    cex_max_age: int = config_field(
-        default=5,
-        help="Maximum age for counterexamples in the buffer before they are automatically removed, " \
-            "used to ensure that the training buffer contains up-to-date counterexamples.",
-        display_alias="cex_age",
-        validators=(positive_validator,),
-    )
-
-    # Tolerances
-    condition_tolerance: float = config_field(
-        default=1e-6,
-        help="Numerical tolerance for Lyapunov condition satisfaction.",
-        display_alias="cond_tol",
-        validators=(positive_validator,),
-    )
-    relative_condition_eps: float = config_field(
-        default=1e-2,
-        help="Numerical epsilon used in relative condition normalization.",
-        display_alias="rel_eps",
-        validators=(positive_validator,),
-    )
+    
     NP_ARRAY_FIELDS = ("state_bounds", "train_bounds")
     DEFAULT_FILE_NAME = TRAINING_CONFIG_FILENAME
 
@@ -484,10 +467,10 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
             object.__setattr__(self, "tb_log_dir", Path(self.tb_log_dir).resolve())
 
         # Rho estimation parameters
-        if self.rho_boundary_buffer_size is None:
+        if self.roa_boundary_buffer_size is None:
             object.__setattr__(
                 self,
-                "rho_boundary_buffer_size",
+                "roa_boundary_buffer_size",
                 max(self.rho_estimation_samples, 4 * self.rho_estimation_samples),
             )
 
@@ -497,7 +480,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         array_shape_validator((2, self.state_dim))(self.state_bounds, "state_bounds")
         array_shape_validator((2, self.state_dim))(self.train_bounds, "train_bounds")
 
-        # CEX mining parameters
+        # Counterexample mining parameters
         if self.cex_fraction_min > self.cex_fraction_max:
             raise ValueError("cex_fraction_min must be less than or equal to cex_fraction_max.")
 

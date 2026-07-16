@@ -697,8 +697,8 @@ class LyapunovTrainingLoss(nn.Module):
             LyapunovScaleAnchorLoss(
                 lyap_model=self.lyap_model,
                 state_bounds=self.config.train_bounds,
-                num_samples=self.config.loss_regularization_num_samples,
-                resample_interval=self.config.loss_regularization_resample_interval,
+                num_samples=self.config.regularization_num_samples,
+                resample_interval=self.config.regularization_resample_interval,
                 device=self.device,
             ) 
             if self.config.scale_weight > 0.0 else None
@@ -709,8 +709,8 @@ class LyapunovTrainingLoss(nn.Module):
             PolicyRegularizationLoss(
                 policy=self.policy_model,
                 state_bounds=self.config.state_bounds,
-                num_samples=self.config.loss_regularization_num_samples,
-                resample_interval=self.config.loss_regularization_resample_interval,
+                num_samples=self.config.regularization_num_samples,
+                resample_interval=self.config.regularization_resample_interval,
                 device=self.device,
             )
             if self.config.policy_regularization_weight > 0.0 else None

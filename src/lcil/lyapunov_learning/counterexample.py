@@ -216,9 +216,8 @@ def find_counter_examples(
     objective: Callable[[th.Tensor], th.Tensor],
     condition_evaluator: Callable[[th.Tensor], tuple[th.Tensor, th.Tensor]],
     config: LyapunovTrainingConfig,
-    initial_states: th.Tensor | None = None,
+    initial_states: th.Tensor,
     device: th.device = th.device("cpu"),
-    generator: th.Generator | None = None,
 ) -> tuple[th.Tensor, th.Tensor]:
     """Find rho-gated training counterexamples via PGD.
 
@@ -228,27 +227,21 @@ def find_counter_examples(
     """
     bounds = _bounds_tensor(config.train_bounds, device)
     lbx, ubx = bounds[0], bounds[1]
-
-    if initial_states is not None and initial_states.numel() > 0:
-        n_init = initial_states.shape[0]
-        indices = th.randint(
-            low=0, 
-            high=n_init, 
-            size=(config.adversarial_samples,), 
-            device=device, 
-            generator=generator
-        )
-        adv_states = initial_states[indices].clone()
-    else:
-        adv_states = sample_uniform_box(config.adversarial_samples, lbx, ubx, device, generator)
-    step = config.adversarial_step_size * (ubx - lbx).unsqueeze(0)
+    adv_states = initial_states.clone().to(device=device)
+    step = config.cex_step_size * (ubx - lbx).unsqueeze(0)
 
     with th.no_grad():
-        init_objective = objective(adv_states).flatten()
         best_states = adv_states.clone()
-        best_objective = init_objective.clone()
+        best_violations = th.zeros(
+            adv_states.shape[0],
+            dtype=adv_states.dtype,
+            device=device,
+        )
+        init_violations, init_mask = condition_evaluator(adv_states)
+        init_violations = init_violations.flatten()
+        best_violations[init_mask] = init_violations[init_mask]
 
-    for _ in range(config.cex_steps):
+    for _ in range(config.cex_descent_steps):
         adv_states.requires_grad_(True)
         raw_objective = objective(adv_states)
 
@@ -262,25 +255,22 @@ def find_counter_examples(
         with th.no_grad():
             candidate_states = adv_states - step * grad.sign()
             candidate_states = project_to_box(candidate_states, lbx, ubx)
+            candidate_violations, candidate_mask = condition_evaluator(candidate_states)
+            candidate_violations = candidate_violations.flatten()
 
-            candidate_objective = objective(candidate_states).flatten()
+            improved = candidate_mask & (candidate_violations > best_violations)
 
-            improved = candidate_objective < best_objective
             best_states[improved] = candidate_states[improved]
-            best_objective[improved] = candidate_objective[improved]
+            best_violations[improved] = candidate_violations[improved]
 
             adv_states = candidate_states
 
     with th.no_grad():
-        # Evaluate true violations and get the validity mask
-        true_violations, condition_mask = condition_evaluator(best_states)
-        
-        # Filter cex origin exclusion
         exclusion = th.as_tensor(config.origin_exclusion, dtype=best_states.dtype, device=device)
         inside_exclusion = th.all(th.abs(best_states) <= exclusion, dim=-1)
-        
-        counter_mask = condition_mask & (~inside_exclusion)
+
+        counter_mask = (best_violations > 0.0) & (~inside_exclusion)
 
     cex_states = best_states[counter_mask].clone().detach()
-    cex_violations = true_violations[counter_mask].clone().detach()
+    cex_violations = best_violations[counter_mask].clone().detach()
     return cex_states, cex_violations

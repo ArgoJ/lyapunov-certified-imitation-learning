@@ -72,7 +72,6 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         state_dim=4,
         state_bounds=np.array([[-1.0, -1.0, -1.0, -1.0], [1.0, 1.0, 1.0, 1.0]], dtype=float),
         train_bounds=None,
-        initial_sample_size=8192,
         batch_size=2048,
         learning_rate=5e-4,
         outer_epochs=500,
@@ -81,8 +80,8 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         policy_lr_factor=0.5,
         kappa=0.05,
         seed=1674653,
-        loss_regularization_num_samples=4096,
-        loss_regularization_resample_interval=10,
+        regularization_num_samples=4096,
+        regularization_resample_interval=10,
         origin_exclusion=[0.01, 0.1, 0.01, 0.1],
         bins_per_dim=15,
 
@@ -103,9 +102,9 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         rho_growth_gamma=1.1,
         rho_ema_decay=0.95,
         cex_every=10,
-        cex_steps=20,
-        adversarial_samples=32768,
-        adversarial_step_size=0.0001,
+        cex_descent_steps=20,
+        state_buffer_limit=32768,
+        cex_step_size=0.0001,
     )
 
 

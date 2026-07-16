@@ -221,7 +221,6 @@ class LyapunovTrainer:
             config=self.config,
             initial_states=initial_states,
             device=self.device,
-            generator=self.torch_gen,
         )
 
     def _build_roa_candidates(self, injection_states: th.Tensor) -> th.Tensor:
@@ -251,12 +250,12 @@ class LyapunovTrainer:
     def _get_boundary_buffer(self):
         boundary_buffer = BoundaryStateBuffer(
             state_dim=self.config.state_dim,
-            max_size=int(self.config.rho_boundary_buffer_size),
+            max_size=int(self.config.roa_boundary_buffer_size),
             max_age=self.config.roa_max_age,
             device=self.device,
         )
         init_boundary_x, _, _ = sample_boundary_points(
-            sample_size=int(self.config.rho_boundary_buffer_size),
+            sample_size=int(self.config.roa_boundary_buffer_size),
             lb=self.lbx_train,
             ub=self.ubx_train,
             device=self.device,
@@ -267,7 +266,7 @@ class LyapunovTrainer:
 
     def _get_cegis_buffer(self) -> CEGISBuffer:
         initial_x = sample_uniform_box(
-            self.config.initial_sample_size, 
+            self.config.state_buffer_limit, 
             self.lbx_train, self.ubx_train, 
             self.device, generator=self.torch_gen,
         )
@@ -372,7 +371,10 @@ class LyapunovTrainer:
         # New mining
         new_cex_states, new_cex_violations = self._mine_new_counterexamples(
             rho_estimate=rho_estimate, 
-            initial_states=state_buffer.states
+            initial_states=state_buffer.sample(
+                self.config.state_buffer_limit,
+                cex_fraction=0.25
+            )
         )
         state_buffer.register_cex(
             new_cex_states,
@@ -385,7 +387,7 @@ class LyapunovTrainer:
         if new_cex_states.numel() == 0:
             __logger__.info("No new counterexamples mined at outer iteration %d.", outer_iter)
 
-        frac_yield = new_cex_states.shape[0] / self.config.adversarial_samples
+        frac_yield = new_cex_states.shape[0] / self.config.state_buffer_limit
         new_ema = get_ema(cex_fraction_ema, frac_yield, self.config.cex_fraction_ema_decay)
         new_fraction = self._calc_cex_fraction(new_ema)
 

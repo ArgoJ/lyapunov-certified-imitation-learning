@@ -35,8 +35,9 @@ def _install_abcrown_stub() -> None:
 _install_abcrown_stub()
 
 bisect_certifier_module = importlib.import_module("lcil.certification.bisect_certifier")
+recursive_certifier_module = importlib.import_module("lcil.certification.recursive_certifier")
 BisectCertifier = bisect_certifier_module.BisectCertifier
-RecursiveCertificationResult = bisect_certifier_module.RecursiveCertificationResult
+RecursiveCertificationResult = recursive_certifier_module.RecursiveCertificationResult
 LyapunovCertificationConfig = importlib.import_module(
     "lcil.certification.config"
 ).LyapunovCertificationConfig
@@ -236,6 +237,7 @@ class CertificationMockedABCrownTestCase(unittest.TestCase):
             patcher.stop()
 
         sys.modules.pop("lcil.certification.bisect_certifier", None)
+        sys.modules.pop("lcil.certification.recursive_certifier", None)
         sys.modules.pop("lcil.certification.abcrown_region_certifier", None)
         sys.modules.pop("lcil.certification.config", None)
 
