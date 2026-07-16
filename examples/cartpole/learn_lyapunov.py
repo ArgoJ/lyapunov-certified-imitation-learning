@@ -16,7 +16,7 @@ from lcil.lyapunov_learning import (
     NeuralLyapunovCandidate,
     ThresholdMonitor,
 )
-from lcil.lyapunov_learning.counterexample import find_counter_examples
+from lcil.lyapunov_learning import find_counter_examples, sample_box_rejection_states 
 from lcil.utils import ArgumentParserConfig, GridSearchHelper, MLP, config_field, IntegrationMethod
 from lcil.utils.lcil_plt.parallel_coodrdinates import parallel_coordinates_plotly
 
@@ -280,7 +280,15 @@ def main() -> None:
             final_cex, final_violations = find_counter_examples(
                 objective=lambda x: trainer.loss_module.mining_objective(x, train_results.rho_estimate),
                 condition_evaluator=lambda x: trainer.loss_module.get_counterexample_mask(x, train_results.rho_estimate),
-                initial_states=,
+                initial_states=sample_box_rejection_states(
+                    lb=trainer.lbx_train,
+                    ub=trainer.ubx_train,
+                    target_count=training_config.state_buffer_limit,
+                    score_fn=lambda x: (
+                        2.0 * train_results.rho_estimate - trainer.lyap_model(x).flatten()
+                    ) / max(train_results.rho_estimate, 1e-9),
+                    device=device,
+                ),
                 config=training_config,
                 device=device,
             )

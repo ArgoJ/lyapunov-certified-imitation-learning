@@ -8,7 +8,7 @@ from .counterexample import (
     estimate_rho_from_boundary,
     find_counter_examples,
 )
-from .sampling import sample_uniform_box
+from .sampling import sample_uniform_box, sample_box_rejection_states
 
 __all__ = [
     "LyapunovTrainer",
@@ -22,6 +22,7 @@ __all__ = [
     "estimate_rho_from_boundary",
     "find_counter_examples",
     "sample_uniform_box",
+    "sample_box_rejection_states",
     "ThresholdMonitor",
     "TrainingAbortedError",
 ]

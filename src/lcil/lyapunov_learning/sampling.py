@@ -167,3 +167,31 @@ def sample_sobol_box(
     """Sample a batch of states using Sobol sequence from the bounds."""
     rand_sobol = sobol_engine.draw(sample_size).to(device)
     return lb + rand_sobol * (ub - lb)
+
+
+def sample_ellipsoid_boundary(
+    sample_size: int,
+    state_dim: int,
+    center: th.Tensor,
+    half_width: th.Tensor,
+    min_radius: float = 0.6,
+    max_radius: float = 1.0,
+    device: th.device | str = "cpu",
+    generator: th.Generator | None = None,
+) -> th.Tensor:
+    """Create diverse candidate states near the boundary of the asymmetric box."""
+    directions = th.randn(
+        sample_size,
+        state_dim,
+        device=device,
+        generator=generator,
+    )
+    directions = directions / directions.norm(dim=1, keepdim=True).clamp(min=1e-8)
+    radii = th.rand(
+        sample_size,
+        1,
+        device=device,
+        generator=generator
+    ) * (max_radius - min_radius) + min_radius
+    z_candidates = directions * radii  # between min_radius and max_radius in random directions
+    return z_candidates * half_width + center
