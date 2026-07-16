@@ -409,8 +409,8 @@ class TestCertificationResultTester(unittest.TestCase):
             sampled_states=np.array([[0.5]], dtype=np.float32),
             sampled_values=np.array([0.5], dtype=np.float32),
             transitions={
-                0.5: (0.0, 0.4),
-                0.4: (0.0, 0.3),
+                0.5: (0.0, 0.25),
+                0.25: (0.0, 0.125),
             },
         )
 
@@ -430,7 +430,7 @@ class TestCertificationResultTester(unittest.TestCase):
         )
         np.testing.assert_allclose(
             result.rollout_states,
-            np.array([[[0.5], [0.4], [0.3]]], dtype=np.float32),
+            np.array([[[0.5], [0.25], [0.125]]], dtype=np.float32),
         )
 
     def test_rollout_steps_and_sample_size_must_be_positive(self) -> None:

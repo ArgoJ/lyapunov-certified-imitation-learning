@@ -108,7 +108,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             rho_estimation_samples=2,
             roa_boundary_buffer_size=2,
             rho_descent_steps=0,
-            rho_growth_gamma=1.0,
+            rho_growth_gamma=1.1,
             rho_estimate_quantile=1.0,
         )
         first_boundary = th.tensor([[1.0, 0.0], [2.0, 0.0]], dtype=th.float32)
@@ -145,7 +145,6 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             state_buffer_limit=256,
             cex_descent_steps=1,
             cex_step_size=0.01,
-            condition_tolerance=1e-6,
         )
         loss_module = LyapunovTrainingLoss(
             policy_model=_ZeroPolicy(),
@@ -169,7 +168,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
 
     def test_policy_regularization_tracks_initial_policy_outputs(self) -> None:
         policy = _SingleWeightPolicy(weight=1.0)
-        regularization_loss = PolicyRegularizationLoss(policy, device="cpu")
+        regularization_loss = PolicyRegularizationLoss(policy, state_bounds=th.tensor([[-1.0], [1.0]]), device="cpu")
         x = th.tensor([[2.0]], dtype=th.float32)
 
         self.assertAlmostEqual(float(regularization_loss(x).item()), 0.0, places=6)
@@ -199,7 +198,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
 
         policy_param = next(trainer.policy_model.parameters())
         lyap_param = next(trainer.lyap_model.parameters())
-        optimizer_params = trainer.optimizer.param_groups[0]["params"]
+        optimizer_params = trainer.optimizer.param_groups[-1]["params"]
 
         self.assertFalse(policy_param.requires_grad)
         self.assertFalse(any(param is policy_param for param in optimizer_params))
@@ -214,13 +213,13 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         trainer._enable_policy_training()
 
         self.assertTrue(policy_param.requires_grad)
-        self.assertTrue(any(param is policy_param for param in trainer.optimizer.param_groups[0]["params"]))
+        self.assertTrue(any(param is policy_param for param in trainer.optimizer.param_groups[-1]["params"]))
         self.assertIn(lyap_param, trainer.optimizer.state)
         self.assertTrue(th.allclose(trainer.optimizer.state[lyap_param]["exp_avg"], old_state["exp_avg"]))
 
     def test_dynamic_state_buffer_keeps_most_violating_counterexamples(self) -> None:
         initial_states = th.zeros((4, 1), dtype=th.float32)
-        state_buffer = CEGISBuffer(
+        state_buffer = CEGISBuffer(lb=th.tensor([-10.0]), ub=th.tensor([10.0]),
             initial_states=initial_states,
             state_buffer_limit=16,
             cex_buffer_limit=3,
@@ -245,7 +244,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         self.assertTrue(th.allclose(retained, expected))
 
     def test_dynamic_state_buffer_sample_returns_requested_batch_size(self) -> None:
-        state_buffer = CEGISBuffer(
+        state_buffer = CEGISBuffer(lb=th.tensor([-10.0]), ub=th.tensor([10.0]),
             initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
             state_buffer_limit=4,
             cex_buffer_limit=3,
@@ -258,7 +257,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         self.assertTrue(th.all((batch == 1.0) | (batch == 2.0)).item())
 
     def test_dynamic_state_buffer_sample_uses_regular_and_cex_pools_separately(self) -> None:
-        state_buffer = CEGISBuffer(
+        state_buffer = CEGISBuffer(lb=th.tensor([-10.0]), ub=th.tensor([10.0]),
             initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
             state_buffer_limit=8,
             cex_buffer_limit=3,
@@ -275,7 +274,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
 
     def test_dynamic_state_buffer_rejects_empty_initial_states(self) -> None:
         with self.assertRaisesRegex(ValueError, "initial_states cannot be empty"):
-            CEGISBuffer(
+            CEGISBuffer(lb=th.tensor([-10.0]), ub=th.tensor([10.0]),
                 initial_states=th.empty((0, 1), dtype=th.float32),
                 state_buffer_limit=4,
                 cex_buffer_limit=3,
@@ -283,7 +282,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             )
 
     def test_dynamic_state_buffer_sample_clamps_out_of_range_cex_fraction(self) -> None:
-        state_buffer = CEGISBuffer(
+        state_buffer = CEGISBuffer(lb=th.tensor([-10.0]), ub=th.tensor([10.0]),
             initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
             state_buffer_limit=4,
             cex_buffer_limit=3,
@@ -305,7 +304,6 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             state_buffer_limit=256,
             cex_descent_steps=1,
             cex_step_size=0.01,
-            condition_tolerance=1e-6,
         )
         trainer = LyapunovTrainer(
             policy_model=_ZeroPolicy(),

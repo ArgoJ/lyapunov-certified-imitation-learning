@@ -18,7 +18,7 @@ class TestCertificationModels(unittest.TestCase):
             policy_model=_ZeroPolicy(),
             lyap_model=_DescendingLinearLyapunov(),
             dyn_model=_ShiftDynamics(shift=2.0),
-            kappa=0.0,
+            kappa=1e-6,
         )
 
         outputs = verifier(

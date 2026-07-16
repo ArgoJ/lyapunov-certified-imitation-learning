@@ -64,7 +64,7 @@ class TestBisectRegionBounds(CertificationMockedABCrownTestCase):
         certifier = self._make_certifier(
             _QuadraticLyapunov(),
             dyn_model=_IdentityDynamics(),
-            kappa=0.0,
+            kappa=1e-6,
         )
         regions = th.tensor(
             [
@@ -112,7 +112,7 @@ class TestBisectRegionBounds(CertificationMockedABCrownTestCase):
         certifier = self._make_certifier(
             _QuadraticLyapunov(),
             dyn_model=_IdentityDynamics(),
-            kappa=0.0,
+            kappa=1e-6,
         )
         children = th.tensor(
             [

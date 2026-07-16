@@ -67,7 +67,7 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
             dyn_model=_IdentityDynamics(),
             state_dim=1,
             cert_bounds=[[-2.0], [2.0]],
-            kappa=0.0,
+            kappa=1e-6,
             batch_size=8,
         )
         region = th.tensor([[-0.5], [0.5]], dtype=th.float32)
@@ -84,7 +84,7 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
             dyn_model=_ShiftDynamics(shift=2.0),
             state_dim=1,
             cert_bounds=[[0.0], [2.0]],
-            kappa=0.0,
+            kappa=1e-6,
             batch_size=8,
         )
         region = th.tensor([[1.0], [1.5]], dtype=th.float32)

@@ -190,7 +190,7 @@ class TestBisectCertifierIntegration(_BisectModuleLoaderMixin, PlotAssertionsMix
         certifier = self._make_certifier(
             _QuadraticLyapunov(),
             dyn_model=_DirectionalScaleDynamics(base_scale=0.8, axis_gain=0.4),
-            kappa=0.0,
+            kappa=1e-6,
             rho_min=0.9,
         )
 

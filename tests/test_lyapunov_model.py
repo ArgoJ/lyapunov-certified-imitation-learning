@@ -76,7 +76,7 @@ class TestNeuralLyapunovCandidateSerialization(unittest.TestCase):
             riccati_p=p_matrix,
         )
 
-        self.assertTrue(th.allclose(model._pd_matrix(), p_matrix, atol=1e-5, rtol=1e-5))
+        self.assertTrue(th.allclose(model._pd_matrix(), p_matrix + th.eye(4) * eps, atol=1e-5, rtol=1e-5))
 
     def test_save_load_roundtrip_with_state_dict_feature_net(self) -> None:
         feature_net = WrappedFeatureNet(

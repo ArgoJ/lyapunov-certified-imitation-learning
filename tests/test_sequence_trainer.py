@@ -99,7 +99,7 @@ class TestSequencePolicyTrainer(unittest.TestCase):
                 x_min=th.tensor([-1.0]),
                 x_max=th.tensor([1.0]),
             ),
-            lambda_dyn=1.0,
+            dynamics_weight=1.0,
         )
         trainer = PolicyTrainer(
             model=model,

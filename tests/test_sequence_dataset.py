@@ -201,8 +201,7 @@ class TestSequenceStateActionDataset(unittest.TestCase):
             return_value=dataset,
         ):
             train_loader, val_loader = create_train_and_val_dataloader(
-                training_cfg,
-                device="cuda",
+                training_cfg
             )
 
         self.assertEqual(len(train_loader.dataset), 2)

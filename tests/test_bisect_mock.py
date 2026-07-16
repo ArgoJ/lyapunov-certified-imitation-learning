@@ -231,7 +231,7 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
         certifier = self._make_certifier(
             _QuadraticLyapunov(),
             dyn_model=_IdentityDynamics(),
-            kappa=0.0,
+            kappa=1e-6,
         )
         result = certifier.certify(rho_estimate=1.0)
 
@@ -274,7 +274,7 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
         certifier = self._make_certifier(
             _QuadraticLyapunov(),
             dyn_model=_DirectionalScaleDynamics(base_scale=0.8, axis_gain=0.4),
-            kappa=0.0,
+            kappa=1e-6,
             rho_min=0.9,
         )
         result = certifier.certify(rho_estimate=1.0)
@@ -302,7 +302,7 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
         certifier = self._make_certifier(
             _QuadraticLyapunov(),
             dyn_model=_IdentityDynamics(),
-            kappa=0.0,
+            kappa=1e-6,
         )
         certifier.regions = th.tensor(
             [
@@ -353,7 +353,7 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
         certifier = self._make_certifier(
             _QuadraticLyapunov(),
             dyn_model=_IdentityDynamics(),
-            kappa=0.0,
+            kappa=1e-6,
         )
         certifier.regions = th.tensor(
             [
@@ -415,7 +415,7 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
         certifier = self._make_certifier(
             _QuadraticLyapunov(),
             dyn_model=_IdentityDynamics(),
-            kappa=0.0,
+            kappa=1e-6,
         )
         certifier.regions = th.tensor(
             [
@@ -472,7 +472,7 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
         certifier = self._make_certifier(
             _QuadraticLyapunov(),
             dyn_model=_IdentityDynamics(),
-            kappa=0.0,
+            kappa=1e-6,
         )
         certifier.regions = th.tensor(
             [
@@ -555,7 +555,7 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
         config = self.make_config(
             state_dim=3,
             cert_bounds=np.array([[-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]], dtype=np.float32),
-            kappa=0.0,
+            kappa=1e-6,
             rho_min=1e-6,
             bins_per_dim=4,
             center_refinement_factor=0.7,
@@ -643,7 +643,7 @@ class TestBisectCertifier(PlotAssertionsMixin, CertificationMockedABCrownTestCas
         certifier = self._make_certifier(
             _QuadraticLyapunov(),
             dyn_model=_IdentityDynamics(),
-            kappa=0.0,
+            kappa=1e-6,
         )
         certifier.regions = th.tensor(
             [
