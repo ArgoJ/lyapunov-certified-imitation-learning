@@ -277,7 +277,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         max_scale_steps: int = 20,
         max_bisection_steps: int = 40,
         lirpa_method: str = "alpha-crown",
-        sublevel_tolerance: float | None = None,
+        sublevel_tolerance: float  = 1e-6,
         suppress_native_output: bool = True,
         batch_size: int = 512,
         abcrown_timeout: float | None = None,
@@ -305,12 +305,8 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
             "max_scale_steps": max_scale_steps,
             "max_bisection_steps": max_bisection_steps,
             "lirpa_method": lirpa_method,
-            "sublevel_tolerance": (
-                config.condition_tolerance
-                if sublevel_tolerance is None
-                else sublevel_tolerance
-            ),
-            "condition_tolerance": config.condition_tolerance,
+            "sublevel_tolerance": sublevel_tolerance,
+            "condition_tolerance": sublevel_tolerance,
             "suppress_native_output": suppress_native_output,
             "batch_size": batch_size,
             "abcrown_timeout": abcrown_timeout,
