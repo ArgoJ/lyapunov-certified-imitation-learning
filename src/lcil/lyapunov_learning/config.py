@@ -411,7 +411,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         validators=(positive_validator,),
     )
     rho_estimate_quantile: float = config_field(
-        default=0.1,
+        default=0.01,
         help="Quantile used for robust boundary-value aggregation in rho estimation.",
         display_alias="\u03C1_quant",
         validators=(fraction_validator,),

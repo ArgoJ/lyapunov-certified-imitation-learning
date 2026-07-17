@@ -148,7 +148,6 @@ def estimate_rho_from_boundary(
             improved = candidate_values < best_boundary_values
             best_boundary_x[improved] = candidate_x[improved]
             best_boundary_values[improved] = candidate_values[improved]
-            boundary_x = candidate_x
 
     boundary_eval_x = best_boundary_x.detach()
     boundary_values = best_boundary_values.detach()

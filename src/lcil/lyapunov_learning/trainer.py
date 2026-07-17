@@ -316,7 +316,7 @@ class LyapunovTrainer:
             TextColumn("loss: {task.fields[loss]:.4f}"),
             TextColumn("ρ: {task.fields[rho]:.4f}"),
             TextColumn("cex_pool: {task.fields[cex_pool]:.0f}"),
-            TextColumn("cex_samples/batch: {task.fields[cex_samples]:.0f}/{task.fields[batch_size]:.0f}"),
+            TextColumn("cex/batch: {task.fields[cex_samples]:.0f}/{task.fields[batch_size]:.0f}"),
             TimeElapsedColumn(),
             TimeRemainingColumn(),
         )
