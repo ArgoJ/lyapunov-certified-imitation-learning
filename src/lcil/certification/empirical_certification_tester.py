@@ -12,6 +12,7 @@ from .config import LyapunovCertificationConfig
 from .models import LyapunovCoreVerifier
 from ..utils.base_config import JsonDataclass
 from ..utils.constants import *
+from ..lyapunov_learning.sampling import sample_sobol_box
 
 __logger__ = logging.getLogger(__name__)
 
@@ -51,14 +52,14 @@ class CertificationTesterResult(JsonDataclass):
 
 
 class CertificationResultTester:
-    """Empirically audit the closed loop around the sampled rho boundary.
+    """Empirically audit the closed loop within the rho sublevel set.
 
     The certifier resolves boxes either because they are outside ``V(x) <= rho``
     or because the Lyapunov core conditions hold inside the sublevel set. This
     tester therefore ignores certification boxes entirely and instead samples
-    states directly from the certification bounds, keeps the ones with
-    ``V(x) <= rho`` that are closest to ``rho`` from below, and evaluates their
-    rollout violations with the shared verifier.
+    states directly from the certification bounds using a Sobol sequence, keeps 
+    the ones with ``V(x) <= rho``, and evaluates their rollout violations 
+    with the shared verifier.
     """
 
     _CANDIDATE_MULTIPLIER = 64
@@ -104,6 +105,10 @@ class CertificationResultTester:
             kappa=config.kappa,
         ).to(self.device).eval()
 
+        self.sobol_engine = th.quasirandom.SobolEngine(
+            dimension=self.config.state_dim, scramble=True
+        )
+
     def _hard_condition_violation(self, verifier_output: th.Tensor) -> th.Tensor:
         """Return the maximum raw Lyapunov-core deficit per sample."""
         decrease_margin = verifier_output[:, :1]
@@ -123,17 +128,7 @@ class CertificationResultTester:
         )
         return violation_terms.max(dim=1, keepdim=True).values
 
-    def _sample_uniform_states(self, sample_size: int) -> th.Tensor:
-        if sample_size <= 0:
-            raise ValueError(f"sample_size must be positive, got {sample_size}.")
 
-        lower_bounds = self.bounds[0].unsqueeze(0)
-        upper_bounds = self.bounds[1].unsqueeze(0)
-        return lower_bounds + th.rand(
-            sample_size,
-            self.config.state_dim,
-            device=self.device,
-        ) * (upper_bounds - lower_bounds)
 
     def _inside_origin_exclusion_mask(self, states: th.Tensor) -> th.Tensor:
         """Return a boolean mask for states inside the origin-exclusion box."""
@@ -174,7 +169,14 @@ class CertificationResultTester:
         candidate_values = th.zeros(candidate_batch_size, dtype=th.float32, device=self.device)
         with th.no_grad():
             for _ in range(self._MAX_SAMPLING_ROUNDS):
-                candidates = self._sample_uniform_states(candidate_batch_size)
+                candidates = sample_sobol_box(
+                    sample_size=candidate_batch_size,
+                    lb=self.bounds[0],
+                    ub=self.bounds[1],
+                    sobol_engine=self.sobol_engine,
+                    device=self.device,
+                )
+                
                 candidate_values = self.lyap_model(candidates).reshape(-1)
                 inside_mask = candidate_values <= rho_scalar
                 inside_origin_exclusion = self._inside_origin_exclusion_mask(candidates)
@@ -192,19 +194,15 @@ class CertificationResultTester:
                 inside_states = candidates[valid_mask]
                 inside_values = candidate_values[valid_mask]
 
-                combined_states = th.cat((kept_states, inside_states), dim=0)
-                combined_values = th.cat((kept_values, inside_values), dim=0)
-                keep_count = min(sample_size, combined_values.shape[0])
-                keep_idx = th.topk(combined_values, k=keep_count, largest=True).indices
-                kept_states = combined_states[keep_idx]
-                kept_values = combined_values[keep_idx]
+                kept_states = th.cat((kept_states, inside_states), dim=0)[:sample_size]
+                kept_values = th.cat((kept_values, inside_values), dim=0)[:sample_size]
 
                 if kept_states.shape[0] >= sample_size:
                     break
 
         if kept_states.shape[0] == 0:
             __logger__.warning(
-                "Could not find any sampled states inside (V(x)=%.6f) <!= (rho=%.6f) within the certification bounds.",
+                "Could not find any sampled states inside (V(x)=%.6f) <= (rho=%.6f) within the certification bounds.",
                 candidate_values.min().float(),
                 rho_scalar,
             )
