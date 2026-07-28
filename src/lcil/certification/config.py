@@ -142,7 +142,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         validators=(non_negative_validator,)
     )
     condition_tolerance: float = config_field(
-        default=1e-6,
+        default=0.0,
         help="Numerical tolerance on the fused verifier output.",
         display_alias="cond_tol",
         validators=(non_negative_validator,)

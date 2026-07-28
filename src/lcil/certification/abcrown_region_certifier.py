@@ -16,11 +16,11 @@ from pkg_logger import suppress_native_output
 from .config import LyapunovCertificationConfig
 from .models import (
     LyapunovCoreVerifier,
-    build_safe_outside_sublevel_constraint,
-    build_safe_lyap_decrease_constraint,
-    build_safe_lyap_condition_constraint,
-    build_safe_lyap_invariance_constraint,
-    build_safe_lyap_positivity_constraint,
+    build_outside_sublevel_constraint,
+    build_decrease_constraint,
+    build_condition_constraint,
+    build_invariance_constraint,
+    build_positivity_constraint,
 )
 
 __logger__ = logging.getLogger(__name__)
@@ -359,8 +359,8 @@ class CompleteABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
     """ABCrown certifier combining sublevel set certification and core Lyapunov condition verification."""
 
     def _build_safe_output_constraint(self, y, rho: float):
-        safe_outside_sublevel = build_safe_outside_sublevel_constraint(y[1], rho, self.config.sublevel_tolerance)
-        safe_condition = build_safe_lyap_condition_constraint(y, self.config.condition_tolerance, self.bounds[0], self.bounds[1])
+        safe_outside_sublevel = build_outside_sublevel_constraint(y[1], rho)
+        safe_condition = build_condition_constraint(y, self.bounds[0], self.bounds[1])
         return safe_outside_sublevel | safe_condition
 
 
@@ -369,7 +369,7 @@ class CoreABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
 
     def _build_safe_output_constraint(self, y, rho: float):
         del rho
-        return build_safe_lyap_condition_constraint(y, self.config.condition_tolerance, self.bounds[0], self.bounds[1])
+        return build_condition_constraint(y, self.bounds[0], self.bounds[1])
 
 
 class PositivityABCrownCertifier(BaseABCrownCertifier):
@@ -393,9 +393,8 @@ class PositivityABCrownCertifier(BaseABCrownCertifier):
 
     def _build_safe_output_constraint(self, y, rho: float):
         del rho
-        return build_safe_lyap_positivity_constraint(
+        return build_positivity_constraint(
             y,
-            self.config.condition_tolerance,
             lyap_output_index=0,
         )
 
@@ -405,7 +404,7 @@ class DecreaseABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
 
     def _build_safe_output_constraint(self, y, rho: float):
         del rho
-        return build_safe_lyap_decrease_constraint(y, self.config.condition_tolerance)
+        return build_decrease_constraint(y)
 
 
 class InvarianceABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
@@ -413,9 +412,8 @@ class InvarianceABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
 
     def _build_safe_output_constraint(self, y, rho: float):
         del rho
-        return build_safe_lyap_invariance_constraint(
+        return build_invariance_constraint(
             y,
-            self.config.condition_tolerance,
             self.bounds[0],
             self.bounds[1],
         )

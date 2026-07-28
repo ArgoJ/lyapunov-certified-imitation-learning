@@ -61,7 +61,7 @@ class LyapunovCoreVerifier(nn.Module):
         return th.cat((decrease_margin, v_curr, x_next), dim=1)
 
 
-def build_safe_outside_sublevel_constraint(y, rho: float, sublevel_tolerance: float):
+def build_outside_sublevel_constraint(y, rho: float):
     r"""Build a strict outside-sublevel ABCrown predicate.
 
     Parameters
@@ -70,20 +70,17 @@ def build_safe_outside_sublevel_constraint(y, rho: float, sublevel_tolerance: fl
         The output from the Lyapunov verifier for ABCrown.
     rho : float
         The sublevel value for the Lyapunov function.
-    sublevel_tolerance : float
-        The tolerance added to the sublevel value.
 
     Returns
     -------
     Any
         A boolean indicating whether the condition is satisfied in ABCrown.
     """
-    return y > (rho + sublevel_tolerance)
+    return y > rho
 
 
-def build_safe_lyap_positivity_constraint(
+def build_positivity_constraint(
     y,
-    condition_tolerance: float,
     lyap_output_index: int = 1,
 ):
     """Build the positivity-only ABCrown predicate for ``V(x)``.
@@ -92,8 +89,6 @@ def build_safe_lyap_positivity_constraint(
     ----------
     y : Any
         The output from the Lyapunov verifier for ABCrown.
-    condition_tolerance : float
-        The tolerance added to the positivity condition.
     lyap_output_index : int
         The index in the verifier output corresponding to the Lyapunov value.
 
@@ -102,18 +97,16 @@ def build_safe_lyap_positivity_constraint(
     Any
         A boolean indicating whether the condition is satisfied in ABCrown.
     """
-    return y[lyap_output_index] > (-condition_tolerance)
+    return y[lyap_output_index] > 0.0
 
 
-def build_safe_lyap_decrease_constraint(y, condition_tolerance: float):
+def build_decrease_constraint(y: float):
     """Build the decrease-only ABCrown predicate for the Lyapunov margin.
     
     Parameters
     ----------
     y : Any
         The output from the Lyapunov verifier for ABCrown.
-    condition_tolerance : float
-        The tolerance added to the decrease margin.
     
     Returns
     -------
@@ -124,12 +117,11 @@ def build_safe_lyap_decrease_constraint(y, condition_tolerance: float):
     -----------
     Only can be use in combination with ``LyapunovCoreVerifier``.
     """
-    return y[0] > (-condition_tolerance)
+    return y[0] > 0.0
 
 
-def build_safe_lyap_invariance_constraint(
+def build_invariance_constraint(
     y,
-    condition_tolerance: float,
     lb: th.Tensor,
     ub: th.Tensor,
 ):
@@ -139,8 +131,6 @@ def build_safe_lyap_invariance_constraint(
     ----------
     y : Any
         The output from the Lyapunov verifier for ABCrown.
-    condition_tolerance : float
-        The tolerance added to the condition values.
     lb : th.Tensor
         The lower bounds for the state variables.
     ub : th.Tensor
@@ -162,23 +152,23 @@ def build_safe_lyap_invariance_constraint(
 
     state_dim = lb.numel()
     for idx in range(state_dim):
-        coord_safe = (y[idx + 2] > (float(lb[idx]) - condition_tolerance)) & (
-            y[idx + 2] < (float(ub[idx]) + condition_tolerance)
+        coord_safe = (
+            y[idx + 2] > float(lb[idx])
+        ) & (
+            y[idx + 2] < float(ub[idx])
         )
         safe_x_next = coord_safe if safe_x_next is None else (safe_x_next & coord_safe)
 
     return safe_x_next
 
 
-def build_safe_lyap_condition_constraint(y, condition_tolerance: float, lb: th.Tensor, ub: th.Tensor):
+def build_condition_constraint(y: float, lb: th.Tensor, ub: th.Tensor):
     """Build the full Lyapunov-core predicate.
 
     Parameters
     ----------
     y : Any
         The output from the Lyapunov verifier for ABCrown.
-    condition_tolerance : float
-        The tolerance added to the condition values.
     lb : th.Tensor
         The lower bounds for the state variables.
     ub : th.Tensor
@@ -193,9 +183,9 @@ def build_safe_lyap_condition_constraint(y, condition_tolerance: float, lb: th.T
     -----------
     Only can be use in combination with ``LyapunovCoreVerifier``.
     """
-    safe_positive = build_safe_lyap_positivity_constraint(y, condition_tolerance)
-    safe_decrease = build_safe_lyap_decrease_constraint(y, condition_tolerance)
-    safe_x_next = build_safe_lyap_invariance_constraint(y, condition_tolerance, lb, ub)
+    safe_positive = build_positivity_constraint(y)
+    safe_decrease = build_decrease_constraint(y)
+    safe_x_next = build_invariance_constraint(y, lb, ub)
     return safe_positive & safe_decrease & safe_x_next
 
 
