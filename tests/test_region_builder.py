@@ -56,8 +56,8 @@ def plot_region_groups_2d(
     fig.update_layout(
         title=title,
         template="plotly_white",
-        xaxis_title="x0",
-        yaxis_title="x1",
+        xaxis_title=r"$x_0$",
+        yaxis_title=r"$x_1$",
     )
     fig.update_yaxes(scaleanchor="x", scaleratio=1.0)
     fig.write_html(html_path)
@@ -131,6 +131,27 @@ class TestRegionBuilder(PlotAssertionsMixin, unittest.TestCase):
             builder.origin_exclusion,
             th.tensor([0.25, 0.25], dtype=th.float32),
         )
+
+    def test_default_settings(self) -> None:
+        builder = self._make_builder(
+            bounds=[[-1.0, -1.0], [1.0, 1.0]],
+            bins_per_dim=1,
+            origin_exclusion=0.25,
+        )
+
+        self.assertEqual(builder.state_dim, 2)
+        self.assertEqual(builder.bins_per_dim, (1, 1))
+        th.testing.assert_close(
+            builder.origin_exclusion,
+            th.tensor([0.25, 0.25], dtype=th.float32),
+        )
+        regions = builder.build_regions()
+        self._assert_region_plot_written(
+            stem="region_builder_build_regions_default",
+            region_groups=[("regions", regions, "#ff7f0e")],
+            title="RegionBuilder build_regions output",
+        )
+
 
     def test_resolve_bounds_validates_shape_and_order(self) -> None:
         bounds = RegionBuilder._resolve_bounds([[-2.0, -1.0], [2.0, 3.0]], th.device("cpu"))

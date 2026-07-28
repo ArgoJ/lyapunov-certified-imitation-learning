@@ -118,6 +118,14 @@ def main() -> None:
             dynamics_weight=train_config.dynamics_weight,
         )
 
+        x_ref_policy = (
+            CartpoleAngleWrapper._transform_inputs(
+                th.as_tensor(x_ref, dtype=th.float32).unsqueeze(0)
+            ).squeeze(0)
+            if script_config.use_angle_wrapper
+            else x_ref
+        )
+
         feature_net = BoundedPolicy(
             feature_net=MLP(
                 [5 if script_config.use_angle_wrapper else 4] + [script_config.hidden_size] * script_config.layers + [dataset_cfg.nu],
@@ -128,7 +136,7 @@ def main() -> None:
             u_min=dataset_cfg.constraints.lbu,
             u_max=dataset_cfg.constraints.ubu,
             u_ref=u_ref,
-            x_ref=x_ref,
+            x_ref=x_ref_policy,
         )
 
         current_train_cfg = replace(

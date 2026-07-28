@@ -59,7 +59,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
     return LyapunovTrainingConfig(
         state_dim=2,
         state_bounds=np.array([[-10.0, -10.0], [10.0, 10.0]], dtype=float),
-        batch_size=1024,
+        batch_size=2048,
         learning_rate=0.0005,
         outer_epochs=500,
         steps_per_epoch=10,
@@ -67,7 +67,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         policy_lr_factor=0.5,
         kappa=0.01,
         seed=1674653,
-        regularization_num_samples=1024,
+        regularization_num_samples=2048,
         regularization_resample_interval=100,
         origin_exclusion=[0.05, 0.15],
         bins_per_dim=50,
@@ -87,7 +87,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         rho_growth_gamma=1.1,
         cex_every=10,
         cex_descent_steps=20,
-        state_buffer_limit=2048,
+        state_buffer_limit=8192,
         cex_step_size=0.001,
     )
 
