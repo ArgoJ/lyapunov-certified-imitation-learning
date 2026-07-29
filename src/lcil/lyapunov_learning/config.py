@@ -205,6 +205,11 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="TensorBoard logging directory.",
         validators=(optional_validator(pathlike_validator),)
     )
+    enable_diagnosis: bool = config_field(
+        default=True,
+        help="Whether to compute diagnostic metrics and zero-weighted loss parts (without gradients). If False, zero-weighted loss parts and rho term diagnostics are skipped completely.",
+        display_alias="enable_diag",
+    )
 
     # Weights
     condition_weight: float = config_field(

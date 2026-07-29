@@ -157,11 +157,14 @@ def estimate_rho_from_boundary(
         boundary_quantile = float(th.quantile(boundary_values, q=float(config.rho_estimate_quantile)).item())
         boundary_mean = float(boundary_values.mean().item())
         
-        term_diagnostics = _boundary_term_diagnostics(
-            lyap_model=lyap_model,
-            boundary_x=boundary_eval_x,
-            quantile=float(config.rho_estimate_quantile),
-        )
+        if config.enable_diagnosis:
+            term_diagnostics = _boundary_term_diagnostics(
+                lyap_model=lyap_model,
+                boundary_x=boundary_eval_x,
+                quantile=float(config.rho_estimate_quantile),
+            )
+        else:
+            term_diagnostics = BoundaryTermDiagnostics.nan()
 
     rho_boundary = max(config.rho_min, config.rho_growth_gamma * boundary_quantile)
     evaluation = BoundaryRhoEvaluation(

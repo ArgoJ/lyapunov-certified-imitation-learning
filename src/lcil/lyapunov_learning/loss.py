@@ -6,7 +6,7 @@ import torch.nn as nn
 
 from copy import deepcopy
 from dataclasses import dataclass
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
 from .config import LyapunovTrainingConfig
@@ -677,7 +677,7 @@ class LyapunovTrainingLoss(nn.Module):
 
     def _setup_losses(self) -> None:
         """Set up the individual loss components based on the configuration. 
-        Only losses with non-zero weights are instantiated."""
+        Losses are instantiated if they have a non-zero weight or if diagnosis is enabled."""
 
         self.condition_loss = RhoGatedConditionLoss(self.config, device=self.device)
         self.roa_loss = RoaSurrogateLoss(self.config)
@@ -690,13 +690,13 @@ class LyapunovTrainingLoss(nn.Module):
                 dyn_model=self.dyn_model,
                 config=self.config,
             )
-            if self.config.condition_lirpa_weight > 0.0 else None
+            if (self.config.condition_lirpa_weight > 0.0 or self.config.enable_diagnosis) else None
         )
         
         # Equilibrium loss
         self.equilibrium_loss = (
             EquilibriumLoss(self.lyap_model, self.config.state_dim, device=self.device) 
-            if self.config.equilibrium_weight > 0.0 else None
+            if (self.config.equilibrium_weight > 0.0 or self.config.enable_diagnosis) else None
         )
 
         # Positivity loss
@@ -706,11 +706,11 @@ class LyapunovTrainingLoss(nn.Module):
                 train_bounds=self.config.train_bounds,
                 device=self.device
             )
-            if self.config.formal_positivity_weight > 0.0 else None
+            if (self.config.formal_positivity_weight > 0.0 or self.config.enable_diagnosis) else None
         )
 
         # L1 regularization loss
-        if self.config.l1_weight > 0.0:
+        if self.config.l1_weight > 0.0 or self.config.enable_diagnosis:
             initial_l1_params = self._parameters_excluding_r_factor(list(self.lyap_model.parameters()))
             self.l1_loss = ParameterL1Loss(initial_l1_params, device=self.device)
         else:
@@ -725,7 +725,7 @@ class LyapunovTrainingLoss(nn.Module):
                 resample_interval=self.config.regularization_resample_interval,
                 device=self.device,
             ) 
-            if self.config.scale_weight > 0.0 else None
+            if (self.config.scale_weight > 0.0 or self.config.enable_diagnosis) else None
         )
 
         # Policy regularization loss
@@ -737,14 +737,29 @@ class LyapunovTrainingLoss(nn.Module):
                 resample_interval=self.config.regularization_resample_interval,
                 device=self.device,
             )
-            if self.config.policy_regularization_weight > 0.0 else None
+            if (self.config.policy_regularization_weight > 0.0 or self.config.enable_diagnosis) else None
         )
 
         # R factor Frobenius loss
         self.r_factor_frobenius_loss = (
             RFactorFrobeniusLoss(lyap_model=self.lyap_model, device=self.device)
-            if _has_learnable_r_factor(self.lyap_model) and self.config.r_factor_fro_norm_weight > 0.0 else None
+            if _has_learnable_r_factor(self.lyap_model) and (self.config.r_factor_fro_norm_weight > 0.0 or self.config.enable_diagnosis) else None
         )
+
+    def _eval_loss_part(
+        self,
+        weight: float,
+        compute_fn: nn.Module | Callable[[], th.Tensor] | None,
+        enabled: bool = True,
+    ) -> th.Tensor:
+        if not enabled or compute_fn is None:
+            return th.zeros((), dtype=th.float32, device=self.device)
+        if weight > 0.0:
+            return compute_fn()
+        if self.config.enable_diagnosis:
+            with th.no_grad():
+                return compute_fn()
+        return th.zeros((), dtype=th.float32, device=self.device)
 
     def _closed_loop_values(
         self,
@@ -835,58 +850,81 @@ class LyapunovTrainingLoss(nn.Module):
     ) -> LyapunovTrainingLossParts:
         """Compute the individual loss components without combining them into a total loss."""
 
-        v_batch, x_next, v_next = self._closed_loop_values(x_batch)
-        condition_loss_value = self.condition_loss(
-            v_curr=v_batch,
-            v_next=v_next,
-            x_next=x_next,
-            rho_estimate=rho_estimate,
+        zero = th.zeros((), dtype=th.float32, device=self.device)
+
+        if self.config.condition_weight > 0.0:
+            v_batch, x_next, v_next = self._closed_loop_values(x_batch)
+        elif self.config.enable_diagnosis:
+            with th.no_grad():
+                v_batch, x_next, v_next = self._closed_loop_values(x_batch)
+        else:
+            v_batch, x_next, v_next = None, None, None
+
+        condition_loss_value = self._eval_loss_part(
+            self.config.condition_weight,
+            lambda: self.condition_loss(
+                v_curr=v_batch,
+                v_next=v_next,
+                x_next=x_next,
+                rho_estimate=rho_estimate,
+            ),
+            enabled=(v_batch is not None),
         )
 
-        v_candidates = self.lyap_model(roa_candidates)
-        roa_loss_value = self.roa_loss(
-            v_candidates=v_candidates, 
-            rho_estimate=rho_estimate
+        roa_loss_value = self._eval_loss_part(
+            self.config.roa_weight,
+            lambda: self.roa_loss(
+                v_candidates=self.lyap_model(roa_candidates),
+                rho_estimate=rho_estimate,
+            ),
         )
-        
-        zero = th.zeros((), dtype=v_batch.dtype, device=v_batch.device)
 
-        condition_lirpa_loss_value = zero
-        if self.condition_lirpa_loss is not None and lirpa_regions is not None:
+        def _compute_lirpa():
+            if self.condition_lirpa_loss is None or lirpa_regions is None:
+                return zero
             active_regions = self._get_active_regions(
                 lirpa_regions,
-                rho=safe_rho(rho_estimate, self.config.rho_min))
+                rho=safe_rho(rho_estimate, self.config.rho_min),
+            )
             if active_regions.shape[0] > 0:
-                condition_lirpa_loss_value = self.condition_lirpa_loss(regions=active_regions)
+                return self.condition_lirpa_loss(regions=active_regions)
+            return zero
 
-        origin_loss_value = (
-            self.equilibrium_loss()
-            if self.equilibrium_loss is not None else zero
+        condition_lirpa_loss_value = self._eval_loss_part(
+            self.config.condition_lirpa_weight,
+            _compute_lirpa,
+            enabled=(self.condition_lirpa_loss is not None and lirpa_regions is not None),
         )
 
-        formal_positivity_loss_value = (
-            self.positivity_loss()
-            if self.positivity_loss is not None else zero
+        origin_loss_value = self._eval_loss_part(
+            self.config.equilibrium_weight,
+            self.equilibrium_loss,
         )
 
-        l1_loss_value = (
-            self.l1_loss() 
-            if self.l1_loss is not None else zero
+        formal_positivity_loss_value = self._eval_loss_part(
+            self.config.formal_positivity_weight,
+            self.positivity_loss,
         )
 
-        scale_loss_value = (
-            self.scale_loss()
-            if self.scale_loss is not None else zero
+        l1_loss_value = self._eval_loss_part(
+            self.config.l1_weight,
+            self.l1_loss,
         )
 
-        policy_regularization_loss_value = (
-            self.policy_regularization_loss()
-            if active_policy_regularization and self.policy_regularization_loss is not None else zero
+        scale_loss_value = self._eval_loss_part(
+            self.config.scale_weight,
+            self.scale_loss,
         )
 
-        r_factor_frobenius_loss_value = (
-            self.r_factor_frobenius_loss()
-            if self.r_factor_frobenius_loss is not None else zero
+        policy_regularization_loss_value = self._eval_loss_part(
+            self.config.policy_regularization_weight,
+            self.policy_regularization_loss,
+            enabled=active_policy_regularization,
+        )
+
+        r_factor_frobenius_loss_value = self._eval_loss_part(
+            self.config.r_factor_fro_norm_weight,
+            self.r_factor_frobenius_loss,
         )
 
         parts = LyapunovTrainingLossParts(
