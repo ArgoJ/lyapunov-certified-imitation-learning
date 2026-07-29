@@ -426,6 +426,21 @@ def find_all_lyapunov_dirs(path: Path) -> list[Path]:
     return lyap_dirs
 
 
+def find_all_policy_dirs(path: Path) -> list[Path]:
+    if not path.exists():
+        __logger__.warning(f"Directory {path} not found.")
+        return []
+
+    policy_dirs = []
+    for model_file in path.rglob(POLICY_MODEL_FILENAME):
+        if LYAPUNOV_DIRNAME in model_file.parts:
+            continue
+        policy_dirs.append(model_file.parent)
+        
+    return sorted(list(dict.fromkeys(policy_dirs)))
+
+
+
 def get_initial_states(dataset: MPCDataset) -> NDArray:
     """Extracts the initial states from all trajectories in the dataset."""
     initial_states = []

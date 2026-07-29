@@ -57,7 +57,7 @@ def parse_cli_args() -> GridSearchHelper[tuple[PolicyScriptConfig, ImitationTrai
     )
     training_defaults.add_to_argparse(
         parser,
-        nargs_fields={"learning_rate", "batch_size", "dropout", "weight_decay"},
+        nargs_fields={"learning_rate", "batch_size", "dropout", "weight_decay", "dynamics_weight", "base_weight", "reference_center_alpha"},
         exclude_fields={"scheduler_type", "scheduler_kwargs", "tb_log_dir"},
     )
 
