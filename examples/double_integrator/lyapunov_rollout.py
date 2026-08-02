@@ -14,7 +14,6 @@ from lcil.utils.base_config import ArgumentParserConfig, config_field
 from . import (
     DoubleIntegratorDynamics,
     discover_latest_lyapunov_dir,
-    discover_latest_policy_dir,
     load_mpc_config,
     load_policy_model,
     load_lyapunov_model,
@@ -39,10 +38,14 @@ class LyapunovRolloutScriptConfig(ArgumentParserConfig):
 
 
 def _build_script_defaults() -> LyapunovRolloutScriptConfig:
-    default_policy_dir = discover_latest_policy_dir()
-    default_lyapunov_dir = discover_latest_lyapunov_dir(default_policy_dir)
+    try:
+        default_lyapunov_dir = discover_latest_lyapunov_dir()
+        default_dir_str = str(default_lyapunov_dir)
+    except Exception as e:
+        __logger__.debug("Could not discover default lyapunov directory: %s", e)
+        default_dir_str = ""
     return LyapunovRolloutScriptConfig(
-        lyapunov_dir=str(default_lyapunov_dir),
+        lyapunov_dir=default_dir_str,
     )
 
 
@@ -59,6 +62,8 @@ def parse_args() -> LyapunovRolloutScriptConfig:
 
 def main() -> None:
     script_config = parse_args()
+    if not script_config.lyapunov_dir:
+        raise ValueError("No --lyapunov-dir specified and no default Lyapunov directory could be discovered.")
     device = th.device(script_config.device)
 
     lyapunov_dir = require_dir(script_config.lyapunov_dir, name="Lyapunov run directory")
