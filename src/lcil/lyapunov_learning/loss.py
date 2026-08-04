@@ -778,17 +778,37 @@ class LyapunovTrainingLoss(nn.Module):
             return [p for p in params if p is not self.lyap_model.r_factor]
         return params
     
-    def _get_active_regions(self, regions: th.Tensor, rho: float):
-        """Uses """
-        centers = 0.5 * (regions[:, 0, :] + regions[:, 1, :])
-        x_L = regions[:, 0, :]
-        x_U = regions[:, 1, :]
+    def _get_active_regions(self, regions: th.Tensor, rho: float, include_center: bool = True):
+        """
+        Evaluates all 2^d corners (+ optional center) of each hyper-rectangle region.
+        Returns regions where min(V(eval_points)) <= rho.
+        """
+        N, _, d = regions.shape
+        device = regions.device
+        dtype = regions.dtype
+
+        x_L = regions[:, 0, :]  # Shape: (N, d)
+        x_U = regions[:, 1, :]  # Shape: (N, d)
+
+        mask_indices = th.arange(2**d, device=device)
+        bit_shifts = th.arange(d, device=device)
+        corners_mask = ((mask_indices.unsqueeze(1) >> bit_shifts) & 1).to(dtype)
+        corners = x_L.unsqueeze(1) + corners_mask.unsqueeze(0) * (x_U - x_L).unsqueeze(1)
+
+        if include_center:
+            centers = 0.5 * (x_L + x_U).unsqueeze(1)
+            eval_points = th.cat([corners, centers], dim=1)
+        else:
+            eval_points = corners
+
+        num_points_per_region = eval_points.shape[1]
+        flat_points = eval_points.reshape(-1, d)
 
         with th.no_grad():
-            v_centers = self.lyap_model(centers).squeeze(-1)
-            v_l = self.lyap_model(x_L).squeeze(-1)
-            v_u = self.lyap_model(x_U).squeeze(-1)
-            v_test = th.minimum(v_centers, th.minimum(v_l, v_u))
+            v_flat = self.lyap_model(flat_points).squeeze(-1)
+            v_all = v_flat.view(N, num_points_per_region)
+            v_test = v_all.min(dim=1).values
+
         return regions[v_test <= rho]
 
     def set_explicit_l1_params(self, params: list[nn.Parameter]) -> None:
