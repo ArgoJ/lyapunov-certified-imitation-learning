@@ -711,7 +711,7 @@ class LyapunovTrainingLoss(nn.Module):
 
         # L1 regularization loss
         if self.config.l1_weight > 0.0 or self.config.enable_diagnosis:
-            initial_l1_params = self._parameters_excluding_r_factor(list(self.lyap_model.parameters()))
+            initial_l1_params = self._filter_l1_params(list(self.lyap_model.parameters()))
             self.l1_loss = ParameterL1Loss(initial_l1_params, device=self.device)
         else:
             self.l1_loss = None
@@ -772,11 +772,13 @@ class LyapunovTrainingLoss(nn.Module):
         v_next = self.lyap_model(x_next)
         return v_batch, x_next, v_next
     
-    def _parameters_excluding_r_factor(self, params: list[nn.Parameter]) -> list[nn.Parameter]:
-        """Return a list of parameters excluding the R factor if it exists."""
-        if _has_learnable_r_factor(self.lyap_model):
-            return [p for p in params if p is not self.lyap_model.r_factor]
-        return params
+    def _filter_l1_params(self, params: list[nn.Parameter]) -> list[nn.Parameter]:
+        """Filter parameters for L1 regularization (excluding 1D biases and the R factor)."""
+        r_factor = self.lyap_model.r_factor if _has_learnable_r_factor(self.lyap_model) else None
+        return [
+            p for p in params
+            if p.ndim >= 2 and p is not r_factor
+        ]
     
     def _get_active_regions(self, regions: th.Tensor, rho: float, include_center: bool = True):
         """
@@ -814,7 +816,7 @@ class LyapunovTrainingLoss(nn.Module):
     def set_explicit_l1_params(self, params: list[nn.Parameter]) -> None:
         """Update the explicitly tracked parameters for the L1 loss and adjust the weight accordingly."""
         if self.l1_loss is not None:
-            filtered_params = self._parameters_excluding_r_factor(params)
+            filtered_params = self._filter_l1_params(params)
             self.l1_loss.set_train_params(filtered_params)
     
     def _condition_violation(self, x_batch: th.Tensor) -> tuple[th.Tensor, th.Tensor]:
