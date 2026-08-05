@@ -10,15 +10,11 @@ from collections.abc import Callable, Iterable
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
 from .config import LyapunovTrainingConfig
+from .models import has_learnable_r_factor
 from .utils import get_th_lbx_ubx, get_center
 from .sampling import sample_sobol_box
 
 __logger__ = logging.getLogger(__name__)
-
-
-def _has_learnable_r_factor(module: nn.Module) -> bool:
-    """Check if the Lyapunov model has an R factor attribute."""
-    return hasattr(module, "r_factor") and isinstance(module.r_factor, nn.Parameter)
 
 
 @dataclass
@@ -743,7 +739,7 @@ class LyapunovTrainingLoss(nn.Module):
         # R factor Frobenius loss
         self.r_factor_frobenius_loss = (
             RFactorFrobeniusLoss(lyap_model=self.lyap_model, device=self.device)
-            if _has_learnable_r_factor(self.lyap_model) and (self.config.r_factor_fro_norm_weight > 0.0 or self.config.enable_diagnosis) else None
+            if has_learnable_r_factor(self.lyap_model) and (self.config.r_factor_fro_norm_weight > 0.0 or self.config.enable_diagnosis) else None
         )
 
     def _eval_loss_part(
@@ -774,7 +770,7 @@ class LyapunovTrainingLoss(nn.Module):
     
     def _filter_l1_params(self, params: list[nn.Parameter]) -> list[nn.Parameter]:
         """Filter parameters for L1 regularization (excluding 1D biases and the R factor)."""
-        r_factor = self.lyap_model.r_factor if _has_learnable_r_factor(self.lyap_model) else None
+        r_factor = self.lyap_model.r_factor if has_learnable_r_factor(self.lyap_model) else None
         return [
             p for p in params
             if p.ndim >= 2 and p is not r_factor

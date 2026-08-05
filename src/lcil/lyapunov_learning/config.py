@@ -45,6 +45,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Number of optimization steps per epoch.
     learning_rate : float
         Adam optimizer learning rate.
+    weight_decay : float
+        Weight decay (L2 regularization) factor for the Adam optimizer.
     policy_epochs : int | None
         Epochs jointly optimizing policy parameters with Lyapunov parameters.
         If ``None``, only the Lyapunov model is updated.
@@ -171,6 +173,12 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="Adam optimizer learning rate.",
         display_alias="lr",
         validators=(positive_validator,),
+    )
+    weight_decay: float = config_field(
+        default=0.0,
+        help="Weight decay (L2 regularization) factor for the Adam optimizer.",
+        display_alias="w_decay",
+        validators=(non_negative_validator,),
     )
     policy_epochs: int | None = config_field(
         default=None,

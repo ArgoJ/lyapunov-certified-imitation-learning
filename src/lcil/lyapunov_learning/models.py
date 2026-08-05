@@ -13,6 +13,11 @@ __logger__ = logging.getLogger(__name__)
 _COND_WARN_THRESHOLD: float = 1e4
 
 
+def has_learnable_r_factor(module: nn.Module) -> bool:
+    """Check if the Lyapunov model has a learnable R factor attribute."""
+    return hasattr(module, "r_factor") and isinstance(module.r_factor, nn.Parameter)
+
+
 def _symmetrize_matrix(matrix: th.Tensor) -> th.Tensor:
     """Return the symmetric part of a matrix."""
     return 0.5 * (matrix + matrix.transpose(0, 1))

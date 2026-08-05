@@ -23,6 +23,7 @@ from rich.progress import (
 from mpc_datagen.mpc_data import MPCConfig
 
 from .config import LyapunovTrainingConfig
+from .models import has_learnable_r_factor
 from .buffer import BoundaryStateBuffer, CEGISBuffer
 from .loss import LyapunovTrainingLoss
 from .counterexample import (
@@ -189,18 +190,29 @@ class LyapunovTrainer:
 
     def _build_optimizer(self) -> th.optim.Adam:
         policy_lr = self.config.learning_rate * self.config.policy_lr_factor
-        return th.optim.Adam(
-            [
-                {
-                    "params": self.lyap_model.parameters(),
-                    "lr": self.config.learning_rate,
-                },
-                {
-                    "params": self.policy_model.parameters(),
-                    "lr": policy_lr,
-                },
-            ],
+        r_factor = self.lyap_model.r_factor if has_learnable_r_factor(self.lyap_model) else None
+
+        def _create_param_groups(model: nn.Module, lr: float):
+            decay_params = [
+                p for p in model.parameters()
+                if p.ndim >= 2 and p is not r_factor
+            ]
+            no_decay_params = [
+                p for p in model.parameters()
+                if p.ndim < 2 or p is r_factor
+            ]
+            groups = []
+            if decay_params:
+                groups.append({"params": decay_params, "lr": lr, "weight_decay": self.config.weight_decay})
+            if no_decay_params:
+                groups.append({"params": no_decay_params, "lr": lr, "weight_decay": 0.0})
+            return groups
+
+        param_groups = (
+            _create_param_groups(self.lyap_model, self.config.learning_rate)
+            + _create_param_groups(self.policy_model, policy_lr)
         )
+        return th.optim.Adam(param_groups)
 
     def _enable_policy_training(self, at_iter: int = 0) -> None:
         self._curr_policy_train_status = True
