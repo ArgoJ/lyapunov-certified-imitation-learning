@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import torch as th
 import torch.nn as nn
+import torch.nn.functional as F
 
 from copy import deepcopy
 from dataclasses import dataclass
@@ -235,7 +236,8 @@ class LyapunovScaleAnchorLoss(BoundedStateSamplingModule):
                 th.exp(self.target_log_value).item()
             )
 
-        return (current_log_value - self.target_log_value).pow(2)
+        diff = self.target_log_value - current_log_value
+        return F.leaky_relu(diff, negative_slope=0.01).pow(2)
     
 
 class LyapunovDecreaseViolation(nn.Module):

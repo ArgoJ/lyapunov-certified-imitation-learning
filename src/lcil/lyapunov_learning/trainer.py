@@ -27,6 +27,7 @@ from .models import has_learnable_r_factor
 from .buffer import BoundaryStateBuffer, CEGISBuffer
 from .loss import LyapunovTrainingLoss
 from .counterexample import (
+    estimate_rho,
     estimate_rho_from_boundary,
     find_counter_examples,
 )
@@ -98,6 +99,7 @@ class LyapunovTrainer:
 
         self._policy_start_epoch = self.config.outer_epochs - self.config.policy_epochs if self.config.policy_epochs is not None else float("inf")
         self._curr_policy_train_status = False
+        self._curr_policy_requires_grad = False
         self._set_train_modes()
         self.optimizer = self._build_optimizer()
         
@@ -176,6 +178,9 @@ class LyapunovTrainer:
         self.policy_model.train(train_mode)
 
     def _set_policy_requires_grad(self, requires_grad: bool) -> None:
+        if self._curr_policy_requires_grad == requires_grad:
+            return
+        self._curr_policy_requires_grad = requires_grad
         for param in self.policy_model.parameters():
             param.requires_grad_(requires_grad)
 
@@ -350,12 +355,17 @@ class LyapunovTrainer:
             self._enable_policy_training(at_iter=outer_iter * self.config.steps_per_epoch)
 
     def _evaluate_boundary_and_roa(
-        self, boundary_buffer: BoundaryStateBuffer, current_rho_estimate: float | None
+        self,
+        boundary_buffer: BoundaryStateBuffer,
+        state_buffer: CEGISBuffer | None,
+        current_rho_estimate: float | None,
     ) -> BoundaryStepResult:
         
-        rho_diagnostics, boundary_states = estimate_rho_from_boundary(
+        rho_diagnostics, boundary_states = estimate_rho(
             lyap_model=self.lyap_model,
             config=self.config,
+            condition_evaluator=self.loss_module._condition_violation,
+            state_buffer=state_buffer,
             device=self.device,
             generator=self.torch_gen,
         )
@@ -484,7 +494,7 @@ class LyapunovTrainer:
                     self._update_policy_training_status(outer_iter)
 
                     boundary_result = self._evaluate_boundary_and_roa(
-                        boundary_buffer, rho_estimate
+                        boundary_buffer, cegis_buffer, rho_estimate
                     )
                     rho_estimate = boundary_result.rho_estimate
 
@@ -516,7 +526,7 @@ class LyapunovTrainer:
                     # Inner training loop
                     for inner_step in range(self.config.steps_per_epoch):
                         global_step = outer_iter * self.config.steps_per_epoch + inner_step
-                        update_policy = self._curr_policy_train_status and global_step % 5 == 0
+                        update_policy = self._curr_policy_train_status and global_step % self.config.policy_update_interval == 0
                         self._set_policy_requires_grad(update_policy)
 
                         x_batch = cegis_buffer.sample(
