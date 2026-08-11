@@ -329,15 +329,34 @@ class RhoGatedConditionLoss(nn.Module):
         v_curr: th.Tensor,
         v_next: th.Tensor,
         x_next: th.Tensor,
+        rho_estimate: float = 0.0,
+        soft_gated: bool = True,
     ) -> th.Tensor:
-        decrease = self.decrease_violation(v_curr=v_curr, v_next=v_next)
-        invariance = self.invariance_violation(x_next=x_next)
-        return decrease + self.invariance_weight * invariance
+        """Compute condition violation per sample.
+        
+        Applies sublevel weight (soft or hard) to BOTH decrease and invariance violations
+        so that violations are only evaluated inside the rho-sublevel set V(x) <= rho.
+        """
+        dec_viol = self.decrease_violation(v_curr=v_curr, v_next=v_next)
+        inv_viol = self.invariance_violation(x_next=x_next)
+        total_raw_viol = dec_viol + self.invariance_weight * inv_viol
 
-    def soft_sublevel_weight(self, v_curr: th.Tensor, rho_estimate: float, detach: bool = True) -> th.Tensor:
+        if soft_gated:
+            sublevel_weight = self.soft_sublevel_weight(v_curr, rho_estimate)
+        else:
+            sublevel_weight = self.hard_sublevel_weight(v_curr, rho_estimate)
+        return total_raw_viol * sublevel_weight
+
+
+    def hard_sublevel_weight(self, v_curr: th.Tensor, rho_estimate: float) -> th.Tensor:
+        """Hard step weight: 1 inside ρ, 0 outside ρ."""
+        v_curr = v_curr.detach()
+        rho_val = safe_rho(rho_estimate, self.rho_min)
+        return (v_curr <= rho_val).to(dtype=v_curr.dtype)
+
+    def soft_sublevel_weight(self, v_curr: th.Tensor, rho_estimate: float) -> th.Tensor:
         """Smooth sigmoid weight: ≈1 inside ρ, ≈0.5 at ρ boundary, ≈0 far outside."""
-        if detach:
-            v_curr = v_curr.detach()
+        v_curr = v_curr.detach()
         rho_value = safe_rho(rho_estimate, self.rho_min)
         margin = (rho_value - v_curr) / max(rho_value, self.relative_eps)
         return th.sigmoid(self.gate_sharpness * margin)
@@ -349,19 +368,7 @@ class RhoGatedConditionLoss(nn.Module):
         x_next: th.Tensor,
         rho_estimate: float,
     ) -> th.Tensor:
-        violation = self.condition_violation(
-            v_curr=v_curr,
-            v_next=v_next,
-            x_next=x_next,
-        )
-        weights = self.soft_sublevel_weight(v_curr, rho_estimate)
-
-        # logging
-        # num_active = int((weights > 0.5).sum().item())
-        # effective_weight_mass = float(weights.sum().item())
-        # __logger__.info("active=%d, effective mass=%.3f", num_active, effective_weight_mass)
-        return weighted_mean(violation, weights)
-
+        return self.condition_violation(v_curr, v_next, x_next, rho_estimate, soft_gated=True).mean()
 
 
 class SignedConditionMargin(nn.Module):
@@ -459,8 +466,7 @@ class ConditionLirpaLoss(StateBoundsModule):
             final_violations = violations
             
         weights = self._calculate_weight(centers=centers)
-        weighted_violations = weighted_mean(final_violations, weights)
-        return weighted_violations
+        return (final_violations * weights).mean()
 
 
 class RoaSurrogateLoss(nn.Module):
@@ -817,18 +823,22 @@ class LyapunovTrainingLoss(nn.Module):
             filtered_params = self._filter_l1_params(params)
             self.l1_loss.set_train_params(filtered_params)
     
-    def _condition_violation(self, x_batch: th.Tensor) -> tuple[th.Tensor, th.Tensor]:
-        """Return the condition violation and the Lyapunov values of the current states."""
+    def condition_violation(
+        self, 
+        x_batch: th.Tensor, 
+        rho_estimate: float, 
+        soft_gated: bool = False,
+    ) -> th.Tensor:
         v_curr, x_next, v_next = self._closed_loop_values(x_batch)
-        violation = self.condition_loss.condition_violation(
-            v_curr=v_curr, v_next=v_next, x_next=x_next)
-        return violation, v_curr
+        return self.condition_loss.condition_violation(
+            v_curr=v_curr, v_next=v_next, x_next=x_next, rho_estimate=rho_estimate, soft_gated=soft_gated
+        )
 
     def get_counterexample_mask(
-        self, 
-        candidate_states: th.Tensor, 
-        rho_estimate: float, 
-        violation_tolerance: float = 1e-6
+        self,
+        candidate_states: th.Tensor,
+        rho_estimate: float,
+        violation_tolerance: float = 1e-8,
     ) -> tuple[th.Tensor, th.Tensor]:
         """Evaluate candidate counterexamples and return their raw condition violations and a boolean validity mask.
         
@@ -841,25 +851,20 @@ class LyapunovTrainingLoss(nn.Module):
             )
 
         with th.no_grad():
-            violation, v_curr = self._condition_violation(candidate_states)
+            violation = self.condition_violation(candidate_states, rho_estimate, soft_gated=False)
             violation = violation.squeeze(-1)
-            inside_sublevel = v_curr.squeeze(-1) <= rho_estimate
-            mask = inside_sublevel & (violation > violation_tolerance)
+            mask = violation > violation_tolerance
         return violation, mask
 
     def mining_objective(self, x_batch: th.Tensor, rho_estimate: float) -> th.Tensor:
         """Return the mining objective value for a batch of states, 
         used for prioritization in the replay buffer and PGD."""
-        violation, v_batch = self._condition_violation(x_batch)
-        soft_mask = self.condition_loss.soft_sublevel_weight(v_batch, rho_estimate)
-        return - soft_mask * violation
+        return - self.condition_violation(x_batch, rho_estimate, soft_gated=True)
     
     def buffer_sorting_objective(self, x_batch: th.Tensor, rho_estimate: float) -> th.Tensor:
         """Return the pure violation score for sorting in the buffer."""
-        violation, v_batch = self._condition_violation(x_batch)
-        soft_mask = self.condition_loss.soft_sublevel_weight(v_batch, rho_estimate * 1.3)
-        return - soft_mask * violation
-    
+        return - self.condition_violation(x_batch, rho_estimate * 1.3, soft_gated=False)
+
     def compute_loss_parts(
         self,
         x_batch: th.Tensor,
