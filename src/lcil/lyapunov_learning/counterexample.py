@@ -184,7 +184,7 @@ def estimate_rho_from_boundary(
 def estimate_rho(
     lyap_model: nn.Module,
     config: LyapunovTrainingConfig,
-    condition_evaluator: Callable[[th.Tensor], tuple[th.Tensor, th.Tensor]] | None = None,
+    condition_evaluator: Callable[[th.Tensor], th.Tensor] | None = None,
     state_buffer: Any | None = None,
     device: th.device = th.device("cpu"),
     generator: th.Generator | None = None,
@@ -211,14 +211,14 @@ def estimate_rho(
         if states_to_check:
             all_buffer_states = th.cat(states_to_check, dim=0)
             with th.no_grad():
-                violations, v_curr = condition_evaluator(all_buffer_states)
+                violations = condition_evaluator(all_buffer_states)
                 violations = violations.flatten()
-                v_curr = v_curr.flatten()
 
                 violating_mask = violations > 1e-6
-                violating_v = v_curr[violating_mask]
 
-                if violating_v.numel() > 0:
+                if violating_mask.any():
+                    violating_states = all_buffer_states[violating_mask]
+                    violating_v = lyap_model(violating_states).flatten()
                     cex_cap_val = float(th.quantile(violating_v, q=float(cex_quantile)).item())
                     rho_effective = max(float(config.rho_min), min(rho_boundary, cex_cap_val))
 

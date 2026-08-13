@@ -364,7 +364,7 @@ class LyapunovTrainer:
         rho_diagnostics, boundary_states = estimate_rho(
             lyap_model=self.lyap_model,
             config=self.config,
-            condition_evaluator=self.loss_module._condition_violation,
+            condition_evaluator=self.loss_module.condition_violation,
             state_buffer=state_buffer,
             device=self.device,
             generator=self.torch_gen,

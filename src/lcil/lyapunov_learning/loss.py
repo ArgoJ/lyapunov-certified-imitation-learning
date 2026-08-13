@@ -329,7 +329,7 @@ class RhoGatedConditionLoss(nn.Module):
         v_curr: th.Tensor,
         v_next: th.Tensor,
         x_next: th.Tensor,
-        rho_estimate: float = 0.0,
+        rho_estimate: float | None = 0.0,
         soft_gated: bool = True,
     ) -> th.Tensor:
         """Compute condition violation per sample.
@@ -340,6 +340,9 @@ class RhoGatedConditionLoss(nn.Module):
         dec_viol = self.decrease_violation(v_curr=v_curr, v_next=v_next)
         inv_viol = self.invariance_violation(x_next=x_next)
         total_raw_viol = dec_viol + self.invariance_weight * inv_viol
+
+        if rho_estimate is None:
+            return total_raw_viol
 
         if soft_gated:
             sublevel_weight = self.soft_sublevel_weight(v_curr, rho_estimate)
@@ -826,7 +829,7 @@ class LyapunovTrainingLoss(nn.Module):
     def condition_violation(
         self, 
         x_batch: th.Tensor, 
-        rho_estimate: float, 
+        rho_estimate: float | None = None, 
         soft_gated: bool = False,
     ) -> th.Tensor:
         v_curr, x_next, v_next = self._closed_loop_values(x_batch)
@@ -859,11 +862,13 @@ class LyapunovTrainingLoss(nn.Module):
     def mining_objective(self, x_batch: th.Tensor, rho_estimate: float) -> th.Tensor:
         """Return the mining objective value for a batch of states, 
         used for prioritization in the replay buffer and PGD."""
-        return - self.condition_violation(x_batch, rho_estimate, soft_gated=True)
+        viol = self.condition_violation(x_batch, rho_estimate, soft_gated=True)
+        return -viol
     
     def buffer_sorting_objective(self, x_batch: th.Tensor, rho_estimate: float) -> th.Tensor:
         """Return the pure violation score for sorting in the buffer."""
-        return - self.condition_violation(x_batch, rho_estimate * 1.3, soft_gated=False)
+        viol = self.condition_violation(x_batch, rho_estimate * 1.3, soft_gated=False)
+        return -viol
 
     def compute_loss_parts(
         self,
