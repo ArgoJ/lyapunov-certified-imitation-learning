@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from mpc_datagen import MPCDataset, mdg_plt
+from mpc_datagen import EmpiricalROAEstimator, EmpiricalROARender, MPCDataset, mdg_plt
 from lcil.utils import ArgumentParserConfig, config_field
 
 from . import default_dataset_path, resolve_dataset_path
@@ -36,6 +36,22 @@ class PlotDatasetLyapunovConfig(ArgumentParserConfig):
     scatter_points: bool = config_field(
         default=True,
         help="If True and 3D is active, adds 3D scatter points of all dataset (x, y, V_N) samples.",
+    )
+    check_roa: bool = config_field(
+        default=True,
+        help="Whether to run empirical Region of Attraction (ROA) estimation on the dataset.",
+    )
+    eps_terminal: float = config_field(
+        default=0.01,
+        help="Tolerance for terminal state convergence in empirical ROA estimation.",
+    )
+    roa_level: float | None = config_field(
+        default=None,
+        help="Manual override for ROA sublevel set level c (rho). If None and check_roa is True, uses empirical c_empirical.",
+    )
+    n_trajectories_roa: int = config_field(
+        default=0,
+        help="Number of trajectories to use for empirical ROA estimation (0 to use all available in dataset).",
     )
     output_path: str | None = config_field(
         default=None,
@@ -80,6 +96,18 @@ def plot_dataset_lyapunov(config: PlotDatasetLyapunovConfig) -> Path:
     __logger__.info("Loading MPC dataset from %s", dataset_path)
     dataset = MPCDataset.load(dataset_path)
 
+    roa_level = config.roa_level
+    if config.check_roa:
+        roa_ds = dataset[: config.n_trajectories_roa] if config.n_trajectories_roa > 0 else dataset
+        __logger__.info("Running empirical ROA estimation on %d trajectories...", len(roa_ds))
+        estimator = EmpiricalROAEstimator(roa_ds, eps_terminal=config.eps_terminal)
+        report = estimator.estimate(show_progress=True)
+        EmpiricalROARender(report).render()
+
+        if roa_level is None and report.c_empirical is not None:
+            roa_level = report.c_empirical
+            __logger__.info("Using empirical ROA sublevel set level (rho) c_empirical = %.4g", roa_level)
+
     if config.output_path is not None:
         html_path = Path(config.output_path).resolve()
     else:
@@ -90,6 +118,7 @@ def plot_dataset_lyapunov(config: PlotDatasetLyapunovConfig) -> Path:
     mdg_plt.lyapunov(
         lyapunov_func=None,
         dataset=dataset[: config.n_trajectories] if config.n_trajectories > 0 else dataset,
+        roa_level=roa_level,
         state_labels=[r"$x$", r"$v$"],
         plot_3d=bool(config.plot_3d),
         use_dataset_v=bool(config.use_dataset_v),
