@@ -502,8 +502,8 @@ class ArgumentParserConfig:
                 arg_kwargs["nargs"] = "+"
 
             help_text = metadata.get("help") or metadata.get("description")
-            if help_text is not None and "help" not in arg_kwargs:
-                arg_kwargs["help"] = help_text
+            if "help" in arg_kwargs:
+                help_text = arg_kwargs["help"]
 
             default_value = getattr(self, field_info.name, MISSING)
             if default_value is not MISSING and "default" not in arg_kwargs:
@@ -511,13 +511,13 @@ class ArgumentParserConfig:
                     import argparse
                     arg_kwargs["default"] = argparse.SUPPRESS
                     if help_text is not None:
-                        help_text += f" (default: {default_value})"
+                        help_text = f"{help_text} (default: {default_value})"
                     else:
                         help_text = f"(default: {default_value})"
                 else:
                     arg_kwargs["default"] = default_value
 
-            if help_text is not None and "help" not in arg_kwargs:
+            if help_text is not None:
                 arg_kwargs["help"] = help_text
 
             parser.add_argument(arg_name, **arg_kwargs)
