@@ -196,7 +196,7 @@ class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
 
         self.assertIsInstance(float(result.rho), float)
         self.assertGreaterEqual(result.rho, certifier.config.rho_min)
-        self.assertFalse(level_set_estimate.truncated)
+        self.assertFalse(level_set_estimate.details.truncated)
         self.assertAlmostEqual(level_set_estimate.measure / lqr_area, 1.0, delta=5e-2)
         self._assert_region_plot_written(
             certification_result=result,

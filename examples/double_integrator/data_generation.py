@@ -5,7 +5,6 @@ from datetime import datetime
 from pathlib import Path
 
 import mpc_datagen.linalg as mdg_linalg
-import mpc_datagen.plots as mdg_plots
 from mpc_datagen import *
 from mpc_datagen.verification import (
     StabilityVerifier,
@@ -116,7 +115,7 @@ def main():
         lyap_fun = None
         c_min = None
 
-    mdg_plots.all(
+    mdg_plt.all(
         dataset=dataset[:min(150, n_samples)],
         state_labels=["$x$", "$v$"],
         control_labels=["$a$"],

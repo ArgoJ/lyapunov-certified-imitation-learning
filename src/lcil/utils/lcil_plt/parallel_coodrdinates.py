@@ -11,11 +11,7 @@ from pathlib import Path
 from numpy.typing import NDArray
 from typing import Sequence
 
-from mpc_datagen.plots import (
-    _resolve_labels,
-    _to_latex,
-    _handle_figure_output,
-)
+from mpc_datagen import mdg_plt
 from .styles import *
 
 __logger__ = logging.getLogger(__name__)
@@ -68,7 +64,7 @@ def _prepare_parallel_data(
     n = x.shape[0]
 
     # resolve labels
-    labels = _resolve_labels(state_labels, d)
+    labels = mdg_plt.utils._resolve_labels(state_labels, d)
     
     # State sorting
     bounds_ordered = state_bounds
@@ -152,10 +148,10 @@ def parallel_coordinates_matplot(
     ax.axhline(0.0, color="0.2", linestyle="-", linewidth=0.8)
     ax.axhline(1.0, color="0.6", linestyle="--", linewidth=0.8)
 
-    ax.set_xticks(xs, labels=[_to_latex(lbl) for lbl in labels])
+    ax.set_xticks(xs, labels=[mdg_plt.utils._to_latex(lbl) for lbl in labels])
     ax.set_ylim(-1.1, 1.1)
     ax.set_ylabel("normalized state")
-    ax.set_title(_to_latex(f"Counterexamples (n={n})"))
+    ax.set_title(mdg_plt.utils._to_latex(f"Counterexamples (n={n})"))
 
     return fig
 
@@ -252,4 +248,4 @@ def parallel_coordinates_plotly(
                 layer="below"
             )
 
-    return _handle_figure_output(fig, html_path, log_message=f"Parallel Coordinates")
+    return mdg_plt.utils._handle_figure_output(fig, html_path, log_message=f"Parallel Coordinates")

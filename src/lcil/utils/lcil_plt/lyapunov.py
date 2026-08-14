@@ -6,16 +6,7 @@ from pathlib import Path
 from numpy.typing import NDArray
 from typing import Callable, TYPE_CHECKING, Sequence
 
-from mpc_datagen.mpc_data import MPCDataset
-from mpc_datagen.plots import (
-    PairPlotResult,
-    lyapunov,
-    _save_pair_figures,
-    _resolve_num_states,
-    _resolve_indices,
-    _resolve_labels,
-    _state_index_pairs,
-)
+from mpc_datagen import MPCDataset, mdg_plt
 
 from .utils import (
     add_regions,
@@ -41,7 +32,7 @@ def lyapunov_cert_regions(
     resolution: int = 100,
     plot_3d: bool = False,
     html_path: Path | str = None,
-) -> list[PairPlotResult] | None:
+) -> list[mdg_plt.PairPlotResult] | None:
     """Plot Lyapunov landscape, trajectories, and optional certified regions in 2D/3D.
     If more than two state indices are provided, one figure per 2D state pair
     is generated.
@@ -94,14 +85,14 @@ def lyapunov_cert_regions(
         max_state_idx = max(state_indices) if state_indices is not None else -1
         num_states = max(region_dims + [max_state_idx + 1])
 
-    state_indices = _resolve_indices(state_indices, num_states)
+    state_indices = mdg_plt.utils._resolve_indices(state_indices, num_states)
     if state_labels is not None and len(state_labels) == len(state_indices):
         labels_full = [f"State {i}" for i in range(num_states)]
         for label_idx, state_idx in enumerate(state_indices):
             labels_full[state_idx] = state_labels[label_idx]
     else:
-        labels_full = _resolve_labels(state_labels, num_states)
-    pair_indices = _state_index_pairs(state_indices)
+        labels_full = mdg_plt.utils._resolve_labels(state_labels, num_states)
+    pair_indices = mdg_plt.utils._state_index_pairs(state_indices)
 
     regions_by_pair: dict[tuple[int, int], tuple[NDArray, NDArray, NDArray]] = {}
     pair_limits: dict[tuple[int, int], list[tuple[float, float]]] = {}
@@ -133,9 +124,9 @@ def lyapunov_cert_regions(
 
     z_overlay = 0.0 if plot_3d else None
 
-    figures: list[PairPlotResult] = {}
+    figures: list[mdg_plt.PairPlotResult] = []
     for pair in pair_indices:
-        fig_pair = lyapunov(
+        fig_pair = mdg_plt.lyapunov(
             lyapunov_func=lyapunov_func,
             dataset=dataset,
             state_indices=list(pair),
@@ -193,10 +184,10 @@ def lyapunov_cert_regions(
                 borderwidth=1,
                 text=partition_annotation(cert_pair, uncert_pair, ctex_pair),
             )
-        figures.append(fig)
+        figures.append(fig_pair[0])
 
     if html_path is not None:
-        _save_pair_figures(figures, html_path, kind="Lyapunov")
+        mdg_plt.utils._save_pair_figures(figures, html_path, kind="Lyapunov")
         return None
 
     return figures
@@ -242,7 +233,7 @@ def lyapunov_with_exclusion(
     """
     z_overlay = 0.0 if plot_3d else None
 
-    results = lyapunov(
+    results = mdg_plt.lyapunov(
         lyapunov_func=lyapunov_func,
         dataset=dataset,
         roa_level=roa_level,
@@ -255,7 +246,7 @@ def lyapunov_with_exclusion(
         html_path=None,
     )
 
-    num_states = _resolve_num_states(num_states, dataset, state_labels, state_indices)
+    num_states = mdg_plt.utils._resolve_num_states(num_states, dataset, state_labels, state_indices)
 
     for result in results:
         if origin_exclusion is not None:
@@ -278,7 +269,7 @@ def lyapunov_with_exclusion(
                 )
 
     if html_path is not None:
-        _save_pair_figures(results, html_path, kind="Lyapunov")
+        mdg_plt.utils._save_pair_figures(results, html_path, kind="Lyapunov")
         return None
 
     return results

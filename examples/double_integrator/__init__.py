@@ -21,6 +21,12 @@ from ..example_utils import (
     get_condition_violations,
     discover_source_rollout_path,
 )
+from ..metrics_collector import (
+    LevelSetMetricsWriter,
+    LevelSetMetricsCollector,
+    save_level_set_metrics,
+    add_entry,
+)
 from ..constants import *
 
 from ..example_utils import (
