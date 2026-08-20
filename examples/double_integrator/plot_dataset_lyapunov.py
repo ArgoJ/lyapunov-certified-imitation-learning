@@ -41,9 +41,9 @@ class PlotDatasetLyapunovConfig(ArgumentParserConfig):
         default=True,
         help="Whether to run empirical Region of Attraction (ROA) estimation on the dataset.",
     )
-    eps_terminal: float = config_field(
-        default=0.01,
-        help="Tolerance for terminal state convergence in empirical ROA estimation.",
+    eps_descent: float = config_field(
+        default=0.000001,
+        help="Tolerance for cost descent in empirical ROA estimation.",
     )
     roa_level: float | None = config_field(
         default=None,
@@ -100,7 +100,7 @@ def plot_dataset_lyapunov(config: PlotDatasetLyapunovConfig) -> Path:
     if config.check_roa:
         roa_ds = dataset[: config.n_trajectories_roa] if config.n_trajectories_roa > 0 else dataset
         __logger__.info("Running empirical ROA estimation on %d trajectories...", len(roa_ds))
-        estimator = EmpiricalROAEstimator(roa_ds, eps_terminal=config.eps_terminal)
+        estimator = EmpiricalROAEstimator(roa_ds, eps_descent=config.eps_descent)
         report = estimator.estimate(show_progress=True)
         EmpiricalROARender(report).render()
 
@@ -117,13 +117,15 @@ def plot_dataset_lyapunov(config: PlotDatasetLyapunovConfig) -> Path:
     __logger__.info("Generating Lyapunov plot directly from dataset with mdg_plt.lyapunov...")
     mdg_plt.lyapunov(
         lyapunov_func=None,
-        dataset=dataset[: config.n_trajectories] if config.n_trajectories > 0 else dataset,
+        dataset=dataset,
         roa_level=roa_level,
         state_labels=[r"$x$", r"$v$"],
         plot_3d=bool(config.plot_3d),
         use_dataset_v=bool(config.use_dataset_v),
         scatter_points=bool(config.scatter_points),
         html_path=html_path,
+        scatter_failed=True,
+        max_trajectories=int(config.n_trajectories) if config.n_trajectories > 0 else None,
     )
     __logger__.info("Saved Lyapunov plot to %s", html_path)
     return html_path
