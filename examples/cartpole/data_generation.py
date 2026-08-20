@@ -21,6 +21,7 @@ class DataGenerationScriptConfig(ArgumentParserConfig):
     t_sim: int = config_field(default=200, help="Simulation horizon length (number of MPC steps).")
     base_path: str = config_field(default=str(DATA_DIR), help="Base output path for generated datasets and plots.")
     debug: bool = config_field(default=False, help="Enable debug logging during dataset generation.")
+    only_feasible: bool = config_field(default=False, help="Save only feasible trajectories.")
 
 
 def parse_cli_args() -> GridSearchHelper[DataGenerationScriptConfig]:
@@ -112,7 +113,6 @@ def main() -> None:
 
         p_matrix = compute_riccati_value_matrix(dt)
         lyap_fun = lambda x: 0.5 * mdg_linalg.weighted_quadratic_norm(x, p_matrix)
-        roa_lyap_fun = lambda x: mdg_linalg.weighted_quadratic_norm(x, p_matrix)
         roa_cert = ROAVerifier(dataset[0].config)
         roa_bounds, c_min = roa_cert.roa_bounds()
 
@@ -128,9 +128,7 @@ def main() -> None:
             use_optimal_v=False,
             lyapunov_func=lyap_fun,
             lyap_use_dataset_v=True,
-            roa_lyapunov_func=roa_lyap_fun,
             c_level=c_min,
-            roa_bounds=roa_bounds,
             base_path=str(base_path / f"cartpole_N{N}_plots"),
         )
 
