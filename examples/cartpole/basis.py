@@ -2,7 +2,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.linalg import solve_discrete_are
 
-from mpc_datagen import mdg_linalg
+from mpc_datagen import mdg_utils
 
 from .sys_cfg import PendulumOnCartConfig
 
@@ -60,7 +60,7 @@ def compute_discrete_cartpole(
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     cfg = PendulumOnCartConfig() if sys_cfg is None else sys_cfg
     a_c, b_c = linearized_inverted_pendulum_on_cart_matrices(cfg=cfg)
-    a_d, b_d = mdg_linalg.lin_c2d_rk4(a_c, b_c, float(dt), num_steps=1)
+    a_d, b_d = mdg_utils.lin_c2d_rk4(a_c, b_c, float(dt), num_steps=1)
     return a_d, b_d
 
 

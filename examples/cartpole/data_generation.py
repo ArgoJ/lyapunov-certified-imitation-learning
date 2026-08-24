@@ -112,7 +112,7 @@ def main() -> None:
         VerificationRender(veri_stats).render()
 
         p_matrix = compute_riccati_value_matrix(dt)
-        lyap_fun = lambda x: 0.5 * mdg_linalg.weighted_quadratic_norm(x, p_matrix)
+        lyap_fun = lambda x: 0.5 * mdg_utils.weighted_quadratic_norm(x, p_matrix)
         roa_cert = ROAVerifier(dataset[0].config)
         roa_bounds, c_min = roa_cert.roa_bounds()
 

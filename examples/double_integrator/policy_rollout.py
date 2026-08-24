@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from scipy.linalg import solve_discrete_are
 
-from mpc_datagen import mdg_plt, StabilityVerifier, VerificationRender, mdg_linalg, MPCDataset
+from mpc_datagen import mdg_plt, StabilityVerifier, VerificationRender, mdg_utils, MPCDataset
 from lcil.utils import IntegrationMethod
 from lcil.imitation_learning import load_imitation_dataset
 from lcil.rollouts import (

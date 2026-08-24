@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-import mpc_datagen.linalg as mdg_linalg
 from mpc_datagen import *
 from mpc_datagen.verification import (
     StabilityVerifier,
@@ -110,7 +109,7 @@ def main() -> None:
 
         if terminal_mode == "regional":
             P = info["P"]
-            lyap_fun = lambda x: 0.5 * mdg_linalg.weighted_quadratic_norm(x, P)
+            lyap_fun = lambda x: 0.5 * mdg_utils.weighted_quadratic_norm(x, P)
             roa_cert = ROAVerifier(dataset[0].config)
             c_min = roa_cert.compute_min_c()
         else:

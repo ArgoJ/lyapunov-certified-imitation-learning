@@ -6,7 +6,7 @@ from numpy.typing import NDArray
 from scipy.linalg import solve_discrete_are, block_diag
 from casadi import SX
 
-from mpc_datagen import add_temp_folder, mdg_linalg
+from mpc_datagen import add_temp_folder, mdg_utils
 
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpBatchSolver, AcadosOcpSolver
 
@@ -103,7 +103,7 @@ def get_ocp(
     nx = A_c.shape[0]
     nu = B_c.shape[1]
 
-    A_d, B_d = mdg_linalg.lin_c2d_rk4(A_c, B_c, dt, num_steps=1)
+    A_d, B_d = mdg_utils.lin_c2d_rk4(A_c, B_c, dt, num_steps=1)
 
     ocp = AcadosOcp()
     if dynamics_type == "continuous":
