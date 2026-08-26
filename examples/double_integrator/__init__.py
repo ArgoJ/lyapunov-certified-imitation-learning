@@ -14,6 +14,7 @@ from .basis import *
 from ..example_utils import (
     build_lyapunov_func,
     find_all_lyapunov_dirs,
+    find_all_policy_dirs,
     require_file,
     require_dir,
     get_initial_states,
