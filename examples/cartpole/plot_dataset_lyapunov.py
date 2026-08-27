@@ -100,7 +100,7 @@ def plot_dataset_lyapunov(config: PlotDatasetLyapunovConfig) -> Path:
     if config.check_roa:
         roa_ds = dataset[: config.n_trajectories_roa] if config.n_trajectories_roa > 0 else dataset
         __logger__.info("Running empirical ROA estimation on %d trajectories...", len(roa_ds))
-        estimator = EmpiricalROAEstimator(roa_ds, eps_terminal=config.eps_terminal)
+        estimator = EmpiricalROAEstimator(roa_ds, eps_descent=config.eps_terminal)
         report = estimator.estimate(show_progress=True)
         EmpiricalROARender(report).render()
 

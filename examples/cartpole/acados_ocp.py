@@ -151,7 +151,7 @@ def get_ocp(
     ocp.solver_options.nlp_solver_type = "SQP"
     ocp.solver_options.integrator_type = 'ERK'
     ocp.solver_options.print_level = 0
-    ocp.solver_options.sim_method_num_stages = 4
+    ocp.solver_options.sim_method_num_stages = 1
     ocp.solver_options.sim_method_num_steps = 1
     ocp.solver_options.qp_solver_iter_max = 200
     ocp.solver_options.nlp_solver_max_iter = 200

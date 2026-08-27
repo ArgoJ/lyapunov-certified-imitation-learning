@@ -134,7 +134,7 @@ def main() -> None:
             dynamics_loss=DynamicsAwareLoss(
                 dynamics=DoubleIntegratorDynamics(
                     dt=dataset_cfg.dt,
-                    method=IntegrationMethod.CLASSICAL_RK4), 
+                    method=IntegrationMethod.EXPLICIT_EULER), 
                 x_min=dataset_cfg.constraints.lbx, 
                 x_max=dataset_cfg.constraints.ubx),
             dynamics_weight=5.0,

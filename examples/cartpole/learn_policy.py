@@ -8,7 +8,7 @@ from datetime import datetime
 from mpc_datagen import MPCDataset
 
 from lcil.imitation_learning import *
-from lcil.utils import ArgumentParserConfig, EarlyStopping, GridSearchHelper, config_field, MLP
+from lcil.utils import ArgumentParserConfig, EarlyStopping, GridSearchHelper, config_field, MLP, IntegrationMethod
 
 from . import (
     CARTPOLE_RESULTS_DIR,
@@ -110,7 +110,11 @@ def main() -> None:
                 min_weight=train_config.reference_min_weight
             ),
             dynamics_loss=DynamicsAwareLoss(
-                dynamics=CartpoleDynamics(dt=dataset_cfg.dt, sys_cfg=sys_cfg),
+                dynamics=CartpoleDynamics(
+                    dt=dataset_cfg.dt, 
+                    sys_cfg=sys_cfg,
+                    method=IntegrationMethod.EXPLICIT_EULER
+                ),
                 x_min=dataset_cfg.constraints.lbx,
                 x_max=dataset_cfg.constraints.ubx,
             ) if train_config.dynamics_weight > 0.0 else None,

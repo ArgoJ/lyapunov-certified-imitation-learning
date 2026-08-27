@@ -18,7 +18,7 @@ from lcil.imitation_learning import load_imitation_dataset
 from lcil.rollouts import FeasibleSetSampler, build_policy_rollout_dataset
 from lcil.utils import ArgumentParserConfig, GridSearchHelper, config_field
 
-from .cartpole import (
+from . import (
     CartpoleDynamics,
     compute_riccati_value_matrix,
     default_dataset_path,
@@ -43,6 +43,10 @@ class PolicyRolloutScriptConfig(ArgumentParserConfig):
     """Configuration for cartpole policy rollout script."""
 
     policy_dir: str = config_field(help="Policy run directory containing policy_model.pt.")
+    apply_all_policies: bool = config_field(
+        default=False,
+        help="Whether to roll out all policy models found in the parent timestamp directory.",
+    )
     dataset_path: str | None = config_field(
         default=None,
         help="Path to expert MPC dataset for 1:1 error comparison. Auto-discovered if None.",
@@ -129,23 +133,25 @@ def main() -> None:
             if (init_policy_dir / POLICY_MODEL_FILENAME).is_file()
             else init_policy_dir
         )
+        if script_config.apply_all_policies:
+            policy_dirs = find_all_policy_dirs(timestamp_dir)
+            if not policy_dirs:
+                if (init_policy_dir / POLICY_MODEL_FILENAME).is_file():
+                    policy_dirs = [init_policy_dir]
+                else:
+                    raise FileNotFoundError(
+                        f"No policy directories containing '{POLICY_MODEL_FILENAME}' found in '{timestamp_dir}'."
+                    )
 
-        policy_dirs = find_all_policy_dirs(timestamp_dir)
-        if not policy_dirs:
-            if (init_policy_dir / POLICY_MODEL_FILENAME).is_file():
-                policy_dirs = [init_policy_dir]
-            else:
-                raise FileNotFoundError(
-                    f"No policy directories containing '{POLICY_MODEL_FILENAME}' found in '{timestamp_dir}'."
-                )
-
-        __logger__.info(
-            "[%d/%d] Found %d policy directories under %s for rollout generation",
-            run_idx,
-            len(sweep.configs),
-            len(policy_dirs),
-            timestamp_dir,
-        )
+            __logger__.info(
+                "[%d/%d] Found %d policy directories under %s for rollout generation",
+                run_idx,
+                len(sweep.configs),
+                len(policy_dirs),
+                timestamp_dir,
+            )
+        else:
+            policy_dirs = [init_policy_dir]
 
         for p_dir in policy_dirs:
             p_dir = p_dir.resolve()
