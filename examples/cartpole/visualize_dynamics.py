@@ -1,4 +1,4 @@
-"""Interactive closed-loop Acados MPC simulation and physical animation for Cartpole."""
+"""Interactive closed-loop Acados MPC simulation and physical animation using PyTorch dynamics."""
 
 import argparse
 import sys
@@ -24,7 +24,7 @@ from lcil.utils import IntegrationMethod
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments for initial state and simulation parameters."""
     parser = argparse.ArgumentParser(
-        description="Simulate and visualize Cartpole closed-loop Acados MPC with PyTorch dynamics."
+        description="Simulate and visualize Cartpole closed-loop Acados MPC using PyTorch dynamics."
     )
     parser.add_argument(
         "--x0",
@@ -110,36 +110,56 @@ def simulate_closed_loop_mpc(
     x0: np.ndarray,
     T_sim: int = 100,
 ) -> tuple[np.ndarray, np.ndarray, list[int]]:
-    """Simulate closed-loop stabilization with Acados MPC controlling PyTorch Cartpole dynamics."""
-    states = [x0.copy()]
+    """Simulate closed-loop MPC where PyTorch is the simulated physical system.
+
+    - At each time step t, the current PyTorch state x_t is measured and passed to Acados.
+    - Acados computes the optimal control force u_t.
+    - PyTorch integrates the physical step: x_{t+1} = dyn_pt(x_t, u_t).
+    """
+    states_pytorch = [x0.copy()]
     controls = []
     statuses = []
 
-    x_curr = x0.copy()
+    x_curr_np = x0.copy()
     x_curr_pt = th.tensor(x0, dtype=th.float32).unsqueeze(0)
 
     for t in range(T_sim):
-        # Set state feedback in Acados OCP solver
-        solver.set(0, "lbx", x_curr)
-        solver.set(0, "ubx", x_curr)
+        # Pass measured PyTorch state to the MPC controller
+        solver.set(0, "lbx", x_curr_np)
+        solver.set(0, "ubx", x_curr_np)
 
         status = solver.solve()
         statuses.append(status)
+
+        if status != 0:
+            # When solver fails / infeasible, insert NaN for control and stop rollout
+            controls.append(np.nan)
+            for _ in range(t + 1, T_sim):
+                controls.append(np.nan)
+                statuses.append(status)
+                states_pytorch.append(np.full(4, np.nan))
+            states_pytorch.append(np.full(4, np.nan))
+            break
+        
+        # Retrieve optimal control action
         u_opt = np.array(solver.get(0, "u")).flatten()
         u_val = float(u_opt[0])
         controls.append(u_val)
 
-        # Propagate PyTorch model
+        # Advance the PyTorch simulation plant
         u_pt = th.tensor([[u_val]], dtype=th.float32)
         with th.no_grad():
             x_next_pt = dyn_pt(x_curr_pt, u_pt)
 
-        x_next_np = x_next_pt.squeeze(0).numpy().copy()
-        states.append(x_next_np)
-        x_curr = x_next_np
+        x_curr_np = x_next_pt.squeeze(0).numpy().copy()
+        states_pytorch.append(x_curr_np)
         x_curr_pt = x_next_pt
 
-    return np.array(states), np.array(controls), statuses
+    return (
+        np.array(states_pytorch),
+        np.array(controls),
+        statuses,
+    )
 
 
 def build_mpc_dashboard(
@@ -150,7 +170,7 @@ def build_mpc_dashboard(
     x0: np.ndarray,
     dt: float,
 ) -> go.Figure:
-    """Build a 6-panel Plotly dashboard showing state trajectories, control force, and phase portrait."""
+    """Build a 6-panel Plotly dashboard visualizing the PyTorch closed-loop simulation."""
     fig = make_subplots(
         rows=3,
         cols=2,
@@ -268,7 +288,7 @@ def build_mpc_dashboard(
             y=[0.0],
             mode="markers",
             marker=dict(size=12, color="#27ae60", symbol="star"),
-            name="Equilibrium (0, 0)",
+            name="Target (0, 0)",
             showlegend=False,
         ),
         row=3,
@@ -298,7 +318,7 @@ def build_mpc_dashboard(
     deg0 = x0[2] * 180.0 / np.pi
 
     title_text = (
-        "<b>Acados Closed-Loop MPC Cartpole Stabilization</b><br>"
+        "<b>Cartpole Closed-Loop MPC Simulation (PyTorch Plant)</b><br>"
         f"<span style='font-size: 13px; color: #444;'>"
         f"Initial State: p₀ = {x0[0]:.2f} m, v₀ = {x0[1]:.2f} m/s, θ₀ = {x0[2]:.3f} rad ({deg0:.1f}°), dθ₀ = {x0[3]:.2f} rad/s "
         f"| dt = {dt}s | {status_badge}</span>"
@@ -321,12 +341,16 @@ def build_physical_animation_figure(
     sys_cfg: PendulumOnCartConfig,
     downsample: int = 1,
 ) -> go.Figure:
-    """Construct a clean 2D physical animation of the cart and inverted pendulum without vertical offsets."""
+    """Construct a clean 2D physical animation of the cart and inverted pendulum using PyTorch simulation."""
     l = sys_cfg.length
     cart_w = 0.35
     cart_h = 0.18
 
-    idx = np.arange(0, len(time_vec), downsample)
+    valid_idx = np.where(~np.isnan(states[:, 0]))[0]
+    if len(valid_idx) == 0:
+        valid_idx = np.array([0])
+
+    idx = valid_idx[::downsample]
     t_frames = time_vec[idx]
     p_frames = states[idx, 0]
     theta_frames = states[idx, 2]
@@ -335,8 +359,8 @@ def build_physical_animation_figure(
     tip_x_frames = p_frames + l * np.sin(theta_frames)
     tip_y_frames = l * np.cos(theta_frames)
 
-    x_min = min(np.min(p_frames), np.min(tip_x_frames), -1.0) - 0.4
-    x_max = max(np.max(p_frames), np.max(tip_x_frames), 1.0) + 0.4
+    x_min = min(float(np.nanmin(p_frames)), float(np.nanmin(tip_x_frames)), -1.0) - 0.4
+    x_max = max(float(np.nanmax(p_frames)), float(np.nanmax(tip_x_frames)), 1.0) + 0.4
     y_min = -l - 0.15
     y_max = l + 0.25
 
@@ -385,7 +409,7 @@ def build_physical_animation_figure(
         ],
         layout=go.Layout(
             title=dict(
-                text="<b>2D Physical Cartpole Animation (Acados Closed-Loop MPC)</b><br>"
+                text="<b>2D Physical Cartpole Animation (PyTorch Simulation + Acados MPC)</b><br>"
                      "<span style='font-size: 13px; color: #555;'>Click ▶ Play to watch real-time balancing</span>",
                 x=0.5,
                 y=0.97,
@@ -534,7 +558,7 @@ def main() -> None:
     T_sim = args.t_sim
     time_vec = np.arange(T_sim + 1) * dt
 
-    print(f"=== Cartpole Acados MPC Simulation (PyTorch Dynamics) ===")
+    print(f"=== Cartpole Closed-Loop MPC Simulation (PyTorch Plant) ===")
     print(f"Initial state x0 = [p: {x0[0]:.2f}m, v: {x0[1]:.2f}m/s, θ: {x0[2]:.3f}rad ({x0[2]*180/np.pi:.1f}°), dθ: {x0[3]:.2f}rad/s]")
     print(f"Horizon N = {N_horizon}, dt = {dt}s, Total steps = {T_sim} ({T_sim * dt:.1f}s)")
 
@@ -555,8 +579,8 @@ def main() -> None:
         method=IntegrationMethod.EXPLICIT_EULER,
     )
 
-    print("Simulating closed-loop Acados MPC on PyTorch dynamics...")
-    states, controls, statuses = simulate_closed_loop_mpc(
+    print("Simulating closed-loop Acados MPC controlling PyTorch dynamics...")
+    states_pt, controls, statuses = simulate_closed_loop_mpc(
         solver=solver,
         dyn_pt=pt_dyn,
         x0=x0,
@@ -571,7 +595,7 @@ def main() -> None:
     # 1. State trajectory & control dashboard
     dashboard_fig = build_mpc_dashboard(
         time_vec=time_vec,
-        states=states,
+        states=states_pt,
         controls=controls,
         statuses=statuses,
         x0=x0,
@@ -584,7 +608,7 @@ def main() -> None:
     # 2. 2D Physical Animation Figure
     anim_fig = build_physical_animation_figure(
         time_vec=time_vec,
-        states=states,
+        states=states_pt,
         sys_cfg=sys_cfg,
     )
     anim_file = out_path / "cartpole_mpc_physical_animation.html"
