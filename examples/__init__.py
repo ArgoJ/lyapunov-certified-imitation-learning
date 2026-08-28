@@ -25,3 +25,7 @@ from .plot_training_metrics import (
     plot_metric_plotly,
     plot_training_metrics_main,
 )
+from .estimate_mpc_dataset_measure import (
+    EstimateMPCDatasetScriptConfig,
+    estimate_and_save_mpc_dataset_measure,
+)

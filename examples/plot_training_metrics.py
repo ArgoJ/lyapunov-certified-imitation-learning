@@ -18,6 +18,9 @@ if str(REPO_ROOT) not in sys.path:
 import numpy as np
 from numpy.typing import NDArray
 import plotly.graph_objects as go
+from rich import box
+from rich.console import Console
+from rich.table import Table
 
 from lcil.utils.constants import (
     TRAINING_CONFIG_FILENAME,
@@ -292,55 +295,95 @@ def discover_metric_runs(
     return runs
 
 
-def evaluate_metrics_summary(runs: list[MetricRun]) -> str:
-    """Generate a clean ASCII summary table of all metrics across runs."""
+def evaluate_metrics_summary(runs: list[MetricRun]) -> list[Table]:
+    """Generate rich summary tables of all metrics across runs.
+
+    Parameters
+    ----------
+    runs : list[MetricRun]
+        List of loaded metric runs to summarize.
+
+    Returns
+    -------
+    list[Table]
+        List of rich Table objects, one for each run.
+    """
     if not runs:
-        return "No runs loaded."
+        return []
 
-    lines: list[str] = []
-    lines.append("=" * 90)
-    lines.append(f"{'TRAINING METRICS EVALUATION SUMMARY':^90}")
-    lines.append("=" * 90)
-
+    tables: list[Table] = []
     for run in runs:
-        lines.append(f"\n▶ RUN: {run.name}")
-        lines.append(f"  Path: {run.path}")
+        caption_parts = [f"Path: {run.path}"]
         if run.scalars:
-            scalar_str = ", ".join(f"{k}={v}" for k, v in run.scalars.items())
-            lines.append(f"  Counters: {scalar_str}")
+            scalar_str = ", ".join(f"{k}={v}" for k, v in sorted(run.scalars.items()))
+            caption_parts.append(f"Counters: {scalar_str}")
+        caption_text = " | ".join(caption_parts)
+
+        table = Table(
+            title=f"[bold]Training Metrics Summary: [cyan]{run.name}[/cyan][/bold]",
+            caption=f"[dim]{caption_text}[/dim]",
+            caption_justify="left",
+            box=box.ROUNDED,
+            header_style="bold cyan",
+            show_header=True,
+            show_lines=False,
+        )
+
+        table.add_column("Metric", style="bold white", no_wrap=True)
+        table.add_column("Type", justify="center")
+        table.add_column("Steps", justify="right", style="cyan")
+        table.add_column("Initial", justify="right", style="yellow")
+        table.add_column("Final", justify="right", style="green")
+        table.add_column("Min (Best)", justify="right", style="bright_cyan")
+        table.add_column("Max", justify="right", style="bright_magenta")
 
         all_names = run.get_all_metric_names()
         if not all_names:
-            lines.append("  (No metric series found)")
+            table.add_row("[dim]No metric series found[/dim]", "-", "-", "-", "-", "-", "-")
+            tables.append(table)
             continue
 
-        header = f"  {'Metric':<28} | {'Type':<6} | {'Steps':<6} | {'Initial':<11} | {'Final':<11} | {'Min (Best)':<11} | {'Max':<11}"
-        lines.append(header)
-        lines.append("  " + "-" * (len(header) - 2))
-
         for name in all_names:
-            if name in run.train_metrics:
+            has_train = name in run.train_metrics
+            has_val = name in run.val_metrics
+
+            if has_train:
                 s = run.train_metrics[name]
                 init_s = f"{s.initial_val:.4e}" if s.initial_val is not None else "N/A"
                 final_s = f"{s.final_val:.4e}" if s.final_val is not None else "N/A"
                 min_s = f"{s.min_val:.4e}" if s.min_val is not None else "N/A"
                 max_s = f"{s.max_val:.4e}" if s.max_val is not None else "N/A"
-                lines.append(
-                    f"  {name:<28} | {'Train':<6} | {s.valid_count:<6} | {init_s:<11} | {final_s:<11} | {min_s:<11} | {max_s:<11}"
+                table.add_row(
+                    name,
+                    "[bold green]Train[/bold green]",
+                    str(s.valid_count),
+                    init_s,
+                    final_s,
+                    min_s,
+                    max_s,
+                    end_section=not has_val,
                 )
 
-            if name in run.val_metrics:
+            if has_val:
                 s = run.val_metrics[name]
                 init_s = f"{s.initial_val:.4e}" if s.initial_val is not None else "N/A"
                 final_s = f"{s.final_val:.4e}" if s.final_val is not None else "N/A"
                 min_s = f"{s.min_val:.4e}" if s.min_val is not None else "N/A"
                 max_s = f"{s.max_val:.4e}" if s.max_val is not None else "N/A"
-                lines.append(
-                    f"  {name:<28} | {'Val':<6} | {s.valid_count:<6} | {init_s:<11} | {final_s:<11} | {min_s:<11} | {max_s:<11}"
+                table.add_row(
+                    name if not has_train else "",
+                    "[bold blue]Val[/bold blue]",
+                    str(s.valid_count),
+                    init_s,
+                    final_s,
+                    min_s,
+                    max_s,
+                    end_section=True,
                 )
 
-    lines.append("\n" + "=" * 90)
-    return "\n".join(lines)
+        tables.append(table)
+
+    return tables
 
 
 def filter_metrics(
@@ -641,10 +684,11 @@ def plot_training_metrics_main(args: argparse.Namespace) -> list[Path]:
         __logger__.error("No valid metric runs could be loaded from: %s", input_paths)
         return []
 
-    # Print summary table
+    # Display summary tables
     if not args.quiet:
-        summary_text = evaluate_metrics_summary(runs)
-        print(summary_text)
+        console = Console()
+        for table in evaluate_metrics_summary(runs):
+            console.print(table)
 
     # Determine target metric names
     all_metrics = set()

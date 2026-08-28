@@ -5,6 +5,7 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from math import gamma, pi
+from pathlib import Path
 from typing import Any, Literal, Self
 
 import numpy as np
@@ -483,6 +484,87 @@ def estimate_level_set_measure_monte_carlo(
     )
     __logger__.info(
         "Estimated Monte-Carlo level-set measure at rho=%.6f in %dD from %d samples: measure=%.6f (box_volume=%.4f, inside_fraction=%.4f).",
+        estimate.rho,
+        estimate.num_states,
+        details.num_samples,
+        estimate.measure,
+        box_volume,
+        inside_fraction,
+    )
+    return estimate
+
+
+def estimate_mpc_dataset_level_set_measure(
+    dataset: Any,
+    rho: float,
+) -> LevelSetEstimate:
+    """Estimate the nD measure of ``V_N(x) <= rho`` directly from an MPC dataset.
+
+    Extracts state bounds and dimensions directly from ``dataset.global_config``
+    and evaluates initial MPC costs $V_N(x_0)$ across all trajectories to compute
+    a Monte-Carlo measure directly comparable to :func:`estimate_level_set_measure_monte_carlo`.
+
+    Parameters
+    ----------
+    dataset : MPCDataset, Path, or str
+        The loaded MPC dataset or path to the HDF5 dataset file.
+    rho : float
+        The sublevel set value to estimate.
+
+    Returns
+    -------
+    LevelSetEstimate
+        A dataclass containing the estimated measure and Monte-Carlo details.
+    """
+    from mpc_datagen import MPCDataset
+
+    if isinstance(dataset, (str, Path)):
+        dataset = MPCDataset.load(Path(dataset))
+
+    if not isinstance(dataset, MPCDataset) and not hasattr(dataset, "global_config"):
+        raise TypeError(f"dataset must be an MPCDataset or Path, got {type(dataset)}.")
+
+    if len(dataset) == 0:
+        raise ValueError("MPCDataset is empty; cannot compute level set measure.")
+
+    if rho < 0.0:
+        raise ValueError(f"rho must be non-negative, got {rho}.")
+
+    low = np.asarray(dataset.global_config.constraints.lbx, dtype=np.float32).flatten()
+    high = np.asarray(dataset.global_config.constraints.ubx, dtype=np.float32).flatten()
+    bounds_matrix = np.column_stack([low, high])
+    box_volume = float(np.prod(high - low))
+    num_states = int(dataset.global_config.nx)
+
+    def _extract_v0(entry: Any) -> float:
+        traj = getattr(entry, "trajectory", entry)
+        for attr in ("V_N", "V_solver", "cost"):
+            val = getattr(traj, attr, None)
+            if val is not None and len(val) > 0:
+                v = float(val[0])
+                if np.isfinite(v):
+                    return v
+        return float("inf")
+
+    v0 = np.array([_extract_v0(entry) for entry in dataset], dtype=np.float64)
+    inside_fraction = float(np.mean((v0 <= rho) & np.isfinite(v0)))
+    measure = box_volume * inside_fraction
+
+    details = MonteCarloDetails(
+        num_samples=len(v0),
+        bounds=bounds_matrix,
+        box_volume=box_volume,
+        inside_fraction=inside_fraction,
+    )
+    estimate = LevelSetEstimate(
+        rho=float(rho),
+        num_states=num_states,
+        measure=measure,
+        method="monte_carlo_dataset",
+        details=details,
+    )
+    __logger__.info(
+        "Estimated MPC dataset Monte-Carlo level-set measure at rho=%.6f in %dD from %d samples: measure=%.6f (box_volume=%.4f, inside_fraction=%.4f).",
         estimate.rho,
         estimate.num_states,
         details.num_samples,

@@ -27,6 +27,7 @@ from .metrics import (
     estimate_level_set_measure,
     estimate_level_set_measure_monte_carlo,
     estimate_level_set_measure_ray_shooting,
+    estimate_mpc_dataset_level_set_measure,
 )
 
 __all__ = [
@@ -51,4 +52,5 @@ __all__ = [
     "estimate_level_set_measure",
     "estimate_level_set_measure_monte_carlo",
     "estimate_level_set_measure_ray_shooting",
+    "estimate_mpc_dataset_level_set_measure",
 ]

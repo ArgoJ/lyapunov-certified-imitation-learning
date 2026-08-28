@@ -15,6 +15,7 @@ from lcil.certification.metrics import (
     LevelSetEstimate,
     _sample_unit_sphere_directions,
     estimate_level_set_measure,
+    estimate_mpc_dataset_level_set_measure,
 )
 
 
@@ -183,6 +184,47 @@ class TestCertificationMetrics(unittest.TestCase):
         self.assertEqual(reloaded.details.box_volume, estimate.details.box_volume)
         self.assertEqual(reloaded.details.inside_fraction, estimate.details.inside_fraction)
         np.testing.assert_allclose(reloaded.details.bounds, estimate.details.bounds)
+
+    def test_estimate_mpc_dataset_level_set_measure(self) -> None:
+        class MockTraj:
+            def __init__(self, V_solver: list[float], states: np.ndarray):
+                self.V_solver = np.array(V_solver)
+                self.states = states
+
+        class MockConstraints:
+            lbx = np.array([-2.0, -2.0])
+            ubx = np.array([2.0, 2.0])
+
+        class MockGlobalConfig:
+            nx = 2
+            constraints = MockConstraints()
+
+        class MockDataset:
+            def __init__(self, trajs: list[MockTraj]):
+                self.trajectories = trajs
+                self.global_config = MockGlobalConfig()
+
+            def __len__(self) -> int:
+                return len(self.trajectories)
+
+            def __getitem__(self, idx: int) -> MockTraj:
+                return self.trajectories[idx]
+
+        trajs = [
+            MockTraj([0.5, 0.2], np.zeros((2, 2))),
+            MockTraj([1.5, 0.8], np.zeros((2, 2))),
+            MockTraj([0.8, 0.4], np.zeros((2, 2))),
+            MockTraj([2.5, 1.2], np.zeros((2, 2))),
+        ]
+        ds = MockDataset(trajs)
+        estimate = estimate_mpc_dataset_level_set_measure(ds, rho=1.0)
+        self.assertEqual(estimate.method, "monte_carlo_dataset")
+        self.assertEqual(estimate.rho, 1.0)
+        self.assertEqual(estimate.num_states, 2)
+        self.assertEqual(estimate.details.num_samples, 4)
+        self.assertAlmostEqual(estimate.details.inside_fraction, 0.5)
+        self.assertAlmostEqual(estimate.details.box_volume, 16.0)
+        self.assertAlmostEqual(estimate.measure, 8.0)
 
 
 if __name__ == "__main__":
