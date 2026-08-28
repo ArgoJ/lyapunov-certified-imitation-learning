@@ -57,7 +57,7 @@ def discrete_inverted_pendulum_on_cart_matrices(
             [0.0, 1.0, 0.0, 0.0],
             [0.0, -d / m_c, -(m_p * g) / m_c, 0.0],
             [0.0, 0.0, 0.0, 1.0],
-            [0.0, - d / (m_c * l), ((m_c + m_p) * g) / (m_c * l), 0.0],
+            [0.0, d / (m_c * l), ((m_c + m_p) * g) / (m_c * l), 0.0],
         ],
         dtype=np.float64,
     )
@@ -66,7 +66,7 @@ def discrete_inverted_pendulum_on_cart_matrices(
             [0.0],
             [1.0 / m_c],
             [0.0],
-            [1.0 / (m_c * l)],
+            [-1.0 / (m_c * l)],
         ],
         dtype=np.float64,
     )
@@ -163,8 +163,8 @@ class NonlinearInvertedPendulumOnCartDynamics(nn.Module):
         ) / denom
 
         theta_ddot = (
-            effective_force * cos_theta
-            + m_p * l * theta_dot.pow(2) * 0.5 * sin_2theta
+            - effective_force * cos_theta
+            - m_p * l * theta_dot.pow(2) * 0.5 * sin_2theta
             + total_mass * g * sin_theta
         ) / (l * denom)
 

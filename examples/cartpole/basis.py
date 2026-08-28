@@ -37,7 +37,7 @@ def linearized_inverted_pendulum_on_cart_matrices(
             [0.0, 1.0, 0.0, 0.0],
             [0.0, -d / m_c, -(m_p * g) / m_c, 0.0],
             [0.0, 0.0, 0.0, 1.0],
-            [0.0, - d / (m_c * l), ((m_c + m_p) * g) / (m_c * l), 0.0],
+            [0.0, d / (m_c * l), ((m_c + m_p) * g) / (m_c * l), 0.0],
         ],
         dtype=np.float64,
     )
@@ -46,7 +46,7 @@ def linearized_inverted_pendulum_on_cart_matrices(
             [0.0],
             [1.0 / m_c],
             [0.0],
-            [1.0 / (m_c * l)],
+            [-1.0 / (m_c * l)],
         ],
         dtype=np.float64,
     )

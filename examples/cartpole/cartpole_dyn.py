@@ -43,8 +43,8 @@ class CartpoleContinuousDynamics(nn.Module):
             - self.m_pole * self.gravity * sin_theta * cos_theta
         ) / denom
         theta_ddot = (
-            effective_force * cos_theta
-            + self.m_pole * self.length * theta_dot * theta_dot * sin_theta * cos_theta
+            - effective_force * cos_theta
+            - self.m_pole * self.length * theta_dot * theta_dot * sin_theta * cos_theta
             + total_mass * self.gravity * sin_theta
         ) / (self.length * denom)
 
@@ -58,7 +58,7 @@ class CartpoleDynamics(nn.Module):
         self,
         dt: float = 0.1,
         sys_cfg: PendulumOnCartConfig = PendulumOnCartConfig(),
-        method: IntegrationMethod = IntegrationMethod.CLASSICAL_RK4,
+        method: IntegrationMethod = IntegrationMethod.EXPLICIT_EULER,
         abcrown_compatible_ops: bool = False,
     ):
         super().__init__()

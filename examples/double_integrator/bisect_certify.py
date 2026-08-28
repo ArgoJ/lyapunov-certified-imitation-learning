@@ -129,6 +129,7 @@ def main() -> None:
 
         dyn_model = DoubleIntegratorDynamics(
             dt=mpc_cfg.dt,
+            method=IntegrationMethod.EXPLICIT_EULER,
             abcrown_compatible_ops=True,
         ).to(device)
         dyn_model.eval()

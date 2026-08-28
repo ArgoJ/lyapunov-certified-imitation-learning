@@ -9,7 +9,7 @@ class DoubleIntegratorDynamics(nn.Module):
     def __init__(
         self, 
         dt: float = 0.1,
-        method: IntegrationMethod = IntegrationMethod.CLASSICAL_RK4,
+        method: IntegrationMethod = IntegrationMethod.EXPLICIT_EULER,
         abcrown_compatible_ops: bool = False,
     ):
         super().__init__()

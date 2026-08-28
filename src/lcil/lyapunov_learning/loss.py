@@ -324,7 +324,18 @@ class RhoGatedConditionLoss(nn.Module):
             relative_eps=config.relative_condition_eps,
         )
 
-    def condition_violation(
+    def raw_condition_violation(
+        self,
+        v_curr: th.Tensor,
+        v_next: th.Tensor,
+        x_next: th.Tensor,
+    ) -> th.Tensor:
+        """Compute condition violation per sample without gating."""
+        dec_viol = self.decrease_violation(v_curr=v_curr, v_next=v_next)
+        inv_viol = self.invariance_violation(x_next=x_next)
+        return dec_viol + self.invariance_weight * inv_viol
+
+    def gated_condition_violation(
         self,
         v_curr: th.Tensor,
         v_next: th.Tensor,
@@ -337,18 +348,16 @@ class RhoGatedConditionLoss(nn.Module):
         Applies sublevel weight (soft or hard) to BOTH decrease and invariance violations
         so that violations are only evaluated inside the rho-sublevel set V(x) <= rho.
         """
-        dec_viol = self.decrease_violation(v_curr=v_curr, v_next=v_next)
-        inv_viol = self.invariance_violation(x_next=x_next)
-        total_raw_viol = dec_viol + self.invariance_weight * inv_viol
+        raw_violation = self.raw_condition_violation(v_curr, v_next, x_next)
 
         if rho_estimate is None:
-            return total_raw_viol
+            return raw_violation
 
         if soft_gated:
             sublevel_weight = self.soft_sublevel_weight(v_curr, rho_estimate)
         else:
             sublevel_weight = self.hard_sublevel_weight(v_curr, rho_estimate)
-        return total_raw_viol * sublevel_weight
+        return raw_violation * sublevel_weight
 
 
     def hard_sublevel_weight(self, v_curr: th.Tensor, rho_estimate: float) -> th.Tensor:
@@ -371,7 +380,9 @@ class RhoGatedConditionLoss(nn.Module):
         x_next: th.Tensor,
         rho_estimate: float,
     ) -> th.Tensor:
-        return self.condition_violation(v_curr, v_next, x_next, rho_estimate, soft_gated=True).mean()
+        raw_violation = self.raw_condition_violation(v_curr, v_next, x_next)
+        sublevel_weight = self.soft_sublevel_weight(v_curr, rho_estimate)
+        return weighted_mean(raw_violation, sublevel_weight)
 
 
 class SignedConditionMargin(nn.Module):
@@ -833,7 +844,7 @@ class LyapunovTrainingLoss(nn.Module):
         soft_gated: bool = False,
     ) -> th.Tensor:
         v_curr, x_next, v_next = self._closed_loop_values(x_batch)
-        return self.condition_loss.condition_violation(
+        return self.condition_loss.gated_condition_violation(
             v_curr=v_curr, v_next=v_next, x_next=x_next, rho_estimate=rho_estimate, soft_gated=soft_gated
         )
 
