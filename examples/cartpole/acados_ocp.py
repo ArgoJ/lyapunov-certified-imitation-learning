@@ -4,7 +4,7 @@ import os
 
 from numpy.typing import NDArray
 from scipy.linalg import solve_discrete_are, block_diag
-from mpc_datagen import mdg_linalg, add_temp_folder
+from mpc_datagen import mdg_utils, add_temp_folder
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver, AcadosOcpBatchSolver
 
 from .sys_cfg import PendulumOnCartConfig
@@ -138,7 +138,7 @@ def get_ocp(
     ocp.model = get_model(cfg=sys_cfg)
 
     A_c, B_c = linearized_inverted_pendulum_on_cart_matrices(cfg=sys_cfg)
-    A_d, B_d = mdg_linalg.lin_c2d_rk4(A_c, B_c, dt, num_steps=1)
+    A_d, B_d = mdg_utils.lin_c2d_rk4(A_c, B_c, dt, num_steps=1)
     P = solve_discrete_are(A_d, B_d, Q, R)
 
     # Solver options
@@ -151,7 +151,7 @@ def get_ocp(
     ocp.solver_options.nlp_solver_type = "SQP"
     ocp.solver_options.integrator_type = 'ERK'
     ocp.solver_options.print_level = 0
-    ocp.solver_options.sim_method_num_stages = 4
+    ocp.solver_options.sim_method_num_stages = 1
     ocp.solver_options.sim_method_num_steps = 1
     ocp.solver_options.qp_solver_iter_max = 200
     ocp.solver_options.nlp_solver_max_iter = 200

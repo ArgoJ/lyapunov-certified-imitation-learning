@@ -15,6 +15,7 @@ from lcil.certification.metrics import (
     LevelSetEstimate,
     _sample_unit_sphere_directions,
     estimate_level_set_measure,
+    estimate_mpc_dataset_level_set_measure,
 )
 
 
@@ -49,9 +50,9 @@ class TestCertificationMetrics(unittest.TestCase):
             num_directions=256,
         )
 
-        self.assertEqual(estimate.directions.shape, (256, 2))
-        np.testing.assert_allclose(estimate.radii, 1.0, atol=5e-6)
-        self.assertFalse(estimate.truncated)
+        self.assertEqual(estimate.details.directions.shape, (256, 2))
+        np.testing.assert_allclose(estimate.details.radii, 1.0, atol=5e-6)
+        self.assertFalse(estimate.details.truncated)
         self.assertAlmostEqual(estimate.measure, np.pi, delta=1e-4)
 
     def test_estimate_level_set_area_matches_unit_ball(self) -> None:
@@ -62,8 +63,8 @@ class TestCertificationMetrics(unittest.TestCase):
             num_directions=512,
         )
 
-        np.testing.assert_allclose(estimate.radii, 1.0, atol=5e-6)
-        self.assertFalse(estimate.truncated)
+        np.testing.assert_allclose(estimate.details.radii, 1.0, atol=5e-6)
+        self.assertFalse(estimate.details.truncated)
         self.assertAlmostEqual(estimate.measure, 4.0 * np.pi / 3.0, delta=1e-4)
 
     def test_estimate_level_set_area_truncation(self) -> None:
@@ -79,9 +80,9 @@ class TestCertificationMetrics(unittest.TestCase):
 
         # All rays should be truncated at 2.0, so the area should be pi * 2^2 = 4pi.
         self.assertAlmostEqual(estimate.measure, 4.0 * np.pi, delta=1e-5)
-        self.assertTrue(estimate.truncated)
-        self.assertEqual(estimate.truncated_fraction, 1.0)
-        np.testing.assert_allclose(estimate.radii, 2.0)
+        self.assertTrue(estimate.details.truncated)
+        self.assertEqual(estimate.details.truncated_fraction, 1.0)
+        np.testing.assert_allclose(estimate.details.radii, 2.0)
 
     def test_nonfinite_values_are_treated_as_ray_exit(self) -> None:
         estimate = estimate_level_set_measure(
@@ -94,12 +95,12 @@ class TestCertificationMetrics(unittest.TestCase):
             max_radius=4.0,
         )
 
-        self.assertFalse(estimate.truncated)
-        np.testing.assert_allclose(estimate.radii, 1.0, atol=5e-5)
+        self.assertFalse(estimate.details.truncated)
+        np.testing.assert_allclose(estimate.details.radii, 1.0, atol=5e-5)
         self.assertAlmostEqual(estimate.measure, np.pi, delta=1e-4)
 
-    def test_non_monotonic_rays_raise_error(self) -> None:
-        with self.assertRaisesRegex(ValueError, "star-shaped"):
+    def test_non_monotonic_rays_logs_warning(self) -> None:
+        with self.assertLogs("lcil.certification.metrics", level="WARNING"):
             estimate_level_set_measure(
                 _NonMonotonicRadialLyapunov(),
                 rho=1.1,
@@ -119,10 +120,24 @@ class TestCertificationMetrics(unittest.TestCase):
         # analytical area of an ellipse: pi * a * b
         expected_area = np.pi * 1.0 * 0.5 
         
-        self.assertFalse(estimate.truncated)
+        self.assertFalse(estimate.details.truncated)
         # Tolerance slightly higher due to Monte Carlo error in asymmetric 
         # shapes being larger than in perfect circles.
         self.assertAlmostEqual(estimate.measure, expected_area, delta=5e-3)
+
+    def test_estimate_level_set_area_monte_carlo(self) -> None:
+        # V(x) = x1^2 + x2^2 <= 1.0 -> unit circle area = pi
+        estimate = estimate_level_set_measure(
+            _QuadraticLyapunov(),
+            rho=1.0,
+            num_states=2,
+            method="monte_carlo",
+            bounds=2.0,
+            num_samples=200_000,
+        )
+
+        self.assertEqual(estimate.method, "monte_carlo")
+        self.assertAlmostEqual(estimate.measure, np.pi, delta=5e-2)
 
     def test_level_set_estimate_json_roundtrip(self) -> None:
         estimate = estimate_level_set_measure(
@@ -139,13 +154,77 @@ class TestCertificationMetrics(unittest.TestCase):
         self.assertEqual(output_path.name, "level_set_estimate.json")
         self.assertEqual(reloaded.rho, estimate.rho)
         self.assertEqual(reloaded.num_states, estimate.num_states)
-        self.assertEqual(reloaded.num_directions, estimate.num_directions)
+        self.assertEqual(reloaded.details.num_directions, estimate.details.num_directions)
         self.assertEqual(reloaded.measure, estimate.measure)
-        self.assertEqual(reloaded.unit_sphere_surface_area, estimate.unit_sphere_surface_area)
-        self.assertEqual(reloaded.max_radius, estimate.max_radius)
-        np.testing.assert_allclose(reloaded.directions, estimate.directions)
-        np.testing.assert_allclose(reloaded.radii, estimate.radii)
-        np.testing.assert_array_equal(reloaded.truncated_mask, estimate.truncated_mask)
+        self.assertEqual(reloaded.details.unit_sphere_surface_area, estimate.details.unit_sphere_surface_area)
+        self.assertEqual(reloaded.details.max_radius, estimate.details.max_radius)
+        np.testing.assert_allclose(reloaded.details.directions, estimate.details.directions)
+        np.testing.assert_allclose(reloaded.details.radii, estimate.details.radii)
+        np.testing.assert_array_equal(reloaded.details.truncated_mask, estimate.details.truncated_mask)
+
+    def test_monte_carlo_level_set_estimate_json_roundtrip(self) -> None:
+        estimate = estimate_level_set_measure(
+            _QuadraticLyapunov(),
+            rho=1.0,
+            num_states=2,
+            method="monte_carlo",
+            bounds=2.0,
+            num_samples=1000,
+        )
+
+        with TemporaryDirectory() as tmp_dir:
+            output_path = estimate.save(tmp_dir)
+            reloaded = LevelSetEstimate.load(tmp_dir)
+
+        self.assertEqual(output_path.name, "level_set_estimate.json")
+        self.assertEqual(reloaded.rho, estimate.rho)
+        self.assertEqual(reloaded.num_states, estimate.num_states)
+        self.assertEqual(reloaded.details.num_samples, estimate.details.num_samples)
+        self.assertEqual(reloaded.measure, estimate.measure)
+        self.assertEqual(reloaded.details.box_volume, estimate.details.box_volume)
+        self.assertEqual(reloaded.details.inside_fraction, estimate.details.inside_fraction)
+        np.testing.assert_allclose(reloaded.details.bounds, estimate.details.bounds)
+
+    def test_estimate_mpc_dataset_level_set_measure(self) -> None:
+        class MockTraj:
+            def __init__(self, V_solver: list[float], states: np.ndarray):
+                self.V_solver = np.array(V_solver)
+                self.states = states
+
+        class MockConstraints:
+            lbx = np.array([-2.0, -2.0])
+            ubx = np.array([2.0, 2.0])
+
+        class MockGlobalConfig:
+            nx = 2
+            constraints = MockConstraints()
+
+        class MockDataset:
+            def __init__(self, trajs: list[MockTraj]):
+                self.trajectories = trajs
+                self.global_config = MockGlobalConfig()
+
+            def __len__(self) -> int:
+                return len(self.trajectories)
+
+            def __getitem__(self, idx: int) -> MockTraj:
+                return self.trajectories[idx]
+
+        trajs = [
+            MockTraj([0.5, 0.2], np.zeros((2, 2))),
+            MockTraj([1.5, 0.8], np.zeros((2, 2))),
+            MockTraj([0.8, 0.4], np.zeros((2, 2))),
+            MockTraj([2.5, 1.2], np.zeros((2, 2))),
+        ]
+        ds = MockDataset(trajs)
+        estimate = estimate_mpc_dataset_level_set_measure(ds, rho=1.0)
+        self.assertEqual(estimate.method, "monte_carlo_dataset")
+        self.assertEqual(estimate.rho, 1.0)
+        self.assertEqual(estimate.num_states, 2)
+        self.assertEqual(estimate.details.num_samples, 4)
+        self.assertAlmostEqual(estimate.details.inside_fraction, 0.5)
+        self.assertAlmostEqual(estimate.details.box_volume, 16.0)
+        self.assertAlmostEqual(estimate.measure, 8.0)
 
 
 if __name__ == "__main__":

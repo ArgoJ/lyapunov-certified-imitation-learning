@@ -439,5 +439,14 @@ class TestArgumentParserConfig(unittest.TestCase):
 
         self.assertTrue(config.skip_boundary_core_cert)
 
+    def test_add_to_argparse_suppress_defaults_includes_default_in_help(self) -> None:
+        parser = ArgumentParser()
+        DummyCliConfig().add_to_argparse(parser, suppress_defaults=True)
+
+        help_text = parser.format_help()
+
+        self.assertIn("(default: 10)", help_text)
+        self.assertIn("(default: True)", help_text)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

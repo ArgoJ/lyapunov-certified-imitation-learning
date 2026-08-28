@@ -16,10 +16,7 @@ from pathlib import Path
 from typing import Sequence
 from numpy.typing import NDArray
 
-from mpc_datagen.plots import (
-    _handle_figure_output,
-    _to_latex,
-)
+from mpc_datagen import mdg_plt
 
 __logger__ = logging.getLogger(__name__)
 
@@ -183,8 +180,8 @@ def empirical_violation_heatmap(
             name="V(x')=(1-κ)V(x)",
         ))
 
-        label_i = _to_latex(state_labels[dim_i])
-        label_j = _to_latex(state_labels[dim_j])
+        label_i = mdg_plt.utils._to_latex(state_labels[dim_i])
+        label_j = mdg_plt.utils._to_latex(state_labels[dim_j])
         fig.update_layout(
             title=f"Decrease Violation: {label_i} vs {label_j} (other dims=0)",
             xaxis_title=label_i,

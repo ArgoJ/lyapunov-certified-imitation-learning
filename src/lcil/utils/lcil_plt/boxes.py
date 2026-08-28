@@ -9,15 +9,7 @@ from pathlib import Path
 from numpy.typing import NDArray
 from typing import TYPE_CHECKING, Sequence
 
-from mpc_datagen.plots import (
-    PairPlotResult,
-    _save_pair_figures,
-    _resolve_indices,
-    _resolve_labels,
-    _state_index_pairs,
-    _to_latex,
-)
-
+from mpc_datagen import mdg_plt
 from .utils import (
     add_regions,
     collapse_projected_regions,
@@ -80,18 +72,18 @@ def certified_regions_2d(
     max_state_idx = max(state_indices) if state_indices is not None else -1
     num_states = max(region_dims + [max_state_idx + 1])
 
-    state_indices = _resolve_indices(state_indices, num_states)
+    state_indices = mdg_plt.utils._resolve_indices(state_indices, num_states)
 
     if state_labels is not None and len(state_labels) == len(state_indices):
         labels_full = [f"State {i}" for i in range(num_states)]
         for label_idx, state_idx in enumerate(state_indices):
             labels_full[state_idx] = state_labels[label_idx]
     else:
-        labels_full = _resolve_labels(state_labels, num_states)
+        labels_full = mdg_plt.utils._resolve_labels(state_labels, num_states)
 
-    pair_indices = _state_index_pairs(state_indices)
+    pair_indices = mdg_plt.utils._state_index_pairs(state_indices)
 
-    figures: list[PairPlotResult] = []
+    figures: list[mdg_plt.PairPlotResult] = []
     for pair in pair_indices:
         labels_pair = (labels_full[pair[0]], labels_full[pair[1]])
         cert_pair, uncert_pair, ctex_pair = collapse_projected_regions(
@@ -122,31 +114,31 @@ def certified_regions_2d(
             cert_pair,
             fig,
             "#2ca02c",
-            _to_latex("Certified"),
+            mdg_plt.utils._to_latex("Certified"),
             fill=True,
         )
         add_regions(
             uncert_pair,
             fig,
             "#d62728",
-            _to_latex("Uncertified"),
+            mdg_plt.utils._to_latex("Uncertified"),
             fill=True,
         )
         add_regions(
             ctex_pair,
             fig,
             "#808080",
-            _to_latex("Outside Sublevel"),
+            mdg_plt.utils._to_latex("Outside Sublevel"),
             fill=True,
             alpha=0.5,
         )
 
         fig.update_layout(
-            title=_to_latex(
+            title=mdg_plt.utils._to_latex(
                 f"Certification Partition ({labels_pair[0]} vs {labels_pair[1]})"
             ),
-            xaxis_title=_to_latex(labels_pair[0]),
-            yaxis_title=_to_latex(labels_pair[1]),
+            xaxis_title=mdg_plt.utils._to_latex(labels_pair[0]),
+            yaxis_title=mdg_plt.utils._to_latex(labels_pair[1]),
             xaxis=dict(range=[pair_bounds[0][0], pair_bounds[0][1]]),
             yaxis=dict(range=[pair_bounds[1][0], pair_bounds[1][1]]),
         )
@@ -162,9 +154,9 @@ def certified_regions_2d(
             bgcolor="rgba(255,255,255,0.80)",
             bordercolor="rgba(0,0,0,0.20)",
             borderwidth=1,
-            text=_to_latex(partition_annotation(cert_pair, uncert_pair, ctex_pair)),
+            text=mdg_plt.utils._to_latex(partition_annotation(cert_pair, uncert_pair, ctex_pair)),
         )
-        figures.append(PairPlotResult(
+        figures.append(mdg_plt.PairPlotResult(
             idx_x=pair[0],
             idx_y=pair[1],
             label_x=labels_pair[0],
@@ -177,7 +169,7 @@ def certified_regions_2d(
         return
 
     if html_path is not None:
-        _save_pair_figures(figures, html_path, kind="Certified region")
+        mdg_plt.utils._save_pair_figures(figures, html_path, kind="Certified region")
         return
 
     return figures

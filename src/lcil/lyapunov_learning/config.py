@@ -193,6 +193,12 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="policy_lr_factor",
         validators=(positive_validator,),
     )
+    policy_update_interval: int = config_field(
+        default=1,
+        help="Number of inner steps between policy parameter updates when policy_epochs is active.",
+        display_alias="policy_upd_int",
+        validators=(positive_validator,),
+    )
     seed: int | None = config_field(
         default=None,
         help="Random seed for reproducibility.",

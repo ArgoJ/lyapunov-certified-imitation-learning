@@ -22,7 +22,12 @@ from .config import LyapunovCertificationConfig
 from .models import LyapunovCoreVerifier
 from .metrics import (
     LevelSetEstimate,
+    MonteCarloDetails,
+    RayShootingDetails,
     estimate_level_set_measure,
+    estimate_level_set_measure_monte_carlo,
+    estimate_level_set_measure_ray_shooting,
+    estimate_mpc_dataset_level_set_measure,
 )
 
 __all__ = [
@@ -39,8 +44,13 @@ __all__ = [
     "LyapunovCertificationConfig",
     "LyapunovCoreVerifier",
     "LevelSetEstimate",
+    "MonteCarloDetails",
+    "RayShootingDetails",
     "LiRPALyapunovRegionBounds",
     "LyapunovRegionBounds",
     "affine_l1_lower_bound",
     "estimate_level_set_measure",
+    "estimate_level_set_measure_monte_carlo",
+    "estimate_level_set_measure_ray_shooting",
+    "estimate_mpc_dataset_level_set_measure",
 ]
