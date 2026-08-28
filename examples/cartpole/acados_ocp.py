@@ -69,12 +69,12 @@ def get_model(
 
     p_ddot = (
         effective_force
-        - theta2_sin_ml
-        + m_p * g * sin_theta * cos_theta
+        + theta2_sin_ml
+        - m_p * g * sin_theta * cos_theta
     ) / denom
 
     theta_ddot = (
-        effective_force * cos_theta
+        - effective_force * cos_theta
         - theta2_sin_ml * cos_theta
         + total_mass * g * sin_theta
     ) / (l * denom)
@@ -89,7 +89,7 @@ def get_model(
     model.p = p
     model.name = model_name
 
-    model.x_labels = ['$x$ [m]', r'$\theta$ [rad]', '$v$ [m]', r'$\dot{\theta}$ [rad/s]']
+    model.x_labels = ['$x$ [m]', '$v$ [m/s]', r'$\theta$ [rad]', r'$\dot{\theta}$ [rad/s]']
     model.u_labels = ['$F$ [N]']
     model.t_label = '$t$ [s]'
 
@@ -183,7 +183,7 @@ def get_ocp(
     ocp.cost.yref_e = np.zeros((nx,))
 
     # Constraints
-    ocp.constraints.x0 = np.array([0.0, np.pi, 0.0, 0.0])
+    ocp.constraints.x0 = np.zeros((nx,))
     # ocp.remove_x0_elimination()
 
     # Hardcoded realistic bounds

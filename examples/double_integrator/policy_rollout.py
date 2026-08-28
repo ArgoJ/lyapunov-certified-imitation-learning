@@ -204,7 +204,7 @@ def main() -> None:
             dt = mpc_cfg.dt
             simulator = DoubleIntegratorDynamics(
                 dt=dt,
-                method=IntegrationMethod.CLASSICAL_RK4,
+                method=IntegrationMethod.EXPLICIT_EULER,
             ).to(device)
 
             solved_dataset = build_policy_rollout_dataset(
