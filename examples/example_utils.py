@@ -1,3 +1,4 @@
+import json
 import torch as th
 import torch.nn as nn
 import numpy as np
@@ -330,6 +331,27 @@ def resolve_dataset_path(
     if resolved_dataset_path.is_dir():
         return discover_latest_dataset_path(resolved_dataset_path, dataset_pattern)
     return resolved_dataset_path
+
+
+def resolve_expert_dataset_path(target_dir: Path | str) -> Path:
+    """Resolve the expert MPC dataset path from the training configuration."""
+    target_path = Path(target_dir).resolve()
+
+    for candidate_dir in [target_path, *target_path.parents]:
+        cfg_file = candidate_dir / TRAINING_CONFIG_FILENAME
+        if cfg_file.is_file():
+            try:
+                with open(cfg_file, "r", encoding="utf-8") as f:
+                    cfg_data = json.load(f)
+                ds_path = cfg_data.get("dataset_path")
+                if ds_path:
+                    resolved_ds = Path(ds_path).resolve()
+                    if resolved_ds.is_file():
+                        return resolved_ds
+            except Exception as exc:
+                __logger__.debug("Could not read dataset_path from %s: %s", cfg_file, exc)
+
+    raise FileNotFoundError(f"Could not resolve expert dataset path for '{target_dir}'.")
 
 
 class GenericModelLoader:

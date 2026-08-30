@@ -35,6 +35,7 @@ from ..constants import *
 from ..example_utils import (
     default_dataset_path as _default_dataset_path,
     resolve_dataset_path as _resolve_dataset_path,
+    resolve_expert_dataset_path as _resolve_expert_dataset_path,
     discover_latest_lyapunov_dir as _discover_latest_lyapunov_dir,
     discover_latest_policy_dir as _discover_latest_policy_dir,
     discover_latest_policy_and_lyapunov_dirs as _discover_latest_policy_and_lyapunov_dirs,
@@ -125,3 +126,7 @@ def default_dataset_path(data_root: Path | str | None = None):
 
 def resolve_dataset_path(dataset_path: Path | str | None, data_root: Path | str | None = None):
     return _resolve_dataset_path(dataset_path, data_root or DATA_DIR)
+
+
+def resolve_expert_dataset_path(target_dir: Path | str) -> Path:
+    return _resolve_expert_dataset_path(target_dir)

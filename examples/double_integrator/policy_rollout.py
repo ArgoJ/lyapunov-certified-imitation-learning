@@ -28,6 +28,7 @@ from . import (
     load_policy_model,
     require_dir,
     resolve_dataset_path,
+    resolve_expert_dataset_path,
 )
 from ..constants import (
     POLICY_MODEL_FILENAME,
@@ -82,45 +83,6 @@ def _set_quadratic_vn(dataset: MPCDataset, P: np.ndarray) -> None:
         entry.trajectory.V_N = np.einsum("bi,ij,bj->b", x, P, x)
 
 
-def _resolve_expert_dataset_path(
-    policy_dir: Path,
-    explicit_path: str | None,
-) -> Path | None:
-    """Find the matching expert MPC dataset path for the policy run."""
-    if explicit_path is not None and str(explicit_path).strip():
-        try:
-            resolved = resolve_dataset_path(explicit_path)
-            if resolved.is_file():
-                return resolved
-        except Exception as e:
-            __logger__.warning("Could not resolve explicit dataset path '%s': %s", explicit_path, e)
-
-    # Check training_config.json in policy_dir or timestamp_dir
-    for search_dir in (policy_dir, policy_dir.parent):
-        cfg_file = search_dir / TRAINING_CONFIG_FILENAME
-        if cfg_file.is_file():
-            try:
-                with open(cfg_file, "r", encoding="utf-8") as f:
-                    cfg_data = json.load(f)
-                ds_path_str = cfg_data.get("dataset_path")
-                if ds_path_str:
-                    resolved = Path(ds_path_str).resolve()
-                    if resolved.is_file():
-                        return resolved
-            except Exception as e:
-                __logger__.debug("Error reading dataset_path from %s: %s", cfg_file, e)
-
-    # Fall back to latest default dataset
-    try:
-        def_path = Path(default_dataset_path()).resolve()
-        if def_path.is_file():
-            return def_path
-    except Exception as e:
-        __logger__.debug("Could not discover default dataset path: %s", e)
-
-    return None
-
-
 def main() -> None:
     sweep = parse_cli_args()
     processed_policy_dirs: set[Path] = set()
@@ -165,7 +127,15 @@ def main() -> None:
             mpc_cfg = load_mpc_config(p_dir)
 
             # Discover expert dataset for 1:1 comparison
-            expert_dataset_path = _resolve_expert_dataset_path(p_dir, script_config.dataset_path)
+            try:
+                expert_dataset_path = (
+                    Path(script_config.dataset_path).resolve()
+                    if script_config.dataset_path
+                    else resolve_expert_dataset_path(p_dir)
+                )
+            except Exception as e:
+                __logger__.warning("Could not resolve expert dataset path for %s: %s", p_dir, e)
+                expert_dataset_path = None
             expert_subset: MPCDataset | None = None
             initial_states: np.ndarray | None = None
 
