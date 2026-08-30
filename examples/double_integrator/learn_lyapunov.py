@@ -47,7 +47,6 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     hidden_size: int = config_field(default=32, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
     layers: int = config_field(default=2, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
     fix_r_factor: bool = config_field(default=False, help="Whether to fix the R factor in the Lyapunov candidate to 1.0.")
-    last_layer_std: float = config_field(default=0.001, help="Standard deviation for the last layer of the Lyapunov feature net.")
 
 def _build_script_defaults() -> LyapunovLearningScriptConfig:
     default_policy_dir = discover_latest_policy_dir()
@@ -218,7 +217,6 @@ def main() -> None:
             state_dim=policy_global_config.nx,
             riccati_p=riccati_p,
             fixed_r_factor=script_config.fix_r_factor,
-            feature_last_init_std=script_config.last_layer_std,
         )
 
         # ---------------------------------------------------------------------

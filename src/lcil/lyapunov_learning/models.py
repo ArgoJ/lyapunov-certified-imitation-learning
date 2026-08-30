@@ -64,7 +64,6 @@ class NeuralLyapunovCandidate(nn.Module):
         riccati_p: th.Tensor | None = None,
         riccati_scale: str | float = "none",
         fixed_r_factor: bool = False,
-        feature_last_init_std: float | None = None,
     ):
         """Initialize the NeuralLyapunovCandidate.
 
@@ -84,8 +83,6 @@ class NeuralLyapunovCandidate(nn.Module):
             The scaling mode for the Riccati matrix, by default "none"
         fixed_r_factor : bool, optional
             Whether the R factor is fixed, by default False
-        feature_last_init_std : float | None, optional
-            The standard deviation for initializing the last feature layer, by default None
         """
         super().__init__()
         self.feature_net = feature_net
@@ -95,10 +92,8 @@ class NeuralLyapunovCandidate(nn.Module):
             x_star = th.zeros(state_dim, dtype=th.float32)
 
         self.register_buffer("x_star", x_star.reshape(1, state_dim))
+        self._set_last_feature_layer(0.5)
         self._setup_r_factor(riccati_p, riccati_scale, fixed_r_factor)
-        
-        if feature_last_init_std is not None:
-            self._set_last_feature_layer(feature_last_init_std)
 
     def _set_last_feature_layer(self, std: float) -> None:
         """Set the last linear layer of the feature network to have weights initialized
@@ -233,10 +228,14 @@ class NeuralLyapunovCandidate(nn.Module):
         )
         p_matrix = _scale_riccati(p_matrix, scale_mode)
         _check_riccati_shape(p_matrix, self.state_dim)
-        __logger__.info("Using Riccati value matrix to seed the Lyapunov R factor: \n%s", p_matrix)
         factor = self._calculate_r_factor_from_riccati(p_matrix)
         with th.no_grad():
             self.r_factor.copy_(factor)
+        
+        p_scale = max(1.0, float(th.linalg.norm(p_matrix, ord=2).item()))
+        self._set_last_feature_layer(0.5 * p_scale)
+        __logger__.info("Using Riccati value matrix to seed the Lyapunov R factor: \n%s", p_matrix)
+        __logger__.info("Setting the last layer of the feature net to std: %.3f", 0.5 *p_scale)
     
     def get_feature_term(self, x: th.Tensor) -> th.Tensor:
         """Compute the feature term |phi(x) - phi(x*)| for the Lyapunov candidate."""

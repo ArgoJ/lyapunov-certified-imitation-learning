@@ -99,6 +99,10 @@ def main() -> None:
             rollout_steps=script_config.time_steps,
             initial_states=initial_states,
         )
+        if dataset is None:
+            __logger__.warning("Failed to generate rollout dataset for %s", lyapunov_dir)
+            continue
+
         dataset.validate()
         dataset.save(output_path, save_ocp_trajs=False)
         __logger__.info("Saved Lyapunov rollout dataset to %s", output_path)
@@ -106,10 +110,21 @@ def main() -> None:
         veri_stats = StabilityVerifier.verify(dataset)
         VerificationRender(veri_stats).render()
 
+        state_labels = [r"$x$", r"$v$"]
+        control_labels = [r"$u$"]
+
+        mdg_plt.mpc_trajectories(
+            dataset=dataset,
+            state_labels=state_labels,
+            control_labels=control_labels,
+            plot_predictions=False,
+            html_path=lyapunov_dir / "trajectories.html",
+        )
+
         mdg_plt.lyapunov(
             lyapunov_func=build_lyapunov_func(lyap_model, device),
             dataset=dataset,
-            state_labels=["$x$", "$v$"],
+            state_labels=state_labels,
             plot_3d=False,
             html_path=(lyapunov_dir / LYAPUNOV_ROLLOUT_FILENAME).with_suffix(".html"),
             use_dataset_v=True,

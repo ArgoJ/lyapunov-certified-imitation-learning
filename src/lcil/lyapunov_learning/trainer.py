@@ -591,13 +591,17 @@ class LyapunovTrainer:
 
     def train_with_scaled_bounds(
         self,
-        bound_scales: Sequence[float | Sequence[float] | NDArray]
+        bound_scales: Sequence[float | Sequence[float] | NDArray],
+        base_save_dir: os.PathLike | str | None = None,
+        mpc_config: MPCConfig | None = None,
     ) -> LyapunovTrainingCurriculumResult:
         """Train on a curriculum of progressively scaled state bounds.
 
         The same policy and Lyapunov model instances are reused across stages,
         so each stage warm-starts from the weights learned on the previous one.
-        The trainer instance is updated in-place to the final curriculum stage.
+        Checkpoints for each completed stage are saved if ``base_save_dir`` is provided.
+        If a subsequent stage aborts, the trainer restores the model state of the
+        last successfully completed stage.
         """
         base_bounds = self.config.train_bounds
         scaled_bounds = self._build_scaled_train_bounds(
@@ -616,17 +620,14 @@ class LyapunovTrainer:
             if self.config.tb_log_dir is not None:
                 stage_tb_log_dir = Path(self.config.tb_log_dir) / f"curriculum_stage_{stage_index:02d}"
 
-            stage_seed = None if self.config.seed is None else self.config.seed + stage_index
-            rho_min = stage_records[-1].result.rho_estimate if stage_records else self.config.rho_min
             stage_config = replace(
                 self.config,
                 train_bounds=stage_bounds,
-                seed=stage_seed,
+                seed=None if self.config.seed is None else self.config.seed + stage_index,
                 tb_log_dir=stage_tb_log_dir,
-                rho_min=rho_min,
+                # rho_min=stage_records[-1].result.rho_estimate if stage_records else self.config.rho_min,
                 outer_epochs=int(self.config.outer_epochs * 0.5) if stage_index != last_stage_idx else self.config.outer_epochs,
                 policy_epochs=int(self.config.policy_epochs * 0.5) if stage_index != last_stage_idx and self.config.policy_epochs is not None else self.config.policy_epochs,
-
             )
             
             stage_trainer = type(self)(
@@ -639,6 +640,10 @@ class LyapunovTrainer:
             )
             stage_result = stage_trainer.train(description=f"Lyapunov Learning Stage [{stage_index + 1}/{len(scaled_bounds)}]")
             final_stage_trainer = stage_trainer
+
+            if base_save_dir is not None:
+                stage_save_folder = Path(base_save_dir) / f"stage_{stage_index:02d}"
+                stage_trainer.save(stage_save_folder, mpc_config=mpc_config)
 
             if stage_result.aborted:
                 aborted_result = stage_result

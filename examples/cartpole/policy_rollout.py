@@ -261,6 +261,27 @@ def main() -> None:
                     )
                     __logger__.info("Saved error bands plot to %s", error_plot_path)
 
+                # Comparative trajectory plot for 5 random initial condition pairs
+                n_pairs = min(5, len(solved_dataset), len(expert_subset))
+                if n_pairs > 0:
+                    rng = np.random.default_rng(seed=42)
+                    selected_indices = rng.choice(
+                        min(len(solved_dataset), len(expert_subset)),
+                        size=n_pairs,
+                        replace=False,
+                    ).tolist()
+                    comp_plot_path = p_dir / "policy_vs_expert_trajectories.html"
+                    mdg_plt.mpc_trajectories(
+                        solved_dataset[selected_indices],
+                        expert_subset[selected_indices],
+                        dataset_labels=["Policy", "Expert MPC"],
+                        state_labels=state_labels,
+                        control_labels=control_labels,
+                        plot_predictions=False,
+                        html_path=comp_plot_path,
+                    )
+                    __logger__.info("Saved trajectory comparison plot to %s", comp_plot_path)
+
 
 if __name__ == "__main__":
     main()

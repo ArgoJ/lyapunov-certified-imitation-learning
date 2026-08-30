@@ -45,9 +45,8 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     layers: int = config_field(default=2, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
     use_angle_wrapper: bool = config_field(default=False, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
     fix_r_factor: bool = config_field(default=False, help="Whether to fix the R factor in the Lyapunov candidate to 1.0.")
-    last_layer_std: float = config_field(default=0.001, help="Standard deviation for the last layer of the Lyapunov feature net.")
     riccati_scale: str | float = config_field(
-        default="spectral",
+        default="none",
         help="How to scale the Riccati P matrix before seeding R. "
              "'none' = use raw P, 'spectral' = divide by spectral norm, "
              "'frobenius' = divide by Frobenius norm, or a float for a custom divisor.",
@@ -220,7 +219,6 @@ def main() -> None:
             riccati_p=riccati_p,
             riccati_scale=script_config.riccati_scale,
             fixed_r_factor=script_config.fix_r_factor,
-            feature_last_init_std=script_config.last_layer_std,
         )
 
         training_config = replace(
@@ -241,7 +239,11 @@ def main() -> None:
             device=device,
         )
 
-        curriculum_result = trainer.train_with_scaled_bounds(curriculum_scales)
+        curriculum_result = trainer.train_with_scaled_bounds(
+            curriculum_scales,
+            base_save_dir=base_path,
+            mpc_config=mpc_cfg,
+        )
         train_results = curriculum_result.final_result
 
         trainer.save(base_path, mpc_config=mpc_cfg)
