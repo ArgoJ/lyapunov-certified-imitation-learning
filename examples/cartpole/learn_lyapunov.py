@@ -46,7 +46,7 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     use_angle_wrapper: bool = config_field(default=False, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
     fix_r_factor: bool = config_field(default=False, help="Whether to fix the R factor in the Lyapunov candidate to 1.0.")
     riccati_scale: str | float = config_field(
-        default="none",
+        default="spectral",
         help="How to scale the Riccati P matrix before seeding R. "
              "'none' = use raw P, 'spectral' = divide by spectral norm, "
              "'frobenius' = divide by Frobenius norm, or a float for a custom divisor.",
@@ -77,7 +77,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         steps_per_epoch=10,
         policy_epochs=400,
         policy_lr_factor=0.5,
-        kappa=0.05,
+        kappa=0.01,
         seed=1674653,
         regularization_num_samples=8192,
         regularization_resample_interval=10,
@@ -212,6 +212,7 @@ def main() -> None:
             normalization="none",
             seed=seed,
         )
+        riccati_p = compute_riccati_value_matrix(float(mpc_cfg.dt), kappa=train_config.kappa)
         lyap_model = NeuralLyapunovCandidate(
             feature_net=(CartpoleAngleWrapper(feature_net=lyap_feature) 
                 if script_config.use_angle_wrapper else lyap_feature),
@@ -219,6 +220,7 @@ def main() -> None:
             riccati_p=riccati_p,
             riccati_scale=script_config.riccati_scale,
             fixed_r_factor=script_config.fix_r_factor,
+            kappa=train_config.kappa,
         )
 
         training_config = replace(

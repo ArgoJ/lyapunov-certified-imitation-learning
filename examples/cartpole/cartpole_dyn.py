@@ -32,19 +32,20 @@ class CartpoleContinuousDynamics(nn.Module):
 
         sin_theta = th.sin(theta)
         cos_theta = th.cos(theta)
+        sin_2theta = th.sin(2.0 * theta)
 
         effective_force = force - self.damping * cart_vel
         total_mass = self.m_cart + self.m_pole
-        denom = total_mass - self.m_pole * cos_theta * cos_theta
+        denom = self.m_cart + self.m_pole * sin_theta.pow(2)
 
         x_ddot = (
             effective_force
-            + self.m_pole * self.length * theta_dot * theta_dot * sin_theta
-            - self.m_pole * self.gravity * sin_theta * cos_theta
+            + self.m_pole * self.length * theta_dot.pow(2) * sin_theta
+            - 0.5 * self.m_pole * self.gravity * sin_2theta
         ) / denom
         theta_ddot = (
             - effective_force * cos_theta
-            - self.m_pole * self.length * theta_dot * theta_dot * sin_theta * cos_theta
+            - 0.5 * self.m_pole * self.length * theta_dot.pow(2) * sin_2theta
             + total_mass * self.gravity * sin_theta
         ) / (self.length * denom)
 

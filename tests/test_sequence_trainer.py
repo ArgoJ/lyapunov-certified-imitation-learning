@@ -54,21 +54,20 @@ class TestSequencePolicyTrainer(unittest.TestCase):
         )
 
         nn_inputs, _, actions = trainer._extract_batch(next(iter(dataloader)))
-        pred_actions = trainer._predict_actions(nn_inputs)
+        pred_actions = trainer.model(nn_inputs)
 
         self.assertEqual(nn_inputs.shape, (2, 2, 1))
         self.assertEqual(actions.shape, (2, 1))
         self.assertEqual(pred_actions.shape, (2, 1))
 
-        trainer.training_config.tb_log_dir = None
-        metrics = trainer.train()
+        metrics, _ = trainer.train()
 
         self.assertEqual(metrics.epochs_completed, 1)
-        self.assertTrue(np.isfinite(metrics.train_loss[0]))
-        self.assertTrue(np.isnan(metrics.train_scaled_raw[0]))
-        self.assertTrue(np.isnan(metrics.train_dynamics_raw[0]))
-        self.assertTrue(np.isnan(metrics.train_scaled[0]))
-        self.assertTrue(np.isnan(metrics.train_dynamics[0]))
+        self.assertTrue(np.isfinite(metrics.loss[0]))
+        self.assertTrue(np.isnan(metrics.base_raw[0]))
+        self.assertTrue(np.isnan(metrics.dynamics_raw[0]))
+        self.assertTrue(np.isnan(metrics.base[0]))
+        self.assertTrue(np.isnan(metrics.dynamics[0]))
 
     def test_dynamics_aware_loss_accepts_last_token_sequence_batches(self) -> None:
         th.manual_seed(0)
@@ -109,17 +108,14 @@ class TestSequencePolicyTrainer(unittest.TestCase):
             loss_fn=loss_fn,
         )
 
-        trainer.training_config.tb_log_dir = None
-        metrics = trainer.train()
+        metrics, _ = trainer.train()
 
         self.assertEqual(metrics.epochs_completed, 1)
-        self.assertTrue(np.isfinite(metrics.train_loss[0]))
-        self.assertTrue(np.isfinite(metrics.train_scaled_raw[0]))
-        self.assertTrue(np.isfinite(metrics.train_dynamics_raw[0]))
-        self.assertTrue(np.isfinite(metrics.train_scaled[0]))
-        self.assertTrue(np.isfinite(metrics.train_dynamics[0]))
-        self.assertTrue(np.isnan(metrics.val_scaled_raw[0]))
-        self.assertTrue(np.isnan(metrics.val_dynamics_raw[0]))
+        self.assertTrue(np.isfinite(metrics.loss[0]))
+        self.assertTrue(np.isfinite(metrics.base_raw[0]))
+        self.assertTrue(np.isfinite(metrics.dynamics_raw[0]))
+        self.assertTrue(np.isfinite(metrics.base[0]))
+        self.assertTrue(np.isfinite(metrics.dynamics[0]))
 
 
 if __name__ == "__main__":

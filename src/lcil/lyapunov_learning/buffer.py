@@ -54,7 +54,7 @@ def get_spatial_diversity_indices(
         if len(keep_rel) >= limit:
             break
 
-        suppressed[np.asarray(neighbors[i], dtype=np.int64)] = True
+        suppressed[neighbors[i]] = True
         suppressed[i] = False
 
     keep_rel = th.as_tensor(keep_rel, dtype=th.long, device=sorted_indices.device)
@@ -66,11 +66,11 @@ class AgedTensorPool:
     def __init__(
         self,
         state_dim: int,
-        max_age: int,
+        max_age: int | None,
         device: th.device | str = "cpu",
         dtype: th.dtype = th.float32,
     ) -> None:
-        self.max_age = int(max_age)
+        self.max_age = int(max_age) if (max_age is not None and max_age >= 0) else None
         self.device = th.device(device)
         self.dtype = dtype
 
@@ -89,10 +89,10 @@ class AgedTensorPool:
             return
             
         self.ages += 1
-        valid_mask = self.ages <= self.max_age
-        
-        self.states = self.states[valid_mask]
-        self.ages = self.ages[valid_mask]
+        if self.max_age is not None:
+            valid_mask = self.ages <= self.max_age
+            self.states = self.states[valid_mask]
+            self.ages = self.ages[valid_mask]
 
     def add_fresh(self, new_states: th.Tensor) -> None:
         """Appends new states, initializing their age to 0."""
@@ -121,7 +121,7 @@ class BoundaryStateBuffer:
         self,
         state_dim: int,
         max_size: int,
-        max_age: int = 15,
+        max_age: int | None = None,
         filter_eps: float = 0.01,
         device: th.device | str = "cpu",
         dtype: th.dtype = th.float32,

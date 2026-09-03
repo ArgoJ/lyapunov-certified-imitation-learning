@@ -52,6 +52,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         If ``None``, only the Lyapunov model is updated.
     policy_lr_factor : float
         Learning rate factor for policy optimization when policy_epochs is not None.
+    r_factor_lr_factor : float
+        Learning rate factor for the quadratic R factor in NeuralLyapunovCandidate.
     seed : int | None
         Random seed for reproducibility.
     kappa : float
@@ -60,8 +62,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Dropout probability for the Lyapunov model. Must be in the range [0, 1].
     roa_candidate_size : int
         Number of candidate states used in the ROA surrogate loss.
-    roa_max_age : int
-        Maximum age for states in the ROA surrogate buffer before they are removed.
+    roa_max_age : int | None
+        Maximum age for states in the ROA surrogate buffer before they are removed. None disables aging.
     regularization_num_samples : int
         Number of uniformly sampled states used for global loss regularizers (scale anchoring, policy regularization).
     regularization_resample_interval : int
@@ -197,6 +199,12 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         default=1,
         help="Number of inner steps between policy parameter updates when policy_epochs is active.",
         display_alias="policy_upd_int",
+        validators=(positive_validator,),
+    )
+    r_factor_lr_factor: float = config_field(
+        default=0.1,
+        help="Learning rate factor for the quadratic R factor in NeuralLyapunovCandidate.",
+        display_alias="r_lr_factor",
         validators=(positive_validator,),
     )
     seed: int | None = config_field(
@@ -382,12 +390,11 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="roa_cand",
         validators=(positive_validator,),
     )
-    roa_max_age: int = config_field(
-        default=15,
-        help="Maximum age for states in the ROA surrogate buffer before they are removed, " \
-            "used to ensure that the surrogate loss is computed based on up-to-date samples.",
+    roa_max_age: int | None = config_field(
+        default=None,
+        help="Maximum age for states in the ROA surrogate buffer before they are removed. None disables aging.",
         display_alias="roa_age",
-        validators=(positive_validator,),
+        validators=(optional_validator(positive_validator),),
     )
 
     # Regularization Losses

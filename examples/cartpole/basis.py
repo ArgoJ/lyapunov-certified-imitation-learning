@@ -1,8 +1,11 @@
 import numpy as np
+import torch as th
+
 from numpy.typing import NDArray
 from scipy.linalg import solve_discrete_are
 
 from mpc_datagen import mdg_utils
+from lcil.lyapunov_learning import check_kappa
 
 from .sys_cfg import PendulumOnCartConfig
 
@@ -69,11 +72,22 @@ def compute_riccati_value_matrix(
     sys_cfg: PendulumOnCartConfig | None = None,
     q: NDArray[np.float64] | None = None,
     r: NDArray[np.float64] | None = None,
+    kappa: float | None = None,
 ) -> NDArray[np.float64]:
     q_matrix = Q if q is None else np.asarray(q, dtype=np.float64)
     r_matrix = R if r is None else np.asarray(r, dtype=np.float64)
     a_d, b_d = compute_discrete_cartpole(dt=dt, sys_cfg=sys_cfg)
-    return solve_discrete_are(a_d, b_d, q_matrix, r_matrix)
+    p = solve_discrete_are(a_d, b_d, q_matrix, r_matrix)
+    if kappa is not None:
+        k_gain = np.linalg.solve(r_matrix + b_d.T @ p @ b_d, b_d.T @ p @ a_d)
+        check_kappa(
+            kappa=kappa,
+            riccati_p=th.as_tensor(p),
+            q_matrix=th.as_tensor(q_matrix),
+            r_matrix=th.as_tensor(r_matrix),
+            k_gain=th.as_tensor(k_gain),
+        )
+    return p
 
 
 __all__ = [

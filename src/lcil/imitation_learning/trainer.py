@@ -188,12 +188,12 @@ def _tb_writer_add_scalar_if_finite(
 
 
 def _tb_writer_add_summary(
-    tb_writer: SummaryWriter,
+    tb_writer: SummaryWriter | None,
     summary: PolicyEpochLossSummary | None,
     prefix: str,
     step: int,
 ) -> None:
-    if summary is None:
+    if tb_writer is None or summary is None:
         return
 
     _tb_writer_add_scalar_if_finite(tb_writer, f"RawLoss/{prefix}Base", summary.base_raw, step)
@@ -352,13 +352,6 @@ class PolicyTrainer:
             return self.early_stopper.early_stop
         return False
 
-    def _predict_actions(self, nn_inputs: th.Tensor) -> th.Tensor:
-        """Use unclamped policy outputs when the model exposes them."""
-        raw_forward = getattr(self.model, "forward_raw", None)
-        if callable(raw_forward):
-            return raw_forward(nn_inputs)
-        return self.model(nn_inputs)
-
     def _get_last_loss_parts(self) -> ImitationLearningLossParts | None:
         loss_parts = getattr(self.loss_fn, "last_loss_parts", None)
         if isinstance(loss_parts, ImitationLearningLossParts):
@@ -374,7 +367,7 @@ class PolicyTrainer:
             nn_inputs, states, actions = self._extract_batch(batch)
 
             self.optimizer.zero_grad(set_to_none=True)
-            pred_actions = self._predict_actions(nn_inputs)
+            pred_actions = self.model(nn_inputs)
             
             if self._loss_requires_states:
                 loss = self.loss_fn(pred_actions, actions, states=states)
@@ -408,7 +401,7 @@ class PolicyTrainer:
         with th.no_grad():
             for batch in self.val_dataloader:
                 nn_inputs, states, actions = self._extract_batch(batch)
-                pred_actions = self._predict_actions(nn_inputs)
+                pred_actions = self.model(nn_inputs)
 
                 if self._loss_requires_states:
                     loss = self.loss_fn(pred_actions, actions, states=states)

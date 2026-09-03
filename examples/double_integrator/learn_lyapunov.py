@@ -212,11 +212,13 @@ def main() -> None:
             normalization='none',
             seed=seed,
         )
+        riccati_p = compute_riccati_value_matrix(float(policy_global_config.dt), kappa=train_config.kappa)
         lyap_model = NeuralLyapunovCandidate(
             feature_net=lyap_feature,
             state_dim=policy_global_config.nx,
             riccati_p=riccati_p,
             fixed_r_factor=script_config.fix_r_factor,
+            kappa=train_config.kappa,
         )
 
         # ---------------------------------------------------------------------

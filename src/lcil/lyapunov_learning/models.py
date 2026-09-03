@@ -49,6 +49,33 @@ def _check_riccati_shape(p_matrix: th.Tensor, state_dim: int) -> None:
         raise ValueError("riccati_p must contain only finite values.")
 
 
+def check_r_factor_conditioning(eigs: th.Tensor, threshold: float = _COND_WARN_THRESHOLD) -> float:
+    """Warn if εI + RᵀR becomes ill-conditioned based on its eigenvalues."""
+    lo, hi = eigs[0].item(), eigs[-1].item()
+    cond = hi / lo if lo > 0.0 else float("inf")
+    if cond > threshold:
+        __logger__.warning(
+            "PD matrix (εI + RᵀR) ill-conditioned: cond=%.2e "
+            "(λ_min=%.2e, λ_max=%.2e). Consider fixing R or "
+            "adding regularization.",
+            cond, lo, hi,
+        )
+    return cond
+
+
+def check_r_factor_kappa(eigs: th.Tensor, kappa: float) -> None:
+    """Warn if configured decay rate kappa is incompatible with eigenvalues of εI + RᵀR."""
+    lo, hi = eigs[0].item(), eigs[-1].item()
+    spectral_ratio = lo / hi if hi > 0.0 else 0.0
+    if kappa > spectral_ratio:
+        __logger__.warning(
+            "Configured decay rate kappa=%.4e exceeds the spectral lower bound "
+            "λ_min/λ_max = %.4e (λ_min=%.2e, λ_max=%.2e). The Lyapunov decrease "
+            "condition may be impossible or difficult to satisfy.",
+            kappa, spectral_ratio, lo, hi,
+        )
+
+
 class NeuralLyapunovCandidate(nn.Module):
     """Lyapunov candidate from Eq. (9) in the paper.
 
@@ -64,6 +91,7 @@ class NeuralLyapunovCandidate(nn.Module):
         riccati_p: th.Tensor | None = None,
         riccati_scale: str | float = "none",
         fixed_r_factor: bool = False,
+        kappa: float | None = None,
     ):
         """Initialize the NeuralLyapunovCandidate.
 
@@ -83,15 +111,20 @@ class NeuralLyapunovCandidate(nn.Module):
             The scaling mode for the Riccati matrix, by default "none"
         fixed_r_factor : bool, optional
             Whether the R factor is fixed, by default False
+        kappa : float | None, optional
+            Exponential decay rate for the Lyapunov decrease condition, by default None
         """
         super().__init__()
         self.feature_net = feature_net
         self.state_dim = state_dim
         self.eps = float(eps)
+        self.kappa: float | None = float(kappa) if kappa is not None else None
         if x_star is None:
             x_star = th.zeros(state_dim, dtype=th.float32)
 
         self.register_buffer("x_star", x_star.reshape(1, state_dim))
+        self._warned_cond: bool = False
+        self._warned_kappa: bool = False
         self._set_last_feature_layer(0.5)
         self._setup_r_factor(riccati_p, riccati_scale, fixed_r_factor)
 
@@ -136,19 +169,25 @@ class NeuralLyapunovCandidate(nn.Module):
             )
 
     def _check_r_factor_conditioning(self, _param: th.Tensor) -> None:
-        """Warn if εI + RᵀR becomes ill-conditioned."""
+        """Run conditioning and kappa checks on εI + RᵀR (warn-once per candidate)."""
+        if self._warned_cond and (self.kappa is None or self._warned_kappa):
+            return
+
         with th.no_grad():
             pd = self._pd_matrix()
             eigs = th.linalg.eigvalsh(pd)
-            lo, hi = eigs[0].item(), eigs[-1].item()
-            cond = hi / lo if lo > 0.0 else float("inf")
-        if cond > _COND_WARN_THRESHOLD:
-            __logger__.warning(
-                "PD matrix (εI + RᵀR) ill-conditioned: cond=%.2e "
-                "(λ_min=%.2e, λ_max=%.2e). Consider fixing R or "
-                "adding regularization.",
-                cond, lo, hi,
-            )
+            if not self._warned_cond:
+                lo, hi = eigs[0].item(), eigs[-1].item()
+                cond = hi / lo if lo > 0.0 else float("inf")
+                if cond > _COND_WARN_THRESHOLD:
+                    check_r_factor_conditioning(eigs)
+                    self._warned_cond = True
+            if self.kappa is not None and not self._warned_kappa:
+                lo, hi = eigs[0].item(), eigs[-1].item()
+                spectral_ratio = lo / hi if hi > 0.0 else 0.0
+                if self.kappa > spectral_ratio:
+                    check_r_factor_kappa(eigs, self.kappa)
+                    self._warned_kappa = True
 
     @th.no_grad()
     def _calculate_r_factor_from_riccati(self, riccati_p: th.Tensor) -> th.Tensor:
@@ -275,6 +314,7 @@ class NeuralLyapunovCandidate(nn.Module):
             "state_dim": self.state_dim,
             "eps": self.eps,
             "fixed_r_factor": not isinstance(self.r_factor, nn.Parameter),
+            "kappa": self.kappa,
         }
         th.save(model_payload, checkpoint_path)
 
@@ -298,6 +338,7 @@ class NeuralLyapunovCandidate(nn.Module):
 
         feature_net_path = checkpoint_path.with_name(payload["feature_net_path"])
         fixed_r_factor = payload.get("fixed_r_factor", False)
+        kappa = payload.get("kappa", None)
         feature_net = load_feature_net(
             feature_net_path,
             map_location=map_location,
@@ -312,6 +353,7 @@ class NeuralLyapunovCandidate(nn.Module):
             state_dim=state_dim,
             eps=eps,
             fixed_r_factor=fixed_r_factor,
+            kappa=kappa,
         ).to(map_location)
         model.load_state_dict(payload["state_dict"], strict=strict)
         model.eval()

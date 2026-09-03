@@ -16,8 +16,8 @@ dependencies = [
     "h5py",
     "typeguard",
     "tensorboard",
-    "mpc-datagen",
-    "pkg-logger",
+    "mpc-datagen @ git+https://github.com/ArgoJ/mpc-datagen.git",
+    "pkg-logger @ git+https://github.com/ArgoJ/pkg-logger.git",
     "auto_LiRPA @ git+https://github.com/Verified-Intelligence/auto_LiRPA.git",
     "abcrown @ git+https://github.com/Verified-Intelligence/alpha-beta-CROWN.git",
 ]

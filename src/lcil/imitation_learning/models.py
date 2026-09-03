@@ -130,12 +130,16 @@ class BoundedPolicy(nn.Module):
         self.register_buffer("_x_ref", x_ref_tensor)
 
     def forward_raw(self, x: th.Tensor) -> th.Tensor:
-        """Return the unconstrained policy output used during imitation fitting."""
-        if self._x_ref is not None and self._u_ref is not None:
-            return self.feature_net(x) - self.feature_net(self._x_ref) + self._u_ref
-        return self.feature_net(x)
+        """Return the unconstrained (unclamped) policy output."""
+        u = self.feature_net(x)
+        if self._x_ref is not None:
+            u = u - self.feature_net(self._x_ref)
+        if self._u_ref is not None:
+            u = u + self._u_ref
+        return u
     
     def forward(self, x: th.Tensor) -> th.Tensor:
+        """Evaluate the policy and clamp to control bounds [u_min, u_max]."""
         raw_u = self.forward_raw(x)
         if self._u_min is None and self._u_max is None:
             return raw_u
@@ -359,7 +363,7 @@ class TransformerPolicy(nn.Module):
         return self.output_projection(encoded)
 
     def forward_raw(self, x: th.Tensor) -> th.Tensor:
-        """Return the unconstrained policy output used during imitation fitting."""
+        """Return the unconstrained (unclamped) policy output."""
         sequence, squeeze_sequence = self._prepare_inputs(x)
         if sequence.size(-1) != self.input_dim:
             raise ValueError(
@@ -374,6 +378,7 @@ class TransformerPolicy(nn.Module):
         return raw_u
 
     def forward(self, x: th.Tensor) -> th.Tensor:
+        """Evaluate the policy and clamp to control bounds [u_min, u_max]."""
         raw_u = self.forward_raw(x)
         if self._u_min is None and self._u_max is None:
             return raw_u

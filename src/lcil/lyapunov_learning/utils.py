@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import torch as th
 
+import logging
+
 from numpy.typing import NDArray
 from dataclasses import dataclass, field
+
+__logger__ = logging.getLogger(__name__)
 
 
 def get_th_lbx_ubx(bounds: NDArray, device: th.device = "cpu") -> tuple[float, float]:
@@ -32,6 +36,47 @@ def get_bounded_fraction(base: float, min: float, max: float) -> float:
     if not (min <= base <= max):
         return max(min, min(base, max))
     return base
+
+
+def compute_max_admissible_kappa(
+    riccati_p: th.Tensor,
+    q_matrix: th.Tensor,
+    r_matrix: th.Tensor,
+    k_gain: th.Tensor,
+) -> float:
+    """Compute the maximum theoretical discrete decay rate kappa_max.
+    
+    kappa_max = min eig(Q + K^T R K, P)
+    """
+    p = th.as_tensor(riccati_p, dtype=th.float64)
+    q = th.as_tensor(q_matrix, dtype=th.float64, device=p.device)
+    r = th.as_tensor(r_matrix, dtype=th.float64, device=p.device)
+    k = th.as_tensor(k_gain, dtype=th.float64, device=p.device)
+
+    W = q + k.T @ r @ k
+    eigvals = th.linalg.eigvals(th.linalg.solve(p, W)).real
+    return float(th.min(eigvals).item())
+
+
+def check_kappa(
+    kappa: float,
+    riccati_p: th.Tensor,
+    q_matrix: th.Tensor,
+    r_matrix: th.Tensor,
+    k_gain: th.Tensor,
+) -> float:
+    """Validate that kappa does not exceed the theoretical maximum and warn if it does."""
+    kappa_max = compute_max_admissible_kappa(riccati_p, q_matrix, r_matrix, k_gain)
+
+    if float(kappa) >= kappa_max:
+        __logger__.warning(
+            "Configured decay rate kappa=%.4e exceeds the theoretical maximum "
+            "admissible kappa_max=%.4e (min eig(Q + K^T R K, P)). "
+            "The discrete Lyapunov decrease condition cannot be satisfied on the linearized system!",
+            float(kappa), kappa_max,
+        )
+
+    return kappa_max
 
 
 class TrainingAbortedError(RuntimeError):

@@ -106,23 +106,6 @@ class _WrappedRawPolicy(nn.Module):
 
 
 class TestPolicyTrainerRawPredictions(unittest.TestCase):
-    def test_trainer_prefers_forward_raw_for_wrapped_models(self) -> None:
-        model = _WrappedRawPolicy()
-        dataloader = DataLoader(
-            TensorDataset(th.tensor([[1.0]]), th.tensor([[2.0]])),
-            batch_size=1,
-        )
-        trainer = PolicyTrainer(
-            model=model,
-            dataloader=dataloader,
-            training_config=ImitationTrainingConfig(epochs=1),
-        )
-
-        trainer.model.eval()
-        pred = trainer._predict_actions(th.tensor([[1.0]]))
-
-        self.assertTrue(th.allclose(pred, th.tensor([[2.0]])))
-
     def test_trainer_applies_weight_decay_from_config(self) -> None:
         model = _WrappedRawPolicy()
         dataloader = DataLoader(

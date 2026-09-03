@@ -111,17 +111,7 @@ def estimate_rho_from_boundary(
         device=device,
         generator=generator,
     )
-
-    # n = ubx.shape[0]
-    # center = (lbx + ubx) / 2.0
-    # face_centers_tensor = center.repeat(2 * n, 1)
-    # bounds_interleaved = th.stack([lbx, ubx], dim=1).flatten()
-    # mask = th.eye(n, dtype=th.bool, device=device).repeat_interleave(2, dim=0)
-    # face_centers_tensor[mask] = bounds_interleaved
     
-    # # Batch aus Zufallspunkten und exakten Mittelpunkten zusammenbauen
-    # boundary_eval_x = th.cat([boundary_x, face_centers_tensor], dim=0)
-
     step = config.rho_step_size * (ubx - lbx).unsqueeze(0)
     with th.no_grad():
         best_boundary_x = boundary_x.clone()
@@ -210,17 +200,23 @@ def estimate_rho(
 
         if states_to_check:
             all_buffer_states = th.cat(states_to_check, dim=0)
-            with th.no_grad():
-                violations = condition_evaluator(all_buffer_states)
-                violations = violations.flatten()
+            if config.origin_exclusion is not None:
+                exclusion = th.as_tensor(config.origin_exclusion, dtype=all_buffer_states.dtype, device=all_buffer_states.device)
+                outside_exclusion = ~th.all(th.abs(all_buffer_states) <= exclusion, dim=-1)
+                all_buffer_states = all_buffer_states[outside_exclusion]
 
-                violating_mask = violations > 1e-6
+            if all_buffer_states.numel() > 0:
+                with th.no_grad():
+                    violations = condition_evaluator(all_buffer_states)
+                    violations = violations.flatten()
 
-                if violating_mask.any():
-                    violating_states = all_buffer_states[violating_mask]
-                    violating_v = lyap_model(violating_states).flatten()
-                    cex_cap_val = float(th.quantile(violating_v, q=float(cex_quantile)).item())
-                    rho_effective = max(float(config.rho_min), min(rho_boundary, cex_cap_val))
+                    violating_mask = violations > 1e-6
+
+                    if violating_mask.any():
+                        violating_states = all_buffer_states[violating_mask]
+                        violating_v = lyap_model(violating_states).flatten()
+                        cex_cap_val = float(th.quantile(violating_v, q=float(cex_quantile)).item())
+                        rho_effective = max(float(config.rho_min), min(rho_boundary, cex_cap_val))
 
     updated_eval = BoundaryRhoEvaluation(
         rho=BoundaryRhoEstimate(

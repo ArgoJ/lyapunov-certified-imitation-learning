@@ -169,7 +169,7 @@ class BaseABCrownCertifier(ABC):
         config_builder = (
             abcrown_api.config_builder_cls.from_defaults()
             .set(general__device=self.device.type)
-            .set(general__complete_verifier="bab")
+            .set(general__complete_verifier="input_bab")
             .set(general__enable_incomplete_verification=False)
             .set(solver__batch_size=int(self.config.batch_size))
             .set(solver__bound_prop_method="crown")

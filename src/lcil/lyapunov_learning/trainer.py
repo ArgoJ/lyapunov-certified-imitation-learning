@@ -197,25 +197,34 @@ class LyapunovTrainer:
         policy_lr = self.config.learning_rate * self.config.policy_lr_factor
         r_factor = self.lyap_model.r_factor if has_learnable_r_factor(self.lyap_model) else None
 
-        def _create_param_groups(model: nn.Module, lr: float):
+        def _create_param_groups(model: nn.Module, lr: float, weight_decay: float):
             decay_params = [
                 p for p in model.parameters()
                 if p.ndim >= 2 and p is not r_factor
             ]
             no_decay_params = [
                 p for p in model.parameters()
-                if p.ndim < 2 or p is r_factor
+                if p.ndim < 2 and p is not r_factor
             ]
             groups = []
             if decay_params:
-                groups.append({"params": decay_params, "lr": lr, "weight_decay": self.config.weight_decay})
+                groups.append({"params": decay_params, "lr": lr, "weight_decay": weight_decay})
             if no_decay_params:
                 groups.append({"params": no_decay_params, "lr": lr, "weight_decay": 0.0})
             return groups
 
-        param_groups = (
-            _create_param_groups(self.lyap_model, self.config.learning_rate)
-            + _create_param_groups(self.policy_model, policy_lr)
+        param_groups = _create_param_groups(
+            self.lyap_model, self.config.learning_rate, weight_decay=self.config.weight_decay
+        )
+        if r_factor is not None:
+            r_factor_lr = self.config.learning_rate * self.config.r_factor_lr_factor
+            param_groups.append({
+                "params": [r_factor],
+                "lr": r_factor_lr,
+                "weight_decay": 0.0,
+            })
+        param_groups += _create_param_groups(
+            self.policy_model, policy_lr, weight_decay=0.0
         )
         return th.optim.Adam(param_groups)
 

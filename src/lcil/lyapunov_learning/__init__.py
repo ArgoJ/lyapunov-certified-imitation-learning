@@ -1,6 +1,6 @@
 from .trainer import LyapunovTrainer, LyapunovTrainingResult
 from .config import LyapunovTrainingConfig
-from .utils import ThresholdMonitor, TrainingAbortedError
+from .utils import ThresholdMonitor, TrainingAbortedError, check_kappa
 from .models import NeuralLyapunovCandidate
 from .loss import LyapunovTrainingLoss
 from .policy_wrapper import PolicyWrapper, RepeatCurrentPolicyWrapper, FromRolloutsPolicyWrapper
@@ -25,4 +25,5 @@ __all__ = [
     "sample_box_rejection_states",
     "ThresholdMonitor",
     "TrainingAbortedError",
+    "check_kappa",
 ]
