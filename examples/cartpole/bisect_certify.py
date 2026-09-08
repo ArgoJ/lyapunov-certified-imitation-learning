@@ -75,16 +75,18 @@ def _build_certification_defaults(
     cert_bound_scales: list[float],
 ) -> LyapunovCertificationConfig:
     training_config = LyapunovTrainingConfig.load(lyapunov_dir)
+    if training_config.train_bounds is None:
+        raise ValueError(f"train_bounds is not defined in {lyapunov_dir}")
     cert_bounds = _scale_cert_bounds(training_config.train_bounds, cert_bound_scales)
     return LyapunovCertificationConfig.from_training_config(
         training_config,
         cert_bounds=cert_bounds,
-        bins_per_dim=1,
+        bins_per_dim=2,
         center_refinement_factor=1.0,
         lirpa_method="alpha-crown",
         suppress_native_output=True,
         batch_size=32,
-        abcrown_timeout=60.0,
+        abcrown_timeout=120.0,
     )
 
 
@@ -144,9 +146,13 @@ def parse_args() -> list[tuple[BisectCertifyScriptConfig, LyapunovCertificationC
             certification_config = dir_certification_defaults.from_namespace(args)
             configs.append((current_script_config, certification_config))
     else:
+        dir_certification_defaults = _build_certification_defaults(
+            Path(script_config.lyapunov_dir),
+            script_config.cert_bound_scales,
+        )
         configs.append((
             script_config,
-            certification_defaults.from_namespace(args),
+            dir_certification_defaults.from_namespace(args),
         ))
 
     return configs

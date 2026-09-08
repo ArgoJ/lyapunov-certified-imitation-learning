@@ -107,7 +107,8 @@ class _RecordingMockRegionCertifier(_StatusAwareMockRegionCertifier):
             regions,
             rho,
             early_exit=early_exit,
-            
+            progress=progress,
+            **kwargs,
         )
 
 

@@ -137,6 +137,7 @@ class _FakeVerificationSpecData:
     lb: th.Tensor
     ub: th.Tensor
     output_constraint: _FakeOutputConstraint
+    output_spec: Any = None
 
 
 class _FakeVerificationSpec:
@@ -154,7 +155,22 @@ class _FakeVerificationSpec:
             lb=input_constraint.lb,
             ub=input_constraint.ub,
             output_constraint=output_constraint,
+            output_spec=types.SimpleNamespace(clauses=[output_constraint]),
         )
+
+    @staticmethod
+    def build_from_input_bounds(
+        lower: th.Tensor,
+        upper: th.Tensor,
+        clauses: Any,
+    ) -> _FakeVerificationSpecData:
+        return _FakeVerificationSpecData(
+            lb=lower.squeeze(0),
+            ub=upper.squeeze(0),
+            output_constraint=clauses,
+            output_spec=types.SimpleNamespace(clauses=[clauses]),
+        )
+
 
 
 @dataclass

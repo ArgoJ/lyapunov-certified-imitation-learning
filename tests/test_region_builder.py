@@ -526,6 +526,50 @@ class TestRegionBuilder(PlotAssertionsMixin, unittest.TestCase):
 
         th.testing.assert_close(single, batched)
 
+    def test_split_regions_incorporates_center_refinement_factor(self) -> None:
+        # Dim 0 has factor 0.5 -> alpha = 0.5 / 1.5 = 1/3 (inner width 1/3, outer width 2/3).
+        # Dim 1 has factor 1.0 -> alpha = 0.5 (standard 50:50 midpoint).
+        builder = self._make_builder(
+            origin_exclusion=0.0,
+            center_refinement_factor=(0.5, 1.0),
+        )
+
+        # 1. Positive region: split point is placed closer to lower bound (0.0).
+        pos_region = th.tensor([[[0.0, 0.0], [3.0, 2.0]]], dtype=th.float32)
+        pos_split = builder.split_regions(pos_region, split_dims=th.tensor([0]))
+        expected_pos = th.tensor(
+            [
+                [[0.0, 0.0], [1.0, 2.0]],
+                [[1.0, 0.0], [3.0, 2.0]],
+            ],
+            dtype=th.float32,
+        )
+        th.testing.assert_close(pos_split, expected_pos)
+
+        # 2. Negative region: split point is placed closer to upper bound (0.0).
+        neg_region = th.tensor([[[-3.0, 0.0], [0.0, 2.0]]], dtype=th.float32)
+        neg_split = builder.split_regions(neg_region, split_dims=th.tensor([0]))
+        expected_neg = th.tensor(
+            [
+                [[-3.0, 0.0], [-1.0, 2.0]],
+                [[-1.0, 0.0], [0.0, 2.0]],
+            ],
+            dtype=th.float32,
+        )
+        th.testing.assert_close(neg_split, expected_neg)
+
+        # 3. Crossing zero region: split point cuts at 0.0 to separate signs.
+        cross_region = th.tensor([[[-2.0, 0.0], [2.0, 2.0]]], dtype=th.float32)
+        cross_split = builder.split_regions(cross_region, split_dims=th.tensor([0]))
+        expected_cross = th.tensor(
+            [
+                [[-2.0, 0.0], [0.0, 2.0]],
+                [[0.0, 0.0], [2.0, 2.0]],
+            ],
+            dtype=th.float32,
+        )
+        th.testing.assert_close(cross_split, expected_cross)
+
     def test_build_regions_tiles_the_outer_box_minus_the_origin_hole(self) -> None:
         builder = self._make_builder(
             bounds=[[-2.0, -1.0], [2.0, 3.0]],

@@ -5,12 +5,11 @@ import logging
 import torch as th
 import torch.nn as nn
 
-from .progress import CertificationProgress
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
-from enum import Enum
+from enum import IntEnum
 from pkg_logger import suppress_native_output
 
 from .config import LyapunovCertificationConfig
@@ -22,6 +21,8 @@ from .models import (
     build_invariance_constraint,
     build_positivity_constraint,
 )
+from .progress import CertificationProgress
+
 
 __logger__ = logging.getLogger(__name__)
 
@@ -48,10 +49,11 @@ def _is_unknown_status(status: str) -> bool:
 # ========================================================
 # DATACLASSES & ENUMS
 # ========================================================
-class EarlyExitLevel(Enum):
+class EarlyExitLevel(IntEnum):
     NONE = 0
     ON_COUNTEREXAMPLE = 1
     ON_UNKNOWN = 2
+
 
 @dataclass(frozen=True)
 class ABCrownRegionVerification:
@@ -117,6 +119,9 @@ class BaseABCrownCertifier(ABC):
         self._abcrown_api: _ABCrownAPI | None = None
         self.abcrown_config: Any = None
         self.verifier: nn.Module | None = None
+        self._cached_clauses: dict[float, Any] = {}
+
+    progress_description: str = "Certify Regions"
 
     @abstractmethod
     def _setup_verifier(self) -> nn.Module:
@@ -162,6 +167,7 @@ class BaseABCrownCertifier(ABC):
         return "N/A"
 
     def setup_backend(self) -> None:
+        self._cached_clauses.clear()
         if self.verifier is not None and self.abcrown_config is not None:
             return
 
@@ -222,17 +228,26 @@ class BaseABCrownCertifier(ABC):
         ub = region[1]
 
         with self._get_suppress_ctx():
-            x = abcrown_api.input_vars_fn(self.config.state_dim)
-            y = abcrown_api.output_vars_fn(self._output_dim())
+            rho_key = round(float(rho), 8)
+            if rho_key not in self._cached_clauses:
+                x = abcrown_api.input_vars_fn(self.config.state_dim)
+                y = abcrown_api.output_vars_fn(self._output_dim())
+                dummy_lb = th.zeros(self.config.state_dim, device=self.device)
+                dummy_ub = th.ones(self.config.state_dim, device=self.device)
+                dummy_input_constraint = (x >= dummy_lb) & (x <= dummy_ub)
+                output_constraint = self._build_safe_output_constraint(y=y, rho=float(rho))
+                init_spec = abcrown_api.verification_spec_cls.build_spec(
+                    input_vars=x,
+                    output_vars=y,
+                    input_constraint=dummy_input_constraint,
+                    output_constraint=output_constraint,
+                )
+                self._cached_clauses[rho_key] = init_spec.output_spec.clauses[0]
 
-            input_constraint = (x >= lb) & (x <= ub)
-            output_constraint = self._build_safe_output_constraint(y=y, rho=float(rho))
-
-            spec = abcrown_api.verification_spec_cls.build_spec(
-                input_vars=x,
-                output_vars=y,
-                input_constraint=input_constraint,
-                output_constraint=output_constraint,
+            spec = abcrown_api.verification_spec_cls.build_from_input_bounds(
+                lower=lb.unsqueeze(0),
+                upper=ub.unsqueeze(0),
+                clauses=self._cached_clauses[rho_key],
             )
             solver = abcrown_api.solver_cls(
                 spec=spec,
@@ -257,9 +272,13 @@ class BaseABCrownCertifier(ABC):
         regions: th.Tensor,
         rho: float,
         *,
-        early_exit: EarlyExitLevel = EarlyExitLevel.NONE,
+        description: str | None = None,
+        early_exit: EarlyExitLevel | bool = EarlyExitLevel.NONE,
         progress: CertificationProgress | None = None,
     ) -> ABCrownRegionBatchVerification:
+        if isinstance(early_exit, bool):
+            early_exit = EarlyExitLevel.ON_COUNTEREXAMPLE if early_exit else EarlyExitLevel.NONE
+
         if regions.ndim != 3 or regions.shape[1] != 2 or regions.shape[2] != self.config.state_dim:
             raise ValueError(
                 f"regions must have shape (N, 2, {self.config.state_dim}); got {tuple(regions.shape)}."
@@ -273,23 +292,11 @@ class BaseABCrownCertifier(ABC):
         unknown_mask = th.zeros((len(regions),), dtype=th.bool, device=self.device)
 
         if progress is not None:
-            progress.start_certify("Certify Regions", total=len(regions))
+            task_description = description if description is not None else self.progress_description
+            progress.start_certify(description=task_description, total=len(regions))
 
-        verified_count = 0
-        cex_count = 0
-        unknown_count = 0
-
-        def update_progress(advance: int = 1) -> None:
-            if progress is not None:
-                progress.update_certify(
-                    advance=advance,
-                    verified_count=verified_count,
-                    unknown_count=unknown_count,
-                    cex_count=cex_count,
-                )
 
         try:
-            update_progress(0)
             for idx, region in enumerate(regions):
                 verification_result = self.verify_region(region, rho)
                 verified_mask[idx] = verification_result.verified
@@ -298,19 +305,16 @@ class BaseABCrownCertifier(ABC):
                     not verification_result.verified
                     and not verification_result.counterexample_found
                 )
-                if verification_result.verified:
-                    verified_count += 1
-                elif verification_result.counterexample_found:
-                    cex_count += 1
-                else:
-                    unknown_count += 1
-                    
-                update_progress(1)
+                if progress is not None:
+                    progress.step_certify(
+                        verification_result.verified,
+                        verification_result.counterexample_found,
+                    )
+
                 if early_exit != EarlyExitLevel.NONE and verification_result.counterexample_found:
                     break
                 if early_exit == EarlyExitLevel.ON_UNKNOWN and not verification_result.verified:
                     break
-                
         finally:
             if progress is not None:
                 progress.stop_certify()
@@ -327,6 +331,8 @@ class BaseABCrownCertifier(ABC):
 # ========================================================
 class BaseLyapunovCoreABCrownCertifier(BaseABCrownCertifier):
     """Shared ABCrown backend for Lyapunov-core predicates."""
+
+    progress_description: str = "Core Check"
 
     def __init__(
         self,
@@ -358,6 +364,8 @@ class BaseLyapunovCoreABCrownCertifier(BaseABCrownCertifier):
 class CompleteABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
     """ABCrown certifier combining sublevel set certification and core Lyapunov condition verification."""
 
+    progress_description: str = "Complete Certification"
+
     def _build_safe_output_constraint(self, y, rho: float):
         safe_outside_sublevel = build_outside_sublevel_constraint(y[1], rho)
         safe_condition = build_condition_constraint(y, self.bounds[0], self.bounds[1])
@@ -367,6 +375,8 @@ class CompleteABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
 class CoreABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
     """ABCrown certifier focused on verifying the core Lyapunov condition without explicit sublevel constraints."""
 
+    progress_description: str = "Core Check"
+
     def _build_safe_output_constraint(self, y, rho: float):
         del rho
         return build_condition_constraint(y, self.bounds[0], self.bounds[1])
@@ -374,6 +384,8 @@ class CoreABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
 
 class PositivityABCrownCertifier(BaseABCrownCertifier):
     """ABCrown certifier for Lyapunov positivity only."""
+
+    progress_description: str = "Positivity Check"
 
     def __init__(
         self,
@@ -402,6 +414,8 @@ class PositivityABCrownCertifier(BaseABCrownCertifier):
 class DecreaseABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
     """ABCrown certifier for the Lyapunov decrease condition only."""
 
+    progress_description: str = "Decrease Check"
+
     def _build_safe_output_constraint(self, y, rho: float):
         del rho
         return build_decrease_constraint(y)
@@ -409,6 +423,8 @@ class DecreaseABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
 
 class InvarianceABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
     """ABCrown certifier for state invariance only."""
+
+    progress_description: str = "Invariance Check"
 
     def _build_safe_output_constraint(self, y, rho: float):
         del rho

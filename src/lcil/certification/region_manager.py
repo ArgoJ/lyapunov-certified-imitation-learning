@@ -82,6 +82,35 @@ class CertificationRegionPartition:
             )
         )
 
+    @property
+    def n_irrelevant(self) -> int:
+        """Number of irrelevant (outside sublevel set) regions."""
+        return len(self.irrelevant_regions)
+
+    @property
+    def n_cached_resolved(self) -> int:
+        """Number of cached resolved (complete-safe + core-safe) regions."""
+        return len(self.cached_complete_safe_regions) + len(self.cached_core_safe_regions)
+
+    @property
+    def n_cached_unresolved(self) -> int:
+        """Number of cached unresolved (inside cex + inside unknown) regions."""
+        return len(self.cached_inside_counterexample_regions) + len(self.cached_inside_unknown_regions)
+
+    @property
+    def n_pending_verification(self) -> int:
+        """Number of regions still requiring core or complete certification."""
+        return (
+            len(self.inside_core_unchecked_regions)
+            + len(self.boundary_core_unchecked_regions)
+            + len(self.boundary_complete_candidate_regions)
+        )
+
+    @property
+    def total_partitioned(self) -> int:
+        """Total number of regions represented across all partitions."""
+        return self.n_irrelevant + self.n_cached_resolved + self.n_cached_unresolved + self.n_pending_verification
+
 
 @dataclass(frozen=True)
 class VerificationRegionUpdate:

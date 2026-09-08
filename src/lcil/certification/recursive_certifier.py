@@ -13,7 +13,11 @@ from numpy.typing import NDArray
 from .config import LyapunovCertificationConfig
 from .region_manager import RegionManager
 from .progress import CertificationProgress, ProgressLevel
-from .abcrown_region_certifier import CompleteABCrownCertifier, CoreABCrownCertifier, EarlyExitLevel
+from .abcrown_region_certifier import (
+    CompleteABCrownCertifier,
+    CoreABCrownCertifier,
+    EarlyExitLevel,
+)
 from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds, LyapunovRegionBounds
 from ..utils.region_builder import RegionBuilder
 from ..utils.constants import *
@@ -303,12 +307,12 @@ class RecursiveCertifier:
         return result, update
 
     def _process_regions(
-            self, 
-            bs: th.Tensor,
-            rho: float,
-            *,
-            early_exit: EarlyExitLevel,
-        ) -> RecursiveCertificationResult:
+        self, 
+        bs: th.Tensor,
+        rho: float,
+        *,
+        early_exit: EarlyExitLevel | bool,
+    ) -> RecursiveCertificationResult:
         """Process one region batch and return step-level certification data.
 
         Parameters
@@ -317,14 +321,17 @@ class RecursiveCertifier:
             Packed lower and upper bounds of regions with shape ``(n, 2, state_dim)``.
         rho : float
             Lyapunov level-set value to certify.
-        early_exit : bool
-            If ``True``, returns immediately once any failing region is found.
+        early_exit : EarlyExitLevel | bool
+            If enabled, returns immediately once any failing region is found.
 
         Returns
         -------
         RecursiveCertificationResult
             Step-level resolved, unresolved and irrelevant regions.
         """
+        if isinstance(early_exit, bool):
+            early_exit = EarlyExitLevel.ON_COUNTEREXAMPLE if early_exit else EarlyExitLevel.NONE
+
         if rho < 0.0:
             raise ValueError(f"rho must be non-negative, got {rho}.")
 
@@ -406,8 +413,8 @@ class RecursiveCertifier:
             early_exit=early_exit,
         )
         if inside_core_update is not None:
-            append_resolved(inside_core_update.verified_regions, update_progress=False)
-            append_unresolved(inside_core_update.failed_regions, update_progress=False)
+            append_resolved(inside_core_update.verified_regions)
+            append_unresolved(inside_core_update.failed_regions)
             if early_exit == EarlyExitLevel.ON_UNKNOWN and len(inside_core_update.failed_regions) > 0:
                 counterexample_found = True
                 return finish()
@@ -421,7 +428,7 @@ class RecursiveCertifier:
             early_exit=EarlyExitLevel.NONE,
         )
         if boundary_core_update is not None:
-            append_resolved(boundary_core_update.verified_regions, update_progress=False)
+            append_resolved(boundary_core_update.verified_regions)
             boundary_complete_candidates = self.region_manager.pack_regions(
                 (boundary_complete_candidates, boundary_core_update.failed_regions))
 
@@ -434,8 +441,8 @@ class RecursiveCertifier:
             early_exit=early_exit,
         )
         if complete_update is not None and complete_result is not None:
-            append_resolved(complete_update.verified_regions, update_progress=False)
-            append_unresolved(complete_update.failed_regions, update_progress=False)
+            append_resolved(complete_update.verified_regions)
+            append_unresolved(complete_update.failed_regions)
             if early_exit == EarlyExitLevel.ON_UNKNOWN and len(complete_update.failed_regions) > 0:
                 counterexample_found = True
                 return finish()
@@ -446,15 +453,20 @@ class RecursiveCertifier:
         self,
         rho: float,
         *,
-        early_exit: EarlyExitLevel = EarlyExitLevel.NONE,
+        early_exit: EarlyExitLevel | bool = EarlyExitLevel.NONE,
         force_display: bool = False,
+        show_progress: bool | None = None,
     ) -> RecursiveCertificationResult:
         """Run recursive certification for a fixed ``rho`` over all regions."""
+        del show_progress
+        if isinstance(early_exit, bool):
+            early_exit = EarlyExitLevel.ON_COUNTEREXAMPLE if early_exit else EarlyExitLevel.NONE
         empty_result = RecursiveCertificationResult.empty(
             state_dim=self.config.state_dim,
             device=self.device,
         )
         recursive_result = deepcopy(empty_result)
+
         
         def finish_with_counterexample() -> RecursiveCertificationResult:
             return recursive_result
@@ -487,17 +499,16 @@ class RecursiveCertifier:
                         recursive_result, unresolved=self.region_manager.empty_regions()
                     )
 
-                    for partition in th.split(pending_bs, self.config.batch_size):
-                        step_result = self._process_regions(
-                            partition,
-                            rho,
-                            early_exit=current_early_exit,
-                        )
+                    step_result = self._process_regions(
+                        pending_bs,
+                        rho,
+                        early_exit=current_early_exit,
+                    )
 
-                        if current_early_exit != EarlyExitLevel.NONE and step_result.counterexample_found:
-                            return finish_with_counterexample()
-                        
-                        recursive_result = recursive_result + step_result
+                    if current_early_exit != EarlyExitLevel.NONE and step_result.counterexample_found:
+                        return finish_with_counterexample()
+                    
+                    recursive_result = recursive_result + step_result
                     recursive_result = recursive_result.with_unresolved(recursive_result.unresolved[:0])
 
                     if len(recursive_result.unresolved) == 0:

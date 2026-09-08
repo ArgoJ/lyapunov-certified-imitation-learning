@@ -27,6 +27,8 @@ class RegionBuilder:
         self.state_dim = int(self.bounds.shape[1])
         self.bins_per_dim = self._normalize_bins(bins_per_dim)
         self.center_refinement_factor = self._normalize_refinement_factors(center_refinement_factor)
+        factors = th.as_tensor(self.center_refinement_factor, dtype=th.float32, device=self.device)
+        self._split_alphas = factors / (1.0 + factors)
         self.origin_exclusion = self._resolve_origin_exclusion(origin_exclusion)
         self.split_dim_weights = self._normalize_split_dim_weights(split_dim_weights)
         self._check_exclusion_ratio()
@@ -286,13 +288,19 @@ class RegionBuilder:
         *,
         split_dims: th.Tensor | None = None,
     ) -> th.Tensor:
-        """Split each region once along its widest, or explicitly provided, dimension."""
+        """Split each region once along its widest, or explicitly provided, dimension.
+
+        When ``center_refinement_factor < 1.0``, the split point is placed
+        asymmetrically closer to the origin (center refinement) rather than at
+        the midpoint, using the ratio ``alpha = c / (1 + c)``.
+        """
         regions = self._validate_regions(regions)
         if len(regions) == 0:
             return regions.clone()
 
-        mids = 0.5 * (regions[:, 0] + regions[:, 1])
-        widths = regions[:, 1] - regions[:, 0]
+        lbs = regions[:, 0]
+        ubs = regions[:, 1]
+        widths = ubs - lbs
 
         if split_dims is None:
             # Anisotropic split-dimension priorities are applied by weighting the widths before argmax.
@@ -305,12 +313,20 @@ class RegionBuilder:
             if ((split_dims < 0) | (split_dims >= self.state_dim)).any():
                 raise ValueError("split_dims contains an out-of-range dimension index.")
 
+        row_idx = th.arange(len(regions), device=self.device)
+        lb = lbs[row_idx, split_dims]
+        ub = ubs[row_idx, split_dims]
+        w = widths[row_idx, split_dims]
+        alpha = self._split_alphas[split_dims]
+
+        mids = th.where(lb >= 0.0, lb + alpha * w, th.where(ub <= 0.0, ub - alpha * w, 0.0))
+        mids = th.clamp(mids, min=lb + alpha * w, max=ub - alpha * w)
+
         low_regions = regions.clone()
         high_regions = regions.clone()
-        row_idx = th.arange(len(regions), device=self.device)
 
-        low_regions[row_idx, 1, split_dims] = mids[row_idx, split_dims]
-        high_regions[row_idx, 0, split_dims] = mids[row_idx, split_dims]
+        low_regions[row_idx, 1, split_dims] = mids
+        high_regions[row_idx, 0, split_dims] = mids
 
         refined = th.cat([low_regions, high_regions], dim=0)
         __logger__.debug(

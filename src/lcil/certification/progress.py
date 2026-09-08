@@ -45,22 +45,52 @@ class CertificationProgress(Progress):
             disable=not self._show_progress(ProgressLevel.TOP),
         )
 
-        self._top_task: TaskID | None = None
         self._recursive_task: TaskID | None = None
         self._certify_task: TaskID | None = None
-        
+
         # State tracking for recursive progress
         self._rec_resolved: int = 0
         self._rec_unresolved: int = 0
         self._rec_irrelevant: int = 0
         self._rec_pending: int = 0
-        
+
         # State tracking for certify progress
         self._cert_verified: int = 0
         self._cert_unknown: int = 0
         self._cert_cex: int = 0
 
         self._entered_depth = 0
+
+    @staticmethod
+    def _format_counts(**counts: int) -> str:
+        color_map = {
+            "safe": "green",
+            "unknown": "yellow",
+            "outside": "dim",
+            "counterexample": "red",
+            "pending": "red",
+        }
+        parts = [
+            f"[{color_map.get(k, 'white')}]{k}: {v}[/{color_map.get(k, 'white')}]"
+            for k, v in counts.items()
+            if v is not None
+        ]
+        return " " + ", ".join(parts) + " " if parts else ""
+
+    def _rec_detail(self) -> str:
+        return self._format_counts(
+            safe=self._rec_resolved,
+            unknown=self._rec_unresolved,
+            outside=self._rec_irrelevant,
+            pending=self._rec_pending,
+        )
+
+    def _cert_detail(self) -> str:
+        return self._format_counts(
+            safe=self._cert_verified,
+            unknown=self._cert_unknown,
+            counterexample=self._cert_cex,
+        )
 
     def _show_progress(self, required_level: ProgressLevel) -> bool:
         return self.level.value >= required_level.value
@@ -116,30 +146,14 @@ class CertificationProgress(Progress):
         if n_irrelevant is not None:
             self._rec_irrelevant = n_irrelevant
         if n_pending is not None:
-            self._rec_pending = n_pending
+            self._rec_pending = max(0, n_pending)
 
         if self._recursive_task is not None:
             if is_completed:
                 self.update(self._recursive_task, completed=max_depth + 1)
             else:
-                detail_str = (
-                    f" [green]safe: {self._rec_resolved}[/green], "
-                    f"[yellow]unknown: {self._rec_unresolved}[/yellow], "
-                    f"[dim]outside: {self._rec_irrelevant}[/dim], "
-                    f"[red]pending: {self._rec_pending}[/red] "
-                )
-                if advance is not None:
-                    self.update(
-                        self._recursive_task, 
-                        advance=advance, 
-                        detail=detail_str,
-                    )
-                else:
-                    self.update(
-                        self._recursive_task, 
-                        detail=detail_str,
-                    )
-                self.refresh()
+                self.update(self._recursive_task, advance=advance, detail=self._rec_detail())
+            self.refresh()
 
     def add_recursive_counts(
         self,
@@ -155,64 +169,56 @@ class CertificationProgress(Progress):
         if irrelevant:
             self._rec_irrelevant += irrelevant
         if pending:
-            self._rec_pending += pending
-            
+            self._rec_pending = max(0, self._rec_pending + pending)
+
         if self._recursive_task is not None:
-            detail_str = (
-                f" [green]safe: {self._rec_resolved}[/green], "
-                f"[yellow]unknown: {self._rec_unresolved}[/yellow], "
-                f"[dim]outside: {self._rec_irrelevant}[/dim], "
-                f"[red]pending: {self._rec_pending}[/red] "
-            )
-            self.update(self._recursive_task, detail=detail_str)
+            self.update(self._recursive_task, detail=self._rec_detail())
             self.refresh()
 
     # ==========================================
     # CERTIFY REGIONS
     # ==========================================
-    def start_certify(self, description: str, total: int) -> None:
+    def start_certify(self, description: str = "Certify Regions", total: int = 0) -> None:
         if self._show_progress(ProgressLevel.ALL):
             self._certify_task = self.add_task(description, total=float(total), detail="")
             self._cert_verified = 0
             self._cert_unknown = 0
             self._cert_cex = 0
+            self.update(self._certify_task, detail=self._cert_detail())
+            self.refresh()
 
     def stop_certify(self) -> None:
         if self._certify_task is not None:
             self.remove_task(self._certify_task)
             self._certify_task = None
 
+    def step_certify(self, verified: bool, counterexample: bool = False) -> None:
+        """Advance the certify progress bar by one region outcome."""
+        if verified:
+            self._cert_verified += 1
+        elif counterexample:
+            self._cert_cex += 1
+        else:
+            self._cert_unknown += 1
+
+        if self._certify_task is not None:
+            self.update(self._certify_task, advance=1, detail=self._cert_detail())
+            self.refresh()
+
     def update_certify(
         self,
         advance: int | None = None,
         verified_count: int | None = None,
         unknown_count: int | None = None,
-        cex_count: int | None = None
+        cex_count: int | None = None,
     ) -> None:
-        delta_verified = 0
-        delta_unknown = 0
-        delta_cex = 0
-
         if verified_count is not None:
-            delta_verified = verified_count - self._cert_verified
             self._cert_verified = verified_count
         if unknown_count is not None:
-            delta_unknown = unknown_count - self._cert_unknown
             self._cert_unknown = unknown_count
         if cex_count is not None:
-            delta_cex = cex_count - self._cert_cex
             self._cert_cex = cex_count
-            
+
         if self._certify_task is not None:
-            details = (
-                f" [green]safe: {self._cert_verified}[/green], "
-                f"[yellow]unknown: {self._cert_unknown}[/yellow], "
-                f"[red]counterexample: {self._cert_cex}[/red] "
-            )
-            self.update(self._certify_task, advance=advance, detail=details)
-            self.add_recursive_counts(
-                resolved=delta_verified,
-                unresolved=delta_unknown + delta_cex,
-                pending=-(delta_verified + delta_unknown + delta_cex),
-            )
+            self.update(self._certify_task, advance=advance, detail=self._cert_detail())
             self.refresh()
