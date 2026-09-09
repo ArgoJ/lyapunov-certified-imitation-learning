@@ -1,3 +1,4 @@
+import copy
 import torch.nn as nn
 
 class EarlyStopping:
@@ -29,15 +30,16 @@ class EarlyStopping:
 
         if self.best_score is None:
             self.best_score = score
-            self.best_model_state = model.state_dict()
+            self.best_model_state = copy.deepcopy(model.state_dict())
         elif score < self.best_score + self.delta:
             self.counter += 1
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
             self.best_score = score
-            self.best_model_state = model.state_dict()
+            self.best_model_state = copy.deepcopy(model.state_dict())
             self.counter = 0
 
     def load_best_model(self, model: nn.Module):
-        model.load_state_dict(self.best_model_state)
+        if self.best_model_state is not None:
+            model.load_state_dict(self.best_model_state)

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
+from mpc_datagen import MPCConfig
 from lcil.certification.config import LyapunovCertificationConfig
 from lcil.imitation_learning.config import ImitationTrainingConfig
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
@@ -14,10 +15,26 @@ from lcil.lyapunov_learning.trainer import (
     LyapunovTrainingCurriculumStage,
     LyapunovTrainingResult,
 )
+from lcil.utils import load_mpc_config_json, save_mpc_config_json
 from lcil.utils.base_config import ArgumentParserConfig, JsonDataclass, config_field
+from lcil.utils.constants import MPC_CONFIG_FILENAME
 
 
 class TestConfigRoundtrip(unittest.TestCase):
+    def test_mpc_config_json_roundtrip(self) -> None:
+        cfg = MPCConfig(T_sim=30, N=10, nx=2, nu=1, dt=0.15)
+        cfg.constraints.lbx = np.array([-2.0, -1.0], dtype=float)
+        cfg.constraints.ubx = np.array([2.0, 1.0], dtype=float)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / MPC_CONFIG_FILENAME
+            save_mpc_config_json(cfg, config_path)
+            loaded = load_mpc_config_json(config_path)
+
+        self.assertAlmostEqual(loaded.dt, cfg.dt)
+        np.testing.assert_allclose(loaded.constraints.lbx, cfg.constraints.lbx)
+        np.testing.assert_allclose(loaded.constraints.ubx, cfg.constraints.ubx)
+
     def test_lyapunov_learning_config_save(self) -> None:
         training_cfg = LyapunovTrainingConfig(
             state_dim=2,

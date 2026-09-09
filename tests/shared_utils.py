@@ -207,3 +207,41 @@ class _RecordingSequencePolicy(nn.Module):
         self.last_forward_raw_input = x.detach().cpu().clone()
         seq_x = x.unsqueeze(1) if x.ndim == 2 else x
         return 2.0 * seq_x[..., :1]
+
+
+def create_dummy_mpc_dataset(
+    file_path,
+    num_trajectories: int = 4,
+    length: int = 20,
+    nx: int = 4,
+    nu: int = 1,
+):
+    from pathlib import Path
+    from mpc_datagen import MPCDataset, MPCData, MPCTrajectory, MPCConfig, MPCMeta
+
+    path = Path(file_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    trajectories = []
+    for i in range(num_trajectories):
+        t = float(i)
+        states = np.sin(
+            np.linspace(t, t + 2 * np.pi, length + 1, dtype=np.float32)[:, None]
+            * np.arange(1, nx + 1)
+        )
+        inputs = np.cos(
+            np.linspace(t, t + 2 * np.pi, length, dtype=np.float32)[:, None]
+            * np.arange(1, nu + 1)
+        )
+        times = np.linspace(0, 1, length + 1, dtype=np.float32)
+        v_solver = np.linspace(1.0, 0.1, length, dtype=np.float32)
+        traj = MPCTrajectory(states=states, inputs=inputs, times=times, V_solver=v_solver)
+        trajectories.append(
+            MPCData(
+                trajectory=traj,
+                meta=MPCMeta(id=i, steps_simulated=length, feasible=True),
+                config=MPCConfig(dt=0.05, N=length),
+            )
+        )
+    dataset = MPCDataset(data_buffer=trajectories)
+    dataset.save(path)
+    return path

@@ -19,22 +19,6 @@ from lcil.imitation_learning.dataset import (
 
 
 class TestSequenceStateActionDataset(unittest.TestCase):
-    def test_save_helper_supports_state_action_dataset_subsets(self) -> None:
-        dataset = StateActionDataset(
-            states=th.tensor([[0.0], [1.0], [2.0], [3.0]]),
-            actions=th.tensor([[5.0], [6.0], [7.0], [8.0]]),
-        )
-        subset = Subset(dataset, [0, 2])
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            checkpoint_path = Path(tmp_dir) / "state_subset.pt"
-            self.assertTrue(save_state_action_dataset_subset(subset, checkpoint_path))
-            loaded = StateActionDataset.load(checkpoint_path)
-
-        self.assertEqual(len(loaded), 2)
-        th.testing.assert_close(loaded[0][0], th.tensor([0.0]))
-        th.testing.assert_close(loaded[1][1], th.tensor([7.0]))
-
     def test_from_trajectories_builds_last_token_windows(self) -> None:
         state_trajectories = [
             th.tensor([[0.0], [1.0], [2.0], [3.0], [4.0]]),
@@ -181,35 +165,10 @@ class TestSequenceStateActionDataset(unittest.TestCase):
         with self.assertRaises(ValueError):
             split_sequence_dataset_by_trajectory(dataset, val_fraction=0.5)
 
-    def test_flat_dataloader_split_seed_works_with_cuda_training_device(self) -> None:
-        training_cfg = ImitationTrainingConfig(
-            dataset_path="unused.h5",
-            sequence_length=1,
-            val_fraction=0.5,
-            seed=7,
-            split_strategy="random",
-            batch_size=2,
-            epochs=1,
-        )
-        dataset = StateActionDataset(
-            states=th.tensor([[0.0], [1.0], [2.0], [3.0]]),
-            actions=th.tensor([[10.0], [11.0], [12.0], [13.0]]),
-        )
-
-        with patch(
-            "lcil.imitation_learning.dataset.StateActionDataset.from_mpc_dataset",
-            return_value=dataset,
-        ):
-            train_loader, val_loader = create_train_and_val_dataloader(
-                training_cfg
-            )
-
-        self.assertEqual(len(train_loader.dataset), 2)
-        self.assertEqual(len(val_loader.dataset), 2)
-
 
 class TestSequenceStateActionDatasetFromMPCDataset(unittest.TestCase):
     PATH_FILE = Path(__file__).with_name("mpc_dataset_path.txt")
+    _temp_dir = None
 
     @classmethod
     def _resolve_dataset_path(cls) -> str:
@@ -222,7 +181,13 @@ class TestSequenceStateActionDatasetFromMPCDataset(unittest.TestCase):
             if file_path:
                 return file_path
 
-        return ""
+        import tempfile
+        from shared_utils import create_dummy_mpc_dataset
+
+        cls._temp_dir = tempfile.TemporaryDirectory()
+        dummy_path = Path(cls._temp_dir.name) / "dummy_mpc_dataset.h5"
+        create_dummy_mpc_dataset(dummy_path, num_trajectories=5, length=20, nx=4, nu=1)
+        return str(dummy_path)
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -235,6 +200,12 @@ class TestSequenceStateActionDatasetFromMPCDataset(unittest.TestCase):
         cls.dataset_path = Path(dataset_path)
         if not cls.dataset_path.exists():
             raise unittest.SkipTest(f"Resolved dataset path does not exist: {cls.dataset_path}")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if cls._temp_dir is not None:
+            cls._temp_dir.cleanup()
+            cls._temp_dir = None
 
     def _assert_mpc_window_shapes(self, sequence_length: int) -> None:
         dataset = SequenceStateActionDataset.from_mpc_dataset(

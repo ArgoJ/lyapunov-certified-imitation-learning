@@ -128,7 +128,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         actions: NDArray | th.Tensor,
         refs: NDArray | th.Tensor | None = None,
         dtype: th.dtype = th.float32,
-        near_duplicate_radius: float = 0,
+        near_duplicate_radius: float = 0.0,
     ):
         """Initialize an in-memory state-action dataset.
 
@@ -145,14 +145,14 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         near_duplicate_radius : float, optional
             Optional near-duplicate filter radius in L2 distance over the
             concatenated state-action vector.
-            Set to ``0`` to disable near-duplicate filtering.
+            Set to ``0.0`` to disable near-duplicate filtering.
             Uses a vectorized voxel deduplication approximation to remove dense,
             very similar samples efficiently.
         """
         if near_duplicate_radius < 0:
             raise ValueError("near_duplicate_radius must be non-negative.")
 
-        normalized_radius = None if near_duplicate_radius == 0 else near_duplicate_radius
+        radius = float(near_duplicate_radius)
 
         states_tensor = _to_tensor(states, name="states", dims=2)
         actions_tensor = _to_tensor(actions, name="actions", dims=2)
@@ -168,11 +168,11 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
                 f"got {states_tensor.shape[0]} states and {refs_tensor.shape[0]} refs."
             )
 
-        if normalized_radius is not None and states_tensor.shape[0] > 0:
+        if radius > 0 and states_tensor.shape[0] > 0:
             keep_idx = self._near_duplicate_keep_indices(
                 states=states_tensor,
                 actions=actions_tensor,
-                radius=normalized_radius,
+                radius=radius,
             )
             states_tensor = states_tensor.index_select(0, keep_idx)
             actions_tensor = actions_tensor.index_select(0, keep_idx)
@@ -180,7 +180,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
                 refs_tensor = refs_tensor.index_select(0, keep_idx)
 
         self.dtype = dtype
-        self.near_duplicate_radius = normalized_radius
+        self.near_duplicate_radius = radius
 
         self._states = states_tensor.to(dtype=self.dtype)
         self._actions = actions_tensor.to(dtype=self.dtype)
@@ -273,7 +273,7 @@ class StateActionDataset(Dataset[tuple[th.Tensor, th.Tensor]]):
         mpc_dataset: MPCDataset | os.PathLike,
         dtype: th.dtype = th.float32,
         use_references: bool = False,
-        near_duplicate_radius: float | None = None,
+        near_duplicate_radius: float = 0.0,
     ) -> StateActionDataset:
         """Create a ``StateActionDataset`` by extracting samples from an MPC dataset."""
         resolved_mpc_dataset = _resolve_mpc_dataset(mpc_dataset)
@@ -937,7 +937,7 @@ def create_train_and_val_dataloader(
         ValueError if no samples are available in the dataset or if the split configuration is invalid.
     """
     val_fraction = float(training_config.val_fraction)
-    seed = int(training_config.seed)
+    seed = int(training_config.seed) if training_config.seed is not None else None
     use_references = bool(training_config.use_references)
     batch_size = int(training_config.batch_size)
     sequence_length = int(training_config.sequence_length)

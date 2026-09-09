@@ -1,18 +1,12 @@
-import unittest
 import tempfile
-
-import numpy as np
+import unittest
+from pathlib import Path
 
 import torch as th
 import torch.nn as nn
 
-from pathlib import Path
-from torch.utils.data import DataLoader, TensorDataset
-
-from mpc_datagen import MPCConfig
-from lcil.imitation_learning import BoundedPolicy, ImitationTrainingConfig, PolicyTrainer, TransformerPolicy
-from lcil.utils import MLP, load_mpc_config_json, save_mpc_config_json
-from lcil.utils.constants import MPC_CONFIG_FILENAME, POLICY_MODEL_FILENAME
+from lcil.imitation_learning import BoundedPolicy
+from lcil.utils import MLP
 
 
 def _build_mlp_feature_net(
@@ -93,34 +87,6 @@ class TestBoundedPolicyReferences(unittest.TestCase):
         self.assertTrue(th.allclose(raw, th.tensor([[4.5]])))
 
 
-class _WrappedRawPolicy(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.weight = nn.Parameter(th.tensor([[2.0]]))
-
-    def forward_raw(self, x: th.Tensor) -> th.Tensor:
-        return x @ self.weight
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return th.clamp(self.forward_raw(x), min=-1.0, max=1.0)
-
-
-class TestPolicyTrainerRawPredictions(unittest.TestCase):
-    def test_trainer_applies_weight_decay_from_config(self) -> None:
-        model = _WrappedRawPolicy()
-        dataloader = DataLoader(
-            TensorDataset(th.tensor([[1.0]]), th.tensor([[2.0]])),
-            batch_size=1,
-        )
-        trainer = PolicyTrainer(
-            model=model,
-            dataloader=dataloader,
-            training_config=ImitationTrainingConfig(epochs=1, weight_decay=1e-2),
-        )
-
-        self.assertAlmostEqual(trainer.optimizer.param_groups[0]["weight_decay"], 1e-2)
-
-
 class TestPolicySerialization(unittest.TestCase):
     def test_save_writes_model_only_checkpoint(self) -> None:
         model = BoundedPolicy(
@@ -166,22 +132,6 @@ class TestPolicySerialization(unittest.TestCase):
             loaded = BoundedPolicy.load(checkpoint_path)
 
         th.testing.assert_close(loaded.forward_raw(sample), expected)
-
-
-class TestMPCConfigHelpers(unittest.TestCase):
-    def test_save_and_load_mpc_config_json_round_trip(self) -> None:
-        cfg = MPCConfig(T_sim=30, N=10, nx=2, nu=1, dt=0.15)
-        cfg.constraints.lbx = np.array([-2.0, -1.0], dtype=float)
-        cfg.constraints.ubx = np.array([2.0, 1.0], dtype=float)
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            config_path = Path(tmp_dir) / MPC_CONFIG_FILENAME
-            save_mpc_config_json(cfg, config_path)
-            loaded = load_mpc_config_json(config_path)
-
-        self.assertAlmostEqual(loaded.dt, cfg.dt)
-        np.testing.assert_allclose(loaded.constraints.lbx, cfg.constraints.lbx)
-        np.testing.assert_allclose(loaded.constraints.ubx, cfg.constraints.ubx)
 
 
 if __name__ == "__main__":

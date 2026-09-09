@@ -72,6 +72,25 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         np.testing.assert_allclose(second_scale, np.array([0.25, 0.75], dtype=np.float32))
         np.testing.assert_allclose(second_bounds, np.array([[-0.5, -3.0], [0.5, 3.0]], dtype=np.float32))
 
+    def test_build_scaled_state_bounds_validations(self) -> None:
+        base_bounds = np.array([[-2.0, -4.0], [2.0, 4.0]], dtype=np.float32)
+
+        # Invalid base bounds shape
+        with self.assertRaisesRegex(ValueError, "must have shape"):
+            LyapunovTrainer._build_scaled_train_bounds(base_bounds[0], bound_scales=[1.0])
+
+        # Empty bound scales
+        with self.assertRaisesRegex(ValueError, "at least one stage"):
+            LyapunovTrainer._build_scaled_train_bounds(base_bounds, bound_scales=[])
+
+        # Scale dim mismatch
+        with self.assertRaisesRegex(ValueError, "Each bound scale must be"):
+            LyapunovTrainer._build_scaled_train_bounds(base_bounds, bound_scales=[[1.0, 2.0, 3.0]])
+
+        # Non-positive scale
+        with self.assertRaisesRegex(ValueError, "All bound scales must be positive"):
+            LyapunovTrainer._build_scaled_train_bounds(base_bounds, bound_scales=[-0.5])
+
     def test_estimate_rho_uses_configured_quantile(self) -> None:
         config = LyapunovTrainingConfig(
             state_dim=2,

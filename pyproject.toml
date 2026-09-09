@@ -70,3 +70,21 @@ convention = "numpy"
 [tool.pyrefly]
 project-includes = ["src", "examples"]
 search-path = [".", "src", "examples"]
+
+[tool.coverage.run]
+source = ["src/lcil"]
+branch = true
+omit = [
+    "*/c_generated_code/*",
+    "*/lcil_plt/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
