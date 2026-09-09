@@ -3,11 +3,12 @@ from __future__ import annotations
 import logging
 import os
 import numpy as np
+import torch as th
 from dataclasses import dataclass
 from pathlib import Path
 from numpy.typing import NDArray
 
-from .recursive_certifier import RecursiveCertifier
+from .recursive_certifier import RecursiveCertifier, RecursiveCertificationResult
 from .abcrown_region_certifier import EarlyExitLevel
 from ..utils.search_utils import search_and_bisect_value
 from ..utils.constants import *
@@ -82,18 +83,56 @@ class RegionCertificationResult:
 class BisectCertifier(RecursiveCertifier):
     """Lyapunov certifier using a bisection-based region refinement strategy."""
 
+    def __init__(
+        self,
+        *args,
+        save_dir: str | os.PathLike | None = None,
+        save_folder: str | os.PathLike | None = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        target_dir = save_dir if save_dir is not None else save_folder
+        self.save_dir: Path | None = Path(target_dir).resolve() if target_dir is not None else None
+
     # =========================================
     # CERTIFICATION SEARCH
     # ========================================
+    def _create_result(self, rho: float, rec_result: RecursiveCertificationResult) -> RegionCertificationResult:
+        bs_bounds = self.region_manager.get_cached_region_bounds(rec_result.resolved)
+        inside_mask, boundary_mask, _ = (
+            bs_bounds.sublevel_masks(rho + self.config.sublevel_tolerance)
+            if bs_bounds is not None and len(rec_result.resolved) > 0
+            else (slice(None), slice(0), None)
+        )
+        return RegionCertificationResult(
+            global_success=rec_result.global_success,
+            partial_success=rec_result.partial_success,
+            rho=float(rho),
+            outside_sublevel_regions=self._regions_tensor_to_np(rec_result.irrelevant),
+            uncertified_regions=self._regions_tensor_to_np(rec_result.unresolved),
+            certified_sublevel_regions=self._regions_tensor_to_np(rec_result.resolved[inside_mask]),
+            certified_boundary_regions=self._regions_tensor_to_np(rec_result.resolved[boundary_mask]),
+        )
+
     def is_rho_certified(self, rho: float) -> bool:
         """Check whether all regions satisfy Lyapunov conditions at ``rho``."""
         result = self._certify_recursive_regions(
             rho=rho,
             early_exit=EarlyExitLevel.ON_COUNTEREXAMPLE,
         )
+
+        if self.save_dir is not None:
+            cert_result = self._create_result(rho, result)
+            subfolder = self.save_dir / CERTIFICATION_EVALUATED_RHOS_DIRNAME
+            subfolder.mkdir(parents=True, exist_ok=True)
+            cert_result.save(subfolder / f"rho_{rho:.6f}.npz")
+
         return result.global_success
 
-    def find_max_rho(self, rho_estimate: float) -> float:
+    def find_max_rho(
+        self,
+        rho_estimate: float,
+    ) -> float:
         """Search for the largest certifiable rho and return it."""
         __logger__.info("Starting Lyapunov certification.")
         
@@ -117,61 +156,21 @@ class BisectCertifier(RecursiveCertifier):
             
         return best_rho
 
-
     # =========================================
     # COLLECT CERTIFICATION DETAILS
     # =========================================
     def _collect_certification_details(self, rho: float) -> RegionCertificationResult:
-        """Collect region-wise certification details for a fixed ``rho``.
-
-        Parameters
-        ----------
-        rho : float
-            Lyapunov level-set value to test.
-
-        Returns
-        -------
-        RegionCertificationResult
-            Aggregated certification result with region partitions.
-        """
+        """Collect region-wise certification details for a fixed ``rho``."""
         recursive_result = self._certify_recursive_regions(
-            rho=rho, force_display=True)
-
-        bs_bounds = self.region_manager.get_cached_region_bounds(recursive_result.resolved)
-        inside_mask, boundary_mask, _ = bs_bounds.sublevel_masks(rho + self.config.sublevel_tolerance)
-        
-        certified_sublevel_regions_np = self._regions_tensor_to_np(recursive_result.resolved[inside_mask])
-        certified_boundary_regions_np = self._regions_tensor_to_np(recursive_result.resolved[boundary_mask])
-        uncertified_regions_np = self._regions_tensor_to_np(recursive_result.unresolved)
-        outside_sublevel_regions_np = self._regions_tensor_to_np(recursive_result.irrelevant)
-
-        if recursive_result.vacuous:
-            __logger__.warning(
-                "Certification at rho=%.6f is completely filtered: all regions are outside V(x) <= rho.",
-                float(rho),
-            )
-
-        self.details = RegionCertificationResult(
-            global_success=recursive_result.global_success,
-            partial_success=recursive_result.partial_success,
-            rho=rho,
-            outside_sublevel_regions=outside_sublevel_regions_np,
-            uncertified_regions=uncertified_regions_np,
-            certified_sublevel_regions=certified_sublevel_regions_np,
-            certified_boundary_regions=certified_boundary_regions_np,
+            rho=rho, force_display=True
         )
-        __logger__.debug(
-            "Certification detail pass at rho=%.6f: success=%s, certified_sublevel=%d, uncertified=%d, outside_sublevel=%d.",
-            float(self.details.rho),
-            self.details.global_success,
-            len(self.details.certified_sublevel_regions),
-            len(self.details.uncertified_regions),
-            len(self.details.outside_sublevel_regions),
-        )
+        self.details = self._create_result(rho, recursive_result)
         return self.details
 
     def certify(
-        self, rho_estimate: float, collect_details_on_failed: bool = False
+        self,
+        rho_estimate: float,
+        collect_details_on_failed: bool = False,
     ) -> RegionCertificationResult | None:
         """Convenience method to run the full certification and return details."""
         best_rho = self.find_max_rho(rho_estimate)
@@ -191,7 +190,7 @@ class BisectCertifier(RecursiveCertifier):
         # Fallback detail collection
         fallback_rho = self.region_manager.get_best_fallback_rho(
             rho_min=self.config.rho_min,
-            sublevel_tolerance=self.config.sublevel_tolerance
+            sublevel_tolerance=self.config.sublevel_tolerance,
         )
         __logger__.info("Collecting diagnostic details at fallback rho=%.6f.", fallback_rho)
         
