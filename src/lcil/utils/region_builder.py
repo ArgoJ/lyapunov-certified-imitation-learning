@@ -429,26 +429,12 @@ class RegionBuilder:
             return regions[:0], terminal_regions
 
         frontier_split_dims = None if split_dims is None else split_dims[adjacent_mask]
-        split_children = self.split_regions(frontier_parents, split_dims=frontier_split_dims)
-        child_frontier_mask = self._face_adjacency_mask(
-            split_children,
-            reference_regions,
-            tolerance=adjacency_tolerance,
-        )
-
-        frontier_children = split_children[child_frontier_mask]
-        terminal_children = split_children[~child_frontier_mask]
-        if len(terminal_children) > 0:
-            terminal_regions = (
-                terminal_children
-                if len(terminal_regions) == 0
-                else th.cat([terminal_regions, terminal_children], dim=0)
-            )
+        frontier_children = self.split_regions(frontier_parents, split_dims=frontier_split_dims)
 
         __logger__.debug(
-            "Frontier split kept %d/%d child regions adjacent to %d reference regions.",
+            "Frontier split kept %d child regions from %d frontier parents adjacent to %d reference regions.",
             len(frontier_children),
-            len(split_children),
+            len(frontier_parents),
             len(reference_regions),
         )
         return frontier_children, terminal_regions

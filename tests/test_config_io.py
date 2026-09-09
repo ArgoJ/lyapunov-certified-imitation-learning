@@ -443,7 +443,7 @@ class TestArgumentParserConfig(unittest.TestCase):
         parser = ArgumentParser()
         DummyCliConfig().add_to_argparse(parser, suppress_defaults=True)
 
-        help_text = parser.format_help()
+        help_text = " ".join(parser.format_help().split())
 
         self.assertIn("(default: 10)", help_text)
         self.assertIn("(default: True)", help_text)

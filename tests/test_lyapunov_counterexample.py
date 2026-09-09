@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+from typing import Any
 from unittest.mock import patch
 from pathlib import Path
 
@@ -96,47 +97,26 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             "lcil.lyapunov_learning.counterexample.sample_boundary_points",
             return_value=(boundary_points, face_dims, is_ub),
         ):
-            rho = estimate_rho_from_boundary(_FirstCoordinateValue(), config).rho
+            rho_eval, _ = estimate_rho_from_boundary(_FirstCoordinateValue(), config)
+            rho = rho_eval.rho.rho
 
         expected = 1.5 * th.quantile(boundary_points[:, 0], q=0.5).item()
         self.assertAlmostEqual(rho, expected, places=6)
 
     def test_estimate_rho_reuses_boundary_buffer_low_values(self) -> None:
-        config = LyapunovTrainingConfig(
-            state_dim=2,
-            state_bounds=np.array([[-12.0, -1.0], [12.0, 1.0]], dtype=np.float32),
-            rho_estimation_samples=2,
-            roa_boundary_buffer_size=2,
-            rho_descent_steps=0,
-            rho_growth_gamma=1.1,
-            rho_estimate_quantile=1.0,
-        )
         first_boundary = th.tensor([[1.0, 0.0], [2.0, 0.0]], dtype=th.float32)
         second_boundary = th.tensor([[9.0, 0.0], [10.0, 0.0]], dtype=th.float32)
-        face_dims = th.zeros(2, dtype=th.long)
-        is_ub = th.ones(2, dtype=th.bool)
-        boundary_buffer = BoundaryStateBuffer(state_dim=2, state_buffer_limit=2, device="cpu")
+        boundary_buffer = BoundaryStateBuffer(state_dim=2, max_size=2, device="cpu")
 
-        with patch(
-            "lcil.lyapunov_learning.counterexample.sample_boundary_points",
-            side_effect=[
-                (first_boundary, face_dims, is_ub),
-                (second_boundary, face_dims, is_ub),
-            ],
-        ):
-            first_rho = estimate_rho_from_boundary(
-                _FirstCoordinateValue(),
-                config,
-                boundary_buffer=boundary_buffer,
-            ).rho
-            second_rho = estimate_rho_from_boundary(
-                _FirstCoordinateValue(),
-                config,
-                boundary_buffer=boundary_buffer,
-            ).rho
+        value_fn = _FirstCoordinateValue()
+        boundary_buffer.update(first_boundary, value_fn=value_fn)
+        first_max_val = float(value_fn(boundary_buffer.states).max().item())
 
-        self.assertAlmostEqual(first_rho, 2.0, places=6)
-        self.assertAlmostEqual(second_rho, 2.0, places=6)
+        boundary_buffer.update(second_boundary, value_fn=value_fn)
+        second_max_val = float(value_fn(boundary_buffer.states).max().item())
+
+        self.assertAlmostEqual(first_max_val, 2.0, places=6)
+        self.assertAlmostEqual(second_max_val, 2.0, places=6)
 
     def test_counterexample_mining_respects_current_rho_gate(self) -> None:
         config = LyapunovTrainingConfig(
@@ -156,10 +136,12 @@ class TestLyapunovCounterexamples(unittest.TestCase):
 
         th.manual_seed(0)
         rho_estimate = 0.1
+        initial_states = th.linspace(-1.0, 1.0, 256).unsqueeze(-1)
         gated_cex, _ = find_counter_examples(
             objective=lambda x: loss_module.mining_objective(x_batch=x, rho_estimate=rho_estimate),
             condition_evaluator=lambda x: loss_module.get_counterexample_mask(x, rho_estimate),
             config=config,
+            initial_states=initial_states,
         )
         gated_values = loss_module.lyap_model(gated_cex).flatten()
 
@@ -169,14 +151,13 @@ class TestLyapunovCounterexamples(unittest.TestCase):
     def test_policy_regularization_tracks_initial_policy_outputs(self) -> None:
         policy = _SingleWeightPolicy(weight=1.0)
         regularization_loss = PolicyRegularizationLoss(policy, state_bounds=th.tensor([[-1.0], [1.0]]), device="cpu")
-        x = th.tensor([[2.0]], dtype=th.float32)
 
-        self.assertAlmostEqual(float(regularization_loss(x).item()), 0.0, places=6)
+        self.assertAlmostEqual(float(regularization_loss().item()), 0.0, places=6)
 
         with th.no_grad():
             policy.linear.weight.fill_(3.0)
 
-        self.assertGreater(float(regularization_loss(x).item()), 0.0)
+        self.assertGreater(float(regularization_loss().item()), 0.0)
 
     def test_enable_policy_training_rebuilds_optimizer_and_preserves_state(self) -> None:
         config = LyapunovTrainingConfig(
@@ -198,10 +179,9 @@ class TestLyapunovCounterexamples(unittest.TestCase):
 
         policy_param = next(trainer.policy_model.parameters())
         lyap_param = next(trainer.lyap_model.parameters())
-        optimizer_params = trainer.optimizer.param_groups[-1]["params"]
 
-        self.assertFalse(policy_param.requires_grad)
-        self.assertFalse(any(param is policy_param for param in optimizer_params))
+        self.assertFalse(trainer._curr_policy_train_status)
+        self.assertFalse(trainer.policy_model.training)
 
         trainer.optimizer.zero_grad()
         lyap_param.sum().backward()
@@ -212,7 +192,8 @@ class TestLyapunovCounterexamples(unittest.TestCase):
 
         trainer._enable_policy_training()
 
-        self.assertTrue(policy_param.requires_grad)
+        self.assertTrue(trainer._curr_policy_train_status)
+        self.assertTrue(trainer.policy_model.training)
         self.assertTrue(any(param is policy_param for param in trainer.optimizer.param_groups[-1]["params"]))
         self.assertIn(lyap_param, trainer.optimizer.state)
         self.assertTrue(th.allclose(trainer.optimizer.state[lyap_param]["exp_avg"], old_state["exp_avg"]))
@@ -263,7 +244,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             cex_buffer_limit=3,
             device=th.device("cpu"),
         )
-        state_buffer.register_cex(th.tensor([[10.0]], dtype=th.float32))
+        state_buffer.register_cex(th.tensor([[10.0]], dtype=th.float32), objective=lambda x: -x)
 
         batch = state_buffer.sample(batch_size=4, cex_fraction=0.5)
         batch_values = batch.flatten()
@@ -288,7 +269,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             cex_buffer_limit=3,
             device=th.device("cpu"),
         )
-        state_buffer.register_cex(th.tensor([[10.0]], dtype=th.float32))
+        state_buffer.register_cex(th.tensor([[10.0]], dtype=th.float32), objective=lambda x: -x)
 
         batch = state_buffer.sample(batch_size=4, cex_fraction=2.0)
         batch_values = batch.flatten()
@@ -314,7 +295,11 @@ class TestLyapunovCounterexamples(unittest.TestCase):
 
         th.manual_seed(0)
         rho_estimate = 0.1
-        mined_cex = trainer._mine_new_counterexamples(rho_estimate=rho_estimate)
+        initial_states = th.linspace(-1.0, 1.0, 256).unsqueeze(-1)
+        mined_cex, _ = trainer._mine_new_counterexamples(
+            rho_estimate=rho_estimate,
+            initial_states=initial_states,
+        )
         mined_values = trainer.lyap_model(mined_cex).flatten()
 
         self.assertGreater(mined_cex.shape[0], 0)
@@ -382,8 +367,8 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             rho_monitor=ThresholdMonitor(threshold=1.0, patience=2),
         )
 
-        def _fake_train(stage_self: LyapunovTrainer) -> LyapunovTrainingResult:
-            stage_upper = float(stage_self.config.state_bounds[1, 0])
+        def _fake_train(stage_self: LyapunovTrainer, *args: Any, **kwargs: Any) -> LyapunovTrainingResult:
+            stage_upper = float(stage_self.config.train_bounds[1, 0])
             if stage_upper > 1.0:
                 stage_self.results = LyapunovTrainingResult(
                     rho_estimate=stage_upper,
@@ -413,7 +398,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         self.assertIsNotNone(curriculum_result.last_completed_result)
         assert curriculum_result.last_completed_result is not None
         np.testing.assert_allclose(
-            curriculum_result.stages[0].state_bounds,
+            curriculum_result.stages[0].train_bounds,
             np.array([[-1.0], [1.0]], dtype=np.float32),
         )
         self.assertAlmostEqual(curriculum_result.last_completed_result.rho_estimate, 1.0, places=6)
@@ -431,7 +416,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             rho_monitor=ThresholdMonitor(threshold=1.0, patience=2),
         )
 
-        def _always_abort(stage_self: LyapunovTrainer) -> LyapunovTrainingResult:
+        def _always_abort(stage_self: LyapunovTrainer, *args: Any, **kwargs: Any) -> LyapunovTrainingResult:
             stage_self.results = LyapunovTrainingResult(
                 rho_estimate=0.5,
                 num_mined_counterexamples=0,
@@ -510,10 +495,10 @@ class TestLyapunovCounterexamples(unittest.TestCase):
 
         stage_bounds_seen: list[np.ndarray] = []
 
-        def _fake_train(stage_self: LyapunovTrainer) -> LyapunovTrainingResult:
-            stage_bounds_seen.append(np.asarray(stage_self.config.state_bounds, dtype=np.float32).copy())
+        def _fake_train(stage_self: LyapunovTrainer, *args: Any, **kwargs: Any) -> LyapunovTrainingResult:
+            stage_bounds_seen.append(np.asarray(stage_self.config.train_bounds, dtype=np.float32).copy())
             stage_self.results = LyapunovTrainingResult(
-                rho_estimate=float(stage_self.config.state_bounds[1, 0]),
+                rho_estimate=float(stage_self.config.train_bounds[1, 0]),
                 num_mined_counterexamples=stage_self.config.state_dim,
                 train_time=0.0,
             )
@@ -530,7 +515,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         self.assertEqual(len(curriculum_result.stages), 2)
         np.testing.assert_allclose(stage_bounds_seen[0], expected_stage_bounds[0])
         np.testing.assert_allclose(stage_bounds_seen[1], expected_stage_bounds[1])
-        np.testing.assert_allclose(trainer.config.state_bounds, expected_stage_bounds[1])
+        np.testing.assert_allclose(trainer.config.train_bounds, expected_stage_bounds[1])
         self.assertAlmostEqual(curriculum_result.final_result.rho_estimate, 2.0, places=6)
 
     def test_trainer_save_writes_training_result_json(self) -> None:

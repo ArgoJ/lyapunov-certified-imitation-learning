@@ -33,8 +33,10 @@ def get_center(lbx: th.Tensor, ubx: th.Tensor) -> th.Tensor:
 
 
 def get_bounded_fraction(base: float, min: float, max: float) -> float:
-    if not (min <= base <= max):
-        return max(min, min(base, max))
+    if base < min:
+        return min
+    if base > max:
+        return max
     return base
 
 

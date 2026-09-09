@@ -470,11 +470,16 @@ class TestRegionBuilder(PlotAssertionsMixin, unittest.TestCase):
             reference,
         )
 
-        expected_frontier = th.tensor([[[1.0, 0.0], [2.0, 1.0]]], dtype=th.float32)
+        expected_frontier = th.tensor(
+            [
+                [[0.0, 0.0], [1.0, 1.0]],
+                [[1.0, 0.0], [2.0, 1.0]],
+            ],
+            dtype=th.float32,
+        )
         expected_terminal = th.tensor(
             [
                 [[-2.0, -1.0], [-1.0, 0.0]],
-                [[0.0, 0.0], [1.0, 1.0]],
             ],
             dtype=th.float32,
         )

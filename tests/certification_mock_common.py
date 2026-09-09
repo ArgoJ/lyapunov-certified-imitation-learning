@@ -37,6 +37,7 @@ _install_abcrown_stub()
 bisect_certifier_module = importlib.import_module("lcil.certification.bisect_certifier")
 recursive_certifier_module = importlib.import_module("lcil.certification.recursive_certifier")
 BisectCertifier = bisect_certifier_module.BisectCertifier
+RecursiveCertifier = recursive_certifier_module.RecursiveCertifier
 RecursiveCertificationResult = recursive_certifier_module.RecursiveCertificationResult
 LyapunovCertificationConfig = importlib.import_module(
     "lcil.certification.config"
@@ -49,6 +50,109 @@ CompleteABCrownCertifier = importlib.import_module(
 ).CompleteABCrownCertifier
 cert_models_module = importlib.import_module("lcil.certification.models")
 LyapunovCoreVerifier = cert_models_module.LyapunovCoreVerifier
+
+
+@dataclass(frozen=True)
+class _MockVerificationResult:
+    verified: bool
+    counterexample_found: bool
+    status: str
+
+
+@dataclass(frozen=True)
+class _MockBatchVerification:
+    verified_mask: th.Tensor
+    counterexample_mask: th.Tensor
+    unknown_mask: th.Tensor
+
+    @property
+    def failed_mask(self) -> th.Tensor:
+        return self.counterexample_mask | self.unknown_mask
+
+    @property
+    def any_counterexample(self) -> bool:
+        return bool(self.counterexample_mask.any().item())
+
+
+class _StatusAwareMockRegionCertifier:
+    def __init__(self, results: list[_MockVerificationResult]):
+        self.results = list(results)
+        self.calls = 0
+
+    def verify_region(self, region: th.Tensor, rho: float) -> _MockVerificationResult:
+        del region, rho
+        if self.calls >= len(self.results):
+            raise AssertionError("verify_region called more often than expected.")
+        result = self.results[self.calls]
+        self.calls += 1
+        return result
+
+    def certify_regions(
+        self,
+        regions: th.Tensor,
+        rho: float,
+        *,
+        early_exit: bool = False,
+        progress=None,
+        **kwargs,
+    ) -> _MockBatchVerification:
+        verified_mask = th.zeros((len(regions),), dtype=th.bool)
+        counterexample_mask = th.zeros((len(regions),), dtype=th.bool)
+        unknown_mask = th.zeros((len(regions),), dtype=th.bool)
+
+        for idx, region in enumerate(regions):
+            result = self.verify_region(region, rho)
+            verified_mask[idx] = result.verified
+            counterexample_mask[idx] = result.counterexample_found
+            unknown_mask[idx] = (not result.verified and not result.counterexample_found)
+            if early_exit and result.counterexample_found:
+                break
+
+        return _MockBatchVerification(
+            verified_mask=verified_mask,
+            counterexample_mask=counterexample_mask,
+            unknown_mask=unknown_mask,
+        )
+
+
+class _RecordingMockRegionCertifier(_StatusAwareMockRegionCertifier):
+    def __init__(self, results: list[_MockVerificationResult]):
+        super().__init__(results)
+        self.batches: list[th.Tensor] = []
+
+    def certify_regions(
+        self,
+        regions: th.Tensor,
+        rho: float,
+        *,
+        early_exit: bool = False,
+        progress=None,
+        **kwargs,
+    ) -> _MockBatchVerification:
+        self.batches.append(regions.clone())
+        return super().certify_regions(
+            regions,
+            rho,
+            early_exit=early_exit,
+            progress=progress,
+            **kwargs,
+        )
+
+
+def _complete_candidate_partition(regions: th.Tensor):
+    from lcil.certification.region_manager import CertificationRegionPartition
+
+    empty = regions[:0]
+    return CertificationRegionPartition(
+        irrelevant_regions=empty,
+        cached_complete_safe_regions=empty,
+        cached_core_safe_regions=empty,
+        cached_inside_counterexample_regions=empty,
+        cached_inside_unknown_regions=empty,
+        inside_core_unchecked_regions=empty,
+        boundary_core_unchecked_regions=empty,
+        boundary_complete_candidate_regions=regions,
+    )
 
 
 @dataclass
@@ -333,6 +437,29 @@ class CertificationMockedABCrownTestCase(unittest.TestCase):
             state_dim = int(config_kwargs.pop("state_dim", 3))
             config = cls.make_config(state_dim=state_dim, **config_kwargs)
         return BisectCertifier(
+            policy_model=_ZeroPolicy() if policy_model is None else policy_model,
+            lyap_model=_QuadraticLyapunov() if lyap_model is None else lyap_model,
+            dyn_model=_ZeroDynamics() if dyn_model is None else dyn_model,
+            config=config,
+            device=th.device("cpu"),
+            progress_level=progress_level,
+        )
+
+    @classmethod
+    def make_recursive_certifier(
+        cls,
+        *,
+        policy_model: nn.Module | None = None,
+        lyap_model: nn.Module | None = None,
+        dyn_model: nn.Module | None = None,
+        config: Any = None,
+        progress_level: int = 0,
+        **config_kwargs,
+    ) -> Any:
+        if config is None:
+            state_dim = int(config_kwargs.pop("state_dim", 3))
+            config = cls.make_config(state_dim=state_dim, **config_kwargs)
+        return RecursiveCertifier(
             policy_model=_ZeroPolicy() if policy_model is None else policy_model,
             lyap_model=_QuadraticLyapunov() if lyap_model is None else lyap_model,
             dyn_model=_ZeroDynamics() if dyn_model is None else dyn_model,

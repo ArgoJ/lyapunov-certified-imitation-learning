@@ -517,15 +517,9 @@ class RecursiveCertifier:
                         )
                         break
 
-                    current_resolved = self.region_manager.pack_regions(all_resolved)
-                    split_bs, terminal_failed_bs = self.region_manager.split_failed_regions_on_certification_frontier(
-                        step_result.unresolved,
-                        current_resolved,
-                    )
-                    if len(terminal_failed_bs) > 0:
-                        all_unresolved.append(terminal_failed_bs)
-
+                    split_bs = self.region_manager.split_regions(step_result.unresolved)
                     if len(split_bs) == 0:
+                        all_unresolved.append(step_result.unresolved)
                         self.progress.update_recursive(
                             advance=1,
                             n_pending=0,

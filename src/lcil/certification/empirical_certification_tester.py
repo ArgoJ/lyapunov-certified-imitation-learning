@@ -151,6 +151,15 @@ class CertificationResultTester:
         active_dims = active_dims.reshape(*([1] * (states.ndim - 1)), active_dims.numel())
         return ((states.abs() <= exclusion) | (~active_dims)).all(dim=-1)
 
+    def _sample_uniform_states(self, sample_size: int) -> th.Tensor:
+        return sample_sobol_box(
+            sample_size=sample_size,
+            lb=self.bounds[0],
+            ub=self.bounds[1],
+            sobol_engine=self.sobol_engine,
+            device=self.device,
+        )
+
     def _sample_near_rho_within_sublevel(
         self,
         rho: float,
@@ -169,13 +178,7 @@ class CertificationResultTester:
         candidate_values = th.zeros(candidate_batch_size, dtype=th.float32, device=self.device)
         with th.no_grad():
             for _ in range(self._MAX_SAMPLING_ROUNDS):
-                candidates = sample_sobol_box(
-                    sample_size=candidate_batch_size,
-                    lb=self.bounds[0],
-                    ub=self.bounds[1],
-                    sobol_engine=self.sobol_engine,
-                    device=self.device,
-                )
+                candidates = self._sample_uniform_states(candidate_batch_size)
                 
                 candidate_values = self.lyap_model(candidates).reshape(-1)
                 inside_mask = candidate_values <= rho_scalar
@@ -194,10 +197,16 @@ class CertificationResultTester:
                 inside_states = candidates[valid_mask]
                 inside_values = candidate_values[valid_mask]
 
-                kept_states = th.cat((kept_states, inside_states), dim=0)[:sample_size]
-                kept_values = th.cat((kept_values, inside_values), dim=0)[:sample_size]
+                kept_states = th.cat((kept_states, inside_states), dim=0)
+                kept_values = th.cat((kept_values, inside_values), dim=0)
+
+                sort_indices = th.argsort(kept_values, descending=True)
+                kept_states = kept_states[sort_indices]
+                kept_values = kept_values[sort_indices]
 
                 if kept_states.shape[0] >= sample_size:
+                    kept_states = kept_states[:sample_size]
+                    kept_values = kept_values[:sample_size]
                     break
 
         if kept_states.shape[0] == 0:

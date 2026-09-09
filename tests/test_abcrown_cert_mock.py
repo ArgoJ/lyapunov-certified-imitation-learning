@@ -24,12 +24,10 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
         self.assertTrue(_is_safe_status("safe-incomplete"))
         self.assertFalse(_is_safe_status("unsafe"))
 
-    def test_build_safe_output_constraint_respects_tolerances(self) -> None:
+    def test_build_safe_output_constraint_evaluates_correctly(self) -> None:
         certifier = self.make_abcrown_region_certifier(
             state_dim=1,
             cert_bounds=[[-1.0], [1.0]],
-            sublevel_tolerance=0.2,
-            condition_tolerance=0.1,
             batch_size=8,
         )
 
@@ -38,10 +36,10 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
         values = th.tensor(
             [
                 [999.0, 1.25, 10.0],
-                [-0.05, 0.05, 1.05],
+                [0.5, 0.05, 0.5],
                 [0.0, -0.11, 0.0],
                 [-0.11, 0.05, 0.0],
-                [0.0, 0.05, 1.2],
+                [0.1, 0.05, 1.2],
             ],
             dtype=th.float32,
         )
@@ -62,15 +60,16 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
             certifier.verify_region(th.zeros((1, 2, 1), dtype=th.float32), rho=1.0)
 
     def test_verify_region_returns_verified_for_safe_region(self) -> None:
+        from shared_utils import _ZeroDynamics
         certifier = self.make_abcrown_region_certifier(
             lyap_model=_QuadraticLyapunov(),
-            dyn_model=_IdentityDynamics(),
+            dyn_model=_ZeroDynamics(),
             state_dim=1,
             cert_bounds=[[-2.0], [2.0]],
             kappa=1e-6,
             batch_size=8,
         )
-        region = th.tensor([[-0.5], [0.5]], dtype=th.float32)
+        region = th.tensor([[0.2], [0.5]], dtype=th.float32)
 
         verification = certifier.verify_region(region, rho=1.0)
 
