@@ -291,7 +291,7 @@ class RecursiveCertifier:
         early_exit: EarlyExitLevel,
     ):
         if len(regions) == 0:
-            return None
+            return None, None
         result = self._get_region_certifier().certify_regions(
             regions=regions,
             rho=rho,
@@ -386,57 +386,41 @@ class RecursiveCertifier:
         append_resolved(partition.cached_complete_safe_regions)
         append_resolved(partition.cached_core_safe_regions)
 
-        cached_inside_core_cex_bs = partition.cached_inside_counterexample_regions
-        if len(cached_inside_core_cex_bs) > 0:
-            append_unresolved(cached_inside_core_cex_bs)
-            counterexample_found = True
-            if early_exit != EarlyExitLevel.NONE:
-                return finish()
-
-        append_unresolved(partition.cached_inside_unknown_regions)
-        if early_exit == EarlyExitLevel.ON_UNKNOWN and len(partition.cached_inside_unknown_regions) > 0:
-            counterexample_found = True
-            return finish()
-
         inside_core_unchecked_bs = partition.inside_core_unchecked_regions
         boundary_core_unchecked_bs = partition.boundary_core_unchecked_regions
-        boundary_complete_candidates = partition.boundary_complete_candidate_regions
 
-        if self.config.skip_boundary_core_cert and len(boundary_core_unchecked_bs) > 0:
-            boundary_complete_candidates = self.region_manager.pack_regions(
-                (boundary_complete_candidates, boundary_core_unchecked_bs))
-            boundary_core_unchecked_bs = self.region_manager.empty_regions()
+        if self.config.skip_boundary_core_cert:
+            core_unchecked_bs = inside_core_unchecked_bs
+            boundary_skipped_core = boundary_core_unchecked_bs
+        else:
+            core_unchecked_bs = self.region_manager.pack_regions(
+                (inside_core_unchecked_bs, boundary_core_unchecked_bs)
+            )
+            boundary_skipped_core = self.region_manager.empty_regions()
 
-        inside_core_update = self._run_core_certification(
-            inside_core_unchecked_bs,
-            rho,
-            early_exit=early_exit,
-        )
-        if inside_core_update is not None:
-            append_resolved(inside_core_update.verified_regions)
-            append_unresolved(inside_core_update.failed_regions)
-            if early_exit == EarlyExitLevel.ON_UNKNOWN and len(inside_core_update.failed_regions) > 0:
-                counterexample_found = True
-                return finish()
-            counterexample_found_or(inside_core_update.counterexample_found)
-            if early_exit != EarlyExitLevel.NONE and inside_core_update.counterexample_found:
-                return finish()
-
-        boundary_core_update = self._run_core_certification(
-            boundary_core_unchecked_bs,
+        core_update = self._run_core_certification(
+            core_unchecked_bs,
             rho,
             early_exit=EarlyExitLevel.NONE,
         )
-        if boundary_core_update is not None:
-            append_resolved(boundary_core_update.verified_regions)
-            boundary_complete_candidates = self.region_manager.pack_regions(
-                (boundary_complete_candidates, boundary_core_update.failed_regions))
+        if core_update is not None:
+            append_resolved(core_update.verified_regions)
 
-        if len(boundary_complete_candidates) == 0:
+        unresolved_core_parts = [
+            partition.cached_inside_counterexample_regions,
+            partition.cached_inside_unknown_regions,
+            partition.boundary_complete_candidate_regions,
+            boundary_skipped_core,
+        ]
+        if core_update is not None and len(core_update.failed_regions) > 0:
+            unresolved_core_parts.append(core_update.failed_regions)
+
+        unresolved_core_bs = self.region_manager.pack_regions(unresolved_core_parts)
+        if len(unresolved_core_bs) == 0:
             return finish()
 
         complete_result, complete_update = self._run_complete_certification(
-            boundary_complete_candidates,
+            unresolved_core_bs,
             rho,
             early_exit=early_exit,
         )
@@ -447,6 +431,8 @@ class RecursiveCertifier:
                 counterexample_found = True
                 return finish()
             counterexample_found_or(complete_result.any_counterexample)
+            if early_exit != EarlyExitLevel.NONE and complete_result.any_counterexample:
+                return finish()
         return finish()
 
     def _certify_recursive_regions(
@@ -461,43 +447,40 @@ class RecursiveCertifier:
         del show_progress
         if isinstance(early_exit, bool):
             early_exit = EarlyExitLevel.ON_COUNTEREXAMPLE if early_exit else EarlyExitLevel.NONE
-        empty_result = RecursiveCertificationResult.empty(
-            state_dim=self.config.state_dim,
-            device=self.device,
-        )
-        recursive_result = deepcopy(empty_result)
-
-        
-        def finish_with_counterexample() -> RecursiveCertificationResult:
-            return recursive_result
 
         max_depth = self.config.max_recursion_depth
-        recursive_result = replace(recursive_result, unresolved=self.region_manager.ensure_regions())
+        pending_bs = self.region_manager.ensure_regions()
+
+        all_resolved: list[th.Tensor] = []
+        all_unresolved: list[th.Tensor] = []
+        all_irrelevant: list[th.Tensor] = []
+        counterexample_found = False
+
+        def build_current_result() -> RecursiveCertificationResult:
+            return RecursiveCertificationResult(
+                resolved=self.region_manager.pack_regions(all_resolved),
+                unresolved=self.region_manager.pack_regions(all_unresolved),
+                irrelevant=self.region_manager.pack_regions(all_irrelevant),
+                counterexample_found=counterexample_found,
+            )
 
         with self.progress:
             self.progress.start_recursive("Region Splits", max_depth, force_display=force_display)
+            self.progress.update_recursive(n_pending=len(pending_bs))
 
             try:
                 for depth in range(max_depth + 1):
                     current_early_exit = early_exit
                     if early_exit == EarlyExitLevel.ON_COUNTEREXAMPLE and depth == max_depth:
                         current_early_exit = EarlyExitLevel.ON_UNKNOWN
-                        
-                    pending_bs = recursive_result.unresolved
-                    
-                    self.progress.update_recursive(
-                        advance=0,
-                        is_completed=False,
-                        max_depth=max_depth,
-                        n_pending=len(pending_bs),
-                    )
 
                     if len(pending_bs) == 0:
+                        self.progress.update_recursive(
+                            is_completed=True,
+                            max_depth=max_depth,
+                            n_pending=0,
+                        )
                         break
-
-                    recursive_result = replace(
-                        recursive_result, unresolved=self.region_manager.empty_regions()
-                    )
 
                     step_result = self._process_regions(
                         pending_bs,
@@ -505,29 +488,59 @@ class RecursiveCertifier:
                         early_exit=current_early_exit,
                     )
 
-                    if current_early_exit != EarlyExitLevel.NONE and step_result.counterexample_found:
-                        return finish_with_counterexample()
-                    
-                    recursive_result = recursive_result + step_result
-                    recursive_result = recursive_result.with_unresolved(recursive_result.unresolved[:0])
+                    if len(step_result.resolved) > 0:
+                        all_resolved.append(step_result.resolved)
+                    if len(step_result.irrelevant) > 0:
+                        all_irrelevant.append(step_result.irrelevant)
+                    if step_result.counterexample_found:
+                        counterexample_found = True
 
-                    if len(recursive_result.unresolved) == 0:
-                        self.progress.update_recursive(is_completed=True, max_depth=max_depth, n_pending=0)
+                    if current_early_exit != EarlyExitLevel.NONE and step_result.counterexample_found:
+                        if len(step_result.unresolved) > 0:
+                            all_unresolved.append(step_result.unresolved)
+                        return build_current_result()
+
+                    if len(step_result.unresolved) == 0:
+                        self.progress.update_recursive(
+                            is_completed=True,
+                            max_depth=max_depth,
+                            n_pending=0,
+                        )
                         break
 
-                    pending_bs, terminal_failed_bs = self.region_manager.split_failed_regions_on_certification_frontier(
+                    if depth == max_depth:
+                        all_unresolved.append(step_result.unresolved)
+                        self.progress.update_recursive(
+                            advance=1,
+                            n_pending=0,
+                            n_unresolved=sum(len(u) for u in all_unresolved),
+                        )
+                        break
+
+                    current_resolved = self.region_manager.pack_regions(all_resolved)
+                    split_bs, terminal_failed_bs = self.region_manager.split_failed_regions_on_certification_frontier(
                         step_result.unresolved,
-                        recursive_result.resolved,
+                        current_resolved,
                     )
                     if len(terminal_failed_bs) > 0:
-                        recursive_result = recursive_result + empty_result.with_unresolved(terminal_failed_bs)
+                        all_unresolved.append(terminal_failed_bs)
 
-                    if len(pending_bs) == 0:
-                        self.progress.update_recursive(is_completed=True, max_depth=max_depth, n_pending=0)
+                    if len(split_bs) == 0:
+                        self.progress.update_recursive(
+                            advance=1,
+                            n_pending=0,
+                            n_unresolved=sum(len(u) for u in all_unresolved),
+                        )
                         break
 
-                    self.progress.update_recursive(advance=1)
+
+                    pending_bs = split_bs
+                    self.progress.update_recursive(
+                        advance=1,
+                        n_pending=len(pending_bs),
+                        n_unresolved=sum(len(u) for u in all_unresolved),
+                    )
             finally:
                 self.progress.stop_recursive()
 
-        return recursive_result
+        return build_current_result()
