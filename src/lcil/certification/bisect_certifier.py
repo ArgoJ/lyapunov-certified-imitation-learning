@@ -4,12 +4,16 @@ import logging
 import os
 import numpy as np
 import torch as th
+
+from torch import nn
 from dataclasses import dataclass
 from pathlib import Path
 from numpy.typing import NDArray
 
 from .recursive_certifier import RecursiveCertifier, RecursiveCertificationResult
 from .abcrown_region_certifier import EarlyExitLevel
+from .progress import ProgressLevel
+from .config import LyapunovCertificationConfig
 from ..utils.search_utils import search_and_bisect_value
 from ..utils.constants import *
 
@@ -85,14 +89,24 @@ class BisectCertifier(RecursiveCertifier):
 
     def __init__(
         self,
-        *args,
+        policy_model: nn.Module,
+        lyap_model: nn.Module,
+        dyn_model: nn.Module,
+        config: LyapunovCertificationConfig,
+        device: th.device = th.device("cpu"),
+        progress_level: int | ProgressLevel = ProgressLevel.ALL,
+        *,
         save_dir: str | os.PathLike | None = None,
-        save_folder: str | os.PathLike | None = None,
-        **kwargs,
     ):
-        super().__init__(*args, **kwargs)
-        target_dir = save_dir if save_dir is not None else save_folder
-        self.save_dir: Path | None = Path(target_dir).resolve() if target_dir is not None else None
+        super().__init__(
+            policy_model=policy_model,
+            lyap_model=lyap_model,
+            dyn_model=dyn_model,
+            config=config,
+            device=device,
+            progress_level=progress_level,
+        )
+        self.save_dir: Path | None = Path(save_dir).resolve() if save_dir is not None else None
 
     # =========================================
     # CERTIFICATION SEARCH

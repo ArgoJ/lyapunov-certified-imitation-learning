@@ -154,6 +154,7 @@ def main() -> None:
             config=certification_config,
             device=device,
             # progress_level=2,
+            save_dir=save_dir,
         )
 
         cert_results = certifier.certify(

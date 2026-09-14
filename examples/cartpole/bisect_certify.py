@@ -195,6 +195,7 @@ def main() -> None:
             dyn_model=dyn_model,
             config=certification_config,
             device=device,
+            save_dir=save_dir,
         )
 
         cert_results = certifier.certify(
