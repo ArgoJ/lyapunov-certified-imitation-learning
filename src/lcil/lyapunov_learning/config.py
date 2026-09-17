@@ -78,6 +78,8 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
 
     condition_weight : float
         Weight of the Lyapunov decrease and set-invariance condition penalty term.
+    condition_margin : float
+        Safety margin added to the decrease condition to penalize near-violating states and mine them as counterexamples.
     condition_lirpa_weight : float
         Weight of the LIRPA-based Lyapunov decrease penalty term.
     invariance_weight : float
@@ -308,6 +310,12 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="Numerical epsilon used in relative condition normalization.",
         display_alias="rel_eps",
         validators=(positive_validator,),
+    )
+    condition_margin: float = config_field(
+        default=0.0,
+        help="Safety margin added to the decrease condition to penalize near-violating states and mine them as counterexamples.",
+        display_alias="cond_margin",
+        validators=(non_negative_validator,),
     )
     
     # Counterexample mining

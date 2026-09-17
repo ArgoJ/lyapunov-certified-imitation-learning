@@ -243,12 +243,13 @@ class LyapunovScaleAnchorLoss(BoundedStateSamplingModule):
 class LyapunovDecreaseViolation(nn.Module):
     """Compute the one-step Lyapunov decrease violation."""
 
-    def __init__(self, kappa: float) -> None:
+    def __init__(self, kappa: float, margin: float = 0.0) -> None:
         super().__init__()
         self.kappa = float(kappa)
+        self.margin = float(margin)
 
     def forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
-        return th.relu(lyapunov_decrease(v_curr, v_next, self.kappa))
+        return th.relu(lyapunov_decrease(v_curr, v_next, self.kappa) + self.margin)
 
 
 class RelativeLyapunovDecreaseViolation(nn.Module):
@@ -258,13 +259,15 @@ class RelativeLyapunovDecreaseViolation(nn.Module):
         self,
         kappa: float,
         relative_eps: float = 1e-2,
+        margin: float = 0.0,
     ) -> None:
         super().__init__()
         self.kappa = float(kappa)
         self.relative_eps = float(relative_eps)
+        self.margin = float(margin)
 
     def forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
-        return th.relu(relative_lyapunov_decrease(v_curr, v_next, self.kappa, self.relative_eps))
+        return th.relu(relative_lyapunov_decrease(v_curr, v_next, self.kappa, self.relative_eps) + self.margin)
 
 
 class InvarianceViolation(StateBoundsModule):
@@ -313,10 +316,16 @@ class RhoGatedConditionLoss(nn.Module):
         self.relative_eps = float(config.relative_condition_eps)
         self.invariance_weight = float(config.invariance_weight)
         self.gate_sharpness = float(config.rho_gate_sharpness)
+        self.condition_margin = float(getattr(config, "condition_margin", 0.0))
         
         self.decrease_violation = RelativeLyapunovDecreaseViolation(
-            kappa=config.kappa, relative_eps=config.relative_condition_eps
-        ) if config.use_relative_decrease else LyapunovDecreaseViolation(kappa=config.kappa)
+            kappa=config.kappa,
+            relative_eps=config.relative_condition_eps,
+            margin=self.condition_margin,
+        ) if config.use_relative_decrease else LyapunovDecreaseViolation(
+            kappa=config.kappa,
+            margin=self.condition_margin,
+        )
             
         self.invariance_violation = RelativeInvarianceViolation(
             config.train_bounds, # type: ignore
@@ -669,7 +678,7 @@ class RFactorFrobeniusLoss(nn.Module):
 
     def forward(self) -> th.Tensor:
         current_norm = th.linalg.norm(self.lyap_model.r_factor, ord="fro")
-        return th.square(current_norm - self.init_norm)
+        return th.square(th.relu(self.init_norm - current_norm))
 
 
 class LyapunovTrainingLoss(nn.Module):
