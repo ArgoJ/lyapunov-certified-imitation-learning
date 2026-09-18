@@ -289,6 +289,7 @@ class RecursiveCertifier:
         rho: float,
         *,
         early_exit: EarlyExitLevel,
+        is_leaf: bool = False,
     ):
         if len(regions) == 0:
             return None, None
@@ -297,6 +298,7 @@ class RecursiveCertifier:
             rho=rho,
             early_exit=early_exit,
             progress=self.progress,
+            is_leaf=is_leaf,
         )
         update = self.region_manager.apply_complete_certification_result(
             regions,
@@ -312,6 +314,7 @@ class RecursiveCertifier:
         rho: float,
         *,
         early_exit: EarlyExitLevel | bool,
+        is_leaf: bool = False,
     ) -> RecursiveCertificationResult:
         """Process one region batch and return step-level certification data.
 
@@ -323,6 +326,9 @@ class RecursiveCertifier:
             Lyapunov level-set value to certify.
         early_exit : EarlyExitLevel | bool
             If enabled, returns immediately once any failing region is found.
+        is_leaf : bool, optional
+            Whether these regions are at the maximum recursion depth (leaf level),
+            by default False.
 
         Returns
         -------
@@ -423,6 +429,7 @@ class RecursiveCertifier:
             unresolved_core_bs,
             rho,
             early_exit=early_exit,
+            is_leaf=is_leaf,
         )
         if complete_update is not None and complete_result is not None:
             append_resolved(complete_update.verified_regions)
@@ -486,6 +493,7 @@ class RecursiveCertifier:
                         pending_bs,
                         rho,
                         early_exit=current_early_exit,
+                        is_leaf=(depth == max_depth),
                     )
 
                     if len(step_result.resolved) > 0:

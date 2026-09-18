@@ -529,6 +529,51 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
         self.assertEqual(len(result.unresolved), 1)
         self.assertEqual(split_mock.call_count, 0)
 
+    def test_certify_recursive_regions_passes_is_leaf_at_max_depth(self) -> None:
+        """Verify that is_leaf=False for depth < max_depth and is_leaf=True at depth == max_depth."""
+        certifier = self._make_certifier(max_recursion_depth=1)
+
+        root_region = th.tensor([[[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]]], dtype=th.float32)
+        child = th.tensor([[[-1.0, -1.0, -1.0], [0.0, 1.0, 1.0]]], dtype=th.float32)
+        certifier.regions = root_region
+
+        core_certifier = _RecordingMockRegionCertifier(
+            [
+                _MockVerificationResult(verified=False, counterexample_found=False, status="unknown"),
+                _MockVerificationResult(verified=False, counterexample_found=False, status="unknown"),
+            ]
+        )
+        complete_certifier = _RecordingMockRegionCertifier(
+            [
+                _MockVerificationResult(verified=False, counterexample_found=False, status="unknown"),
+                _MockVerificationResult(verified=True, counterexample_found=False, status="safe"),
+            ]
+        )
+
+        bounder = certifier._get_region_bounder()
+
+        with mock.patch.object(
+            certifier, "_get_core_region_certifier", return_value=core_certifier
+        ), mock.patch.object(
+            certifier, "_get_region_certifier", return_value=complete_certifier
+        ), mock.patch.object(
+            certifier.region_manager, "split_regions", return_value=child
+        ), mock.patch.object(
+            bounder,
+            "compute_bounds_for_regions",
+            side_effect=lambda bs, *args, **kwargs: LyapunovRegionBounds(
+                lower=th.full((len(bs),), 0.1, dtype=th.float32),
+                upper=th.full((len(bs),), 0.5, dtype=th.float32),
+            ),
+        ):
+            result = certifier._certify_recursive_regions(
+                rho=1.0,
+                early_exit=False,
+            )
+
+        self.assertTrue(result.global_success)
+        self.assertEqual(complete_certifier.is_leaf_calls, [False, True])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

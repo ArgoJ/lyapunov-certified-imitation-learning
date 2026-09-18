@@ -118,6 +118,7 @@ class BaseABCrownCertifier(ABC):
 
         self._abcrown_api: _ABCrownAPI | None = None
         self.abcrown_config: Any = None
+        self.abcrown_leaf_config: Any = None
         self.verifier: nn.Module | None = None
         self._cached_clauses: dict[float, Any] = {}
 
@@ -166,18 +167,14 @@ class BaseABCrownCertifier(ABC):
             return f"{float(bab_vals[0][1].detach().cpu().item()):.3f}"
         return "N/A"
 
-    def setup_backend(self) -> None:
-        self._cached_clauses.clear()
-        if self.verifier is not None and self.abcrown_config is not None:
-            return
-
+    def _build_abcrown_config(self, is_leaf: bool = False) -> Any:
         abcrown_api = self._get_abcrown_api()
         config_builder = (
             abcrown_api.config_builder_cls.from_defaults()
             .set(general__device=self.device.type)
             .set(general__complete_verifier="input_bab")
             .set(general__enable_incomplete_verification=False)
-            .set(solver__batch_size=int(self.config.batch_size))
+            .set(solver__batch_size=self.config.batch_size)
             .set(solver__bound_prop_method="crown")
             .set(bab__branching__method="sb")
             .set(bab__branching__input_split__enable=True)
@@ -189,10 +186,25 @@ class BaseABCrownCertifier(ABC):
             .set(bab__decision_thresh=-float(self.config.condition_tolerance))
         )
         if self.config.abcrown_timeout is not None:
-            config_builder = config_builder.set(bab__timeout=float(self.config.abcrown_timeout))
+            config_builder = config_builder.set(
+                bab__timeout=float(self.config.abcrown_timeout if not is_leaf else self.config.abcrown_timeout * 5) 
+            )
         if self.config.abcrown_max_domains is not None:
-            config_builder = config_builder.set(bab__max_domains=int(self.config.abcrown_max_domains))
-        self.abcrown_config = config_builder()
+            config_builder = config_builder.set(bab__max_domains=self.config.abcrown_max_domains)
+        return config_builder()
+
+
+    def setup_backend(self) -> None:
+        self._cached_clauses.clear()
+        if (
+            self.verifier is not None
+            and self.abcrown_config is not None
+            and self.abcrown_leaf_config is not None
+        ):
+            return
+
+        self.abcrown_config = self._build_abcrown_config(is_leaf=False)
+        self.abcrown_leaf_config = self._build_abcrown_config(is_leaf=True)
 
         self.verifier = self._setup_verifier()
         self.verifier.eval()
@@ -213,7 +225,13 @@ class BaseABCrownCertifier(ABC):
             ),
         )
 
-    def verify_region(self, region: th.Tensor, rho: float) -> ABCrownRegionVerification:
+    def verify_region(
+        self,
+        region: th.Tensor,
+        rho: float,
+        *,
+        is_leaf: bool = False,
+    ) -> ABCrownRegionVerification:
         if region.shape != (2, self.config.state_dim):
             raise ValueError(
                 f"region must have shape (2, {self.config.state_dim}); got {tuple(region.shape)}."
@@ -249,10 +267,15 @@ class BaseABCrownCertifier(ABC):
                 upper=ub.unsqueeze(0),
                 clauses=self._cached_clauses[rho_key],
             )
+            solver_config = (
+                self.abcrown_leaf_config
+                if is_leaf and self.abcrown_leaf_config is not None
+                else self.abcrown_config
+            )
             solver = abcrown_api.solver_cls(
                 spec=spec,
                 computing_graph=self.verifier,
-                config=self.abcrown_config,
+                config=solver_config,
             )
             result = solver.solve()
 
@@ -275,6 +298,7 @@ class BaseABCrownCertifier(ABC):
         description: str | None = None,
         early_exit: EarlyExitLevel | bool = EarlyExitLevel.NONE,
         progress: CertificationProgress | None = None,
+        is_leaf: bool = False,
     ) -> ABCrownRegionBatchVerification:
         if isinstance(early_exit, bool):
             early_exit = EarlyExitLevel.ON_COUNTEREXAMPLE if early_exit else EarlyExitLevel.NONE
@@ -298,7 +322,7 @@ class BaseABCrownCertifier(ABC):
 
         try:
             for idx, region in enumerate(regions):
-                verification_result = self.verify_region(region, rho)
+                verification_result = self.verify_region(region, rho, is_leaf=is_leaf)
                 verified_mask[idx] = verification_result.verified
                 counterexample_mask[idx] = verification_result.counterexample_found
                 unknown_mask[idx] = (

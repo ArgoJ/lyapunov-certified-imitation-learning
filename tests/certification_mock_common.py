@@ -79,8 +79,15 @@ class _StatusAwareMockRegionCertifier:
         self.results = list(results)
         self.calls = 0
 
-    def verify_region(self, region: th.Tensor, rho: float) -> _MockVerificationResult:
-        del region, rho
+    def verify_region(
+        self,
+        region: th.Tensor,
+        rho: float,
+        *,
+        is_leaf: bool = False,
+        **kwargs,
+    ) -> _MockVerificationResult:
+        del region, rho, is_leaf, kwargs
         if self.calls >= len(self.results):
             raise AssertionError("verify_region called more often than expected.")
         result = self.results[self.calls]
@@ -94,6 +101,7 @@ class _StatusAwareMockRegionCertifier:
         *,
         early_exit: bool = False,
         progress=None,
+        is_leaf: bool = False,
         **kwargs,
     ) -> _MockBatchVerification:
         verified_mask = th.zeros((len(regions),), dtype=th.bool)
@@ -101,7 +109,7 @@ class _StatusAwareMockRegionCertifier:
         unknown_mask = th.zeros((len(regions),), dtype=th.bool)
 
         for idx, region in enumerate(regions):
-            result = self.verify_region(region, rho)
+            result = self.verify_region(region, rho, is_leaf=is_leaf)
             verified_mask[idx] = result.verified
             counterexample_mask[idx] = result.counterexample_found
             unknown_mask[idx] = (not result.verified and not result.counterexample_found)
@@ -119,6 +127,7 @@ class _RecordingMockRegionCertifier(_StatusAwareMockRegionCertifier):
     def __init__(self, results: list[_MockVerificationResult]):
         super().__init__(results)
         self.batches: list[th.Tensor] = []
+        self.is_leaf_calls: list[bool] = []
 
     def certify_regions(
         self,
@@ -127,14 +136,17 @@ class _RecordingMockRegionCertifier(_StatusAwareMockRegionCertifier):
         *,
         early_exit: bool = False,
         progress=None,
+        is_leaf: bool = False,
         **kwargs,
     ) -> _MockBatchVerification:
         self.batches.append(regions.clone())
+        self.is_leaf_calls.append(is_leaf)
         return super().certify_regions(
             regions,
             rho,
             early_exit=early_exit,
             progress=progress,
+            is_leaf=is_leaf,
             **kwargs,
         )
 
@@ -388,6 +400,7 @@ class CertificationMockedABCrownTestCase(unittest.TestCase):
         batch_size: int = 512,
         max_recursion_depth: int = 3,
         skip_boundary_core_cert: bool = False,
+        abcrown_timeout: float | None = None,
     ) -> Any:
         bounds = cert_bounds
         if bounds is None:
@@ -420,6 +433,7 @@ class CertificationMockedABCrownTestCase(unittest.TestCase):
             batch_size=batch_size,
             max_recursion_depth=max_recursion_depth,
             skip_boundary_core_cert=skip_boundary_core_cert,
+            abcrown_timeout=abcrown_timeout,
         )
 
     @classmethod

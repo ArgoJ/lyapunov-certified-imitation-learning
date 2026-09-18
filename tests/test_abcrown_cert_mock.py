@@ -136,6 +136,28 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
         )
         self.assertEqual(verify_region_mock.call_count, 2)
 
+    def test_verify_region_uses_leaf_config_when_is_leaf(self) -> None:
+        from dataclasses import replace
+        certifier = self.make_abcrown_region_certifier(
+            state_dim=1,
+            cert_bounds=[[-2.0], [2.0]],
+            abcrown_timeout=10.0,
+            batch_size=8,
+        )
+        region = th.tensor([[0.2], [0.5]], dtype=th.float32)
+
+        api = certifier._get_abcrown_api()
+        mock_solver_cls = mock.MagicMock()
+        mock_solver_cls.return_value.solve.return_value = SimpleNamespace(status="safe", stats={})
+        mock_api = replace(api, solver_cls=mock_solver_cls)
+
+        with mock.patch.object(certifier, "_get_abcrown_api", return_value=mock_api):
+            certifier.verify_region(region, rho=1.0, is_leaf=False)
+            self.assertEqual(mock_solver_cls.call_args.kwargs["config"], certifier.abcrown_config)
+
+            certifier.verify_region(region, rho=1.0, is_leaf=True)
+            self.assertEqual(mock_solver_cls.call_args.kwargs["config"], certifier.abcrown_leaf_config)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
