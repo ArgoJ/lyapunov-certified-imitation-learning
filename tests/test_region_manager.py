@@ -456,6 +456,117 @@ class TestRegionManager(unittest.TestCase):
         # rho=0.3 -> L1 (upper=0.3<=0.3, safe), L2 (complete_safe_max_rho=1.0 >= 0.3). No holes. Vol = 3.
         self.assertAlmostEqual(best_rho, 0.3, places=5)
 
+    def test_split_regions_records_parent_ids_and_depth(self) -> None:
+        from lcil.utils.region_builder import RegionBuilder
+        real_builder = RegionBuilder(bounds=[[-1.0, -1.0], [1.0, 1.0]], bins_per_dim=2)
+        manager = RegionManager(region_builder=real_builder)
+        root_regions = manager.ensure_regions()
+        self.assertEqual(len(root_regions), 4)
+
+        root_bounds = LyapunovRegionBounds(
+            lower=th.zeros(len(root_regions)),
+            upper=th.ones(len(root_regions)),
+        )
+        manager.cache_region_bounds(root_bounds)
+        self.assertEqual(len(manager.region_table.ids), 4)
+        th.testing.assert_close(manager.region_table.parent_ids, th.full((4,), -1, dtype=th.long))
+        th.testing.assert_close(manager.region_table.depth, th.zeros(4, dtype=th.long))
+
+        # Split 2 of the root regions (e.g. index 0 and 2)
+        parents_to_split = root_regions[[0, 2]]
+        children = manager.split_regions(parents_to_split)
+        self.assertEqual(len(children), 4)
+
+        # Cache bounds for children
+        child_bounds = LyapunovRegionBounds(
+            lower=th.zeros(len(children)),
+            upper=th.ones(len(children)),
+        )
+        manager.cache_bounds_for_regions(children, child_bounds, is_root=False)
+        self.assertEqual(len(manager.region_table.ids), 8)
+
+        expected_parents = th.tensor([-1, -1, -1, -1, 0, 2, 0, 2], dtype=th.long)
+        th.testing.assert_close(manager.region_table.parent_ids, expected_parents)
+        expected_depths = th.tensor([0, 0, 0, 0, 1, 1, 1, 1], dtype=th.long)
+        th.testing.assert_close(manager.region_table.depth, expected_depths)
+
+    def test_propagate_core_safe_to_parents(self) -> None:
+        from lcil.utils.region_builder import RegionBuilder
+        real_builder = RegionBuilder(bounds=[[-1.0, -1.0], [1.0, 1.0]], bins_per_dim=1)
+        manager = RegionManager(region_builder=real_builder)
+        root = manager.ensure_regions()
+        self.assertEqual(len(root), 1)
+
+        manager.cache_region_bounds(LyapunovRegionBounds(lower=th.tensor([0.0]), upper=th.tensor([1.0])))
+        children = manager.split_regions(root)
+        manager.cache_bounds_for_regions(children, LyapunovRegionBounds(lower=th.zeros(2), upper=th.ones(2)), is_root=False)
+
+        # Initially root is UNCHECKED
+        self.assertEqual(manager.region_table.core_status[0].item(), CoreStatus.UNCHECKED)
+
+        # Mark only 1 child safe
+        manager.update_core_status(
+            children[:1],
+            verified_mask=th.tensor([True]),
+            counterexample_mask=th.tensor([False]),
+            unknown_mask=th.tensor([False]),
+        )
+        # Parent should still be UNCHECKED because other child is not safe
+        self.assertEqual(manager.region_table.core_status[0].item(), CoreStatus.UNCHECKED)
+
+        # Now mark the second child safe
+        manager.update_core_status(
+            children[1:],
+            verified_mask=th.tensor([True]),
+            counterexample_mask=th.tensor([False]),
+            unknown_mask=th.tensor([False]),
+        )
+        # Now parent should be automatically SAFE!
+        self.assertEqual(manager.region_table.core_status[0].item(), CoreStatus.SAFE)
+        self.assertTrue(manager.all_root_regions_core_safe())
+
+    def test_propagate_core_safe_multi_level(self) -> None:
+        from lcil.utils.region_builder import RegionBuilder
+        real_builder = RegionBuilder(bounds=[[-1.0, -1.0], [1.0, 1.0]], bins_per_dim=1)
+        manager = RegionManager(region_builder=real_builder)
+        root = manager.ensure_regions()
+
+        manager.cache_region_bounds(LyapunovRegionBounds(lower=th.tensor([0.0]), upper=th.tensor([1.0])))
+        # Level 1 split: root (id 0) -> children (id 1, 2)
+        c12 = manager.split_regions(root)
+        manager.cache_bounds_for_regions(c12, LyapunovRegionBounds(lower=th.zeros(2), upper=th.ones(2)), is_root=False)
+
+        # Level 2 split: child 1 (id 1) -> grandchildren (id 3, 4)
+        c34 = manager.split_regions(c12[:1])
+        manager.cache_bounds_for_regions(c34, LyapunovRegionBounds(lower=th.zeros(2), upper=th.ones(2)), is_root=False)
+
+        self.assertEqual(manager.region_table.core_status[0].item(), CoreStatus.UNCHECKED)
+        self.assertEqual(manager.region_table.core_status[1].item(), CoreStatus.UNCHECKED)
+
+        # Mark grandchildren 3 and 4 safe
+        manager.update_core_status(
+            c34,
+            verified_mask=th.tensor([True, True]),
+            counterexample_mask=th.tensor([False, False]),
+            unknown_mask=th.tensor([False, False]),
+        )
+        # Child 1 should now be SAFE!
+        self.assertEqual(manager.region_table.core_status[1].item(), CoreStatus.SAFE)
+        # But root 0 is NOT safe yet because child 2 is not safe
+        self.assertEqual(manager.region_table.core_status[0].item(), CoreStatus.UNCHECKED)
+        self.assertFalse(manager.all_root_regions_core_safe())
+
+        # Now mark child 2 safe
+        manager.update_core_status(
+            c12[1:],
+            verified_mask=th.tensor([True]),
+            counterexample_mask=th.tensor([False]),
+            unknown_mask=th.tensor([False]),
+        )
+        # Now root 0 MUST be SAFE!
+        self.assertEqual(manager.region_table.core_status[0].item(), CoreStatus.SAFE)
+        self.assertTrue(manager.all_root_regions_core_safe())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

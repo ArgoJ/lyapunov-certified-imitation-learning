@@ -260,12 +260,16 @@ class BaseABCrownCertifier(ABC):
                     input_constraint=dummy_input_constraint,
                     output_constraint=output_constraint,
                 )
-                self._cached_clauses[rho_key] = init_spec.output_spec.clauses[0]
+                self._cached_clauses[rho_key] = init_spec.output_spec.clauses
 
+            clauses = self._cached_clauses[rho_key]
+            num_clauses = len(clauses) if isinstance(clauses, (list, tuple)) else 1
+            lower = lb.repeat((num_clauses, 1)) if lb.ndim == 1 else lb.repeat(num_clauses, *(1 for _ in range(lb.ndim - 1)))
+            upper = ub.repeat((num_clauses, 1)) if ub.ndim == 1 else ub.repeat(num_clauses, *(1 for _ in range(ub.ndim - 1)))
             spec = abcrown_api.verification_spec_cls.build_from_input_bounds(
-                lower=lb.unsqueeze(0),
-                upper=ub.unsqueeze(0),
-                clauses=self._cached_clauses[rho_key],
+                lower=lower,
+                upper=upper,
+                clauses=clauses,
             )
             solver_config = (
                 self.abcrown_leaf_config

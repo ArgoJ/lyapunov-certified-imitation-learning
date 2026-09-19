@@ -280,11 +280,15 @@ class _FakeVerificationSpec:
         upper: th.Tensor,
         clauses: Any,
     ) -> _FakeVerificationSpecData:
+        lb = lower[0] if lower.ndim > 1 else lower
+        ub = upper[0] if upper.ndim > 1 else upper
         return _FakeVerificationSpecData(
-            lb=lower.squeeze(0),
-            ub=upper.squeeze(0),
+            lb=lb,
+            ub=ub,
             output_constraint=clauses,
-            output_spec=types.SimpleNamespace(clauses=[clauses]),
+            output_spec=types.SimpleNamespace(
+                clauses=clauses if isinstance(clauses, (list, tuple)) else [clauses]
+            ),
         )
 
 
@@ -319,7 +323,13 @@ class _FakeABCrownSolver:
         points = self._sample_points(self.spec.lb, self.spec.ub)
         with th.no_grad():
             values = self.computing_graph(points)
-        safe_mask = self.spec.output_constraint.evaluate(values)
+        if isinstance(self.spec.output_constraint, (list, tuple)):
+            safe_mask = th.ones(len(points), dtype=th.bool, device=points.device)
+            for c in self.spec.output_constraint:
+                if hasattr(c, "evaluate"):
+                    safe_mask = safe_mask & c.evaluate(values)
+        else:
+            safe_mask = self.spec.output_constraint.evaluate(values)
         status = "verified" if bool(safe_mask.all().item()) else "unsafe"
         return _FakeSolveResult(status=status)
 

@@ -154,11 +154,7 @@ def main() -> None:
             certification_config = LyapunovCertificationConfig.load(certification_config_path)
             cert_result = RegionCertificationResult.load(cert_result_path)
 
-            certification_config_smaller = replace(
-                certification_config,
-                cert_bounds=certification_config.cert_bounds * 0.1
-            )
-            __logger__.info("Using bounds: %s", str(certification_config_smaller.cert_bounds))
+            __logger__.info("Using bounds: %s", str(certification_config.cert_bounds))
             
             if not cert_result.global_success:
                 __logger__.warning(
@@ -188,7 +184,7 @@ def main() -> None:
                 policy_model=policy_model,
                 lyap_model=lyap_model,
                 dyn_model=dyn_model,
-                config=certification_config_smaller,
+                config=certification_config,
                 device=device,
             )
             test_results = cert_tester.test_result(
@@ -221,7 +217,7 @@ def main() -> None:
             )
             _save_lyapunov_plot(
                 cert_dir=cert_path,
-                certification_config=certification_config_smaller,
+                certification_config=certification_config,
                 lyapunov_func=lyapunov_func,
                 roa_level=float(cert_result.rho),
                 rollout_dataset=rollout_dataset,

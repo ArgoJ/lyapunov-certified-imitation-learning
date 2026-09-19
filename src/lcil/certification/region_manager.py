@@ -139,6 +139,8 @@ class RegionManager:
         self._region_bounds_cache: dict[tuple[float, ...], tuple[float, float]] = {}
         self._region_ids: dict[tuple[float, ...], int] = {}
         self._next_region_id = 0
+        self._pending_parent_ids: dict[tuple[float, ...], int] = {}
+        self._pending_depths: dict[tuple[float, ...], int] = {}
         self.region_table = RegionTable.empty(device=self.device, state_dim=self.state_dim)
 
     def clear_regions(self) -> None:
@@ -209,18 +211,23 @@ class RegionManager:
         for idx, region in enumerate(regions):
             key = self.region_key(region)
             if key in self._region_ids:
+                self._pending_parent_ids.pop(key, None)
+                self._pending_depths.pop(key, None)
                 continue
 
             region_id = self._next_region_id
             self._next_region_id += 1
             self._region_ids[key] = region_id
 
+            parent_id = -1 if is_root else self._pending_parent_ids.pop(key, -1)
+            depth = 0 if is_root else self._pending_depths.pop(key, default_depth)
+
             new_ids.append(region_id)
             new_regions.append(region.detach().to(device=self.device, dtype=th.float32))
             new_lower.append(lower[idx].detach().to(device=self.device, dtype=th.float32).reshape(()))
             new_upper.append(upper[idx].detach().to(device=self.device, dtype=th.float32).reshape(()))
-            new_parent_ids.append(-1)
-            new_depth.append(default_depth)
+            new_parent_ids.append(parent_id)
+            new_depth.append(depth)
 
         if not new_ids:
             return
@@ -560,6 +567,9 @@ class RegionManager:
         if len(unknown_rows) > 0:
             self.region_table.core_status[unknown_rows] = CoreStatus.UNKNOWN
 
+        if len(verified_rows) > 0:
+            self.propagate_core_safe_to_parents()
+
     def update_complete_safe_max_rho(
         self,
         regions: th.Tensor,
@@ -642,7 +652,96 @@ class RegionManager:
         split_dims: th.Tensor | None = None,
     ) -> th.Tensor:
         """Split each region once using the managed RegionBuilder."""
-        return self.region_builder.split_regions(regions, split_dims=split_dims)
+        if len(regions) == 0:
+            return self.empty_regions()
+
+        parent_ids: list[int] = []
+        parent_depths: list[int] = []
+        for region in regions:
+            key = self.region_key(region)
+            if key in self._region_ids:
+                row = self._region_ids[key]
+                parent_ids.append(int(self.region_table.ids[row].item()))
+                parent_depths.append(int(self.region_table.depth[row].item()))
+            else:
+                parent_ids.append(-1)
+                parent_depths.append(-1)
+
+        refined = self.region_builder.split_regions(regions, split_dims=split_dims)
+        n_parents = len(regions)
+        if len(refined) == 2 * n_parents:
+            for idx in range(n_parents):
+                p_id = parent_ids[idx]
+                p_depth = parent_depths[idx]
+                child_depth = (p_depth + 1) if p_depth >= 0 else -1
+
+                c1_key = self.region_key(refined[idx])
+                c2_key = self.region_key(refined[idx + n_parents])
+
+                if p_id >= 0:
+                    self._pending_parent_ids[c1_key] = p_id
+                    self._pending_depths[c1_key] = child_depth
+                    self._pending_parent_ids[c2_key] = p_id
+                    self._pending_depths[c2_key] = child_depth
+
+        return refined
+
+    def propagate_core_safe_to_parents(self) -> int:
+        """Propagate CoreStatus.SAFE bottom-up from children to parent regions.
+
+        When all direct children of a parent region are CoreStatus.SAFE, the parent
+        region is guaranteed to satisfy the Lyapunov core condition across its entire
+        volume and is marked as CoreStatus.SAFE. This is applied recursively up to
+        the root level.
+
+        Returns
+        -------
+        int
+            The total number of parent regions newly marked as CoreStatus.SAFE.
+        """
+        table = self.region_table
+        n = table.ids.numel()
+        if n == 0:
+            return 0
+
+        total_updated = 0
+        while True:
+            has_parent = (table.parent_ids >= 0) & (table.parent_ids < n)
+            if not has_parent.any():
+                break
+
+            P = table.parent_ids[has_parent]
+            is_safe = (table.core_status == CoreStatus.SAFE)
+            safe_children = is_safe & has_parent
+            safe_P = table.parent_ids[safe_children]
+
+            total_children = th.bincount(P, minlength=n)
+            safe_children_count = th.bincount(safe_P, minlength=n)
+
+            newly_safe = (
+                (total_children >= 2)
+                & (total_children == safe_children_count)
+                & (table.core_status != CoreStatus.SAFE)
+            )
+
+            if not newly_safe.any():
+                break
+
+            table.core_status[newly_safe] = CoreStatus.SAFE
+            count = int(newly_safe.sum().item())
+            total_updated += count
+
+        return total_updated
+
+    def all_root_regions_core_safe(self) -> bool:
+        """Return True if all root regions are certified as CoreStatus.SAFE."""
+        table = self.region_table
+        if table.ids.numel() == 0:
+            return False
+        root_mask = (table.parent_ids < 0)
+        if not root_mask.any():
+            return False
+        return bool((table.core_status[root_mask] == CoreStatus.SAFE).all().item())
 
     def split_regions_adjacent_to_reference(
         self,
