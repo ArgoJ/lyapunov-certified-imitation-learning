@@ -4,12 +4,13 @@ from unittest import mock
 
 import torch as th
 
-from lcil.certification.abcrown_region_certifier import _is_safe_status
+from lcil.certification.abcrown_region_certifier import _is_safe_status, CoreABCrownCertifier
 
 from shared_utils import (
     _IdentityDynamics,
     _QuadraticLyapunov,
-    _ShiftDynamics
+    _ShiftDynamics,
+    _ZeroPolicy,
 )
 from certification_mock_common import (
     CertificationMockedABCrownTestCase,
@@ -135,6 +136,48 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
             )
         )
         self.assertEqual(verify_region_mock.call_count, 2)
+
+    def test_core_certify_regions_never_early_exits_on_counterexample(self) -> None:
+        certifier = CoreABCrownCertifier(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_QuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            config=self.make_config(state_dim=1),
+            device=th.device("cpu"),
+        )
+        regions = th.tensor(
+            [
+                [[-2.0], [-1.0]],
+                [[-1.0], [0.0]],
+                [[0.0], [1.0]],
+            ],
+            dtype=th.float32,
+        )
+
+        with mock.patch.object(
+            certifier,
+            "verify_region",
+            side_effect=[
+                SimpleNamespace(verified=True, counterexample_found=False),
+                SimpleNamespace(verified=False, counterexample_found=True),
+                SimpleNamespace(verified=True, counterexample_found=False),
+            ],
+        ) as verify_region_mock:
+            batch_result = certifier.certify_regions(regions, rho=0.25, early_exit=True)
+
+        self.assertTrue(
+            th.equal(
+                batch_result.verified_mask.cpu(),
+                th.tensor([True, False, True], dtype=th.bool),
+            )
+        )
+        self.assertTrue(
+            th.equal(
+                batch_result.counterexample_mask.cpu(),
+                th.tensor([False, True, False], dtype=th.bool),
+            )
+        )
+        self.assertEqual(verify_region_mock.call_count, 3)
 
     def test_verify_region_uses_leaf_config_when_is_leaf(self) -> None:
         from dataclasses import replace

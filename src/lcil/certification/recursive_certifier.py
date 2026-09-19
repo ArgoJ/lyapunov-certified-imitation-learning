@@ -5,13 +5,12 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 
-from dataclasses import dataclass, replace
-from typing import Sequence
-from copy import deepcopy
+from dataclasses import dataclass, field
+from typing import Any, Callable, Sequence, TypeVar
 from numpy.typing import NDArray
 
 from .config import LyapunovCertificationConfig
-from .region_manager import RegionManager
+from .region_manager import CertificationRegionPartition, CoreStatus, RegionManager
 from .progress import CertificationProgress, ProgressLevel
 from .abcrown_region_certifier import (
     CompleteABCrownCertifier,
@@ -20,7 +19,6 @@ from .abcrown_region_certifier import (
 )
 from .lirpa_lyapunov_bounds import LiRPALyapunovRegionBounds, LyapunovRegionBounds
 from ..utils.region_builder import RegionBuilder
-from ..utils.constants import *
 
 __logger__ = logging.getLogger(__name__)
 
@@ -35,11 +33,6 @@ class RecursiveCertificationResult:
     counterexample_found: bool = False
 
     @property
-    def vacuous(self) -> bool:
-        """Whether no regions remain relevant."""
-        return self.resolved.numel() == 0 and self.unresolved.numel() == 0
-
-    @property
     def global_success(self) -> bool:
         """Whether all regions inside ``V(x) <= rho`` were certified."""
         return self.unresolved.numel() == 0 and self.resolved.numel() > 0
@@ -49,25 +42,74 @@ class RecursiveCertificationResult:
         """Whether at least one region is inside the tested sublevel set and certified."""
         return self.resolved.numel() > 0
 
-    @classmethod
-    def empty(cls, state_dim: int, device: th.device) -> RecursiveCertificationResult:
-        empty = th.empty((0, 2, state_dim), device=device)
-        return cls(
-            resolved=empty,
-            unresolved=empty,
-            irrelevant=empty,
-            counterexample_found=False,
-        )
 
-    def with_unresolved(self, regions: th.Tensor) -> RecursiveCertificationResult:
-        return replace(self, unresolved=regions)
+_CertifierT = TypeVar("_CertifierT", CompleteABCrownCertifier, CoreABCrownCertifier)
 
-    def __add__(self, other: RecursiveCertificationResult) -> RecursiveCertificationResult:
+
+@dataclass
+class _RecursiveLoopResult:
+    """Internal result container for recursive certification loops."""
+
+    all_resolved: list[th.Tensor] = field(default_factory=list)
+    unresolved_leaves: list[th.Tensor] = field(default_factory=list)
+    unresolved_non_leaves: list[th.Tensor] = field(default_factory=list)
+    all_irrelevant: list[th.Tensor] = field(default_factory=list)
+    counterexample_found: bool = False
+
+    @property
+    def all_unresolved(self) -> list[th.Tensor]:
+        return self.unresolved_non_leaves + self.unresolved_leaves
+
+
+class _StepCollector:
+    """Accumulates resolved, unresolved, and irrelevant regions for a step while updating progress."""
+
+    def __init__(self, region_manager: RegionManager, progress: CertificationProgress) -> None:
+        self.rm = region_manager
+        self.progress = progress
+        self.resolved_parts: list[th.Tensor] = []
+        self.unresolved_parts: list[th.Tensor] = []
+        self.irrelevant: th.Tensor = region_manager.empty_regions()
+        self.counterexample_found: bool = False
+
+    def add_resolved(self, regions: th.Tensor, update_progress: bool = True) -> None:
+        if len(regions) > 0:
+            self.resolved_parts.append(regions)
+            if update_progress:
+                self.progress.add_recursive_counts(resolved=len(regions), pending=-len(regions))
+
+    def add_unresolved(self, regions: th.Tensor, update_progress: bool = True) -> None:
+        if len(regions) > 0:
+            self.unresolved_parts.append(regions)
+            if update_progress:
+                self.progress.add_recursive_counts(unresolved=len(regions), pending=-len(regions))
+
+    def set_irrelevant(self, regions: th.Tensor) -> None:
+        self.irrelevant = regions
+        if len(regions) > 0:
+            self.progress.add_recursive_counts(irrelevant=len(regions), pending=-len(regions))
+
+    def record_complete_update(
+        self,
+        result: Any,
+        update: Any,
+        early_exit: EarlyExitLevel,
+    ) -> None:
+        """Record results from complete specification verification."""
+        if update is not None and result is not None:
+            self.add_resolved(update.verified_regions)
+            self.add_unresolved(update.failed_regions)
+            if early_exit == EarlyExitLevel.ON_UNKNOWN and len(update.failed_regions) > 0:
+                self.counterexample_found = True
+            elif early_exit != EarlyExitLevel.NONE and result.any_counterexample:
+                self.counterexample_found = True
+
+    def build_result(self) -> RecursiveCertificationResult:
         return RecursiveCertificationResult(
-            resolved=th.cat([self.resolved, other.resolved], dim=0),
-            unresolved=th.cat([self.unresolved, other.unresolved], dim=0),
-            irrelevant=th.cat([self.irrelevant, other.irrelevant], dim=0),
-            counterexample_found=self.counterexample_found or other.counterexample_found,
+            resolved=self.rm.pack_regions(self.resolved_parts),
+            unresolved=self.rm.pack_regions(self.unresolved_parts),
+            irrelevant=self.irrelevant,
+            counterexample_found=self.counterexample_found,
         )
 
 
@@ -129,26 +171,22 @@ class RecursiveCertifier:
     # ==========================================
     # BUILDER AND GETTER
     # ==========================================
-    def _build_region_bounder(self) -> LiRPALyapunovRegionBounds:
-        """Construct a LiRPA helper for classifying regions against ``V(x) <= rho``."""
-        return LiRPALyapunovRegionBounds(
-            lyap_model=self.lyap_model,
-            state_dim=self.config.state_dim,
-            batch_size=self.config.batch_size,
-            default_bound_method=self.config.lirpa_method,
-            use_affine_l1_lower_bound=self.config.use_affine_l1_sublevel_bounds,
-            device=self.device,
-        )
-
     def _get_region_bounder(self) -> LiRPALyapunovRegionBounds:
         """Return the cached LiRPA region bounder."""
         if self.bounder is None:
-            self.bounder = self._build_region_bounder()
+            self.bounder = LiRPALyapunovRegionBounds(
+                lyap_model=self.lyap_model,
+                state_dim=self.config.state_dim,
+                batch_size=self.config.batch_size,
+                default_bound_method=self.config.lirpa_method,
+                use_affine_l1_lower_bound=self.config.use_affine_l1_sublevel_bounds,
+                device=self.device,
+            )
         return self.bounder
 
-    def _build_region_certifier(self) -> CompleteABCrownCertifier:
-        """Construct the shared per-region ABCrown certifier."""
-        return CompleteABCrownCertifier(
+    def _build_certifier(self, certifier_cls: type[_CertifierT]) -> _CertifierT:
+        """Construct a certifier instance configured with models and device."""
+        return certifier_cls(
             policy_model=self.policy_model,
             lyap_model=self.lyap_model,
             dyn_model=self.dyn_model,
@@ -159,23 +197,13 @@ class RecursiveCertifier:
     def _get_region_certifier(self) -> CompleteABCrownCertifier:
         """Return the cached ABCrown region certifier."""
         if self.certifier is None:
-            self.certifier = self._build_region_certifier()
+            self.certifier = self._build_certifier(CompleteABCrownCertifier)
         return self.certifier
-
-    def _build_core_region_certifier(self) -> CoreABCrownCertifier:
-        """Construct the shared per-region core ABCrown certifier."""
-        return CoreABCrownCertifier(
-            policy_model=self.policy_model,
-            lyap_model=self.lyap_model,
-            dyn_model=self.dyn_model,
-            config=self.config,
-            device=self.device,
-        )
 
     def _get_core_region_certifier(self) -> CoreABCrownCertifier:
         """Return the cached core ABCrown certifier."""
         if self.core_certifier is None:
-            self.core_certifier = self._build_core_region_certifier()
+            self.core_certifier = self._build_certifier(CoreABCrownCertifier)
         return self.core_certifier
 
     def _build_region_builder(self) -> RegionBuilder:
@@ -243,12 +271,12 @@ class RecursiveCertifier:
     # HELPERS
     # =========================================
     @staticmethod
-    def _resolve_bounds(bounds: Sequence[float], device: th.device) -> th.Tensor:
-        """Convert state bounds to a tensor on the target device."""
-        bounds = th.as_tensor(bounds, dtype=th.float32, device=device)
-        if bounds.ndim != 2 or bounds.shape[0] != 2:
+    def _resolve_bounds(bounds: Any, device: th.device) -> th.Tensor:
+        """Convert state bounds to a tensor of shape (2, nx) on target device."""
+        b = th.as_tensor(bounds, dtype=th.float32, device=device)
+        if b.ndim != 2 or b.shape[0] != 2:
             raise ValueError("bounds must be a sequence of shape (2, nx) [lb, ub].")
-        return bounds
+        return b
 
     def _regions_tensor_to_np(self, regions: th.Tensor) -> NDArray:
         """Convert a region tensor ``(N, 2, state_dim)`` to NumPy."""
@@ -264,16 +292,17 @@ class RecursiveCertifier:
     def _run_core_certification(
         self,
         regions: th.Tensor,
-        rho: float,
+        rho: float = 0.0,
         *,
-        early_exit: EarlyExitLevel,
+        early_exit: EarlyExitLevel = EarlyExitLevel.NONE,
     ):
+        del early_exit, rho
         if len(regions) == 0:
             return None
         result = self._get_core_region_certifier().certify_regions(
             regions=regions,
-            rho=rho,
-            early_exit=early_exit,
+            rho=0.0,
+            early_exit=EarlyExitLevel.NONE,
             progress=self.progress,
         )
         return self.region_manager.apply_core_certification_result(
@@ -308,71 +337,22 @@ class RecursiveCertifier:
         )
         return result, update
 
-    def _process_regions(
-        self, 
+    def _prepare_step_partition(
+        self,
         bs: th.Tensor,
         rho: float,
-        *,
-        early_exit: EarlyExitLevel | bool,
-        is_leaf: bool = False,
-    ) -> RecursiveCertificationResult:
-        """Process one region batch and return step-level certification data.
+    ) -> tuple[CertificationRegionPartition | None, _StepCollector]:
+        """Validate inputs, partition regions against rho, and record cached safe/irrelevant regions.
 
-        Parameters
-        ----------
-        bs : th.Tensor
-            Packed lower and upper bounds of regions with shape ``(n, 2, state_dim)``.
-        rho : float
-            Lyapunov level-set value to certify.
-        early_exit : EarlyExitLevel | bool
-            If enabled, returns immediately once any failing region is found.
-        is_leaf : bool, optional
-            Whether these regions are at the maximum recursion depth (leaf level),
-            by default False.
-
-        Returns
-        -------
-        RecursiveCertificationResult
-            Step-level resolved, unresolved and irrelevant regions.
+        Returns (partition, collector). If partition is None or has no relevant regions,
+        the collector is ready to build the final step result immediately.
         """
-        if isinstance(early_exit, bool):
-            early_exit = EarlyExitLevel.ON_COUNTEREXAMPLE if early_exit else EarlyExitLevel.NONE
-
         if rho < 0.0:
             raise ValueError(f"rho must be non-negative, got {rho}.")
 
-        resolved_parts: list[th.Tensor] = []
-        unresolved_parts: list[th.Tensor] = []
-        irrelevant_regions = self.region_manager.empty_regions()
-        counterexample_found = False
-        
-        def append_resolved(regions: th.Tensor, update_progress: bool = True) -> None:
-            if len(regions) > 0:
-                resolved_parts.append(regions)
-                if update_progress:
-                    self.progress.add_recursive_counts(resolved=len(regions), pending=-len(regions))
-
-        def append_unresolved(regions: th.Tensor, update_progress: bool = True) -> None:
-            if len(regions) > 0:
-                unresolved_parts.append(regions)
-                if update_progress:
-                    self.progress.add_recursive_counts(unresolved=len(regions), pending=-len(regions))
-
-        def counterexample_found_or(condition: bool):
-            nonlocal counterexample_found
-            if early_exit != EarlyExitLevel.NONE:
-                counterexample_found = counterexample_found or condition
-
-        def finish() -> RecursiveCertificationResult:
-            return RecursiveCertificationResult(
-                resolved=self.region_manager.pack_regions(resolved_parts),
-                unresolved=self.region_manager.pack_regions(unresolved_parts),
-                irrelevant=irrelevant_regions,
-                counterexample_found=counterexample_found,
-            )
-
+        collector = _StepCollector(self.region_manager, self.progress)
         if len(bs) == 0:
-            return finish()
+            return None, collector
 
         bs, region_bounds = self._ensure_region_bounds(bs, make_current=bs is self.regions)
         partition = self.region_manager.partition_certification_regions(
@@ -382,65 +362,266 @@ class RecursiveCertifier:
             sublevel_tolerance=self.config.sublevel_tolerance,
         )
 
-        irrelevant_regions = partition.irrelevant_regions
-        if len(irrelevant_regions) > 0:
-            self.progress.add_recursive_counts(irrelevant=len(irrelevant_regions), pending=-len(irrelevant_regions))
-            
+        collector.set_irrelevant(partition.irrelevant_regions)
+
         if not partition.has_relevant_regions:
-            return finish()
+            return None, collector
 
-        append_resolved(partition.cached_complete_safe_regions)
-        append_resolved(partition.cached_core_safe_regions)
+        collector.add_resolved(partition.cached_complete_safe_regions)
+        collector.add_resolved(partition.cached_core_safe_regions)
+        return partition, collector
 
-        inside_core_unchecked_bs = partition.inside_core_unchecked_regions
-        boundary_core_unchecked_bs = partition.boundary_core_unchecked_regions
+    def _process_core_regions(
+        self,
+        bs: th.Tensor,
+        rho: float | None = None,
+    ) -> RecursiveCertificationResult:
+        """Process one region batch with the rho-independent Core Check.
 
-        if self.config.skip_boundary_core_cert:
-            core_unchecked_bs = inside_core_unchecked_bs
-            boundary_skipped_core = boundary_core_unchecked_bs
-        else:
-            core_unchecked_bs = self.region_manager.pack_regions(
-                (inside_core_unchecked_bs, boundary_core_unchecked_bs)
-            )
-            boundary_skipped_core = self.region_manager.empty_regions()
+        Evaluates dV + kappa*V <= 0 and next_step in cert_bounds.
+        Cached safe regions are resolved immediately.
+        Unchecked regions undergo Core Check.
+        Failing regions (counterexample or unknown) are marked unresolved.
+        """
+        del rho
+        collector = _StepCollector(self.region_manager, self.progress)
+        if len(bs) == 0:
+            return collector.build_result()
 
-        core_update = self._run_core_certification(
-            core_unchecked_bs,
-            rho,
-            early_exit=EarlyExitLevel.NONE,
+        bs, _ = self._ensure_region_bounds(bs, make_current=bs is self.regions)
+
+        core_status = self.region_manager.get_core_status(bs)
+        collector.add_resolved(bs[core_status == CoreStatus.SAFE])
+
+        unchecked_bs = bs[core_status == CoreStatus.UNCHECKED]
+        if len(unchecked_bs) > 0:
+            core_update = self._run_core_certification(unchecked_bs)
+            if core_update is not None:
+                collector.add_resolved(core_update.verified_regions)
+                collector.add_unresolved(core_update.failed_regions)
+                __logger__.info(
+                    "Core Check completed on %d regions: %d safe, %d failed.",
+                    len(unchecked_bs),
+                    len(core_update.verified_regions),
+                    len(core_update.failed_regions),
+                )
+
+        collector.add_unresolved(
+            bs[(core_status == CoreStatus.COUNTEREXAMPLE) | (core_status == CoreStatus.UNKNOWN)]
         )
-        if core_update is not None:
-            append_resolved(core_update.verified_regions)
+        return collector.build_result()
 
-        unresolved_core_parts = [
+    def _process_complete_regions(
+        self,
+        bs: th.Tensor,
+        rho: float,
+        *,
+        early_exit: EarlyExitLevel | bool = EarlyExitLevel.NONE,
+        is_leaf: bool = False,
+    ) -> RecursiveCertificationResult:
+        """Process one region batch with the complete specification verifier."""
+        if isinstance(early_exit, bool):
+            early_exit = EarlyExitLevel.ON_COUNTEREXAMPLE if early_exit else EarlyExitLevel.NONE
+
+        partition, collector = self._prepare_step_partition(bs, rho)
+        if partition is None:
+            return collector.build_result()
+
+        to_verify_parts = [
+            partition.inside_core_unchecked_regions,
             partition.cached_inside_counterexample_regions,
             partition.cached_inside_unknown_regions,
+            partition.boundary_core_unchecked_regions,
             partition.boundary_complete_candidate_regions,
-            boundary_skipped_core,
         ]
-        if core_update is not None and len(core_update.failed_regions) > 0:
-            unresolved_core_parts.append(core_update.failed_regions)
+        regions_to_verify = self.region_manager.pack_regions(to_verify_parts)
 
-        unresolved_core_bs = self.region_manager.pack_regions(unresolved_core_parts)
-        if len(unresolved_core_bs) == 0:
-            return finish()
+        if len(regions_to_verify) == 0:
+            return collector.build_result()
 
         complete_result, complete_update = self._run_complete_certification(
-            unresolved_core_bs,
+            regions_to_verify,
             rho,
             early_exit=early_exit,
             is_leaf=is_leaf,
         )
-        if complete_update is not None and complete_result is not None:
-            append_resolved(complete_update.verified_regions)
-            append_unresolved(complete_update.failed_regions)
-            if early_exit == EarlyExitLevel.ON_UNKNOWN and len(complete_update.failed_regions) > 0:
-                counterexample_found = True
-                return finish()
-            counterexample_found_or(complete_result.any_counterexample)
-            if early_exit != EarlyExitLevel.NONE and complete_result.any_counterexample:
-                return finish()
-        return finish()
+        collector.record_complete_update(complete_result, complete_update, early_exit)
+        return collector.build_result()
+
+    def _run_recursive_loop(
+        self,
+        title: str,
+        pending_bs: th.Tensor,
+        step_fn: Callable[[th.Tensor, int, bool], RecursiveCertificationResult],
+        *,
+        start_depth: int = 0,
+        early_exit: EarlyExitLevel = EarlyExitLevel.NONE,
+        on_resolved: Callable[[], Any] | None = None,
+        force_display: bool = False,
+    ) -> _RecursiveLoopResult:
+        """Execute a depth-bounded recursive certification loop over regions."""
+        max_depth = self.config.max_recursion_depth
+        all_resolved: list[th.Tensor] = []
+        unresolved_leaves: list[th.Tensor] = []
+        unresolved_non_leaves: list[th.Tensor] = []
+        all_irrelevant: list[th.Tensor] = []
+        counterexample_found = False
+
+        if len(pending_bs) == 0:
+            return _RecursiveLoopResult()
+
+        def _update_progress(advance: int = 0, n_pending: int = 0, is_completed: bool = False) -> None:
+            n_unresolved = sum(len(u) for u in unresolved_leaves + unresolved_non_leaves)
+            self.progress.update_recursive(
+                advance=advance,
+                n_pending=n_pending,
+                n_unresolved=n_unresolved,
+                is_completed=is_completed,
+                max_depth=max_depth if is_completed else 0,
+            )
+
+        with self.progress:
+            self.progress.start_recursive(title, max_depth, force_display=force_display)
+            self.progress.update_recursive(n_pending=len(pending_bs))
+
+            try:
+                for depth in range(start_depth, max_depth + 1):
+                    if len(pending_bs) == 0:
+                        _update_progress(is_completed=True)
+                        break
+
+                    is_leaf = (depth == max_depth)
+                    step_result = step_fn(pending_bs, depth, is_leaf)
+
+                    if len(step_result.resolved) > 0:
+                        all_resolved.append(step_result.resolved)
+                        if on_resolved is not None:
+                            on_resolved()
+                    if len(step_result.irrelevant) > 0:
+                        all_irrelevant.append(step_result.irrelevant)
+                    if step_result.counterexample_found:
+                        counterexample_found = True
+
+                    if early_exit != EarlyExitLevel.NONE and step_result.counterexample_found:
+                        if len(step_result.unresolved) > 0:
+                            unresolved_leaves.append(step_result.unresolved)
+                        break
+
+                    if len(step_result.unresolved) == 0:
+                        _update_progress(is_completed=True)
+                        break
+
+                    if is_leaf:
+                        unresolved_leaves.append(step_result.unresolved)
+                        _update_progress(advance=1)
+                        break
+
+                    split_bs = self.region_manager.split_regions(step_result.unresolved)
+                    if len(split_bs) == 0:
+                        unresolved_non_leaves.append(step_result.unresolved)
+                        _update_progress(advance=1)
+                        break
+
+                    pending_bs = split_bs
+                    _update_progress(advance=1, n_pending=len(pending_bs))
+            finally:
+                self.progress.stop_recursive()
+
+        return _RecursiveLoopResult(
+            all_resolved=all_resolved,
+            unresolved_leaves=unresolved_leaves,
+            unresolved_non_leaves=unresolved_non_leaves,
+            all_irrelevant=all_irrelevant,
+            counterexample_found=counterexample_found,
+        )
+
+    def _core_recursive_certify(
+        self,
+        pending_bs: th.Tensor | None = None,
+        rho: float | None = None,
+        *,
+        force_display: bool = False,
+    ) -> tuple[list[th.Tensor], list[th.Tensor], list[th.Tensor]]:
+        """Run recursive Core Check certification up to max_recursion_depth.
+
+        Returns
+        -------
+        tuple[list[th.Tensor], list[th.Tensor], list[th.Tensor]]
+            (all_resolved, unresolved_leaves, unresolved_non_leaves)
+        """
+        del rho
+        if pending_bs is None:
+            pending_bs = self.region_manager.ensure_regions()
+
+        loop_res = self._run_recursive_loop(
+            title="Core Split",
+            pending_bs=pending_bs,
+            step_fn=lambda bs, depth, is_leaf: self._process_core_regions(bs),
+            start_depth=0,
+            early_exit=EarlyExitLevel.NONE,
+            on_resolved=self.region_manager.propagate_core_safe_to_parents,
+            force_display=force_display,
+        )
+        return (
+            loop_res.all_resolved,
+            loop_res.unresolved_leaves,
+            loop_res.unresolved_non_leaves,
+        )
+
+    def _complete_recursive_certify(
+        self,
+        pending_bs: th.Tensor,
+        rho: float,
+        *,
+        start_depth: int = 0,
+        early_exit: EarlyExitLevel = EarlyExitLevel.NONE,
+        force_display: bool = False,
+    ) -> tuple[list[th.Tensor], list[th.Tensor], list[th.Tensor], bool]:
+        """Run complete specification certification with recursive splitting if needed.
+
+        Returns
+        -------
+        tuple[list[th.Tensor], list[th.Tensor], list[th.Tensor], bool]
+            (all_resolved, all_unresolved, all_irrelevant, counterexample_found)
+        """
+        loop_res = self._run_recursive_loop(
+            title="Complete Split",
+            pending_bs=pending_bs,
+            step_fn=lambda bs, depth, is_leaf: self._process_complete_regions(
+                bs,
+                rho,
+                early_exit=(
+                    EarlyExitLevel.ON_UNKNOWN
+                    if early_exit == EarlyExitLevel.ON_COUNTEREXAMPLE and is_leaf
+                    else early_exit
+                ),
+                is_leaf=is_leaf,
+            ),
+            start_depth=start_depth,
+            early_exit=early_exit,
+            force_display=force_display,
+        )
+        return (
+            loop_res.all_resolved,
+            loop_res.all_unresolved,
+            loop_res.all_irrelevant,
+            loop_res.counterexample_found,
+        )
+
+    def _pack_result(
+        self,
+        resolved: Sequence[th.Tensor],
+        unresolved: Sequence[th.Tensor],
+        irrelevant: Sequence[th.Tensor],
+        counterexample_found: bool = False,
+    ) -> RecursiveCertificationResult:
+        """Pack lists of region tensors into a RecursiveCertificationResult."""
+        return RecursiveCertificationResult(
+            resolved=self.region_manager.pack_regions(resolved),
+            unresolved=self.region_manager.pack_regions(unresolved),
+            irrelevant=self.region_manager.pack_regions(irrelevant),
+            counterexample_found=counterexample_found,
+        )
 
     def _certify_recursive_regions(
         self,
@@ -455,94 +636,47 @@ class RecursiveCertifier:
         if isinstance(early_exit, bool):
             early_exit = EarlyExitLevel.ON_COUNTEREXAMPLE if early_exit else EarlyExitLevel.NONE
 
-        max_depth = self.config.max_recursion_depth
-        pending_bs = self.region_manager.ensure_regions()
+        if rho < 0.0:
+            raise ValueError(f"rho must be non-negative, got {rho}.")
 
-        all_resolved: list[th.Tensor] = []
-        all_unresolved: list[th.Tensor] = []
-        all_irrelevant: list[th.Tensor] = []
-        counterexample_found = False
-
-        def build_current_result() -> RecursiveCertificationResult:
-            return RecursiveCertificationResult(
-                resolved=self.region_manager.pack_regions(all_resolved),
-                unresolved=self.region_manager.pack_regions(all_unresolved),
-                irrelevant=self.region_manager.pack_regions(all_irrelevant),
-                counterexample_found=counterexample_found,
+        if self.config.skip_core_cert:
+            comp_resolved, comp_unresolved, comp_irrelevant, cex_found = (
+                self._complete_recursive_certify(
+                    self.region_manager.ensure_regions(),
+                    rho,
+                    start_depth=0,
+                    early_exit=early_exit,
+                    force_display=force_display,
+                )
             )
+            return self._pack_result(comp_resolved, comp_unresolved, comp_irrelevant, cex_found)
 
-        with self.progress:
-            self.progress.start_recursive("Region Splits", max_depth, force_display=force_display)
-            self.progress.update_recursive(n_pending=len(pending_bs))
+        # Phase 1: Core recursive certification up to max_recursion_depth (all core regions + splits)
+        core_resolved, unresolved_leaves, unresolved_non_leaves = (
+            self._core_recursive_certify(
+                force_display=force_display,
+            )
+        )
 
-            try:
-                for depth in range(max_depth + 1):
-                    current_early_exit = early_exit
-                    if early_exit == EarlyExitLevel.ON_COUNTEREXAMPLE and depth == max_depth:
-                        current_early_exit = EarlyExitLevel.ON_UNKNOWN
+        all_core_unresolved = unresolved_non_leaves + unresolved_leaves
+        pending_leaves = self.region_manager.pack_regions(unresolved_leaves)
+        if len(pending_leaves) == 0:
+            return self._pack_result(core_resolved, all_core_unresolved, [], False)
 
-                    if len(pending_bs) == 0:
-                        self.progress.update_recursive(
-                            is_completed=True,
-                            max_depth=max_depth,
-                            n_pending=0,
-                        )
-                        break
+        # Phase 2: Complete certification on remaining unresolved leaves
+        comp_resolved, comp_unresolved, comp_irrelevant, cex_found = (
+            self._complete_recursive_certify(
+                pending_leaves,
+                rho,
+                start_depth=self.config.max_recursion_depth,
+                early_exit=early_exit,
+                force_display=force_display,
+            )
+        )
 
-                    step_result = self._process_regions(
-                        pending_bs,
-                        rho,
-                        early_exit=current_early_exit,
-                        is_leaf=(depth == max_depth),
-                    )
-
-                    if len(step_result.resolved) > 0:
-                        all_resolved.append(step_result.resolved)
-                    if len(step_result.irrelevant) > 0:
-                        all_irrelevant.append(step_result.irrelevant)
-                    if step_result.counterexample_found:
-                        counterexample_found = True
-
-                    if current_early_exit != EarlyExitLevel.NONE and step_result.counterexample_found:
-                        if len(step_result.unresolved) > 0:
-                            all_unresolved.append(step_result.unresolved)
-                        return build_current_result()
-
-                    if len(step_result.unresolved) == 0:
-                        self.progress.update_recursive(
-                            is_completed=True,
-                            max_depth=max_depth,
-                            n_pending=0,
-                        )
-                        break
-
-                    if depth == max_depth:
-                        all_unresolved.append(step_result.unresolved)
-                        self.progress.update_recursive(
-                            advance=1,
-                            n_pending=0,
-                            n_unresolved=sum(len(u) for u in all_unresolved),
-                        )
-                        break
-
-                    split_bs = self.region_manager.split_regions(step_result.unresolved)
-                    if len(split_bs) == 0:
-                        all_unresolved.append(step_result.unresolved)
-                        self.progress.update_recursive(
-                            advance=1,
-                            n_pending=0,
-                            n_unresolved=sum(len(u) for u in all_unresolved),
-                        )
-                        break
-
-
-                    pending_bs = split_bs
-                    self.progress.update_recursive(
-                        advance=1,
-                        n_pending=len(pending_bs),
-                        n_unresolved=sum(len(u) for u in all_unresolved),
-                    )
-            finally:
-                self.progress.stop_recursive()
-
-        return build_current_result()
+        return self._pack_result(
+            core_resolved + comp_resolved,
+            unresolved_non_leaves + comp_unresolved,
+            comp_irrelevant,
+            cex_found,
+        )

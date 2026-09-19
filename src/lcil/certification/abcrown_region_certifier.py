@@ -409,6 +409,27 @@ class CoreABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
         del rho
         return build_condition_constraint(y, self.bounds[0], self.bounds[1])
 
+    def certify_regions(
+        self,
+        regions: th.Tensor,
+        rho: float,
+        *,
+        description: str | None = None,
+        early_exit: EarlyExitLevel | bool = EarlyExitLevel.NONE,
+        progress: CertificationProgress | None = None,
+        is_leaf: bool = False,
+    ) -> ABCrownRegionBatchVerification:
+        # Core check must run through all regions completely and never abort early on counterexamples.
+        del early_exit
+        return super().certify_regions(
+            regions=regions,
+            rho=rho,
+            description=description,
+            early_exit=EarlyExitLevel.NONE,
+            progress=progress,
+            is_leaf=is_leaf,
+        )
+
 
 class PositivityABCrownCertifier(BaseABCrownCertifier):
     """ABCrown certifier for Lyapunov positivity only."""

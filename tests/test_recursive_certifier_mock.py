@@ -13,6 +13,7 @@ from certification_mock_common import (
     _StatusAwareMockRegionCertifier,
     _complete_candidate_partition,
 )
+from lcil.certification.abcrown_region_certifier import EarlyExitLevel
 from lcil.certification.region_manager import CertificationRegionPartition
 from shared_utils import _IdentityDynamics, _QuadraticLyapunov, _ZeroPolicy
 
@@ -28,7 +29,7 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
         self,
         *,
         max_recursion_depth: int = 3,
-        skip_boundary_core_cert: bool = False,
+        skip_core_cert: bool = False,
     ) -> RecursiveCertifier:
         config = self.make_config(
             state_dim=3,
@@ -39,7 +40,7 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
             center_refinement_factor=0.7,
             origin_exclusion=0.0,
             max_recursion_depth=max_recursion_depth,
-            skip_boundary_core_cert=skip_boundary_core_cert,
+            skip_core_cert=skip_core_cert,
         )
         return self.make_recursive_certifier(
             policy_model=_ZeroPolicy(),
@@ -48,87 +49,8 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
             config=config,
         )
 
-    def test_process_regions_boundary_uses_core_before_complete_by_default(self) -> None:
-        certifier = self._make_certifier()
-        certifier.regions = th.tensor(
-            [
-                [[-1.0, -1.0, -1.0], [0.0, 0.0, 0.0]],
-                [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
-            ],
-            dtype=th.float32,
-        )
-        certifier.region_manager.cache_region_bounds(
-            LyapunovRegionBounds(
-                lower=th.zeros((len(certifier.regions),), dtype=th.float32),
-                upper=th.zeros((len(certifier.regions),), dtype=th.float32),
-            ),
-            regions=certifier.regions,
-            make_current=True,
-        )
-
-        empty = certifier.regions[:0]
-        partition = CertificationRegionPartition(
-            irrelevant_regions=empty,
-            cached_complete_safe_regions=empty,
-            cached_core_safe_regions=empty,
-            cached_inside_counterexample_regions=empty,
-            cached_inside_unknown_regions=empty,
-            inside_core_unchecked_regions=empty,
-            boundary_core_unchecked_regions=certifier.regions,
-            boundary_complete_candidate_regions=empty,
-        )
-        complete_certifier = _RecordingMockRegionCertifier(
-            [
-                _MockVerificationResult(
-                    verified=True,
-                    counterexample_found=False,
-                    status="safe",
-                ),
-            ]
-        )
-        core_certifier = _RecordingMockRegionCertifier(
-            [
-                _MockVerificationResult(
-                    verified=True,
-                    counterexample_found=False,
-                    status="safe",
-                ),
-                _MockVerificationResult(
-                    verified=False,
-                    counterexample_found=False,
-                    status="unknown",
-                ),
-            ]
-        )
-
-        with mock.patch.object(
-            certifier.region_manager,
-            "partition_certification_regions",
-            return_value=partition,
-        ), mock.patch.object(
-            certifier,
-            "_get_region_certifier",
-            return_value=complete_certifier,
-        ), mock.patch.object(
-            certifier,
-            "_get_core_region_certifier",
-            return_value=core_certifier,
-        ):
-            result = certifier._process_regions(
-                certifier.regions,
-                rho=1.0,
-                early_exit=False,
-            )
-
-        self.assertEqual(len(complete_certifier.batches), 1)
-        self.assertEqual(len(core_certifier.batches), 1)
-        self.assertTrue(th.allclose(core_certifier.batches[0], certifier.regions))
-        self.assertTrue(th.allclose(complete_certifier.batches[0], certifier.regions[1:2]))
-        self.assertEqual(result.resolved.shape[0], 2)
-        self.assertEqual(result.unresolved.shape[0], 0)
-
-    def test_process_regions_skip_boundary_core_routes_directly_to_complete(self) -> None:
-        certifier = self._make_certifier(skip_boundary_core_cert=True)
+    def test_certify_recursive_regions_skip_core_routes_directly_to_complete(self) -> None:
+        certifier = self._make_certifier(skip_core_cert=True)
         certifier.regions = th.tensor(
             [
                 [[-1.0, -1.0, -1.0], [0.0, 0.0, 0.0]],
@@ -184,8 +106,7 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
             "_get_core_region_certifier",
             side_effect=AssertionError("boundary core certifier should be skipped"),
         ):
-            result = certifier._process_regions(
-                certifier.regions,
+            result = certifier._certify_recursive_regions(
                 rho=1.0,
                 early_exit=False,
             )
@@ -254,7 +175,7 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
         self.assertTrue(th.equal(second_result.unresolved, certifier.regions))
 
     def test_certify_recursive_regions_keeps_splitting_unknown_regions(self) -> None:
-        certifier = self._make_certifier()
+        certifier = self._make_certifier(max_recursion_depth=1)
         certifier.regions = th.tensor(
             [
                 [[-1.0, -1.0, -1.0], [0.0, 0.0, 0.0]],
@@ -262,7 +183,7 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
             ],
             dtype=th.float32,
         )
-        region_certifier = _StatusAwareMockRegionCertifier(
+        core_certifier = _StatusAwareMockRegionCertifier(
             [
                 _MockVerificationResult(
                     verified=True,
@@ -287,13 +208,9 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
         )
 
         with mock.patch.object(
-            certifier.region_manager,
-            "partition_certification_regions",
-            return_value=_complete_candidate_partition(certifier.regions),
-        ), mock.patch.object(
             certifier,
-            "_get_region_certifier",
-            return_value=region_certifier,
+            "_get_core_region_certifier",
+            return_value=core_certifier,
         ), mock.patch.object(
             certifier.region_manager,
             "split_regions",
@@ -305,13 +222,13 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
             )
 
         self.assertFalse(result.global_success)
-        self.assertEqual(region_certifier.calls, 2)
+        self.assertEqual(core_certifier.calls, 2)
         split_mock.assert_called_once()
         (split_failed_bs,) = split_mock.call_args.args
         self.assertTrue(th.allclose(split_failed_bs, certifier.regions[1:2]))
 
     def test_certify_recursive_regions_marks_all_resolved_when_all_are_safe(self) -> None:
-        certifier = self._make_certifier()
+        certifier = self._make_certifier(max_recursion_depth=0)
         certifier.regions = th.tensor(
             [
                 [[-1.0, -1.0, -1.0], [0.0, 0.0, 0.0]],
@@ -363,9 +280,9 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
         self.assertEqual(region_certifier.calls, 2)
 
     def test_certify_recursive_regions_multi_depth_core_complete_split_order(self) -> None:
-        """Verify that Core runs first, only Complete unresolved regions are split,
-        and split children are routed back to Core at subsequent depths."""
-        certifier = self._make_certifier(max_recursion_depth=2)
+        """Verify that Core runs first and splits unresolved regions, with Complete certification
+        only running on remaining boundary regions at the leaf level."""
+        certifier = self._make_certifier(max_recursion_depth=1)
 
         root_region = th.tensor([[[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]]], dtype=th.float32)
         child1 = th.tensor([[[-1.0, -1.0, -1.0], [0.0, 1.0, 1.0]]], dtype=th.float32)
@@ -374,8 +291,8 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
 
         certifier.regions = root_region
 
-        # Depth 0: Core fails (unknown) -> Complete fails (unknown) -> split!
-        # Depth 1: Core resolves child1, fails child2 -> Complete resolves child2!
+        # Depth 0: Core fails (unknown) -> split directly without Complete cert
+        # Depth 1 (leaf): Core resolves child1, fails child2 -> Complete resolves child2!
         core_certifier = _RecordingMockRegionCertifier(
             [
                 _MockVerificationResult(verified=False, counterexample_found=False, status="unknown"),  # root
@@ -385,7 +302,6 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
         )
         complete_certifier = _RecordingMockRegionCertifier(
             [
-                _MockVerificationResult(verified=False, counterexample_found=False, status="unknown"),  # root
                 _MockVerificationResult(verified=True, counterexample_found=False, status="safe"),      # child2
             ]
         )
@@ -421,12 +337,11 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
         self.assertEqual(len(core_certifier.batches[1]), 2)
         self.assertEqual(core_certifier.calls, 3)
 
-        # Complete was called on root (batch 0) and ONLY child2 (batch 1), because child1 was resolved by Core
-        self.assertEqual(len(complete_certifier.batches), 2)
+        # Complete was called ONLY on leaf child2 (batch 0)
+        self.assertEqual(len(complete_certifier.batches), 1)
         self.assertEqual(len(complete_certifier.batches[0]), 1)
-        self.assertEqual(len(complete_certifier.batches[1]), 1)
-        self.assertTrue(th.equal(complete_certifier.batches[1], child2))
-        self.assertEqual(complete_certifier.calls, 2)
+        self.assertTrue(th.equal(complete_certifier.batches[0], child2))
+        self.assertEqual(complete_certifier.calls, 1)
 
         # Splitting was called exactly once on root region
         self.assertEqual(split_mock.call_count, 1)
@@ -441,7 +356,7 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
         split_children = th.cat([child1, child2], dim=0)
         certifier.regions = root_region
 
-        # Depth 0: Core fails -> Complete fails -> split
+        # Depth 0: Core fails root -> split (complete cert bypassed on non-leaf)
         # Depth 1 (max_depth): Core resolves child1, fails child2 -> Complete fails child2
         # Max depth reached -> no more splits, child2 returned in unresolved
         core_certifier = _RecordingMockRegionCertifier(
@@ -453,7 +368,6 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
         )
         complete_certifier = _RecordingMockRegionCertifier(
             [
-                _MockVerificationResult(verified=False, counterexample_found=False, status="unknown"),
                 _MockVerificationResult(verified=False, counterexample_found=False, status="unknown"),
             ]
         )
@@ -484,19 +398,31 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
         self.assertEqual(len(result.unresolved), 1)
         self.assertTrue(th.equal(result.unresolved, child2))
         self.assertEqual(split_mock.call_count, 1)
+        self.assertEqual(complete_certifier.calls, 1)
 
     def test_certify_recursive_regions_early_exit_on_counterexample_stops_without_splitting(self) -> None:
-        """Verify that a counterexample under early_exit stops recursion immediately without splitting."""
-        certifier = self._make_certifier(max_recursion_depth=2)
+        """Verify that a counterexample under early_exit stops recursion immediately without splitting,
+        while the core check runs through completely across all regions."""
+        certifier = self._make_certifier(max_recursion_depth=0)
 
-        root_region = th.tensor([[[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]]], dtype=th.float32)
-        certifier.regions = root_region
+        root_regions = th.tensor(
+            [
+                [[-1.0, -1.0, -1.0], [0.0, 0.0, 0.0]],
+                [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+            ],
+            dtype=th.float32,
+        )
+        certifier.regions = root_regions
 
+        # Core check verifies both regions: region 0 has counterexample, region 1 is safe.
+        # Core check must run through completely (both calls executed).
         core_certifier = _RecordingMockRegionCertifier(
             [
-                _MockVerificationResult(verified=False, counterexample_found=False, status="unknown"),
+                _MockVerificationResult(verified=False, counterexample_found=True, status="unsafe-pgd"),
+                _MockVerificationResult(verified=True, counterexample_found=False, status="safe"),
             ]
         )
+        # Complete check only needs to check the unresolved region (region 0) and early exits on counterexample.
         complete_certifier = _RecordingMockRegionCertifier(
             [
                 _MockVerificationResult(verified=False, counterexample_found=True, status="unsafe-pgd"),
@@ -526,11 +452,13 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
 
         self.assertFalse(result.global_success)
         self.assertTrue(result.counterexample_found)
+        self.assertEqual(core_certifier.calls, 2)
+        self.assertEqual(len(result.resolved), 1)
         self.assertEqual(len(result.unresolved), 1)
         self.assertEqual(split_mock.call_count, 0)
 
     def test_certify_recursive_regions_passes_is_leaf_at_max_depth(self) -> None:
-        """Verify that is_leaf=False for depth < max_depth and is_leaf=True at depth == max_depth."""
+        """Verify that complete certification is only invoked at leaf depth with is_leaf=True."""
         certifier = self._make_certifier(max_recursion_depth=1)
 
         root_region = th.tensor([[[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]]], dtype=th.float32)
@@ -545,7 +473,6 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
         )
         complete_certifier = _RecordingMockRegionCertifier(
             [
-                _MockVerificationResult(verified=False, counterexample_found=False, status="unknown"),
                 _MockVerificationResult(verified=True, counterexample_found=False, status="safe"),
             ]
         )
@@ -572,7 +499,87 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
             )
 
         self.assertTrue(result.global_success)
-        self.assertEqual(complete_certifier.is_leaf_calls, [False, True])
+        self.assertEqual(complete_certifier.is_leaf_calls, [True])
+
+    def test_non_leaf_regions_failing_core_check_are_split_without_complete_cert(self) -> None:
+        """Verify that at depth < max_depth, failed core regions are directly split without invoking Complete certification."""
+        certifier = self._make_certifier(max_recursion_depth=1)
+        root_region = th.tensor([[[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]]], dtype=th.float32)
+        child = th.tensor([[[-1.0, -1.0, -1.0], [0.0, 1.0, 1.0]]], dtype=th.float32)
+        certifier.regions = root_region
+
+        core_certifier = _RecordingMockRegionCertifier(
+            [
+                _MockVerificationResult(verified=False, counterexample_found=False, status="unknown"),  # depth 0
+                _MockVerificationResult(verified=True, counterexample_found=False, status="safe"),      # depth 1
+            ]
+        )
+        complete_certifier = _RecordingMockRegionCertifier([])
+
+        bounder = certifier._get_region_bounder()
+
+        with mock.patch.object(
+            certifier, "_get_core_region_certifier", return_value=core_certifier
+        ), mock.patch.object(
+            certifier, "_get_region_certifier", return_value=complete_certifier
+        ), mock.patch.object(
+            certifier.region_manager, "split_regions", return_value=child
+        ) as split_mock, mock.patch.object(
+            bounder,
+            "compute_bounds_for_regions",
+            side_effect=lambda bs, *args, **kwargs: LyapunovRegionBounds(
+                lower=th.full((len(bs),), 0.1, dtype=th.float32),
+                upper=th.full((len(bs),), 0.5, dtype=th.float32),
+            ),
+        ):
+            result = certifier._certify_recursive_regions(
+                rho=1.0,
+                early_exit=True,
+            )
+
+        self.assertTrue(result.global_success)
+        self.assertEqual(split_mock.call_count, 1)
+        # Complete certifier should never have been called because child passed Core Check at depth 1
+        self.assertEqual(complete_certifier.calls, 0)
+
+    def test_run_core_certification_runs_through_all_regions_even_when_counterexample_found(self) -> None:
+        certifier = self._make_certifier()
+        regions = th.tensor(
+            [
+                [[-2.0, -2.0, -2.0], [-1.0, -1.0, -1.0]],
+                [[-1.0, -1.0, -1.0], [0.0, 0.0, 0.0]],
+                [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+            ],
+            dtype=th.float32,
+        )
+        certifier.region_manager.cache_region_bounds(
+            LyapunovRegionBounds(
+                lower=th.zeros((len(regions),), dtype=th.float32),
+                upper=th.zeros((len(regions),), dtype=th.float32),
+            ),
+            regions=regions,
+            make_current=True,
+        )
+        core_certifier = _RecordingMockRegionCertifier(
+            [
+                _MockVerificationResult(verified=True, counterexample_found=False, status="safe"),
+                _MockVerificationResult(verified=False, counterexample_found=True, status="unsafe-pgd"),
+                _MockVerificationResult(verified=True, counterexample_found=False, status="safe"),
+            ]
+        )
+
+        with mock.patch.object(certifier, "_get_core_region_certifier", return_value=core_certifier):
+            update = certifier._run_core_certification(
+                regions,
+                rho=1.0,
+                early_exit=EarlyExitLevel.ON_COUNTEREXAMPLE,
+            )
+
+        self.assertIsNotNone(update)
+        self.assertEqual(core_certifier.calls, 3)
+        self.assertEqual(len(update.verified_regions), 2)
+        self.assertEqual(len(update.failed_regions), 1)
+        self.assertTrue(th.equal(update.failed_regions, regions[1:2]))
 
 
 if __name__ == "__main__":

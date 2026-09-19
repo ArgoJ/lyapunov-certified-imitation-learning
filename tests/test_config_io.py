@@ -436,7 +436,7 @@ class TestArgumentParserConfig(unittest.TestCase):
 
         self.assertEqual(config.origin_exclusion, (0.1, 0.2, 0.3, 0.4))
 
-    def test_from_namespace_parses_skip_boundary_core_cert_boolean_flag(self) -> None:
+    def test_from_namespace_parses_skip_core_cert_boolean_flag(self) -> None:
         parser = ArgumentParser()
         defaults = LyapunovCertificationConfig(
             state_dim=2,
@@ -446,15 +446,15 @@ class TestArgumentParserConfig(unittest.TestCase):
         )
         defaults.add_to_argparse(
             parser,
-            include_fields={"skip_boundary_core_cert"},
+            include_fields={"skip_core_cert"},
         )
 
         args = parser.parse_args([
-            "--skip-boundary-core-cert",
+            "--skip-core-cert",
         ])
         config = defaults.from_namespace(args)
 
-        self.assertTrue(config.skip_boundary_core_cert)
+        self.assertTrue(config.skip_core_cert)
 
     def test_add_to_argparse_suppress_defaults_includes_default_in_help(self) -> None:
         parser = ArgumentParser()

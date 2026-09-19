@@ -83,9 +83,9 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         Maximum recursion depth for the certification process. 
         This limits how many times the certification will recursively subdivide 
         regions if they fail certification, to prevent infinite recursion in edge cases.
-    skip_boundary_core_cert : bool
-        Whether to skip the boundary-region core-certification prepass and send
-        boundary regions directly into complete certification.
+    skip_core_cert : bool
+        Whether to skip the core-certification prepass and send
+        regions directly into complete certification.
     split_dim_weights : float | Sequence[float]
         Per-dimension weights used when choosing recursive split dimensions.
         Larger weights make a dimension more likely to be split.
@@ -179,9 +179,9 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="split_depth",
         validators=(non_negative_validator,)
     )
-    skip_boundary_core_cert: bool = config_field(
+    skip_core_cert: bool = config_field(
         default=False,
-        help="Skip the boundary-region core-certification prepass and route boundary regions directly to complete certification.",
+        help="Skip the core-certification prepass and route boundary regions directly to complete certification.",
         display_alias="skip_core_cert"
     )
     split_dim_weights: float | Sequence[float] = config_field(
@@ -285,7 +285,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         abcrown_max_domains: int | None = None,
         abcrown_input_split_partitions: int = 2,
         max_recursion_depth: int = 10,
-        skip_boundary_core_cert: bool = False,
+        skip_core_cert: bool = False,
         split_dim_weights: float | Sequence[float] = 1.0,
         use_affine_l1_sublevel_bounds: bool = True,
     ) -> "LyapunovCertificationConfig":
@@ -314,7 +314,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
             "abcrown_max_domains": abcrown_max_domains,
             "abcrown_input_split_partitions": abcrown_input_split_partitions,
             "max_recursion_depth": max_recursion_depth,
-            "skip_boundary_core_cert": skip_boundary_core_cert,
+            "skip_core_cert": skip_core_cert,
             "split_dim_weights": split_dim_weights,
             "use_affine_l1_sublevel_bounds": use_affine_l1_sublevel_bounds,
         }
