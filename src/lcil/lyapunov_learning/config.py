@@ -96,9 +96,13 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Weight for the Lyapunov scale anchor loss.
     policy_regularization_weight : float
         Weight for the policy regularization loss, which encourages the policy to stay close to the initial policy.
-    r_factor_fro_norm_weight : float
-        Weight for the Frobenius norm regularization of the R factor in the Lyapunov model, if it exists. 
-        This helps prevent the R factor from collapsing or growing too large.
+    r_factor_regularization_weight : float
+        Weight for the regularization of the R factor in the Lyapunov model, if it exists. 
+        This helps prevent dimensions from collapsing or becoming ill-conditioned.
+    r_factor_min_eig : float
+        Minimum eigenvalue floor for the positive definite matrix P in the Lyapunov model.
+    r_factor_max_cond : float
+        Maximum condition number bound for the positive definite matrix P in the Lyapunov model.
     
     rho_growth_gamma : float
         Growth factor for estimating sublevel values from boundary points.
@@ -230,7 +234,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         validators=(optional_validator(pathlike_validator),)
     )
     enable_diagnosis: bool = config_field(
-        default=True,
+        default=False,
         help="Whether to compute diagnostic metrics and zero-weighted loss parts (without gradients). If False, zero-weighted loss parts and rho term diagnostics are skipped completely.",
         display_alias="enable_diag",
     )
@@ -255,13 +259,13 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         validators=(non_negative_validator,),
     )
     equilibrium_weight: float = config_field(
-        default=0.1,
+        default=0.0,
         help="Weight for keeping V(0) near zero.",
         display_alias="eqw",
         validators=(non_negative_validator,),
     )
     formal_positivity_weight: float = config_field(
-        default=1.0,
+        default=0.0,
         help="Weight of the positivity penalty over the training box.",
         display_alias="fpw",
         validators=(non_negative_validator,),
@@ -292,12 +296,24 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="policy_reg_w",
         validators=(non_negative_validator,),
     )
-    r_factor_fro_norm_weight: float = config_field(
+    r_factor_regularization_weight: float = config_field(
         default=100.0,
-        help="Weight for the Frobenius norm regularization of the R factor in the Lyapunov model, if it exists. " \
-            "This helps prevent the R factor from collapsing or growing too large.",
-        display_alias="r_factor_fro_norm_w",
+        help="Weight for the regularization of the R factor (floor + condition bound) in the Lyapunov model, if it exists. " \
+            "This helps prevent dimensions from collapsing or becoming ill-conditioned.",
+        display_alias="r_factor_regularization_w",
         validators=(non_negative_validator,),
+    )
+    r_factor_min_eig: float = config_field(
+        default=0.02,
+        help="Minimum eigenvalue floor for the positive definite matrix P in the Lyapunov model.",
+        display_alias="r_factor_min_eig",
+        validators=(positive_validator,),
+    )
+    r_factor_max_cond: float = config_field(
+        default=25.0,
+        help="Maximum condition number bound for the positive definite matrix P in the Lyapunov model.",
+        display_alias="r_factor_max_cond",
+        validators=(positive_validator,),
     )
 
     # Condition Loss

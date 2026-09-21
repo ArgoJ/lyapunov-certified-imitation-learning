@@ -461,6 +461,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
+            formal_positivity_weight=1.0,
         )
         loss_module = LyapunovTrainingLoss(
             policy_model=_ZeroPolicy(),
@@ -478,6 +479,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         config = LyapunovTrainingConfig(
             state_dim=1,
             state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
+            formal_positivity_weight=1.0,
         )
         with patch.object(
             FormalPositivityLoss,

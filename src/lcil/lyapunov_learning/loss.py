@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterable
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
 from .config import LyapunovTrainingConfig
-from .models import has_learnable_r_factor
+from .models import has_learnable_r_factor, NeuralLyapunovCandidate
 from .utils import get_th_lbx_ubx, get_center
 from .sampling import sample_sobol_box
 
@@ -29,7 +29,7 @@ class LyapunovTrainingLossParts:
     formal_positivity_raw: th.Tensor
     scale_raw: th.Tensor
     policy_regularization_raw: th.Tensor
-    r_factor_fro_norm_raw: th.Tensor
+    r_factor_regularization_raw: th.Tensor
 
     condition_weight: float
     roa_weight: float
@@ -39,7 +39,7 @@ class LyapunovTrainingLossParts:
     formal_positivity_weight: float
     scale_weight: float
     policy_regularization_weight: float
-    r_factor_fro_norm_weight: float
+    r_factor_regularization_weight: float
 
     @property
     def condition(self) -> th.Tensor:
@@ -74,8 +74,8 @@ class LyapunovTrainingLossParts:
         return self.policy_regularization_weight * self.policy_regularization_raw
 
     @property
-    def r_factor_fro_norm(self) -> th.Tensor:
-        return self.r_factor_fro_norm_weight * self.r_factor_fro_norm_raw
+    def r_factor_regularization(self) -> th.Tensor:
+        return self.r_factor_regularization_weight * self.r_factor_regularization_raw
 
     @property
     def total(self) -> th.Tensor:
@@ -88,7 +88,7 @@ class LyapunovTrainingLossParts:
             + self.formal_positivity
             + self.scale
             + self.policy_regularization
-            + self.r_factor_fro_norm
+            + self.r_factor_regularization
         )
 
 
@@ -204,7 +204,7 @@ class LyapunovScaleAnchorLoss(BoundedStateSamplingModule):
     
     def __init__(
         self,
-        lyap_model: nn.Module,
+        lyap_model: NeuralLyapunovCandidate,
         state_bounds: th.Tensor,
         num_samples: int = 1000,
         resample_interval: int = 100,
@@ -248,8 +248,9 @@ class LyapunovDecreaseViolation(nn.Module):
         self.kappa = float(kappa)
         self.margin = float(margin)
 
-    def forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
-        return th.relu(lyapunov_decrease(v_curr, v_next, self.kappa) + self.margin)
+    def forward(self, v_curr: th.Tensor, v_next: th.Tensor, with_margin: bool = True) -> th.Tensor:
+        margin = self.margin if with_margin else 0.0
+        return th.relu(lyapunov_decrease(v_curr, v_next, self.kappa) + margin)
 
 
 class RelativeLyapunovDecreaseViolation(nn.Module):
@@ -266,8 +267,9 @@ class RelativeLyapunovDecreaseViolation(nn.Module):
         self.relative_eps = float(relative_eps)
         self.margin = float(margin)
 
-    def forward(self, v_curr: th.Tensor, v_next: th.Tensor) -> th.Tensor:
-        return th.relu(relative_lyapunov_decrease(v_curr, v_next, self.kappa, self.relative_eps) + self.margin)
+    def forward(self, v_curr: th.Tensor, v_next: th.Tensor, with_margin: bool = True) -> th.Tensor:
+        margin = self.margin if with_margin else 0.0
+        return th.relu(relative_lyapunov_decrease(v_curr, v_next, self.kappa, self.relative_eps) + margin)
 
 
 class InvarianceViolation(StateBoundsModule):
@@ -338,9 +340,10 @@ class RhoGatedConditionLoss(nn.Module):
         v_curr: th.Tensor,
         v_next: th.Tensor,
         x_next: th.Tensor,
+        with_margin: bool = True,
     ) -> th.Tensor:
         """Compute condition violation per sample without gating."""
-        dec_viol = self.decrease_violation(v_curr=v_curr, v_next=v_next)
+        dec_viol = self.decrease_violation(v_curr=v_curr, v_next=v_next, with_margin=with_margin)
         inv_viol = self.invariance_violation(x_next=x_next)
         return dec_viol + self.invariance_weight * inv_viol
 
@@ -351,13 +354,14 @@ class RhoGatedConditionLoss(nn.Module):
         x_next: th.Tensor,
         rho_estimate: float | None = 0.0,
         soft_gated: bool = True,
+        with_margin: bool = True,
     ) -> th.Tensor:
         """Compute condition violation per sample.
         
         Applies sublevel weight (soft or hard) to BOTH decrease and invariance violations
         so that violations are only evaluated inside the rho-sublevel set V(x) <= rho.
         """
-        raw_violation = self.raw_condition_violation(v_curr, v_next, x_next)
+        raw_violation = self.raw_condition_violation(v_curr, v_next, x_next, with_margin=with_margin)
 
         if rho_estimate is None:
             return raw_violation
@@ -398,7 +402,7 @@ class SignedConditionMargin(nn.Module):
     def __init__(
         self,
         policy_model: nn.Module,
-        lyap_model: nn.Module,
+        lyap_model: NeuralLyapunovCandidate,
         dyn_model: nn.Module,
         config: LyapunovTrainingConfig,
     ) -> None:
@@ -426,7 +430,7 @@ class ConditionLirpaLoss(StateBoundsModule):
     def __init__(
         self,
         policy_model: nn.Module,
-        lyap_model: nn.Module,
+        lyap_model: NeuralLyapunovCandidate,
         dyn_model: nn.Module,
         config: LyapunovTrainingConfig,
         device: th.device = th.device("cpu"),
@@ -521,7 +525,7 @@ class FormalPositivityLoss(StateBoundsModule):
     """Compute the positivity loss induced by a lower bound on V."""
     def __init__(
         self, 
-        lyap_model: nn.Module, 
+        lyap_model: NeuralLyapunovCandidate, 
         train_bounds: th.Tensor, 
         device: th.device | str = "cpu"
     ) -> None:
@@ -623,10 +627,7 @@ class PolicyRegularizationLoss(BoundedStateSamplingModule):
         self._set_init_policy_mode()
 
         with th.no_grad():
-            initial_values = self._forward_maybe_raw(
-                self.init_policy,
-                self.samples,
-            )
+            initial_values = self.init_policy(self.samples)
 
         self.register_buffer("init_policy_values", initial_values)
 
@@ -635,17 +636,11 @@ class PolicyRegularizationLoss(BoundedStateSamplingModule):
             param.requires_grad = False
         self.init_policy.eval()
 
-    def _forward_maybe_raw(self, policy: nn.Module, x_batch: th.Tensor) -> th.Tensor:
-        """Evaluate the policy on a batch of states, optionally returning raw outputs."""
-        if hasattr(policy, "forward_raw") and callable(getattr(policy, "forward_raw")):
-            return policy.forward_raw(x_batch)
-        return policy(x_batch)
-
     @th.no_grad()
     def _update_init_policy_values(self) -> None:
         """Evaluates the initial policy on current samples and caches the result."""
         self.init_policy_values.copy_(
-            self._forward_maybe_raw(self.init_policy, self.samples)
+            self.init_policy(self.samples)
         )
     
     def step_sampling(self) -> bool:
@@ -657,28 +652,37 @@ class PolicyRegularizationLoss(BoundedStateSamplingModule):
 
     def forward(self) -> th.Tensor:
         self.step_sampling()
-        out = self._forward_maybe_raw(self.policy, self.samples)
+        out = self.policy(self.samples)
         mse = th.square(out - self.init_policy_values).mean()
         ref_energy = th.square(self.init_policy_values).mean()
         normalized_loss = mse / ref_energy.clamp_min(1e-3)
         return normalized_loss
 
 
-class RFactorFrobeniusLoss(nn.Module):
-    """Compute the Frobenius norm distance of the R factor to regularize its magnitude."""
+class RFactorRegularizationLoss(nn.Module):
+    """Combined R-factor floor and condition bound."""
 
-    def __init__(self, lyap_model: nn.Module, device: th.device | str = "cpu") -> None:
+    def __init__(
+        self,
+        lyap_model: NeuralLyapunovCandidate,
+        min_eig: float = 0.02,
+        max_cond: float = 25.0,
+    ) -> None:
         super().__init__()
         self.lyap_model = lyap_model
-        self.device = th.device(device)
-
-        with th.no_grad():
-            init_norm = th.linalg.norm(self.lyap_model.r_factor, ord="fro").to(self.device)
-            self.register_buffer("init_norm", init_norm)
+        self.min_eig = min_eig
+        self.max_cond = max_cond
 
     def forward(self) -> th.Tensor:
-        current_norm = th.linalg.norm(self.lyap_model.r_factor, ord="fro")
-        return th.square(th.relu(self.init_norm - current_norm))
+        P = self.lyap_model._pd_matrix()
+        eigs = th.linalg.eigvalsh(P)
+        lam_min, lam_max = eigs[0], eigs[-1]
+
+        floor_penalty = th.square(F.relu(self.min_eig - lam_min) / self.min_eig)
+        cond_penalty = th.square(F.relu(lam_max - self.max_cond * lam_min) / lam_max.detach().clamp_min(1e-6))
+
+        return floor_penalty + cond_penalty
+
 
 
 class LyapunovTrainingLoss(nn.Module):
@@ -687,7 +691,7 @@ class LyapunovTrainingLoss(nn.Module):
     def __init__(
         self,
         policy_model: nn.Module,
-        lyap_model: nn.Module,
+        lyap_model: NeuralLyapunovCandidate,
         dyn_model: nn.Module,
         config: LyapunovTrainingConfig,
         device: th.device | str = "cpu",
@@ -716,8 +720,9 @@ class LyapunovTrainingLoss(nn.Module):
                 lyap_model=self.lyap_model,
                 dyn_model=self.dyn_model,
                 config=self.config,
+                device=self.device,
             )
-            if (self.config.condition_lirpa_weight > 0.0 or self.config.enable_diagnosis) else None
+            if self.config.condition_lirpa_weight > 0.0 else None
         )
         
         # Equilibrium loss
@@ -733,7 +738,7 @@ class LyapunovTrainingLoss(nn.Module):
                 train_bounds=self.config.train_bounds,
                 device=self.device
             )
-            if (self.config.formal_positivity_weight > 0.0 or self.config.enable_diagnosis) else None
+            if self.config.formal_positivity_weight > 0.0 else None
         )
 
         # L1 regularization loss
@@ -767,10 +772,14 @@ class LyapunovTrainingLoss(nn.Module):
             if (self.config.policy_regularization_weight > 0.0 or self.config.enable_diagnosis) else None
         )
 
-        # R factor Frobenius loss
-        self.r_factor_frobenius_loss = (
-            RFactorFrobeniusLoss(lyap_model=self.lyap_model, device=self.device)
-            if has_learnable_r_factor(self.lyap_model) and (self.config.r_factor_fro_norm_weight > 0.0 or self.config.enable_diagnosis) else None
+        # R factor regularization loss
+        self.r_factor_regularization_loss = (
+            RFactorRegularizationLoss(
+                lyap_model=self.lyap_model,
+                min_eig=self.config.r_factor_min_eig,
+                max_cond=self.config.r_factor_max_cond,
+            )
+            if has_learnable_r_factor(self.lyap_model) and (self.config.r_factor_regularization_weight > 0.0 or self.config.enable_diagnosis) else None
         )
 
     def _eval_loss_part(
@@ -851,10 +860,11 @@ class LyapunovTrainingLoss(nn.Module):
         x_batch: th.Tensor, 
         rho_estimate: float | None = None, 
         soft_gated: bool = False,
+        with_margin: bool = True,
     ) -> th.Tensor:
         v_curr, x_next, v_next = self._closed_loop_values(x_batch)
         return self.condition_loss.gated_condition_violation(
-            v_curr=v_curr, v_next=v_next, x_next=x_next, rho_estimate=rho_estimate, soft_gated=soft_gated
+            v_curr=v_curr, v_next=v_next, x_next=x_next, rho_estimate=rho_estimate, soft_gated=soft_gated, with_margin=with_margin
         )
 
     def get_counterexample_mask(
@@ -972,9 +982,9 @@ class LyapunovTrainingLoss(nn.Module):
             enabled=active_policy_regularization,
         )
 
-        r_factor_frobenius_loss_value = self._eval_loss_part(
-            self.config.r_factor_fro_norm_weight,
-            self.r_factor_frobenius_loss,
+        r_factor_regularization_loss_value = self._eval_loss_part(
+            self.config.r_factor_regularization_weight,
+            self.r_factor_regularization_loss,
         )
 
         parts = LyapunovTrainingLossParts(
@@ -986,7 +996,7 @@ class LyapunovTrainingLoss(nn.Module):
             formal_positivity_raw=formal_positivity_loss_value,
             scale_raw=scale_loss_value,
             policy_regularization_raw=policy_regularization_loss_value,
-            r_factor_fro_norm_raw=r_factor_frobenius_loss_value,
+            r_factor_regularization_raw=r_factor_regularization_loss_value,
 
             condition_weight=self.config.condition_weight,
             roa_weight=self.config.roa_weight,
@@ -996,7 +1006,7 @@ class LyapunovTrainingLoss(nn.Module):
             formal_positivity_weight=self.config.formal_positivity_weight,
             scale_weight=self.config.scale_weight,
             policy_regularization_weight=self.config.policy_regularization_weight,
-            r_factor_fro_norm_weight=self.config.r_factor_fro_norm_weight,
+            r_factor_regularization_weight=self.config.r_factor_regularization_weight,
         )
         self.last_loss_parts = parts
         return parts

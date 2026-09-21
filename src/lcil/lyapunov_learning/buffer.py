@@ -2,14 +2,10 @@ from __future__ import annotations
 
 import logging
 import torch as th
-import numpy as np
-
 from collections.abc import Callable
-from scipy.spatial import cKDTree
 
 from .utils import get_bounded_fraction
-from .sampling import sample_rejection_states, sample_mixed_batch, sample_uniform_box, sample_box_rejection_states
-from ..utils import timeit
+from .sampling import sample_mixed_batch, sample_box_rejection_states
 
 __logger__ = logging.getLogger(__name__)
 
@@ -27,37 +23,52 @@ def get_spatial_diversity_indices(
     descending: bool = True,
     max_elements: int | None = None,
 ) -> th.Tensor:
-    n = states.shape[0]
+    """Select diverse states by suppressing close spatial neighbors.
+
+    Uses GPU-vectorized spatial voxel hashing to ensure high throughput and
+    avoid CPU-GPU synchronization overhead.
+    """
+    if states.ndim == 1:
+        states = states.unsqueeze(-1)
+
+    n, d = states.shape
     if n <= 1:
         return th.arange(n, device=states.device)
 
     sorted_indices = th.argsort(values, descending=descending)
 
-    if filter_eps <= 0:
+    if filter_eps <= 0.0:
         return sorted_indices if max_elements is None else sorted_indices[:max_elements]
 
-    pts = states[sorted_indices].detach().cpu().numpy()
-    tree = cKDTree(pts)
+    sorted_states = states[sorted_indices]
+    min_coords = sorted_states.min(dim=0).values
+    coords = th.floor((sorted_states - min_coords) / filter_eps).to(th.int64)
 
-    neighbors = tree.query_ball_tree(tree, r=filter_eps)
+    # Large prime multipliers for multi-dimensional spatial hashing on GPU
+    primes = th.tensor(
+        [73856093, 19349663, 83492791, 2654435761, 50331653, 982451653],
+        device=states.device,
+        dtype=th.int64,
+    )
+    if d > len(primes):
+        mults = th.arange(1, d + 1, device=states.device, dtype=th.int64) * 73856093
+    else:
+        mults = primes[:d]
 
-    suppressed = np.zeros(n, dtype=bool)
-    keep_rel = []
+    cell_ids = (coords * mults).sum(dim=1)
 
-    limit = n if max_elements is None else min(n, max_elements)
+    unique_cells, inverse_indices = th.unique(cell_ids, return_inverse=True)
+    perm = th.arange(n, device=states.device)
+    first_occurrences = th.zeros(
+        len(unique_cells), dtype=th.long, device=states.device
+    ).scatter_reduce(
+        0, inverse_indices, perm, reduce="amin", include_self=False
+    )
 
-    for i in range(n):
-        if suppressed[i]:
-            continue
+    keep_rel = first_occurrences.sort().values
+    if max_elements is not None:
+        keep_rel = keep_rel[:max_elements]
 
-        keep_rel.append(i)
-        if len(keep_rel) >= limit:
-            break
-
-        suppressed[neighbors[i]] = True
-        suppressed[i] = False
-
-    keep_rel = th.as_tensor(keep_rel, dtype=th.long, device=sorted_indices.device)
     return sorted_indices[keep_rel]
 
 class AgedTensorPool:

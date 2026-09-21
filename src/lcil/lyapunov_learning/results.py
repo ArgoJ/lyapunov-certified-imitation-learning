@@ -127,7 +127,7 @@ class LyapunovTrainingMetrics:
     formal_positivity_raw: NDArray
     scale_raw: NDArray
     policy_regularization_raw: NDArray
-    r_factor_fro_norm_raw: NDArray
+    r_factor_regularization_raw: NDArray
     condition: NDArray
     roa: NDArray
     condition_lirpa: NDArray
@@ -136,7 +136,7 @@ class LyapunovTrainingMetrics:
     formal_positivity: NDArray
     scale: NDArray
     policy_regularization: NDArray
-    r_factor_fro_norm: NDArray
+    r_factor_regularization: NDArray
     steps_per_epoch: int
     outer_iterations_completed: int = 0
     inner_iterations_completed: int = 0
@@ -176,7 +176,7 @@ class LyapunovTrainingMetrics:
             formal_positivity_raw=inner_nan_array.copy(),
             scale_raw=inner_nan_array.copy(),
             policy_regularization_raw=inner_nan_array.copy(),
-            r_factor_fro_norm_raw=inner_nan_array.copy(),
+            r_factor_regularization_raw=inner_nan_array.copy(),
             condition=inner_nan_array.copy(),
             roa=inner_nan_array.copy(),
             condition_lirpa=inner_nan_array.copy(),
@@ -185,7 +185,7 @@ class LyapunovTrainingMetrics:
             formal_positivity=inner_nan_array.copy(),
             scale=inner_nan_array.copy(),
             policy_regularization=inner_nan_array.copy(),
-            r_factor_fro_norm=inner_nan_array.copy(),
+            r_factor_regularization=inner_nan_array.copy(),
             steps_per_epoch=steps_per_epoch,
             outer_iterations_completed=0,
             inner_iterations_completed=0,
@@ -202,26 +202,49 @@ class LyapunovTrainingMetrics:
         inner_iter: int,
         loss_parts: LyapunovTrainingLossParts,
     ) -> None:
-        self.loss[inner_iter] = float(loss_parts.total.item())
-        self.condition_raw[inner_iter] = float(loss_parts.condition_raw.item())
-        self.roa_raw[inner_iter] = float(loss_parts.roa_raw.item())
-        self.condition_lirpa_raw[inner_iter] = float(loss_parts.condition_lirpa_raw.item())
-        self.l1_raw[inner_iter] = float(loss_parts.l1_raw.item())
-        self.equilibrium_raw[inner_iter] = float(loss_parts.equilibrium_raw.item())
-        self.formal_positivity_raw[inner_iter] = float(loss_parts.formal_positivity_raw.item())
-        self.scale_raw[inner_iter] = float(loss_parts.scale_raw.item())
-        self.policy_regularization_raw[inner_iter] = float(loss_parts.policy_regularization_raw.item())
-        self.r_factor_fro_norm_raw[inner_iter] = float(loss_parts.r_factor_fro_norm_raw.item())
+        raw_scalars = th.stack([
+            loss_parts.total,
+            loss_parts.condition_raw,
+            loss_parts.roa_raw,
+            loss_parts.condition_lirpa_raw,
+            loss_parts.l1_raw,
+            loss_parts.equilibrium_raw,
+            loss_parts.formal_positivity_raw,
+            loss_parts.scale_raw,
+            loss_parts.policy_regularization_raw,
+            loss_parts.r_factor_regularization_raw,
+            loss_parts.condition,
+            loss_parts.roa,
+            loss_parts.condition_lirpa,
+            loss_parts.l1,
+            loss_parts.equilibrium,
+            loss_parts.formal_positivity,
+            loss_parts.scale,
+            loss_parts.policy_regularization,
+            loss_parts.r_factor_regularization,
+        ]).detach().cpu().numpy()
 
-        self.condition[inner_iter] = float(loss_parts.condition.item())
-        self.roa[inner_iter] = float(loss_parts.roa.item())
-        self.condition_lirpa[inner_iter] = float(loss_parts.condition_lirpa.item())
-        self.l1[inner_iter] = float(loss_parts.l1.item())
-        self.equilibrium[inner_iter] = float(loss_parts.equilibrium.item())
-        self.formal_positivity[inner_iter] = float(loss_parts.formal_positivity.item())
-        self.scale[inner_iter] = float(loss_parts.scale.item())
-        self.policy_regularization[inner_iter] = float(loss_parts.policy_regularization.item())
-        self.r_factor_fro_norm[inner_iter] = float(loss_parts.r_factor_fro_norm.item())
+        (
+            self.loss[inner_iter],
+            self.condition_raw[inner_iter],
+            self.roa_raw[inner_iter],
+            self.condition_lirpa_raw[inner_iter],
+            self.l1_raw[inner_iter],
+            self.equilibrium_raw[inner_iter],
+            self.formal_positivity_raw[inner_iter],
+            self.scale_raw[inner_iter],
+            self.policy_regularization_raw[inner_iter],
+            self.r_factor_regularization_raw[inner_iter],
+            self.condition[inner_iter],
+            self.roa[inner_iter],
+            self.condition_lirpa[inner_iter],
+            self.l1[inner_iter],
+            self.equilibrium[inner_iter],
+            self.formal_positivity[inner_iter],
+            self.scale[inner_iter],
+            self.policy_regularization[inner_iter],
+            self.r_factor_regularization[inner_iter],
+        ) = raw_scalars
         self.inner_iterations_completed = inner_iter + 1
 
     def fill_outer(
@@ -270,7 +293,7 @@ class LyapunovTrainingMetrics:
             formal_positivity_raw=self.formal_positivity_raw,
             scale_raw=self.scale_raw,
             policy_regularization_raw=self.policy_regularization_raw,
-            r_factor_fro_norm_raw=self.r_factor_fro_norm_raw,
+            r_factor_regularization_raw=self.r_factor_regularization_raw,
             condition=self.condition,
             roa=self.roa,
             condition_lirpa=self.condition_lirpa,
@@ -279,7 +302,7 @@ class LyapunovTrainingMetrics:
             formal_positivity=self.formal_positivity,
             scale=self.scale,
             policy_regularization=self.policy_regularization,
-            r_factor_fro_norm=self.r_factor_fro_norm,
+            r_factor_regularization=self.r_factor_regularization,
             steps_per_epoch=np.asarray(self.steps_per_epoch, dtype=np.int64),
             outer_iterations_completed=np.asarray(self.outer_iterations_completed, dtype=np.int64),
             inner_iterations_completed=np.asarray(self.inner_iterations_completed, dtype=np.int64),

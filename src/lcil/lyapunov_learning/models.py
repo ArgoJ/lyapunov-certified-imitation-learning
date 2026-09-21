@@ -92,6 +92,7 @@ class NeuralLyapunovCandidate(nn.Module):
         riccati_scale: str | float = "none",
         fixed_r_factor: bool = False,
         kappa: float | None = None,
+        enable_conditioning_hook: bool = False,
     ):
         """Initialize the NeuralLyapunovCandidate.
 
@@ -113,6 +114,8 @@ class NeuralLyapunovCandidate(nn.Module):
             Whether the R factor is fixed, by default False
         kappa : float | None, optional
             Exponential decay rate for the Lyapunov decrease condition, by default None
+        enable_conditioning_hook : bool, optional
+            Whether to register an autograd backward hook to check R-factor conditioning, by default False
         """
         super().__init__()
         self.feature_net = feature_net
@@ -126,7 +129,7 @@ class NeuralLyapunovCandidate(nn.Module):
         self._warned_cond: bool = False
         self._warned_kappa: bool = False
         self._set_last_feature_layer(0.5)
-        self._setup_r_factor(riccati_p, riccati_scale, fixed_r_factor)
+        self._setup_r_factor(riccati_p, riccati_scale, fixed_r_factor, enable_hook=enable_conditioning_hook)
 
     def _set_last_feature_layer(self, std: float) -> None:
         """Set the last linear layer of the feature network to have weights initialized
@@ -150,11 +153,19 @@ class NeuralLyapunovCandidate(nn.Module):
             if last_layer.bias is not None:
                 last_layer.bias.zero_()
 
-    def _setup_r_factor(self, riccati_p: th.Tensor | None, riccati_scale: str | float, fixed: bool) -> None:
+    def _setup_r_factor(
+        self,
+        riccati_p: th.Tensor | None,
+        riccati_scale: str | float,
+        fixed: bool,
+        enable_hook: bool = False,
+    ) -> None:
         """Set up the R factor for the Lyapunov candidate."""
         self._cached_pd_matrix: th.Tensor | None = None
         self._cached_pd_version: int = -1
         self._cached_eps: float | None = None
+        self._r_factor_hook_handle = None
+        self._hook_step: int = 0
 
         if fixed:
             self.register_buffer("r_factor", th.eye(self.state_dim))
@@ -163,13 +174,27 @@ class NeuralLyapunovCandidate(nn.Module):
 
         if riccati_p is not None:
             self.set_riccati_p(riccati_p, scale_mode=riccati_scale)
-        if isinstance(self.r_factor, nn.Parameter):
-            self.r_factor.register_post_accumulate_grad_hook(
+        if enable_hook:
+            self.set_conditioning_hook(True)
+
+    def set_conditioning_hook(self, enabled: bool) -> None:
+        """Enable or disable the autograd backward conditioning check hook."""
+        if not isinstance(self.r_factor, nn.Parameter):
+            return
+        if enabled and self._r_factor_hook_handle is None:
+            self._r_factor_hook_handle = self.r_factor.register_post_accumulate_grad_hook(
                 self._check_r_factor_conditioning
             )
+        elif not enabled and self._r_factor_hook_handle is not None:
+            self._r_factor_hook_handle.remove()
+            self._r_factor_hook_handle = None
 
     def _check_r_factor_conditioning(self, _param: th.Tensor) -> None:
-        """Run conditioning and kappa checks on εI + RᵀR (warn-once per candidate)."""
+        """Run conditioning and kappa checks on εI + RᵀR periodically (warn-once per candidate)."""
+        self._hook_step += 1
+        if self._hook_step % 100 != 1:
+            return
+
         if self._warned_cond and (self.kappa is None or self._warned_kappa):
             return
 
@@ -279,16 +304,15 @@ class NeuralLyapunovCandidate(nn.Module):
     def get_feature_term(self, x: th.Tensor) -> th.Tensor:
         """Compute the feature term |phi(x) - phi(x*)| for the Lyapunov candidate."""
         x_star = self.x_star.to(dtype=x.dtype, device=x.device)
-        x_star_batch = x_star.expand(x.shape[0], -1)
         phi_x = self.feature_net(x)
-        phi_x_star = self.feature_net(x_star_batch)
+        phi_x_star = self.feature_net(x_star).squeeze(0)
         feature_term = th.abs(phi_x - phi_x_star).sum(dim=1, keepdim=True)
         return feature_term
 
     def get_linear_term(self, x: th.Tensor) -> th.Tensor:
         """Compute the linear term |x - x*| for the Lyapunov candidate."""
-        x_star_batch = self.x_star.expand(x.shape[0], -1)
-        delta = x - x_star_batch
+        x_star = self.x_star.to(dtype=x.dtype, device=x.device).squeeze(0)
+        delta = x - x_star
         pd_matrix = self._pd_matrix()
         linear_term = th.abs(delta @ pd_matrix).sum(dim=1, keepdim=True)
         return linear_term

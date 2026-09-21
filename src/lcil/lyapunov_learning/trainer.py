@@ -84,6 +84,8 @@ class LyapunovTrainer:
     ) -> None:
         self.config = config
         self.device = th.device(device)
+        if self.device.type == "cuda":
+            th.set_float32_matmul_precision("high")
         self.torch_gen = build_generator(self.config.seed, self.device)
 
         self.policy_model = policy_model.to(self.device)
@@ -226,7 +228,10 @@ class LyapunovTrainer:
         param_groups += _create_param_groups(
             self.policy_model, policy_lr, weight_decay=0.0
         )
-        return th.optim.Adam(param_groups)
+        adam_kwargs = {}
+        if self.device.type == "cuda":
+            adam_kwargs["fused"] = True
+        return th.optim.Adam(param_groups, **adam_kwargs)
 
     def _enable_policy_training(self, at_iter: int = 0) -> None:
         self._curr_policy_train_status = True
@@ -373,7 +378,7 @@ class LyapunovTrainer:
         rho_diagnostics, boundary_states = estimate_rho(
             lyap_model=self.lyap_model,
             config=self.config,
-            condition_evaluator=self.loss_module.condition_violation,
+            condition_evaluator=lambda x: self.loss_module.condition_violation(x, with_margin=False),
             state_buffer=state_buffer,
             device=self.device,
             generator=self.torch_gen,
@@ -532,6 +537,7 @@ class LyapunovTrainer:
                         rho_margin=self.config.rho_resample_margin,
                     )
 
+                    steps_since_update = 0
                     # Inner training loop
                     for inner_step in range(self.config.steps_per_epoch):
                         global_step = outer_iter * self.config.steps_per_epoch + inner_step
@@ -564,19 +570,23 @@ class LyapunovTrainer:
                         th.nn.utils.clip_grad_norm_(self._get_train_params(), max_norm=1.0)
                         self.optimizer.step()
 
-                        # Update Progress Bar
-                        actual_cex_samples = min(
-                            cegis_buffer.cex_count, 
-                            int(mining_result.cex_fraction * self.config.batch_size)
-                        )
-                        progress.update(
-                            task,
-                            advance=1.0,
-                            loss=none_to_float(loss.item()),
-                            rho=none_to_float(rho_estimate),
-                            cex_pool=none_to_float(cegis_buffer.cex_count),
-                            cex_samples=float(actual_cex_samples),
-                        )
+                        # Update Progress Bar (throttled every 10 steps to prevent GPU sync stalls)
+                        steps_since_update += 1
+                        is_last_step = (inner_step == self.config.steps_per_epoch - 1)
+                        if steps_since_update >= 10 or is_last_step:
+                            actual_cex_samples = min(
+                                cegis_buffer.cex_count, 
+                                int(mining_result.cex_fraction * self.config.batch_size)
+                            )
+                            progress.update(
+                                task,
+                                advance=float(steps_since_update),
+                                loss=none_to_float(loss.detach().item()),
+                                rho=none_to_float(rho_estimate),
+                                cex_pool=none_to_float(cegis_buffer.cex_count),
+                                cex_samples=float(actual_cex_samples),
+                            )
+                            steps_since_update = 0
 
                     self.metrics.fill_outer(
                         outer_iter=outer_iter,

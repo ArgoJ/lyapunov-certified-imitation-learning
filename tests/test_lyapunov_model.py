@@ -179,6 +179,33 @@ class TestNeuralLyapunovCandidateSerialization(unittest.TestCase):
         self.assertTrue(th.allclose(loaded.feature_net.net.bias, model.feature_net.net.bias))
         self.assertTrue(th.allclose(loaded(x), expected))
 
+    def test_conditioning_hook_lifecycle(self) -> None:
+        model = NeuralLyapunovCandidate(
+            feature_net=SaveableFeatureNet(),
+            state_dim=4,
+            enable_conditioning_hook=False,
+        )
+        self.assertIsNone(model._r_factor_hook_handle)
+
+        # Enabling registers the hook handle
+        model.set_conditioning_hook(True)
+        self.assertIsNotNone(model._r_factor_hook_handle)
+
+        # Re-enabling is idempotent
+        handle = model._r_factor_hook_handle
+        model.set_conditioning_hook(True)
+        self.assertIs(model._r_factor_hook_handle, handle)
+
+        # Backward runs smoothly
+        x = th.randn(2, 4)
+        out = model(x).sum()
+        out.backward()
+        self.assertIsNotNone(model.r_factor.grad)
+
+        # Disabling removes the hook handle
+        model.set_conditioning_hook(False)
+        self.assertIsNone(model._r_factor_hook_handle)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
