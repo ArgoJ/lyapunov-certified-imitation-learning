@@ -22,11 +22,14 @@ def get_spatial_diversity_indices(
     filter_eps: float,
     descending: bool = True,
     max_elements: int | None = None,
+    lb: th.Tensor | None = None,
+    ub: th.Tensor | None = None,
 ) -> th.Tensor:
     """Select diverse states by suppressing close spatial neighbors.
 
-    Uses GPU-vectorized spatial voxel hashing to ensure high throughput and
-    avoid CPU-GPU synchronization overhead.
+    Uses GPU-vectorized spatial voxel hashing with normalized coordinates/epsilon
+    to ensure consistent diversity across dimensions with different scales and avoid
+    CPU-GPU synchronization overhead.
     """
     if states.ndim == 1:
         states = states.unsqueeze(-1)
@@ -41,26 +44,25 @@ def get_spatial_diversity_indices(
         return sorted_indices if max_elements is None else sorted_indices[:max_elements]
 
     sorted_states = states[sorted_indices]
-    min_coords = sorted_states.min(dim=0).values
-    coords = th.floor((sorted_states - min_coords) / filter_eps).to(th.int64)
 
-    # Large prime multipliers for multi-dimensional spatial hashing on GPU
-    primes = th.tensor(
-        [73856093, 19349663, 83492791, 2654435761, 50331653, 982451653],
-        device=states.device,
-        dtype=th.int64,
-    )
-    if d > len(primes):
-        mults = th.arange(1, d + 1, device=states.device, dtype=th.int64) * 73856093
+    if lb is not None and ub is not None:
+        lb_t = lb.to(device=states.device, dtype=states.dtype).view(1, d)
+        ub_t = ub.to(device=states.device, dtype=states.dtype).view(1, d)
+        widths = (ub_t - lb_t).clamp_min(1e-6)
+        min_coords = lb_t
     else:
-        mults = primes[:d]
+        min_coords = sorted_states.min(dim=0).values.view(1, d)
+        max_coords = sorted_states.max(dim=0).values.view(1, d)
+        widths = (max_coords - min_coords).clamp_min(1e-6)
 
-    cell_ids = (coords * mults).sum(dim=1)
+    # Normalize step size per dimension so filter_eps is relative to the domain bounds
+    step = (widths * filter_eps).clamp_min(1e-6)
+    coords = th.floor((sorted_states - min_coords) / step).to(th.int64)
 
-    unique_cells, inverse_indices = th.unique(cell_ids, return_inverse=True)
+    unique_coords, inverse_indices = th.unique(coords, dim=0, return_inverse=True)
     perm = th.arange(n, device=states.device)
     first_occurrences = th.zeros(
-        len(unique_cells), dtype=th.long, device=states.device
+        len(unique_coords), dtype=th.long, device=states.device
     ).scatter_reduce(
         0, inverse_indices, perm, reduce="amin", include_self=False
     )
@@ -136,9 +138,13 @@ class BoundaryStateBuffer:
         filter_eps: float = 0.01,
         device: th.device | str = "cpu",
         dtype: th.dtype = th.float32,
+        lb: th.Tensor | None = None,
+        ub: th.Tensor | None = None,
     ) -> None:
         self.max_size = int(max_size)
         self.filter_eps = float(filter_eps)
+        self.lb = lb.to(device) if lb is not None else None
+        self.ub = ub.to(device) if ub is not None else None
 
         self._pool = AgedTensorPool(state_dim, max_age, device, dtype)
 
@@ -166,6 +172,8 @@ class BoundaryStateBuffer:
             filter_eps=self.filter_eps,
             descending=False,
             max_elements=self.max_size,
+            lb=self.lb,
+            ub=self.ub,
         )
 
         self._pool.filter_by_indices(keep_indices)
@@ -313,25 +321,40 @@ class CEGISBuffer:
         new_cexs: th.Tensor,
         objective: Callable[[th.Tensor], th.Tensor],
     ) -> None:
-        """Registers new counterexamples and retains the strongest filtered violations."""
+        """Registers new counterexamples and retains the strongest violations.
+
+        Only new counterexamples are filtered for spatial diversity before being
+        added to the pool. Existing counterexamples in the pool are not spatially
+        filtered against each other or against new counterexamples.
+        """
         self._cex_pool.step_time_and_clean()
 
-        if new_cexs.numel() == 0 and len(self._cex_pool) == 0:
+        if new_cexs.numel() > 0:
+            with th.no_grad():
+                new_violation_scores = -objective(new_cexs).flatten()
+
+            keep_indices = get_spatial_diversity_indices(
+                states=new_cexs,
+                values=new_violation_scores,
+                filter_eps=self.filter_eps,
+                descending=True,
+                lb=self.lb,
+                ub=self.ub,
+            )
+            self._cex_pool.add_fresh(new_cexs[keep_indices])
+
+        if len(self._cex_pool) == 0:
             return
 
-        self._cex_pool.add_fresh(new_cexs)
-
-        with th.no_grad():
-            violation_scores = -objective(self.cexs).flatten()
-
-        keep_indices = get_spatial_diversity_indices(
-            states=self.cexs,
-            values=violation_scores,
-            filter_eps=self.filter_eps,
-            descending=True,
-            max_elements=self.cex_buffer_limit,
-        )
-        self._cex_pool.filter_by_indices(keep_indices)
+        if len(self._cex_pool) > self.cex_buffer_limit:
+            with th.no_grad():
+                violation_scores = -objective(self.cexs).flatten()
+            top_indices = th.topk(
+                violation_scores,
+                k=self.cex_buffer_limit,
+                largest=True,
+            ).indices
+            self._cex_pool.filter_by_indices(top_indices)
 
     def sample(self, batch_size: int, cex_fraction: float = 0.25) -> th.Tensor:
         """

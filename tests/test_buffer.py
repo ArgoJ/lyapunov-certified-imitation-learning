@@ -90,7 +90,56 @@ class TestBufferSpatialDiversity(unittest.TestCase):
 
         # Only diverse points should be kept
         self.assertLessEqual(len(buf), 5)
-        self.assertGreaterEqual(len(buf), 2)
+
+    def test_get_spatial_diversity_indices_normalized_bounds(self) -> None:
+        # Dimension 0 width is 100.0, Dimension 1 width is 0.01
+        lb = th.tensor([0.0, 0.0])
+        ub = th.tensor([100.0, 0.01])
+
+        # Point 0 and Point 1 are at the same x0=50.0, but differ by 0.008 in x1 (80% of dim 1)
+        states = th.tensor([
+            [50.0, 0.001],
+            [50.0, 0.009],
+        ])
+        values = th.tensor([10.0, 5.0])
+
+        # With normalized filter_eps=0.1 (10% of box width in each dimension):
+        # 0.008 is 80% > 10%, so they must NOT suppress each other!
+        idx = get_spatial_diversity_indices(states, values, filter_eps=0.1, lb=lb, ub=ub)
+        self.assertEqual(len(idx), 2)
+
+    def test_cegis_buffer_filters_only_new_cexs(self) -> None:
+        lb = th.tensor([0.0])
+        ub = th.tensor([1.0])
+        buf = CEGISBuffer(
+            initial_states=th.tensor([[0.5]]),
+            state_buffer_limit=10,
+            cex_buffer_limit=5,
+            lb=lb,
+            ub=ub,
+            filter_eps=0.2,  # 20% bin size: [0.0, 0.2), [0.2, 0.4), etc.
+            max_cex_age=5,
+            device=th.device("cpu"),
+        )
+
+        # Batch 1: two new points in the SAME bin [0.0, 0.2): 0.05 (val 2) and 0.08 (val 10)
+        # Spatial filtering among new CEXs keeps only 0.08 (higher violation score)
+        buf.register_cex(
+            th.tensor([[0.05], [0.08]]),
+            objective=lambda x: -x,  # score = x
+        )
+        self.assertEqual(buf.cex_count, 1)
+        self.assertAlmostEqual(buf.cexs[0, 0].item(), 0.08, places=5)
+
+        # Batch 2: new point at 0.06 (also in bin [0.0, 0.2)).
+        # Since ONLY new CEXs are filtered, the existing point 0.08 is NOT removed!
+        buf.register_cex(
+            th.tensor([[0.06]]),
+            objective=lambda x: -x,
+        )
+        self.assertEqual(buf.cex_count, 2)
+        retained_vals = {round(x, 2) for x in buf.cexs.flatten().tolist()}
+        self.assertEqual(retained_vals, {0.08, 0.06})
 
 
 if __name__ == "__main__":

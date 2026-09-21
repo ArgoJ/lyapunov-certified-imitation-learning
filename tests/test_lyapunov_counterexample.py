@@ -223,6 +223,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             initial_states=initial_states,
             state_buffer_limit=16,
             cex_buffer_limit=3,
+            filter_eps=0.0,
             device=th.device("cpu"),
         )
 

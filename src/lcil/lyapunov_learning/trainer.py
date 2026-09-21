@@ -295,6 +295,8 @@ class LyapunovTrainer:
             state_dim=self.config.state_dim,
             max_size=int(self.config.roa_boundary_buffer_size),
             max_age=self.config.roa_max_age,
+            lb=self.lbx_train,
+            ub=self.ubx_train,
             device=self.device,
         )
         init_boundary_x, _, _ = sample_boundary_points(

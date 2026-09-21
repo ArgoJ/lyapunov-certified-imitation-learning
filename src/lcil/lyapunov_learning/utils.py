@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 __logger__ = logging.getLogger(__name__)
 
 
-def get_th_lbx_ubx(bounds: NDArray, device: th.device = "cpu") -> tuple[float, float]:
+def get_th_lbx_ubx(bounds: NDArray, device: th.device | str = "cpu") -> tuple[th.Tensor, th.Tensor]:
     """Convert bounds to lbx and ubx arrays."""
     th_bounds = th.as_tensor(bounds, dtype=th.float32, device=device)
     if th_bounds.ndim != 2 or th_bounds.shape[0] != 2:
