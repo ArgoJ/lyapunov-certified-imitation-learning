@@ -98,7 +98,6 @@ class TestBisectDoubleIntegratorIntegration(PlotAssertionsMixin):
             batch_size=2048,
             abcrown_timeout=60,
             suppress_native_output=True,
-            skip_core_cert=True,
         )
         return cls.BisectCertifier(
             policy_model=RiccatiPolicy(k_gain),

@@ -371,47 +371,7 @@ class RecursiveCertifier:
         collector.add_resolved(partition.cached_core_safe_regions)
         return partition, collector
 
-    def _process_core_regions(
-        self,
-        bs: th.Tensor,
-        rho: float | None = None,
-    ) -> RecursiveCertificationResult:
-        """Process one region batch with the rho-independent Core Check.
-
-        Evaluates dV + kappa*V <= 0 and next_step in cert_bounds.
-        Cached safe regions are resolved immediately.
-        Unchecked regions undergo Core Check.
-        Failing regions (counterexample or unknown) are marked unresolved.
-        """
-        del rho
-        collector = _StepCollector(self.region_manager, self.progress)
-        if len(bs) == 0:
-            return collector.build_result()
-
-        bs, _ = self._ensure_region_bounds(bs, make_current=bs is self.regions)
-
-        core_status = self.region_manager.get_core_status(bs)
-        collector.add_resolved(bs[core_status == CoreStatus.SAFE])
-
-        unchecked_bs = bs[core_status == CoreStatus.UNCHECKED]
-        if len(unchecked_bs) > 0:
-            core_update = self._run_core_certification(unchecked_bs)
-            if core_update is not None:
-                collector.add_resolved(core_update.verified_regions)
-                collector.add_unresolved(core_update.failed_regions)
-                __logger__.info(
-                    "Core Check completed on %d regions: %d safe, %d failed.",
-                    len(unchecked_bs),
-                    len(core_update.verified_regions),
-                    len(core_update.failed_regions),
-                )
-
-        collector.add_unresolved(
-            bs[(core_status == CoreStatus.COUNTEREXAMPLE) | (core_status == CoreStatus.UNKNOWN)]
-        )
-        return collector.build_result()
-
-    def _process_complete_regions(
+    def _process_regions(
         self,
         bs: th.Tensor,
         rho: float,
@@ -419,28 +379,60 @@ class RecursiveCertifier:
         early_exit: EarlyExitLevel | bool = EarlyExitLevel.NONE,
         is_leaf: bool = False,
     ) -> RecursiveCertificationResult:
-        """Process one region batch with the complete specification verifier."""
+        """Process one region batch with rho-partitioning, core check, and complete check.
+
+        1. Partitions against rho: outside regions (V_min > rho) are marked irrelevant.
+        2. Cached complete-safe (only if rho is smaller or equal to the rho used for caching) and 
+           core-safe regions are resolved immediately.
+        3. Unchecked inside/boundary regions undergo Core Check (unless skip_core_cert).
+           Verified regions are resolved immediately and cached.
+        4. Any remaining unresolved regions undergo Complete Certification (forwarding is_leaf
+           to configure solver settings such as timeouts or early-exit).
+        5. Regions unresolved after Complete Certification are returned to the caller to be split
+           (on non-leaves) or finalized (on leaves).
+        """
         if isinstance(early_exit, bool):
             early_exit = EarlyExitLevel.ON_COUNTEREXAMPLE if early_exit else EarlyExitLevel.NONE
 
         partition, collector = self._prepare_step_partition(bs, rho)
-        if partition is None:
+        if partition is None or not partition.has_relevant_regions:
             return collector.build_result()
 
-        to_verify_parts = [
+        unchecked_parts = [
             partition.inside_core_unchecked_regions,
+            partition.boundary_core_unchecked_regions,
+        ]
+        unchecked_bs = self.region_manager.pack_regions(unchecked_parts)
+
+        if not self.config.skip_core_cert and len(unchecked_bs) > 0:
+            core_update = self._run_core_certification(unchecked_bs)
+            if core_update is not None:
+                collector.add_resolved(core_update.verified_regions)
+                failed_core = core_update.failed_regions
+                __logger__.info(
+                    "Core Check completed on %d regions: %d safe, %d failed.",
+                    len(unchecked_bs),
+                    len(core_update.verified_regions),
+                    len(core_update.failed_regions),
+                )
+            else:
+                failed_core = self.region_manager.empty_regions()
+        else:
+            failed_core = unchecked_bs
+
+        unresolved_core_parts = [
+            failed_core,
             partition.cached_inside_counterexample_regions,
             partition.cached_inside_unknown_regions,
-            partition.boundary_core_unchecked_regions,
             partition.boundary_complete_candidate_regions,
         ]
-        regions_to_verify = self.region_manager.pack_regions(to_verify_parts)
+        unresolved_core_bs = self.region_manager.pack_regions(unresolved_core_parts)
 
-        if len(regions_to_verify) == 0:
+        if len(unresolved_core_bs) == 0:
             return collector.build_result()
 
         complete_result, complete_update = self._run_complete_certification(
-            regions_to_verify,
+            unresolved_core_bs,
             rho,
             early_exit=early_exit,
             is_leaf=is_leaf,
@@ -535,79 +527,6 @@ class RecursiveCertifier:
             counterexample_found=counterexample_found,
         )
 
-    def _core_recursive_certify(
-        self,
-        pending_bs: th.Tensor | None = None,
-        rho: float | None = None,
-        *,
-        force_display: bool = False,
-    ) -> tuple[list[th.Tensor], list[th.Tensor], list[th.Tensor]]:
-        """Run recursive Core Check certification up to max_recursion_depth.
-
-        Returns
-        -------
-        tuple[list[th.Tensor], list[th.Tensor], list[th.Tensor]]
-            (all_resolved, unresolved_leaves, unresolved_non_leaves)
-        """
-        del rho
-        if pending_bs is None:
-            pending_bs = self.region_manager.ensure_regions()
-
-        loop_res = self._run_recursive_loop(
-            title="Core Split",
-            pending_bs=pending_bs,
-            step_fn=lambda bs, depth, is_leaf: self._process_core_regions(bs),
-            start_depth=0,
-            early_exit=EarlyExitLevel.NONE,
-            on_resolved=self.region_manager.propagate_core_safe_to_parents,
-            force_display=force_display,
-        )
-        return (
-            loop_res.all_resolved,
-            loop_res.unresolved_leaves,
-            loop_res.unresolved_non_leaves,
-        )
-
-    def _complete_recursive_certify(
-        self,
-        pending_bs: th.Tensor,
-        rho: float,
-        *,
-        start_depth: int = 0,
-        early_exit: EarlyExitLevel = EarlyExitLevel.NONE,
-        force_display: bool = False,
-    ) -> tuple[list[th.Tensor], list[th.Tensor], list[th.Tensor], bool]:
-        """Run complete specification certification with recursive splitting if needed.
-
-        Returns
-        -------
-        tuple[list[th.Tensor], list[th.Tensor], list[th.Tensor], bool]
-            (all_resolved, all_unresolved, all_irrelevant, counterexample_found)
-        """
-        loop_res = self._run_recursive_loop(
-            title="Complete Split",
-            pending_bs=pending_bs,
-            step_fn=lambda bs, depth, is_leaf: self._process_complete_regions(
-                bs,
-                rho,
-                early_exit=(
-                    EarlyExitLevel.ON_UNKNOWN
-                    if early_exit == EarlyExitLevel.ON_COUNTEREXAMPLE and is_leaf
-                    else early_exit
-                ),
-                is_leaf=is_leaf,
-            ),
-            start_depth=start_depth,
-            early_exit=early_exit,
-            force_display=force_display,
-        )
-        return (
-            loop_res.all_resolved,
-            loop_res.all_unresolved,
-            loop_res.all_irrelevant,
-            loop_res.counterexample_found,
-        )
-
     def _pack_result(
         self,
         resolved: Sequence[th.Tensor],
@@ -639,44 +558,28 @@ class RecursiveCertifier:
         if rho < 0.0:
             raise ValueError(f"rho must be non-negative, got {rho}.")
 
-        if self.config.skip_core_cert:
-            comp_resolved, comp_unresolved, comp_irrelevant, cex_found = (
-                self._complete_recursive_certify(
-                    self.region_manager.ensure_regions(),
-                    rho,
-                    start_depth=0,
-                    early_exit=early_exit,
-                    force_display=force_display,
-                )
-            )
-            return self._pack_result(comp_resolved, comp_unresolved, comp_irrelevant, cex_found)
-
-        # Phase 1: Core recursive certification up to max_recursion_depth (all core regions + splits)
-        core_resolved, unresolved_leaves, unresolved_non_leaves = (
-            self._core_recursive_certify(
-                force_display=force_display,
-            )
-        )
-
-        all_core_unresolved = unresolved_non_leaves + unresolved_leaves
-        pending_leaves = self.region_manager.pack_regions(unresolved_leaves)
-        if len(pending_leaves) == 0:
-            return self._pack_result(core_resolved, all_core_unresolved, [], False)
-
-        # Phase 2: Complete certification on remaining unresolved leaves
-        comp_resolved, comp_unresolved, comp_irrelevant, cex_found = (
-            self._complete_recursive_certify(
-                pending_leaves,
+        loop_res = self._run_recursive_loop(
+            title="Region Splits",
+            pending_bs=self.region_manager.ensure_regions(),
+            step_fn=lambda bs, depth, is_leaf: self._process_regions(
+                bs,
                 rho,
-                start_depth=self.config.max_recursion_depth,
-                early_exit=early_exit,
-                force_display=force_display,
-            )
+                early_exit=(
+                    EarlyExitLevel.ON_UNKNOWN
+                    if early_exit == EarlyExitLevel.ON_COUNTEREXAMPLE and is_leaf
+                    else early_exit
+                ),
+                is_leaf=is_leaf,
+            ),
+            start_depth=0,
+            early_exit=early_exit,
+            on_resolved=self.region_manager.propagate_core_safe_to_parents,
+            force_display=force_display,
         )
 
         return self._pack_result(
-            core_resolved + comp_resolved,
-            unresolved_non_leaves + comp_unresolved,
-            comp_irrelevant,
-            cex_found,
+            loop_res.all_resolved,
+            loop_res.all_unresolved,
+            loop_res.all_irrelevant,
+            loop_res.counterexample_found,
         )
