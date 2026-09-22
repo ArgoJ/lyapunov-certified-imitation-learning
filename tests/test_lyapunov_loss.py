@@ -15,6 +15,7 @@ from lcil.lyapunov_learning.loss import (
     PolicyRegularizationLoss,
     RFactorRegularizationLoss,
     RoaSurrogateLoss,
+    margin_violation,
 )
 from lcil.lyapunov_learning.models import NeuralLyapunovCandidate
 from lcil.utils.base_models import MLP
@@ -251,13 +252,13 @@ class TestLyapunovLossComponents(unittest.TestCase):
                 return 0.99 * x
 
         # Set kappa=0.0 (meaning V(x_next) <= V(x_curr) is sufficient for stability)
-        # and condition_margin = 0.5
         cfg = LyapunovTrainingConfig(
             state_dim=2,
             state_bounds=np.array([[-2.0, -2.0], [2.0, 2.0]]),
             kappa=0.0,
             condition_margin=0.5,
             use_relative_decrease=False,
+            softplus_beta=10.0,
         )
         from lcil.lyapunov_learning.loss import LyapunovTrainingLoss
         loss_mod = LyapunovTrainingLoss(
@@ -270,13 +271,17 @@ class TestLyapunovLossComponents(unittest.TestCase):
         # Non-zero state where V decreases: V(x_next) < V(x_curr)
         x = th.tensor([[1.0, 1.0]], dtype=th.float32)
 
-        # 1. With margin: decrease violation is relu(V(next) - V(curr) + margin) > 0
-        viol_with_margin = loss_mod.condition_violation(x, with_margin=True)
+        # 1. With margin (without softplus): decrease violation is relu(V(next) - V(curr) + 0.5) > 0
+        viol_with_margin = loss_mod.condition_violation(x, with_margin=True, with_softplus=False)
         self.assertGreater(viol_with_margin.item(), 0.0)
 
-        # 2. Without margin: true violation is relu(V(next) - V(curr)) == 0.0
-        viol_without_margin = loss_mod.condition_violation(x, with_margin=False)
+        # 2. Without margin and without softplus: true violation is relu(V(next) - V(curr)) == 0.0
+        viol_without_margin = loss_mod.condition_violation(x, with_margin=False, with_softplus=False)
         self.assertEqual(viol_without_margin.item(), 0.0)
+
+        # 3. With softplus: softplus is positive everywhere
+        viol_with_softplus = loss_mod.condition_violation(x, with_margin=False, with_softplus=True)
+        self.assertGreater(viol_with_softplus.item(), 0.0)
 
     def test_policy_regularization_tracks_initial_policy_outputs(self) -> None:
         policy = _SingleWeightPolicy(weight=1.0)
@@ -305,6 +310,23 @@ class TestLyapunovLossComponents(unittest.TestCase):
         lower = loss_module.positivity_loss.compute_lyapunov_lower_bound(method="backward")
 
         self.assertAlmostEqual(float(lower.item()), -1.0, places=6)
+
+    def test_margin_violation_helper(self) -> None:
+        val_neg = th.tensor([-0.5])
+        val_pos = th.tensor([0.5])
+
+        # softplus_beta > 0: Softplus(-0.5) > 0, ReLU(-0.5) = 0 -> positive
+        self.assertGreater(float(margin_violation(val_neg, softplus_beta=10.0).item()), 0.0)
+        # softplus_beta = 0: ReLU(-0.5) == 0 -> exact 0
+        self.assertEqual(float(margin_violation(val_neg, softplus_beta=0.0).item()), 0.0)
+
+        # with margin: ReLU(-0.5 + 0.8) == 0.3
+        self.assertAlmostEqual(float(margin_violation(val_neg, margin=0.8, softplus_beta=0.0).item()), 0.3, places=6)
+
+        # softplus_beta = 0: ReLU(0.5) == 0.5
+        self.assertAlmostEqual(float(margin_violation(val_pos, softplus_beta=0.0).item()), 0.5, places=6)
+        # softplus_beta > 0: Softplus(0.5) + ReLU(0.5) > 0.5
+        self.assertGreater(float(margin_violation(val_pos, softplus_beta=10.0).item()), 0.5)
 
 
 if __name__ == "__main__":

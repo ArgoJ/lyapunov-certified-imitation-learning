@@ -73,7 +73,6 @@ class DiagnoseABCrownScriptConfig(ArgumentParserConfig):
     state_abs_bound: float = config_field(default=1.0, help="Symmetric state bound used in the synthetic MPCConfig for fresh models.")
     control_abs_bound: float = config_field(default=1.0, help="Symmetric control bound used in the synthetic MPCConfig for fresh models.")
     kappa: float = config_field(default=0.01, help="Lyapunov decay factor used for fresh verifier construction.")
-    condition_margin: float = config_field(default=1e-5, help="Lyapunov verifier condition margin used for fresh models.")
     policy_hidden_sizes: tuple[int, ...] = config_field(
         default=(32, 32),
         help="Hidden layer sizes for a fresh MLP policy.",
@@ -481,7 +480,6 @@ def main() -> int:
         lyap_model=lyap_model,
         dyn_model=dyn_model,
         kappa=kappa,
-        condition_margin=condition_margin,
     ).to(device)
     verifier.eval()
 
@@ -498,11 +496,10 @@ def main() -> int:
         device,
     )
     __logger__.info(
-        "Policy metadata: max_seq_len=%s output_mode=%s kappa=%.6f condition_margin=%.6g.",
+        "Policy metadata: max_seq_len=%s output_mode=%s kappa=%.6f.",
         getattr(policy_model, "max_seq_len", "n/a"),
         getattr(policy_model, "output_mode", "n/a"),
         kappa,
-        condition_margin,
     )
 
     capture_handler, previous_levels = _configure_logging_capture()

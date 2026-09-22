@@ -110,7 +110,19 @@ def relative_lyapunov_decrease(
     eps: float,
 ) -> th.Tensor:
     return lyapunov_decrease(v_curr, v_next, kappa) / relative_denominator(v_curr, eps)
-    
+
+
+def margin_violation(
+    value: th.Tensor,
+    margin: float = 0.0,
+    softplus_beta: float = 0.0,
+) -> th.Tensor:
+    """Compute condition violation: Softplus(value + margin) + ReLU(value + margin) if with_softplus, else ReLU(value + margin)."""
+    shifted = value + margin if margin != 0.0 else value
+    if softplus_beta > 0.0:
+        return F.softplus(shifted, beta=softplus_beta) + F.relu(shifted)
+    return F.relu(shifted)
+
 
 def weighted_mean(values: th.Tensor, weights: th.Tensor) -> th.Tensor:
     """Compute a weighted mean of the given values with the provided weights."""
@@ -243,14 +255,28 @@ class LyapunovScaleAnchorLoss(BoundedStateSamplingModule):
 class LyapunovDecreaseViolation(nn.Module):
     """Compute the one-step Lyapunov decrease violation."""
 
-    def __init__(self, kappa: float, margin: float = 0.0) -> None:
+    def __init__(
+        self,
+        kappa: float,
+        margin: float = 0.0,
+        softplus_beta: float = 10.0,
+    ) -> None:
         super().__init__()
         self.kappa = float(kappa)
         self.margin = float(margin)
+        self.softplus_beta = float(softplus_beta)
 
-    def forward(self, v_curr: th.Tensor, v_next: th.Tensor, with_margin: bool = True) -> th.Tensor:
+    def forward(
+        self,
+        v_curr: th.Tensor,
+        v_next: th.Tensor,
+        with_margin: bool = True,
+        with_softplus: bool = True,
+    ) -> th.Tensor:
         margin = self.margin if with_margin else 0.0
-        return th.relu(lyapunov_decrease(v_curr, v_next, self.kappa) + margin)
+        beta = self.softplus_beta if with_softplus else 0.0
+        dec = lyapunov_decrease(v_curr, v_next, self.kappa)
+        return margin_violation(dec, margin=margin, softplus_beta=beta)
 
 
 class RelativeLyapunovDecreaseViolation(nn.Module):
@@ -261,15 +287,25 @@ class RelativeLyapunovDecreaseViolation(nn.Module):
         kappa: float,
         relative_eps: float = 1e-2,
         margin: float = 0.0,
+        softplus_beta: float = 10.0,
     ) -> None:
         super().__init__()
         self.kappa = float(kappa)
         self.relative_eps = float(relative_eps)
         self.margin = float(margin)
+        self.softplus_beta = float(softplus_beta)
 
-    def forward(self, v_curr: th.Tensor, v_next: th.Tensor, with_margin: bool = True) -> th.Tensor:
+    def forward(
+        self,
+        v_curr: th.Tensor,
+        v_next: th.Tensor,
+        with_margin: bool = True,
+        with_softplus: bool = True,
+    ) -> th.Tensor:
         margin = self.margin if with_margin else 0.0
-        return th.relu(relative_lyapunov_decrease(v_curr, v_next, self.kappa, self.relative_eps) + margin)
+        beta = self.softplus_beta if with_softplus else 0.0
+        dec = relative_lyapunov_decrease(v_curr, v_next, self.kappa, self.relative_eps)
+        return margin_violation(dec, margin=margin, softplus_beta=beta)
 
 
 class InvarianceViolation(StateBoundsModule):
@@ -318,15 +354,18 @@ class RhoGatedConditionLoss(nn.Module):
         self.relative_eps = float(config.relative_condition_eps)
         self.invariance_weight = float(config.invariance_weight)
         self.gate_sharpness = float(config.rho_gate_sharpness)
-        self.condition_margin = float(getattr(config, "condition_margin", 0.0))
+        self.softplus_beta = float(getattr(config, "softplus_beta", 10.0))
+        self.margin = float(getattr(config, "margin", getattr(config, "condition_margin", 0.0)))
         
         self.decrease_violation = RelativeLyapunovDecreaseViolation(
             kappa=config.kappa,
             relative_eps=config.relative_condition_eps,
-            margin=self.condition_margin,
+            margin=self.margin,
+            softplus_beta=self.softplus_beta,
         ) if config.use_relative_decrease else LyapunovDecreaseViolation(
             kappa=config.kappa,
-            margin=self.condition_margin,
+            margin=self.margin,
+            softplus_beta=self.softplus_beta,
         )
             
         self.invariance_violation = RelativeInvarianceViolation(
@@ -341,9 +380,12 @@ class RhoGatedConditionLoss(nn.Module):
         v_next: th.Tensor,
         x_next: th.Tensor,
         with_margin: bool = True,
+        with_softplus: bool = True,
     ) -> th.Tensor:
         """Compute condition violation per sample without gating."""
-        dec_viol = self.decrease_violation(v_curr=v_curr, v_next=v_next, with_margin=with_margin)
+        dec_viol = self.decrease_violation(
+            v_curr=v_curr, v_next=v_next, with_margin=with_margin, with_softplus=with_softplus
+        )
         inv_viol = self.invariance_violation(x_next=x_next)
         return dec_viol + self.invariance_weight * inv_viol
 
@@ -355,13 +397,16 @@ class RhoGatedConditionLoss(nn.Module):
         rho_estimate: float | None = 0.0,
         soft_gated: bool = True,
         with_margin: bool = True,
+        with_softplus: bool = True,
     ) -> th.Tensor:
         """Compute condition violation per sample.
         
         Applies sublevel weight (soft or hard) to BOTH decrease and invariance violations
         so that violations are only evaluated inside the rho-sublevel set V(x) <= rho.
         """
-        raw_violation = self.raw_condition_violation(v_curr, v_next, x_next, with_margin=with_margin)
+        raw_violation = self.raw_condition_violation(
+            v_curr, v_next, x_next, with_margin=with_margin, with_softplus=with_softplus
+        )
 
         if rho_estimate is None:
             return raw_violation
@@ -383,8 +428,8 @@ class RhoGatedConditionLoss(nn.Module):
         """Smooth sigmoid weight: ≈1 inside ρ, ≈0.5 at ρ boundary, ≈0 far outside."""
         v_curr = v_curr.detach()
         rho_value = safe_rho(rho_estimate, self.rho_min)
-        margin = (rho_value - v_curr) / max(rho_value, self.relative_eps)
-        return th.sigmoid(self.gate_sharpness * margin)
+        gate_dist = (rho_value - v_curr) / max(rho_value, self.relative_eps)
+        return th.sigmoid(self.gate_sharpness * gate_dist)
 
     def forward(
         self,
@@ -393,7 +438,7 @@ class RhoGatedConditionLoss(nn.Module):
         x_next: th.Tensor,
         rho_estimate: float,
     ) -> th.Tensor:
-        raw_violation = self.raw_condition_violation(v_curr, v_next, x_next)
+        raw_violation = self.raw_condition_violation(v_curr, v_next, x_next, with_margin=True, with_softplus=True)
         sublevel_weight = self.soft_sublevel_weight(v_curr, rho_estimate)
         return weighted_mean(raw_violation, sublevel_weight)
 
@@ -861,10 +906,17 @@ class LyapunovTrainingLoss(nn.Module):
         rho_estimate: float | None = None, 
         soft_gated: bool = False,
         with_margin: bool = True,
+        with_softplus: bool = True,
     ) -> th.Tensor:
         v_curr, x_next, v_next = self._closed_loop_values(x_batch)
         return self.condition_loss.gated_condition_violation(
-            v_curr=v_curr, v_next=v_next, x_next=x_next, rho_estimate=rho_estimate, soft_gated=soft_gated, with_margin=with_margin
+            v_curr=v_curr,
+            v_next=v_next,
+            x_next=x_next,
+            rho_estimate=rho_estimate,
+            soft_gated=soft_gated,
+            with_margin=with_margin,
+            with_softplus=with_softplus,
         )
 
     def get_counterexample_mask(
@@ -872,11 +924,12 @@ class LyapunovTrainingLoss(nn.Module):
         candidate_states: th.Tensor,
         rho_estimate: float,
         violation_tolerance: float = 1e-8,
-        with_margin: bool = True,
+        with_margin: bool = False,
     ) -> tuple[th.Tensor, th.Tensor]:
         """Evaluate candidate counterexamples and return their raw condition violations and a boolean validity mask.
         
         A valid counterexample must be strictly inside the rho-sublevel set and have a positive violation.
+        Always uses with_softplus=False to prevent false positives from Softplus tail.
         """
         if candidate_states.numel() == 0:
             return (
@@ -886,7 +939,11 @@ class LyapunovTrainingLoss(nn.Module):
 
         with th.no_grad():
             violation = self.condition_violation(
-                candidate_states, rho_estimate, soft_gated=False, with_margin=with_margin
+                candidate_states,
+                rho_estimate,
+                soft_gated=False,
+                with_margin=with_margin,
+                with_softplus=False,
             )
             violation = violation.squeeze(-1)
             mask = violation > violation_tolerance
@@ -896,18 +953,30 @@ class LyapunovTrainingLoss(nn.Module):
         self,
         x_batch: th.Tensor,
         rho_estimate: float,
-        with_margin: bool = True,
     ) -> th.Tensor:
-        """Return the mining objective value for a batch of states, 
-        used for prioritization in the replay buffer and PGD."""
+        """Return the mining objective value for PGD (uses margin + softplus for smooth non-vanishing gradients)."""
         viol = self.condition_violation(
-            x_batch, rho_estimate, soft_gated=True, with_margin=with_margin
+            x_batch,
+            rho_estimate,
+            soft_gated=True,
+            with_margin=True,
+            with_softplus=True,
         )
         return -viol
     
-    def buffer_sorting_objective(self, x_batch: th.Tensor, rho_estimate: float) -> th.Tensor:
-        """Return the pure violation score for sorting in the buffer."""
-        viol = self.condition_violation(x_batch, rho_estimate * 1.3, soft_gated=False)
+    def buffer_sorting_objective(
+        self,
+        x_batch: th.Tensor,
+        rho_estimate: float,
+    ) -> th.Tensor:
+        """Return the sorting score for the CEX buffer (pure violation without margin, softplus-ranked)."""
+        viol = self.condition_violation(
+            x_batch,
+            rho_estimate * 1.3,
+            soft_gated=False,
+            with_margin=False,
+            with_softplus=True,
+        )
         return -viol
 
     def compute_loss_parts(

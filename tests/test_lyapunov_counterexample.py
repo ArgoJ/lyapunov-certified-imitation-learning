@@ -110,6 +110,39 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         self.assertGreater(mined_cex.shape[0], 0)
         self.assertTrue(th.all(mined_values <= rho_estimate + 1e-6).item())
 
+    def test_counterexample_mask_rejects_stable_states(self) -> None:
+        class _ContractingDyn(th.nn.Module):
+            def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+                return 0.5 * x
+
+        config = LyapunovTrainingConfig(
+            state_dim=1,
+            state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
+            kappa=0.0,
+            condition_margin=0.5,
+            use_relative_decrease=False,
+            softplus_beta=10.0,
+        )
+        loss_module = LyapunovTrainingLoss(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_QuadraticLyapunov(),
+            dyn_model=_ContractingDyn(),
+            config=config,
+            device="cpu",
+        )
+        # Inside sublevel set rho=1.0, strictly contracting system: V(next) = 0.25 * V(curr) < V(curr)
+        states = th.tensor([[0.5], [-0.5]], dtype=th.float32)
+
+        # Default (with_margin=False): strictly stable states must NOT be flagged as counterexamples
+        viol, mask = loss_module.get_counterexample_mask(states, rho_estimate=1.0)
+        self.assertFalse(th.any(mask).item())
+        self.assertTrue(th.all(viol == 0.0).item())
+
+        # With with_margin=True: condition_margin shifts violation threshold into stable region
+        viol_margin, mask_margin = loss_module.get_counterexample_mask(states, rho_estimate=1.0, with_margin=True)
+        self.assertTrue(th.all(viol_margin > 0.0).item())
+        self.assertTrue(th.all(mask_margin).item())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -298,7 +298,7 @@ class LyapunovTrainer:
         rho_estimate: float,
         initial_states: th.Tensor | None = None,
         *,
-        with_margin: bool = False,
+        with_margin: bool = True,
         target_count: int | None = None,
         config: CounterexampleMiningConfig | None = None,
     ) -> tuple[th.Tensor, th.Tensor]:
@@ -316,7 +316,8 @@ class LyapunovTrainer:
             )
         cfg = config or self.cex_config
         return find_counter_examples(
-            objective=lambda x: self.loss_module.mining_objective(x, rho_estimate, with_margin=with_margin),
+            objective=lambda x: self.loss_module.mining_objective(x, rho_estimate),
+            # Acceptance condition uses with_margin (default False) without softplus
             condition_evaluator=lambda x: self.loss_module.get_counterexample_mask(
                 x, rho_estimate, with_margin=with_margin
             ),
