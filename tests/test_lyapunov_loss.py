@@ -10,6 +10,7 @@ from lcil.lyapunov_learning.loss import (
     EquilibriumLoss,
     FormalPositivityLoss,
     InvarianceViolation,
+    LyapunovTrainingLoss,
     ParameterL1Loss,
     PolicyRegularizationLoss,
     RFactorRegularizationLoss,
@@ -17,6 +18,22 @@ from lcil.lyapunov_learning.loss import (
 )
 from lcil.lyapunov_learning.models import NeuralLyapunovCandidate
 from lcil.utils.base_models import MLP
+from shared_utils import (
+    _IdentityDynamics,
+    _LinearValue,
+    _ZeroPolicy,
+)
+
+
+class _SingleWeightPolicy(nn.Module):
+    def __init__(self, weight: float = 1.0) -> None:
+        super().__init__()
+        self.linear = nn.Linear(1, 1, bias=False)
+        with th.no_grad():
+            self.linear.weight.fill_(weight)
+
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        return self.linear(x)
 
 
 class _MockRFactorModel(nn.Module):
@@ -260,6 +277,34 @@ class TestLyapunovLossComponents(unittest.TestCase):
         # 2. Without margin: true violation is relu(V(next) - V(curr)) == 0.0
         viol_without_margin = loss_mod.condition_violation(x, with_margin=False)
         self.assertEqual(viol_without_margin.item(), 0.0)
+
+    def test_policy_regularization_tracks_initial_policy_outputs(self) -> None:
+        policy = _SingleWeightPolicy(weight=1.0)
+        regularization_loss = PolicyRegularizationLoss(policy, state_bounds=th.tensor([[-1.0], [1.0]]), device="cpu")
+
+        self.assertAlmostEqual(float(regularization_loss().item()), 0.0, places=6)
+
+        with th.no_grad():
+            policy.linear.weight.fill_(3.0)
+
+        self.assertGreater(float(regularization_loss().item()), 0.0)
+
+    def test_formal_positivity_backward_returns_expected_lower_bound(self) -> None:
+        config = LyapunovTrainingConfig(
+            state_dim=1,
+            state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
+            formal_positivity_weight=1.0,
+        )
+        loss_module = LyapunovTrainingLoss(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_LinearValue(),
+            dyn_model=_IdentityDynamics(),
+            config=config,
+            device="cpu",
+        )
+        lower = loss_module.positivity_loss.compute_lyapunov_lower_bound(method="backward")
+
+        self.assertAlmostEqual(float(lower.item()), -1.0, places=6)
 
 
 if __name__ == "__main__":

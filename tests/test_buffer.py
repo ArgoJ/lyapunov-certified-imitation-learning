@@ -141,6 +141,97 @@ class TestBufferSpatialDiversity(unittest.TestCase):
         retained_vals = {round(x, 2) for x in buf.cexs.flatten().tolist()}
         self.assertEqual(retained_vals, {0.08, 0.06})
 
+    def test_dynamic_state_buffer_keeps_most_violating_counterexamples(self) -> None:
+        initial_states = th.zeros((4, 1), dtype=th.float32)
+        state_buffer = CEGISBuffer(
+            lb=th.tensor([-10.0]),
+            ub=th.tensor([10.0]),
+            initial_states=initial_states,
+            state_buffer_limit=16,
+            cex_buffer_limit=3,
+            filter_eps=0.0,
+            device=th.device("cpu"),
+        )
+
+        state_buffer.register_cex(
+            th.tensor([[0.2], [0.4]], dtype=th.float32),
+            objective=lambda x: -x,
+        )
+        state_buffer.register_cex(
+            th.tensor([[0.1], [0.9]], dtype=th.float32),
+            objective=lambda x: -x,
+        )
+
+        retained = state_buffer.cexs.flatten()
+        expected = th.tensor([0.9, 0.4, 0.2], dtype=th.float32)
+
+        self.assertEqual(state_buffer.state_count, 4)
+        self.assertEqual(state_buffer.cex_count, 3)
+        self.assertEqual(len(state_buffer), 7)
+        self.assertTrue(th.allclose(retained, expected))
+
+    def test_dynamic_state_buffer_sample_returns_requested_batch_size(self) -> None:
+        state_buffer = CEGISBuffer(
+            lb=th.tensor([-10.0]),
+            ub=th.tensor([10.0]),
+            initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
+            state_buffer_limit=4,
+            cex_buffer_limit=3,
+            device=th.device("cpu"),
+        )
+
+        batch = state_buffer.sample(batch_size=5)
+
+        self.assertEqual(batch.shape, (5, 1))
+        self.assertTrue(th.all((batch == 1.0) | (batch == 2.0)).item())
+
+    def test_dynamic_state_buffer_sample_uses_regular_and_cex_pools_separately(self) -> None:
+        state_buffer = CEGISBuffer(
+            lb=th.tensor([-10.0]),
+            ub=th.tensor([10.0]),
+            initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
+            state_buffer_limit=8,
+            cex_buffer_limit=3,
+            device=th.device("cpu"),
+        )
+        state_buffer.register_cex(th.tensor([[10.0]], dtype=th.float32), objective=lambda x: -x)
+
+        batch = state_buffer.sample(batch_size=4, cex_fraction=0.5)
+        batch_values = batch.flatten()
+
+        self.assertEqual(batch.shape, (4, 1))
+        self.assertEqual(int((batch_values == 10.0).sum().item()), 1)
+        self.assertTrue(th.all((batch_values != 10.0) <= ((batch_values == 1.0) | (batch_values == 2.0))).item())
+
+    def test_dynamic_state_buffer_rejects_empty_initial_states(self) -> None:
+        with self.assertRaisesRegex(ValueError, "initial_states cannot be empty"):
+            CEGISBuffer(
+                lb=th.tensor([-10.0]),
+                ub=th.tensor([10.0]),
+                initial_states=th.empty((0, 1), dtype=th.float32),
+                state_buffer_limit=4,
+                cex_buffer_limit=3,
+                device=th.device("cpu"),
+            )
+
+    def test_dynamic_state_buffer_sample_clamps_out_of_range_cex_fraction(self) -> None:
+        state_buffer = CEGISBuffer(
+            lb=th.tensor([-10.0]),
+            ub=th.tensor([10.0]),
+            initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
+            state_buffer_limit=4,
+            cex_buffer_limit=3,
+            device=th.device("cpu"),
+        )
+        state_buffer.register_cex(th.tensor([[10.0]], dtype=th.float32), objective=lambda x: -x)
+
+        batch = state_buffer.sample(batch_size=4, cex_fraction=2.0)
+        batch_values = batch.flatten()
+
+        self.assertEqual(batch.shape, (4, 1))
+        self.assertEqual(int((batch_values == 10.0).sum().item()), 1)
+        self.assertTrue(th.all((batch_values == 10.0) | (batch_values == 1.0) | (batch_values == 2.0)).item())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

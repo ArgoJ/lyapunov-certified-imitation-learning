@@ -78,8 +78,10 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
 
     condition_weight : float
         Weight of the Lyapunov decrease and set-invariance condition penalty term.
-    condition_margin : float
-        Safety margin added to the decrease condition to penalize near-violating states and mine them as counterexamples.
+    softplus_beta : float
+        Sharpness parameter beta for the Softplus decrease violation when with_margin=True.
+    hard_violation_factor : float
+        Multiplier for the ReLU hard-violation penalty term when with_margin=True.
     condition_lirpa_weight : float
         Weight of the LIRPA-based Lyapunov decrease penalty term.
     invariance_weight : float
@@ -327,10 +329,16 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="rel_eps",
         validators=(positive_validator,),
     )
-    condition_margin: float = config_field(
-        default=0.0,
-        help="Safety margin added to the decrease condition to penalize near-violating states and mine them as counterexamples.",
-        display_alias="cond_margin",
+    softplus_beta: float = config_field(
+        default=10.0,
+        help="Sharpness parameter beta for the Softplus decrease violation when with_margin=True.",
+        display_alias="sp_beta",
+        validators=(positive_validator,),
+    )
+    hard_violation_factor: float = config_field(
+        default=1.0,
+        help="Multiplier for the ReLU hard-violation penalty term when with_margin=True.",
+        display_alias="hard_factor",
         validators=(non_negative_validator,),
     )
     

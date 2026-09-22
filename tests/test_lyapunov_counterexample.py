@@ -1,141 +1,38 @@
 import unittest
-import tempfile
-from typing import Any
-from unittest.mock import patch
-from pathlib import Path
-
 import numpy as np
 import torch as th
-import torch.nn as nn
 from shared_utils import (
-    _FirstCoordinateValue,
     _IdentityDynamics,
-    _LinearValue,
     _QuadraticLyapunov,
     _TrainableQuadraticLyapunov,
     _ZeroPolicy,
 )
 
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
-from lcil.lyapunov_learning.buffer import BoundaryStateBuffer, CEGISBuffer
 from lcil.lyapunov_learning.counterexample import (
-    BoundaryRhoEstimate,
-    BoundaryTermDiagnostics,
-    BoundaryRhoEvaluation,
-    estimate_rho_from_boundary,
+    CounterexampleMiningConfig,
     find_counter_examples,
 )
-from lcil.lyapunov_learning.loss import FormalPositivityLoss, LyapunovTrainingLoss, PolicyRegularizationLoss
-from lcil.lyapunov_learning.trainer import LyapunovTrainer, LyapunovTrainingResult
-from lcil.lyapunov_learning.utils import ThresholdMonitor
-
-
-class _SingleWeightPolicy(nn.Module):
-    def __init__(self, weight: float = 1.0) -> None:
-        super().__init__()
-        self.linear = nn.Linear(1, 1, bias=False)
-        with th.no_grad():
-            self.linear.weight.fill_(weight)
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return self.linear(x)
-
-
-class _ControlAffineDynamics(nn.Module):
-    def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
-        return x + u
+from lcil.lyapunov_learning.loss import LyapunovTrainingLoss
+from lcil.lyapunov_learning.trainer import LyapunovTrainer
 
 
 class TestLyapunovCounterexamples(unittest.TestCase):
-    def test_rho_threshold_monitor_triggers_after_consecutive_low_values(self) -> None:
-        monitor = ThresholdMonitor(threshold=1.0, patience=3)
-
-        outputs = [monitor.update(value) for value in (0.8, 0.9, 1.2, 0.7, 0.6, 0.5)]
-
-        self.assertEqual(outputs, [False, False, False, False, False, True])
-        self.assertEqual(monitor.value_history, [0.8, 0.9, 1.2, 0.7, 0.6, 0.5])
-        self.assertEqual(monitor.consecutive_low, 3)
-
-    def test_build_scaled_state_bounds_supports_scalar_and_vector_stages(self) -> None:
-        base_bounds = np.array([[-2.0, -4.0], [2.0, 4.0]], dtype=np.float32)
-
-        scaled = LyapunovTrainer._build_scaled_train_bounds(
-            base_bounds=base_bounds,
-            bound_scales=[0.5, [0.25, 0.75]],
+    def test_counterexample_mining_config_from_training_config(self) -> None:
+        bounds = np.array([[-2.0], [2.0]], dtype=np.float32)
+        train_cfg = LyapunovTrainingConfig(
+            state_dim=1,
+            state_bounds=bounds,
+            cex_step_size=0.02,
+            cex_descent_steps=15,
+            origin_exclusion=0.1,
         )
+        cex_cfg = CounterexampleMiningConfig.from_training_config(train_cfg, descent_steps=8)
 
-        first_bounds, first_scale = scaled[0]
-        second_bounds, second_scale = scaled[1]
-
-        np.testing.assert_allclose(first_scale, np.array([0.5, 0.5], dtype=np.float32))
-        np.testing.assert_allclose(first_bounds, np.array([[-1.0, -2.0], [1.0, 2.0]], dtype=np.float32))
-        np.testing.assert_allclose(second_scale, np.array([0.25, 0.75], dtype=np.float32))
-        np.testing.assert_allclose(second_bounds, np.array([[-0.5, -3.0], [0.5, 3.0]], dtype=np.float32))
-
-    def test_build_scaled_state_bounds_validations(self) -> None:
-        base_bounds = np.array([[-2.0, -4.0], [2.0, 4.0]], dtype=np.float32)
-
-        # Invalid base bounds shape
-        with self.assertRaisesRegex(ValueError, "must have shape"):
-            LyapunovTrainer._build_scaled_train_bounds(base_bounds[0], bound_scales=[1.0])
-
-        # Empty bound scales
-        with self.assertRaisesRegex(ValueError, "at least one stage"):
-            LyapunovTrainer._build_scaled_train_bounds(base_bounds, bound_scales=[])
-
-        # Scale dim mismatch
-        with self.assertRaisesRegex(ValueError, "Each bound scale must be"):
-            LyapunovTrainer._build_scaled_train_bounds(base_bounds, bound_scales=[[1.0, 2.0, 3.0]])
-
-        # Non-positive scale
-        with self.assertRaisesRegex(ValueError, "All bound scales must be positive"):
-            LyapunovTrainer._build_scaled_train_bounds(base_bounds, bound_scales=[-0.5])
-
-    def test_estimate_rho_uses_configured_quantile(self) -> None:
-        config = LyapunovTrainingConfig(
-            state_dim=2,
-            state_bounds=np.array([[-4.0, -1.0], [4.0, 1.0]], dtype=np.float32),
-            rho_estimation_samples=4,
-            rho_descent_steps=0,
-            rho_growth_gamma=1.5,
-            rho_estimate_quantile=0.5,
-        )
-        boundary_points = th.tensor(
-            [
-                [1.0, 0.0],
-                [2.0, 0.0],
-                [3.0, 0.0],
-                [4.0, 0.0],
-            ],
-            dtype=th.float32,
-        )
-        face_dims = th.zeros(4, dtype=th.long)
-        is_ub = th.ones(4, dtype=th.bool)
-
-        with patch(
-            "lcil.lyapunov_learning.counterexample.sample_boundary_points",
-            return_value=(boundary_points, face_dims, is_ub),
-        ):
-            rho_eval, _ = estimate_rho_from_boundary(_FirstCoordinateValue(), config)
-            rho = rho_eval.rho.rho
-
-        expected = 1.5 * th.quantile(boundary_points[:, 0], q=0.5).item()
-        self.assertAlmostEqual(rho, expected, places=6)
-
-    def test_estimate_rho_reuses_boundary_buffer_low_values(self) -> None:
-        first_boundary = th.tensor([[1.0, 0.0], [2.0, 0.0]], dtype=th.float32)
-        second_boundary = th.tensor([[9.0, 0.0], [10.0, 0.0]], dtype=th.float32)
-        boundary_buffer = BoundaryStateBuffer(state_dim=2, max_size=2, device="cpu")
-
-        value_fn = _FirstCoordinateValue()
-        boundary_buffer.update(first_boundary, value_fn=value_fn)
-        first_max_val = float(value_fn(boundary_buffer.states).max().item())
-
-        boundary_buffer.update(second_boundary, value_fn=value_fn)
-        second_max_val = float(value_fn(boundary_buffer.states).max().item())
-
-        self.assertAlmostEqual(first_max_val, 2.0, places=6)
-        self.assertAlmostEqual(second_max_val, 2.0, places=6)
+        self.assertEqual(cex_cfg.step_size, 0.02)
+        self.assertEqual(cex_cfg.descent_steps, 8)
+        self.assertEqual(cex_cfg.origin_exclusion, (0.1,))
+        np.testing.assert_allclose(cex_cfg.train_bounds, bounds)
 
     def test_counterexample_mining_respects_current_rho_gate(self) -> None:
         config = LyapunovTrainingConfig(
@@ -156,10 +53,11 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         th.manual_seed(0)
         rho_estimate = 0.1
         initial_states = th.linspace(-1.0, 1.0, 256).unsqueeze(-1)
+        cex_config = CounterexampleMiningConfig.from_training_config(config)
         gated_cex, _ = find_counter_examples(
             objective=lambda x: loss_module.mining_objective(x_batch=x, rho_estimate=rho_estimate),
             condition_evaluator=lambda x: loss_module.get_counterexample_mask(x, rho_estimate),
-            config=config,
+            config=cex_config,
             initial_states=initial_states,
         )
         gated_values = loss_module.lyap_model(gated_cex).flatten()
@@ -167,136 +65,23 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         self.assertGreater(gated_cex.shape[0], 0)
         self.assertTrue(th.all(gated_values <= rho_estimate + 1e-6).item())
 
-    def test_policy_regularization_tracks_initial_policy_outputs(self) -> None:
-        policy = _SingleWeightPolicy(weight=1.0)
-        regularization_loss = PolicyRegularizationLoss(policy, state_bounds=th.tensor([[-1.0], [1.0]]), device="cpu")
-
-        self.assertAlmostEqual(float(regularization_loss().item()), 0.0, places=6)
-
-        with th.no_grad():
-            policy.linear.weight.fill_(3.0)
-
-        self.assertGreater(float(regularization_loss().item()), 0.0)
-
-    def test_enable_policy_training_rebuilds_optimizer_and_preserves_state(self) -> None:
-        config = LyapunovTrainingConfig(
-            state_dim=1,
-            state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
-            state_buffer_limit=4,
-            batch_size=2,
-            outer_epochs=2,
-            steps_per_epoch=1,
-            cex_every=100,
-            policy_epochs=1,
+    def test_find_counter_examples_respects_origin_exclusion(self) -> None:
+        cex_config = CounterexampleMiningConfig(
+            train_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
+            descent_steps=1,
+            origin_exclusion=0.2,
         )
-        trainer = LyapunovTrainer(
-            policy_model=_SingleWeightPolicy(weight=1.0),
-            lyap_model=_TrainableQuadraticLyapunov(),
-            dyn_model=_ControlAffineDynamics(),
-            config=config,
-        )
+        initial_states = th.tensor([[0.05], [0.1], [0.5]], dtype=th.float32)
 
-        policy_param = next(trainer.policy_model.parameters())
-        lyap_param = next(trainer.lyap_model.parameters())
-
-        self.assertFalse(trainer._curr_policy_train_status)
-        self.assertFalse(trainer.policy_model.training)
-
-        trainer.optimizer.zero_grad()
-        lyap_param.sum().backward()
-        trainer.optimizer.step()
-
-        old_state = trainer.optimizer.state[lyap_param]
-        self.assertIn("exp_avg", old_state)
-
-        trainer._enable_policy_training()
-
-        self.assertTrue(trainer._curr_policy_train_status)
-        self.assertTrue(trainer.policy_model.training)
-        self.assertTrue(any(param is policy_param for param in trainer.optimizer.param_groups[-1]["params"]))
-        self.assertIn(lyap_param, trainer.optimizer.state)
-        self.assertTrue(th.allclose(trainer.optimizer.state[lyap_param]["exp_avg"], old_state["exp_avg"]))
-
-    def test_dynamic_state_buffer_keeps_most_violating_counterexamples(self) -> None:
-        initial_states = th.zeros((4, 1), dtype=th.float32)
-        state_buffer = CEGISBuffer(lb=th.tensor([-10.0]), ub=th.tensor([10.0]),
+        cex_states, _ = find_counter_examples(
+            objective=lambda x: x.sum(dim=-1),
+            condition_evaluator=lambda x: (th.ones(x.shape[0]), th.ones(x.shape[0], dtype=th.bool)),
+            config=cex_config,
             initial_states=initial_states,
-            state_buffer_limit=16,
-            cex_buffer_limit=3,
-            filter_eps=0.0,
-            device=th.device("cpu"),
+            device="cpu",
         )
 
-        state_buffer.register_cex(
-            th.tensor([[0.2], [0.4]], dtype=th.float32),
-            objective=lambda x: -x,
-        )
-        state_buffer.register_cex(
-            th.tensor([[0.1], [0.9]], dtype=th.float32),
-            objective=lambda x: -x,
-        )
-
-        retained = state_buffer.cexs.flatten()
-        expected = th.tensor([0.9, 0.4, 0.2], dtype=th.float32)
-
-        self.assertEqual(state_buffer.state_count, 4)
-        self.assertEqual(state_buffer.cex_count, 3)
-        self.assertEqual(len(state_buffer), 7)
-        self.assertTrue(th.allclose(retained, expected))
-
-    def test_dynamic_state_buffer_sample_returns_requested_batch_size(self) -> None:
-        state_buffer = CEGISBuffer(lb=th.tensor([-10.0]), ub=th.tensor([10.0]),
-            initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
-            state_buffer_limit=4,
-            cex_buffer_limit=3,
-            device=th.device("cpu"),
-        )
-
-        batch = state_buffer.sample(batch_size=5)
-
-        self.assertEqual(batch.shape, (5, 1))
-        self.assertTrue(th.all((batch == 1.0) | (batch == 2.0)).item())
-
-    def test_dynamic_state_buffer_sample_uses_regular_and_cex_pools_separately(self) -> None:
-        state_buffer = CEGISBuffer(lb=th.tensor([-10.0]), ub=th.tensor([10.0]),
-            initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
-            state_buffer_limit=8,
-            cex_buffer_limit=3,
-            device=th.device("cpu"),
-        )
-        state_buffer.register_cex(th.tensor([[10.0]], dtype=th.float32), objective=lambda x: -x)
-
-        batch = state_buffer.sample(batch_size=4, cex_fraction=0.5)
-        batch_values = batch.flatten()
-
-        self.assertEqual(batch.shape, (4, 1))
-        self.assertEqual(int((batch_values == 10.0).sum().item()), 1)
-        self.assertTrue(th.all((batch_values != 10.0) <= ((batch_values == 1.0) | (batch_values == 2.0))).item())
-
-    def test_dynamic_state_buffer_rejects_empty_initial_states(self) -> None:
-        with self.assertRaisesRegex(ValueError, "initial_states cannot be empty"):
-            CEGISBuffer(lb=th.tensor([-10.0]), ub=th.tensor([10.0]),
-                initial_states=th.empty((0, 1), dtype=th.float32),
-                state_buffer_limit=4,
-                cex_buffer_limit=3,
-                device=th.device("cpu"),
-            )
-
-    def test_dynamic_state_buffer_sample_clamps_out_of_range_cex_fraction(self) -> None:
-        state_buffer = CEGISBuffer(lb=th.tensor([-10.0]), ub=th.tensor([10.0]),
-            initial_states=th.tensor([[1.0], [2.0]], dtype=th.float32),
-            state_buffer_limit=4,
-            cex_buffer_limit=3,
-            device=th.device("cpu"),
-        )
-        state_buffer.register_cex(th.tensor([[10.0]], dtype=th.float32), objective=lambda x: -x)
-
-        batch = state_buffer.sample(batch_size=4, cex_fraction=2.0)
-        batch_values = batch.flatten()
-
-        self.assertEqual(batch.shape, (4, 1))
-        self.assertEqual(int((batch_values == 10.0).sum().item()), 1)
-        self.assertTrue(th.all((batch_values == 10.0) | (batch_values == 1.0) | (batch_values == 2.0)).item())
+        self.assertTrue(th.all(th.abs(cex_states) > 0.2).item())
 
     def test_trainer_mining_uses_current_rho_estimate(self) -> None:
         config = LyapunovTrainingConfig(
@@ -316,7 +101,7 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         th.manual_seed(0)
         rho_estimate = 0.1
         initial_states = th.linspace(-1.0, 1.0, 256).unsqueeze(-1)
-        mined_cex, _ = trainer._mine_new_counterexamples(
+        mined_cex, _ = trainer.mine_counterexamples(
             rho_estimate=rho_estimate,
             initial_states=initial_states,
         )
@@ -324,249 +109,6 @@ class TestLyapunovCounterexamples(unittest.TestCase):
 
         self.assertGreater(mined_cex.shape[0], 0)
         self.assertTrue(th.all(mined_values <= rho_estimate + 1e-6).item())
-
-    def test_trainer_returns_aborted_result_after_sustained_low_rho(self) -> None:
-        config = LyapunovTrainingConfig(
-            state_dim=1,
-            state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
-            state_buffer_limit=4,
-            batch_size=2,
-            outer_epochs=3,
-            steps_per_epoch=1,
-            cex_every=100,
-        )
-        trainer = LyapunovTrainer(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_TrainableQuadraticLyapunov(),
-            dyn_model=_IdentityDynamics(),
-            config=config,
-            rho_monitor=ThresholdMonitor(threshold=1.0, patience=2),
-        )
-        rho_eval = BoundaryRhoEvaluation(
-            rho=BoundaryRhoEstimate(
-                rho=0.5,
-                boundary_quantile=0.5,
-                boundary_mean=0.5,
-            ),
-            terms=BoundaryTermDiagnostics(
-                feature_term_quantile=0.0,
-                linear_term_quantile=0.5,
-                feature_term_mean=0.0,
-                linear_term_mean=0.5,
-                feature_term_mean_share=0.0,
-                linear_term_mean_share=1.0,
-            ),
-        )
-
-        with patch(
-            "lcil.lyapunov_learning.trainer.estimate_rho_from_boundary",
-            return_value=(rho_eval, th.zeros((1, 1))),
-        ):
-            train_result = trainer.train()
-
-        self.assertTrue(train_result.aborted)
-        self.assertIs(trainer.results, train_result)
-        self.assertEqual(
-            train_result.abort_reason,
-            "Lyapunov training aborted after 2 consecutive rho estimates below 1.000.",
-        )
-        self.assertIsNotNone(trainer.metrics)
-        assert trainer.metrics is not None
-        self.assertEqual(trainer.metrics.outer_iterations_completed, 1)
-
-    def test_train_with_scaled_bounds_returns_completed_stages_before_abort(self) -> None:
-        config = LyapunovTrainingConfig(
-            state_dim=1,
-            state_bounds=np.array([[-2.0], [2.0]], dtype=np.float32),
-        )
-        trainer = LyapunovTrainer(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_TrainableQuadraticLyapunov(),
-            dyn_model=_IdentityDynamics(),
-            config=config,
-            rho_monitor=ThresholdMonitor(threshold=1.0, patience=2),
-        )
-
-        def _fake_train(stage_self: LyapunovTrainer, *args: Any, **kwargs: Any) -> LyapunovTrainingResult:
-            stage_upper = float(stage_self.config.train_bounds[1, 0])
-            if stage_upper > 1.0:
-                stage_self.results = LyapunovTrainingResult(
-                    rho_estimate=stage_upper,
-                    num_mined_counterexamples=0,
-                    train_time=0.0,
-                    aborted=True,
-                    abort_reason="rho monitor triggered",
-                )
-                return stage_self.results
-            stage_self.results = LyapunovTrainingResult(
-                rho_estimate=stage_upper,
-                num_mined_counterexamples=0,
-                train_time=0.0,
-            )
-            return stage_self.results
-
-        with patch.object(LyapunovTrainer, "train", autospec=True, side_effect=_fake_train):
-            curriculum_result = trainer.train_with_scaled_bounds([0.5, 1.0])
-
-        self.assertTrue(curriculum_result.aborted)
-        self.assertEqual(curriculum_result.abort_reason, "rho monitor triggered")
-        self.assertEqual(curriculum_result.aborted_stage_index, 1)
-        self.assertEqual(len(curriculum_result.stages), 1)
-        self.assertIsNotNone(curriculum_result.final_result)
-        assert curriculum_result.final_result is not None
-        self.assertTrue(curriculum_result.final_result.aborted)
-        self.assertIsNotNone(curriculum_result.last_completed_result)
-        assert curriculum_result.last_completed_result is not None
-        np.testing.assert_allclose(
-            curriculum_result.stages[0].train_bounds,
-            np.array([[-1.0], [1.0]], dtype=np.float32),
-        )
-        self.assertAlmostEqual(curriculum_result.last_completed_result.rho_estimate, 1.0, places=6)
-
-    def test_train_with_scaled_bounds_returns_aborted_result_when_first_stage_aborts(self) -> None:
-        config = LyapunovTrainingConfig(
-            state_dim=1,
-            state_bounds=np.array([[-2.0], [2.0]], dtype=np.float32),
-        )
-        trainer = LyapunovTrainer(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_TrainableQuadraticLyapunov(),
-            dyn_model=_IdentityDynamics(),
-            config=config,
-            rho_monitor=ThresholdMonitor(threshold=1.0, patience=2),
-        )
-
-        def _always_abort(stage_self: LyapunovTrainer, *args: Any, **kwargs: Any) -> LyapunovTrainingResult:
-            stage_self.results = LyapunovTrainingResult(
-                rho_estimate=0.5,
-                num_mined_counterexamples=0,
-                train_time=0.0,
-                aborted=True,
-                abort_reason="rho monitor triggered",
-            )
-            return stage_self.results
-
-        with patch.object(LyapunovTrainer, "train", autospec=True, side_effect=_always_abort):
-            curriculum_result = trainer.train_with_scaled_bounds([0.5, 1.0])
-
-        self.assertTrue(curriculum_result.aborted)
-        self.assertEqual(curriculum_result.abort_reason, "rho monitor triggered")
-        self.assertEqual(curriculum_result.aborted_stage_index, 0)
-        self.assertEqual(len(curriculum_result.stages), 0)
-        self.assertIsNone(curriculum_result.last_completed_result)
-        self.assertIsNotNone(curriculum_result.final_result)
-        assert curriculum_result.final_result is not None
-        self.assertTrue(curriculum_result.final_result.aborted)
-
-    def test_formal_positivity_backward_returns_expected_lower_bound(self) -> None:
-        config = LyapunovTrainingConfig(
-            state_dim=1,
-            state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
-            formal_positivity_weight=1.0,
-        )
-        loss_module = LyapunovTrainingLoss(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_LinearValue(),
-            dyn_model=_IdentityDynamics(),
-            config=config,
-            device="cpu",
-        )
-        lower = loss_module.positivity_loss.compute_lyapunov_lower_bound(method="backward")
-
-        self.assertAlmostEqual(float(lower.item()), -1.0, places=6)
-
-    def test_trainer_reuses_cached_bounded_model_for_formal_positivity(self) -> None:
-        lyap_model = _LinearValue()
-        config = LyapunovTrainingConfig(
-            state_dim=1,
-            state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
-            formal_positivity_weight=1.0,
-        )
-        with patch.object(
-            FormalPositivityLoss,
-            "_build_lyapunov_bounded_model",
-            autospec=True,
-            side_effect=FormalPositivityLoss._build_lyapunov_bounded_model,
-        ) as build_bounded_model:
-            trainer = LyapunovTrainer(
-                policy_model=_ZeroPolicy(),
-                lyap_model=lyap_model,
-                dyn_model=_IdentityDynamics(),
-                config=config,
-            )
-            first_loss = trainer.loss_module.positivity_loss()
-            with th.no_grad():
-                lyap_model.linear.weight.fill_(2.0)
-            second_loss = trainer.loss_module.positivity_loss()
-
-        self.assertEqual(build_bounded_model.call_count, 1)
-        self.assertAlmostEqual(float(first_loss.item()), 1.0, places=6)
-        self.assertAlmostEqual(float(second_loss.item()), 2.0, places=6)
-
-    def test_train_with_scaled_bounds_runs_stages_and_updates_trainer(self) -> None:
-        config = LyapunovTrainingConfig(
-            state_dim=1,
-            state_bounds=np.array([[-2.0], [2.0]], dtype=np.float32),
-        )
-        trainer = LyapunovTrainer(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_TrainableQuadraticLyapunov(),
-            dyn_model=_IdentityDynamics(),
-            config=config,
-        )
-
-        stage_bounds_seen: list[np.ndarray] = []
-
-        def _fake_train(stage_self: LyapunovTrainer, *args: Any, **kwargs: Any) -> LyapunovTrainingResult:
-            stage_bounds_seen.append(np.asarray(stage_self.config.train_bounds, dtype=np.float32).copy())
-            stage_self.results = LyapunovTrainingResult(
-                rho_estimate=float(stage_self.config.train_bounds[1, 0]),
-                num_mined_counterexamples=stage_self.config.state_dim,
-                train_time=0.0,
-            )
-            stage_self.metrics = None
-            return stage_self.results
-
-        with patch.object(LyapunovTrainer, "train", autospec=True, side_effect=_fake_train):
-            curriculum_result = trainer.train_with_scaled_bounds([0.5, 1.0])
-
-        expected_stage_bounds = [
-            np.array([[-1.0], [1.0]], dtype=np.float32),
-            np.array([[-2.0], [2.0]], dtype=np.float32),
-        ]
-        self.assertEqual(len(curriculum_result.stages), 2)
-        np.testing.assert_allclose(stage_bounds_seen[0], expected_stage_bounds[0])
-        np.testing.assert_allclose(stage_bounds_seen[1], expected_stage_bounds[1])
-        np.testing.assert_allclose(trainer.config.train_bounds, expected_stage_bounds[1])
-        self.assertAlmostEqual(curriculum_result.final_result.rho_estimate, 2.0, places=6)
-
-    def test_trainer_save_writes_training_result_json(self) -> None:
-        config = LyapunovTrainingConfig(
-            state_dim=1,
-            state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
-        )
-        trainer = LyapunovTrainer(
-            policy_model=_ZeroPolicy(),
-            lyap_model=_TrainableQuadraticLyapunov(),
-            dyn_model=_IdentityDynamics(),
-            config=config,
-        )
-        trainer.results = LyapunovTrainingResult(
-            rho_estimate=0.75,
-            num_mined_counterexamples=3,
-            train_time=1.25,
-        )
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            out_dir = Path(tmp_dir)
-            trainer.save(out_dir)
-            loaded_result = LyapunovTrainingResult.load(out_dir)
-
-        self.assertAlmostEqual(loaded_result.rho_estimate, 0.75, places=6)
-        self.assertEqual(loaded_result.num_mined_counterexamples, 3)
-        self.assertEqual(loaded_result.train_time, 1.25)
-        self.assertEqual(loaded_result.lyap_model_path, out_dir / "lyapunov_model.pt")
-        self.assertEqual(loaded_result.policy_model_path, out_dir / "policy_model.pt")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,11 @@ import numpy as np
 
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
 from lcil.lyapunov_learning.loss import LyapunovTrainingLoss
-from lcil.lyapunov_learning.counterexample import estimate_rho_from_boundary, BoundaryTermDiagnostics
+from lcil.lyapunov_learning.sublevel import (
+    estimate_rho_from_boundary,
+    BoundaryTermDiagnostics,
+    RhoEstimationConfig,
+)
 from lcil.utils import MLP
 
 
@@ -89,14 +93,14 @@ def test_rho_diagnostics_enable_diagnosis():
         state_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]]),
         enable_diagnosis=True,
     )
-    eval_diag, _ = estimate_rho_from_boundary(lyap, cfg_diag)
+    eval_diag, _ = estimate_rho_from_boundary(lyap, RhoEstimationConfig.from_training_config(cfg_diag))
 
     cfg_no_diag = LyapunovTrainingConfig(
         state_dim=2,
         state_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]]),
         enable_diagnosis=False,
     )
-    eval_no_diag, _ = estimate_rho_from_boundary(lyap, cfg_no_diag)
+    eval_no_diag, _ = estimate_rho_from_boundary(lyap, RhoEstimationConfig.from_training_config(cfg_no_diag))
 
     # When enable_diagnosis=False, term diagnostics returns NaN without computing
     assert np.isnan(eval_no_diag.terms.feature_term_quantile)

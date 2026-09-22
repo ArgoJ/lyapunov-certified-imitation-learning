@@ -7,6 +7,7 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 
+from typing import Any
 from collections.abc import Sequence
 from numpy.typing import NDArray
 from torch.utils.tensorboard import SummaryWriter
@@ -26,15 +27,21 @@ from .config import LyapunovTrainingConfig
 from .models import has_learnable_r_factor
 from .buffer import BoundaryStateBuffer, CEGISBuffer
 from .loss import LyapunovTrainingLoss
-from .counterexample import (
+from .sublevel import (
+    RhoEstimationConfig,
+    BoundaryRhoEvaluation,
     estimate_rho,
     estimate_rho_from_boundary,
+)
+from .counterexample import (
+    CounterexampleMiningConfig,
     find_counter_examples,
 )
 from .sampling import (
     sample_uniform_box,
     sample_boundary_points,
     sample_box_shell,
+    sample_box_rejection_states,
 )
 from .results import (
     MiningStepResult,
@@ -115,7 +122,9 @@ class LyapunovTrainer:
             device=self.device,
         )
     
-        self.rho_monitor = rho_monitor
+        self.rho_monitor: ThresholdMonitor | None = rho_monitor
+        self.rho_config = RhoEstimationConfig.from_training_config(self.config)
+        self.cex_config = CounterexampleMiningConfig.from_training_config(self.config)
         self.results: LyapunovTrainingResult | None = None
         self.metrics: LyapunovTrainingMetrics | None = None
         self.tb_writer: SummaryWriter | None = None
@@ -261,12 +270,57 @@ class LyapunovTrainer:
     # --- TRAINING HELPER METHODS ---
     # ==========================================
 
-    def _mine_new_counterexamples(self, rho_estimate: float, initial_states: th.Tensor | None = None) -> tuple[th.Tensor, th.Tensor]:
-        """Mine rho-gated counterexamples using the external training semantics."""
+    def estimate_rho(
+        self,
+        *,
+        gamma: float | None = None,
+        with_margin: bool = False,
+        state_buffer: Any | None = None,
+        config: RhoEstimationConfig | None = None,
+    ) -> tuple[BoundaryRhoEvaluation, th.Tensor]:
+        """Estimate rho and boundary points using the current Lyapunov model."""
+        cfg = config or (
+            replace(self.rho_config, rho_growth_gamma=gamma)
+            if gamma is not None
+            else self.rho_config
+        )
+        return estimate_rho(
+            lyap_model=self.lyap_model,
+            config=cfg,
+            condition_evaluator=lambda x: self.loss_module.condition_violation(x, with_margin=with_margin),
+            state_buffer=state_buffer,
+            device=self.device,
+            generator=self.torch_gen,
+        )
+
+    def mine_counterexamples(
+        self,
+        rho_estimate: float,
+        initial_states: th.Tensor | None = None,
+        *,
+        with_margin: bool = False,
+        target_count: int | None = None,
+        config: CounterexampleMiningConfig | None = None,
+    ) -> tuple[th.Tensor, th.Tensor]:
+        """Mine counterexamples violating the Lyapunov condition within the sublevel set."""
+        if initial_states is None:
+            target = target_count or self.config.state_buffer_limit
+            initial_states = sample_box_rejection_states(
+                lb=self.lbx_train,
+                ub=self.ubx_train,
+                target_count=target,
+                score_fn=lambda x: (
+                    2.0 * rho_estimate - self.lyap_model(x).flatten()
+                ) / max(rho_estimate, 1e-9),
+                device=self.device,
+            )
+        cfg = config or self.cex_config
         return find_counter_examples(
-            objective=lambda x: self.loss_module.mining_objective(x, rho_estimate),
-            condition_evaluator=lambda x: self.loss_module.get_counterexample_mask(x, rho_estimate),
-            config=self.config,
+            objective=lambda x: self.loss_module.mining_objective(x, rho_estimate, with_margin=with_margin),
+            condition_evaluator=lambda x: self.loss_module.get_counterexample_mask(
+                x, rho_estimate, with_margin=with_margin
+            ),
+            config=cfg,
             initial_states=initial_states,
             device=self.device,
         )
@@ -291,16 +345,17 @@ class LyapunovTrainer:
         return random_candidates
 
     def _get_boundary_buffer(self):
+        buffer_size = self.config.roa_boundary_buffer_size or (4 * self.config.rho_estimation_samples)
         boundary_buffer = BoundaryStateBuffer(
             state_dim=self.config.state_dim,
-            max_size=int(self.config.roa_boundary_buffer_size),
+            max_size=buffer_size,
             max_age=self.config.roa_max_age,
             lb=self.lbx_train,
             ub=self.ubx_train,
             device=self.device,
         )
         init_boundary_x, _, _ = sample_boundary_points(
-            sample_size=int(self.config.roa_boundary_buffer_size),
+            sample_size=buffer_size,
             lb=self.lbx_train,
             ub=self.ubx_train,
             device=self.device,
@@ -376,15 +431,7 @@ class LyapunovTrainer:
         state_buffer: CEGISBuffer | None,
         current_rho_estimate: float | None,
     ) -> BoundaryStepResult:
-        
-        rho_diagnostics, boundary_states = estimate_rho(
-            lyap_model=self.lyap_model,
-            config=self.config,
-            condition_evaluator=lambda x: self.loss_module.condition_violation(x, with_margin=False),
-            state_buffer=state_buffer,
-            device=self.device,
-            generator=self.torch_gen,
-        )
+        rho_diagnostics, boundary_states = self.estimate_rho(state_buffer=state_buffer)
         boundary_buffer.update(boundary_states, value_fn=self.lyap_model)
         roa_candidates = self._build_roa_candidates(injection_states=boundary_buffer.states)
         
@@ -419,7 +466,7 @@ class LyapunovTrainer:
             return MiningStepResult(current_fraction, cex_fraction_ema, None, None)
 
         # New mining
-        new_cex_states, new_cex_violations = self._mine_new_counterexamples(
+        new_cex_states, new_cex_violations = self.mine_counterexamples(
             rho_estimate=rho_estimate, 
             initial_states=state_buffer.sample(
                 self.config.state_buffer_limit,

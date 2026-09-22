@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from .buffer import CEGISBuffer
 from .loss import LyapunovTrainingLossParts
-from .counterexample import BoundaryRhoEvaluation
+from .sublevel import BoundaryRhoEvaluation
 from ..utils import (
     JsonDataclass,
     timeit,

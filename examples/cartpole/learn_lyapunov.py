@@ -15,8 +15,7 @@ from lcil.lyapunov_learning import (
     LyapunovTrainingConfig,
     NeuralLyapunovCandidate,
     ThresholdMonitor,
-)
-from lcil.lyapunov_learning import find_counter_examples, sample_box_rejection_states 
+) 
 from lcil.utils import ArgumentParserConfig, GridSearchHelper, MLP, config_field, IntegrationMethod
 from lcil.utils.lcil_plt.parallel_coodrdinates import parallel_coordinates_plotly
 
@@ -281,20 +280,17 @@ def main() -> None:
             )
             
         if not train_results.aborted:
-            final_cex, final_violations = find_counter_examples(
-                objective=lambda x: trainer.loss_module.mining_objective(x, train_results.rho_estimate),
-                condition_evaluator=lambda x: trainer.loss_module.get_counterexample_mask(x, train_results.rho_estimate),
-                initial_states=sample_box_rejection_states(
-                    lb=trainer.lbx_train,
-                    ub=trainer.ubx_train,
-                    target_count=training_config.state_buffer_limit,
-                    score_fn=lambda x: (
-                        2.0 * train_results.rho_estimate - trainer.lyap_model(x).flatten()
-                    ) / max(train_results.rho_estimate, 1e-9),
-                    device=device,
-                ),
-                config=training_config,
-                device=device,
+            __logger__.info("Mining final counterexamples for visualization...")
+            eval_rho_diag, _ = trainer.estimate_rho(gamma=1.0, with_margin=False)
+            final_rho = eval_rho_diag.rho.rho
+            __logger__.info(
+                "Estimated final rho without margins: %.6f (trained EMA: %.6f)",
+                final_rho,
+                train_results.rho_estimate,
+            )
+            final_cex, final_violations = trainer.mine_counterexamples(
+                rho_estimate=final_rho,
+                with_margin=False,
             )
             if final_cex.numel() > 0:
                 parallel_coordinates_plotly(

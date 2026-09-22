@@ -1,7 +1,12 @@
 import torch as th
-from typing import Sequence, Callable
+from typing import Sequence, Callable, Any
+from numpy.typing import NDArray
 
-def _bounds_tensor(state_bounds: Sequence[float], device: th.device) -> th.Tensor:
+def _bounds_tensor(
+    state_bounds: NDArray | Sequence[float] | th.Tensor | Any, 
+    device: th.device | int | str | None,
+) -> th.Tensor:
+    """Convert state bounds to a PyTorch tensor."""
     bounds = th.as_tensor(state_bounds, dtype=th.float32, device=device)
     if bounds.ndim != 2 or bounds.shape[0] != 2:
         raise ValueError("state_bounds must be a sequence of shape (2, nx) [lb, ub].")
@@ -17,7 +22,7 @@ def sample_uniform_box(
     sample_size: int,
     lb: th.Tensor,
     ub: th.Tensor,
-    device: th.device,
+    device: th.device | int | str | None,
     generator: th.Generator | None = None,
 ) -> th.Tensor:
     """Sample uniformly from the asymmetric box B = {x | lb <= x <= ub}."""
@@ -29,7 +34,7 @@ def sample_boundary_points(
     sample_size: int,
     lb: th.Tensor,
     ub: th.Tensor,
-    device: th.device,
+    device: th.device | int | str | None,
     generator: th.Generator | None = None,
 ) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
     """Sample points uniformly distributed over the actual surface area of the box."""

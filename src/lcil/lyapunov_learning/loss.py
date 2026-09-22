@@ -872,6 +872,7 @@ class LyapunovTrainingLoss(nn.Module):
         candidate_states: th.Tensor,
         rho_estimate: float,
         violation_tolerance: float = 1e-8,
+        with_margin: bool = True,
     ) -> tuple[th.Tensor, th.Tensor]:
         """Evaluate candidate counterexamples and return their raw condition violations and a boolean validity mask.
         
@@ -884,15 +885,24 @@ class LyapunovTrainingLoss(nn.Module):
             )
 
         with th.no_grad():
-            violation = self.condition_violation(candidate_states, rho_estimate, soft_gated=False)
+            violation = self.condition_violation(
+                candidate_states, rho_estimate, soft_gated=False, with_margin=with_margin
+            )
             violation = violation.squeeze(-1)
             mask = violation > violation_tolerance
         return violation, mask
 
-    def mining_objective(self, x_batch: th.Tensor, rho_estimate: float) -> th.Tensor:
+    def mining_objective(
+        self,
+        x_batch: th.Tensor,
+        rho_estimate: float,
+        with_margin: bool = True,
+    ) -> th.Tensor:
         """Return the mining objective value for a batch of states, 
         used for prioritization in the replay buffer and PGD."""
-        viol = self.condition_violation(x_batch, rho_estimate, soft_gated=True)
+        viol = self.condition_violation(
+            x_batch, rho_estimate, soft_gated=True, with_margin=with_margin
+        )
         return -viol
     
     def buffer_sorting_objective(self, x_batch: th.Tensor, rho_estimate: float) -> th.Tensor:
