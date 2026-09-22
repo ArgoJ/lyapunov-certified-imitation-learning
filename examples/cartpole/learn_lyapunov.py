@@ -281,7 +281,11 @@ def main() -> None:
             
         if not train_results.aborted:
             __logger__.info("Mining final counterexamples for visualization...")
-            eval_rho_diag, _ = trainer.estimate_rho(gamma=1.0, with_margin=False)
+            eval_rho_diag, _ = trainer.estimate_rho(
+                gamma=1.0, 
+                estimate_quantile=0.0,
+                with_margin=False,
+            )
             final_rho = eval_rho_diag.rho.rho
             __logger__.info(
                 "Estimated final rho without margins: %.6f (trained EMA: %.6f)",

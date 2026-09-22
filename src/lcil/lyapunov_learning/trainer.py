@@ -274,20 +274,22 @@ class LyapunovTrainer:
         self,
         *,
         gamma: float | None = None,
+        estimate_quantile: float | None = None,
         with_margin: bool = False,
         state_buffer: Any | None = None,
-        config: RhoEstimationConfig | None = None,
     ) -> tuple[BoundaryRhoEvaluation, th.Tensor]:
         """Estimate rho and boundary points using the current Lyapunov model."""
-        cfg = config or (
-            replace(self.rho_config, rho_growth_gamma=gamma)
-            if gamma is not None
-            else self.rho_config
-        )
+        cfg = self.rho_config
+        if gamma is not None:
+            cfg = replace(cfg, rho_growth_gamma=gamma)
+        if estimate_quantile is not None:
+            cfg = replace(cfg, estimate_quantile=estimate_quantile)
         return estimate_rho(
             lyap_model=self.lyap_model,
             config=cfg,
-            condition_evaluator=lambda x: self.loss_module.condition_violation(x, with_margin=with_margin),
+            condition_evaluator=lambda x: self.loss_module.condition_violation(
+                x, with_margin=with_margin, with_softplus=False
+            ),
             state_buffer=state_buffer,
             device=self.device,
             generator=self.torch_gen,
