@@ -199,6 +199,34 @@ class TestLyapunovCertificationConfigNormalization(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"origin_exclusion\[1\]"):
             self._make_config(origin_exclusion=[0.1, -0.1])
 
+    def test_from_training_config_origin_exclusion_clamping(self) -> None:
+        train_cfg = LyapunovTrainingConfig(
+            state_dim=2,
+            state_bounds=np.array([[-1.0, -2.0], [1.0, 2.0]], dtype=float),
+            origin_exclusion=(0.02, 0.05),
+        )
+
+        # Case 1: origin_exclusion is None -> uses training values
+        cert_cfg_none = LyapunovCertificationConfig.from_training_config(train_cfg)
+        self.assertEqual(cert_cfg_none.origin_exclusion, (0.02, 0.05))
+
+        # Case 2: origin_exclusion override is larger -> uses larger override
+        cert_cfg_larger = LyapunovCertificationConfig.from_training_config(
+            train_cfg,
+            origin_exclusion=(0.1, 0.2),
+        )
+        self.assertEqual(cert_cfg_larger.origin_exclusion, (0.1, 0.2))
+
+        # Case 3: origin_exclusion override is smaller in some or all dimensions -> clamped to training values
+        with self.assertLogs("lcil.certification.config", level="WARNING") as cm:
+            cert_cfg_smaller = LyapunovCertificationConfig.from_training_config(
+                train_cfg,
+                origin_exclusion=(0.005, 0.1),
+            )
+        self.assertEqual(cert_cfg_smaller.origin_exclusion, (0.02, 0.1))
+        self.assertTrue(any("Clamping to training origin_exclusion" in msg for msg in cm.output))
+
+
 
 @dataclass(frozen=True)
 class DummyConfig(JsonDataclass):

@@ -102,21 +102,12 @@ class TestLyapunovLossComponents(unittest.TestCase):
 
     def test_r_factor_regularization_loss(self) -> None:
         model = _MockRFactorModel(n=2)
-        loss_fn = RFactorRegularizationLoss(lyap_model=model, min_eig=0.02, max_cond=25.0)
+        loss_fn = RFactorRegularizationLoss(lyap_model=model, max_cond=25.0)
 
-        # 1. Initially zero (P = eye(2), eigenvalues are [1.0, 1.0])
+        # 1. Initially zero (P = eye(2), eigenvalues are [1.0, 1.0], cond=1 <= 25)
         self.assertAlmostEqual(loss_fn().item(), 0.0)
 
-        # 2. After shrinking r_factor below min_eig, floor penalty triggers and gradients flow
-        with th.no_grad():
-            model.r_factor.copy_(0.01 * th.eye(2))
-        floor_loss = loss_fn()
-        self.assertGreater(floor_loss.item(), 0.0)
-        floor_loss.backward()
-        self.assertIsNotNone(model.r_factor.grad)
-        self.assertGreater(model.r_factor.grad.abs().sum().item(), 0.0)
-
-        # 3. After making r_factor ill-conditioned (floor fulfilled: lam_min=0.09 > 0.02, cond=100 > 25),
+        # 2. After making r_factor ill-conditioned (e.g. eigenvalues 9.0 and 0.09 -> cond=100 > 25),
         # condition penalty triggers and gradients flow
         model.r_factor.grad = None
         with th.no_grad():
@@ -293,6 +284,45 @@ class TestLyapunovLossComponents(unittest.TestCase):
             policy.linear.weight.fill_(3.0)
 
         self.assertGreater(float(regularization_loss().item()), 0.0)
+
+    def test_policy_regularization_with_explicit_init_policy(self) -> None:
+        policy = _SingleWeightPolicy(weight=5.0)
+        init_policy = _SingleWeightPolicy(weight=1.0)
+        regularization_loss = PolicyRegularizationLoss(
+            policy=policy,
+            init_policy=init_policy,
+            state_bounds=th.tensor([[-1.0], [1.0]]),
+            device="cpu",
+        )
+
+        # Initially non-zero because policy (weight 5) != init_policy (weight 1)
+        self.assertGreater(float(regularization_loss().item()), 0.0)
+
+        # When policy matches init_policy, loss should be ~0
+        with th.no_grad():
+            policy.linear.weight.fill_(1.0)
+        self.assertAlmostEqual(float(regularization_loss().item()), 0.0, places=6)
+
+        # Verify LyapunovTrainingLoss forwards init_policy_model
+        config = LyapunovTrainingConfig(
+            state_dim=1,
+            state_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
+            policy_regularization_weight=1.0,
+        )
+        loss_module = LyapunovTrainingLoss(
+            policy_model=policy,
+            lyap_model=_LinearValue(),
+            dyn_model=_IdentityDynamics(),
+            config=config,
+            device="cpu",
+            init_policy_model=init_policy,
+        )
+        self.assertIsNotNone(loss_module.policy_regularization_loss)
+        self.assertAlmostEqual(
+            float(loss_module.policy_regularization_loss.init_policy.linear.weight.item()),
+            1.0,
+            places=6,
+        )
 
     def test_formal_positivity_backward_returns_expected_lower_bound(self) -> None:
         config = LyapunovTrainingConfig(

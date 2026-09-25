@@ -126,6 +126,8 @@ class NeuralLyapunovCandidate(nn.Module):
             x_star = th.zeros(state_dim, dtype=th.float32)
 
         self.register_buffer("x_star", x_star.reshape(1, state_dim))
+        self.register_buffer("eye", th.eye(state_dim, dtype=th.float32), persistent=False)
+        self._cached_phi_x_star: th.Tensor | None = None
         self._warned_cond: bool = False
         self._warned_kappa: bool = False
         self._set_last_feature_layer(0.5)
@@ -251,12 +253,10 @@ class NeuralLyapunovCandidate(nn.Module):
                 return self._cached_pd_matrix
 
         # Compute Matrix
-        eye = th.eye(
-            self.state_dim,
-            dtype=self.r_factor.dtype,
-            device=self.r_factor.device,
-        )
-        pd = self.eps * eye + self.r_factor.transpose(0, 1) @ self.r_factor
+        if self.eps > 0.0:
+            pd = th.addmm(self.eps * self.eye, self.r_factor.transpose(0, 1), self.r_factor)
+        else:
+            pd = self.r_factor.transpose(0, 1) @ self.r_factor
 
         # Update Cache
         if not needs_grad:
@@ -269,6 +269,7 @@ class NeuralLyapunovCandidate(nn.Module):
     def set_x_star(self, x_star: th.Tensor) -> None:
         """Set the equilibrium point x* for the Lyapunov candidate."""
         self.x_star.copy_(x_star.reshape(1, -1))
+        self._cached_phi_x_star = None
 
     def set_riccati_p(self, riccati_p: th.Tensor, scale_mode: str | float = "none") -> None:
         """Set the Riccati value matrix to seed the Lyapunov R factor.
@@ -303,16 +304,22 @@ class NeuralLyapunovCandidate(nn.Module):
     
     def get_feature_term(self, x: th.Tensor) -> th.Tensor:
         """Compute the feature term |phi(x) - phi(x*)| for the Lyapunov candidate."""
-        x_star = self.x_star.to(dtype=x.dtype, device=x.device)
         phi_x = self.feature_net(x)
-        phi_x_star = self.feature_net(x_star).squeeze(0)
+        if not th.is_grad_enabled() and self._cached_phi_x_star is not None:
+            phi_x_star = self._cached_phi_x_star
+        else:
+            phi_x_star = self.feature_net(self.x_star).squeeze(0)
+            if not th.is_grad_enabled():
+                self._cached_phi_x_star = phi_x_star.detach()
+            else:
+                self._cached_phi_x_star = None
+
         feature_term = th.abs(phi_x - phi_x_star).sum(dim=1, keepdim=True)
         return feature_term
 
     def get_linear_term(self, x: th.Tensor) -> th.Tensor:
         """Compute the linear term |x - x*| for the Lyapunov candidate."""
-        x_star = self.x_star.to(dtype=x.dtype, device=x.device).squeeze(0)
-        delta = x - x_star
+        delta = x - self.x_star.squeeze(0)
         pd_matrix = self._pd_matrix()
         linear_term = th.abs(delta @ pd_matrix).sum(dim=1, keepdim=True)
         return linear_term

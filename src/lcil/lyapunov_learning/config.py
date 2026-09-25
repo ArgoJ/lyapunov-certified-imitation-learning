@@ -99,8 +99,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     r_factor_regularization_weight : float
         Weight for the regularization of the R factor in the Lyapunov model, if it exists. 
         This helps prevent dimensions from collapsing or becoming ill-conditioned.
-    r_factor_min_eig : float
-        Minimum eigenvalue floor for the positive definite matrix P in the Lyapunov model.
     r_factor_max_cond : float
         Maximum condition number bound for the positive definite matrix P in the Lyapunov model.
     
@@ -302,12 +300,6 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
             "This helps prevent dimensions from collapsing or becoming ill-conditioned.",
         display_alias="r_factor_regularization_w",
         validators=(non_negative_validator,),
-    )
-    r_factor_min_eig: float = config_field(
-        default=0.02,
-        help="Minimum eigenvalue floor for the positive definite matrix P in the Lyapunov model.",
-        display_alias="r_factor_min_eig",
-        validators=(positive_validator,),
     )
     r_factor_max_cond: float = config_field(
         default=25.0,

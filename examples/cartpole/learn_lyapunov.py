@@ -32,16 +32,16 @@ from ..example_utils import build_lyapunov_func
 
 __logger__ = logging.getLogger("lcil.examples.cartpole.learn_lyapunov")
 
-_DEFAULT_TRAIN_BOUND_FACTORS = (0.15, 0.15, 0.08, 0.15)
+_DEFAULT_TRAIN_BOUND_FACTORS = (0.8, 0.5, 0.1, 0.5)
 
 
 @dataclass(frozen=True)
 class LyapunovLearningScriptConfig(ArgumentParserConfig):
     policy_dir: str = config_field(help=f"Policy run directory containing {POLICY_MODEL_FILENAME}.")
-    device: str = config_field(default="cpu", help="Torch device string (for example cpu or cuda).")
-    activation: str = config_field(default="relu", help="Activation function for the Lyapunov feature net.", display_alias="act")
-    hidden_size: int = config_field(default=32, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
-    layers: int = config_field(default=2, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
+    device: str = config_field(default="cuda", help="Torch device string (for example cpu or cuda).")
+    activation: str = config_field(default="leaky_relu", help="Activation function for the Lyapunov feature net.", display_alias="act")
+    hidden_size: int = config_field(default=24, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
+    layers: int = config_field(default=3, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
     use_angle_wrapper: bool = config_field(default=False, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
     fix_r_factor: bool = config_field(default=False, help="Whether to fix the R factor in the Lyapunov candidate to 1.0.")
     riccati_scale: str | float = config_field(
@@ -54,8 +54,9 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
         default_factory=lambda: list(_DEFAULT_TRAIN_BOUND_FACTORS),
         help="Per-dimension scaling applied to policy state bounds before Lyapunov training.",
     )
+    eps: float = config_field(default=0.0, help="Epsilon added to the Riccati matrix P inside NeuralLyapunovCandidate.")
     curriculum_scales: list[float] = config_field(
-        default_factory=lambda: [0.3, 0.6, 0.8, 1.0],
+        default_factory=lambda: [0.3, 0.5, 1.0],
         help=("Curriculum scales applied to the final training bounds."),
     )
 
@@ -72,37 +73,46 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         train_bounds=None,
         batch_size=2048,
         learning_rate=1e-4,
-        outer_epochs=500,
-        steps_per_epoch=10,
-        policy_epochs=400,
-        policy_lr_factor=0.5,
-        kappa=0.01,
+        outer_epochs=250,
+        steps_per_epoch=50,
+        policy_epochs=150,
+        policy_lr_factor=0.01,
+        policy_update_interval=3,
+        kappa=0.001,
         seed=1674653,
         regularization_num_samples=8192,
         regularization_resample_interval=10,
-        origin_exclusion=[0.01, 0.1, 0.01, 0.1],
+        origin_exclusion=[0.002, 0.005, 0.001, 0.005],
         bins_per_dim=15,
 
-        condition_weight=10.0,
-        roa_weight=0.05,
-        condition_lirpa_weight=0.2,
-        l1_weight=0.00001,
-        scale_weight=0.0,
+        condition_weight=50.0,
+        roa_weight=0.5,
+        condition_lirpa_weight=0.005,
+        l1_weight=0.0,
+        weight_decay=0.0,
+        scale_weight=2.5,
         equilibrium_weight=0.0,
         formal_positivity_weight=0.0,
-        policy_regularization_weight=0.1,
-        r_factor_regularization_weight=10.0,
+        policy_regularization_weight=10.0,
+        r_factor_regularization_weight=1.0,
+        r_factor_lr_factor=0.1,
+        r_factor_max_cond=600.0,
+        condition_margin=0.01,
 
         roa_candidate_size=8192,
         rho_estimation_samples=32768,
-        rho_estimate_quantile=0.01,
+        rho_estimate_quantile=0.005,
         rho_descent_steps=20,
-        rho_growth_gamma=1.1,
+        rho_growth_gamma=1.15,
         rho_ema_decay=0.95,
-        cex_every=10,
+        rho_resample_margin=1.3,
+        cex_every=2,
+        cex_max_age=2,
+        cex_fraction_max=0.6,
         cex_descent_steps=20,
         state_buffer_limit=32768,
-        cex_step_size=0.0001,
+        cex_step_size=0.01,
+        enable_diagnosis=True,
     )
 
 
@@ -216,6 +226,7 @@ def main() -> None:
             feature_net=(CartpoleAngleWrapper(feature_net=lyap_feature) 
                 if script_config.use_angle_wrapper else lyap_feature),
             state_dim=mpc_cfg.nx,
+            eps=script_config.eps,
             riccati_p=riccati_p,
             riccati_scale=script_config.riccati_scale,
             fixed_r_factor=script_config.fix_r_factor,

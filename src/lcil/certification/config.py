@@ -263,7 +263,7 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         object.__setattr__(self, "split_dim_weights", split_dim_weights)
         object.__setattr__(self, "lirpa_method", self.lirpa_method.strip().lower())
 
-        if all(e == 0.0 for e in self.origin_exclusion):
+        if all(e == 0.0 for e in normalized_origin_exclusion):
             __logger__.warning("You may want to set a positive origin_exclusion to avoid numerical issues near the origin during certification.")
 
     @staticmethod
@@ -292,30 +292,75 @@ class LyapunovCertificationConfig(JsonDataclass, ArgumentParserConfig):
         """Build a certification config from a training config.
 
         Explicit function arguments override values derived from ``config``.
+        If an ``origin_exclusion`` override is provided, each dimension is clamped
+        to be at least as large as the training origin exclusion.
         """
-        config_values = {
-            "state_dim": config.state_dim,
-            "cert_bounds": config.train_bounds if cert_bounds is None else cert_bounds,
-            "kappa": config.kappa,
-            "rho_min": config.rho_min,
-            "bins_per_dim": bins_per_dim,
-            "center_refinement_factor": center_refinement_factor,
-            "origin_exclusion": config.origin_exclusion if origin_exclusion is None else origin_exclusion,
-            "rho_scaling": rho_scaling,
-            "bisection_tol": bisection_tol,
-            "max_scale_steps": max_scale_steps,
-            "max_bisection_steps": max_bisection_steps,
-            "lirpa_method": lirpa_method,
-            "sublevel_tolerance": sublevel_tolerance,
-            "condition_tolerance": sublevel_tolerance,
-            "suppress_native_output": suppress_native_output,
-            "batch_size": batch_size,
-            "abcrown_timeout": abcrown_timeout,
-            "abcrown_max_domains": abcrown_max_domains,
-            "abcrown_input_split_partitions": abcrown_input_split_partitions,
-            "max_recursion_depth": max_recursion_depth,
-            "skip_core_cert": skip_core_cert,
-            "split_dim_weights": split_dim_weights,
-            "use_affine_l1_sublevel_bounds": use_affine_l1_sublevel_bounds,
-        }
-        return LyapunovCertificationConfig(**config_values)
+        if origin_exclusion is None:
+            resolved_origin_exclusion = config.origin_exclusion
+        else:
+            normalized_training = normalize_scalar_or_sequence(
+                config.origin_exclusion,
+                state_dim=config.state_dim,
+                name="training origin_exclusion",
+                caster=float,
+            )
+            normalized_override = normalize_scalar_or_sequence(
+                origin_exclusion,
+                state_dim=config.state_dim,
+                name="origin_exclusion",
+                caster=float,
+            )
+            train_seq = (
+                normalized_training
+                if isinstance(normalized_training, (tuple, list))
+                else (normalized_training,) * config.state_dim
+            )
+            override_seq = (
+                normalized_override
+                if isinstance(normalized_override, (tuple, list))
+                else (normalized_override,) * config.state_dim
+            )
+            resolved_origin_exclusion = tuple(
+                max(float(ov), float(tr))
+                for ov, tr in zip(override_seq, train_seq)
+            )
+            if any(ov < tr for ov, tr in zip(override_seq, train_seq)):
+                __logger__.warning(
+                    "Override origin_exclusion %s has elements smaller than training origin_exclusion %s. "
+                    "Clamping to training origin_exclusion: %s",
+                    override_seq,
+                    train_seq,
+                    resolved_origin_exclusion,
+                )
+
+        resolved_cert_bounds = cert_bounds if cert_bounds is not None else (
+            config.train_bounds if config.train_bounds is not None else config.state_bounds
+        )
+        if resolved_cert_bounds is None:
+            raise ValueError("cert_bounds must be provided or defined in training_config.")
+
+        return LyapunovCertificationConfig(
+            state_dim=config.state_dim,
+            cert_bounds=resolved_cert_bounds,
+            kappa=config.kappa,
+            rho_min=config.rho_min,
+            bins_per_dim=bins_per_dim,
+            center_refinement_factor=center_refinement_factor,
+            origin_exclusion=resolved_origin_exclusion,
+            rho_scaling=rho_scaling,
+            bisection_tol=bisection_tol,
+            max_scale_steps=max_scale_steps,
+            max_bisection_steps=max_bisection_steps,
+            lirpa_method=lirpa_method,
+            sublevel_tolerance=sublevel_tolerance,
+            condition_tolerance=sublevel_tolerance,
+            suppress_native_output=suppress_native_output,
+            batch_size=batch_size,
+            abcrown_timeout=abcrown_timeout,
+            abcrown_max_domains=abcrown_max_domains,
+            abcrown_input_split_partitions=abcrown_input_split_partitions,
+            max_recursion_depth=max_recursion_depth,
+            skip_core_cert=skip_core_cert,
+            split_dim_weights=split_dim_weights,
+            use_affine_l1_sublevel_bounds=use_affine_l1_sublevel_bounds,
+        )

@@ -10,6 +10,7 @@ Act like a control + DL engineer: keep changes small, numerically careful, and c
 - Imitation Learning: `src/lcil/imitation_learning`
 - Lyapunov Learning: `src/lcil/lypunov_learning/`
 - Certification: `src/lcil/certification/`
+- Certification Rules & Workflow: `.agents/rules/certification-workflow.md`
 - Example system: `examples/double_integrator/`
 - Generated solver artifacts (do not edit): `c_generated_code/`
 

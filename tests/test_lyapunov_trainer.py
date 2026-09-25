@@ -310,6 +310,49 @@ class TestLyapunovTrainer(unittest.TestCase):
         np.testing.assert_allclose(trainer.config.train_bounds, expected_stage_bounds[1])
         self.assertAlmostEqual(curriculum_result.final_result.rho_estimate, 2.0, places=6)
 
+    def test_train_with_scaled_bounds_regularizes_to_true_initial_policy(self) -> None:
+        config = LyapunovTrainingConfig(
+            state_dim=1,
+            state_bounds=np.array([[-2.0], [2.0]], dtype=np.float32),
+            policy_regularization_weight=1.0,
+        )
+        policy = _SingleWeightPolicy(weight=1.0)
+        trainer = LyapunovTrainer(
+            policy_model=policy,
+            lyap_model=_TrainableQuadraticLyapunov(),
+            dyn_model=_IdentityDynamics(),
+            config=config,
+        )
+
+        stage_init_weights: list[float] = []
+
+        def _fake_train(stage_self: LyapunovTrainer, *args: Any, **kwargs: Any) -> LyapunovTrainingResult:
+            reg_loss = stage_self.loss_module.policy_regularization_loss
+            self.assertIsNotNone(reg_loss)
+            init_w = float(reg_loss.init_policy.linear.weight.item())
+            stage_init_weights.append(init_w)
+
+            # Mutate policy to simulate training drift in this stage
+            with th.no_grad():
+                stage_self.policy_model.linear.weight.add_(10.0)
+
+            stage_self.results = LyapunovTrainingResult(
+                rho_estimate=1.0,
+                num_mined_counterexamples=0,
+                train_time=0.0,
+            )
+            stage_self.metrics = None
+            return stage_self.results
+
+        with patch.object(LyapunovTrainer, "train", autospec=True, side_effect=_fake_train):
+            curriculum_result = trainer.train_with_scaled_bounds([0.5, 1.0])
+
+        self.assertEqual(len(curriculum_result.stages), 2)
+        # Both stage 0 and stage 1 must regularize against the original initial policy (weight 1.0),
+        # even though stage 0 mutated policy_model to weight 11.0!
+        self.assertEqual(stage_init_weights, [1.0, 1.0])
+        self.assertAlmostEqual(float(trainer.init_policy_model.linear.weight.item()), 1.0, places=6)
+
     def test_trainer_save_writes_training_result_json(self) -> None:
         config = LyapunovTrainingConfig(
             state_dim=1,

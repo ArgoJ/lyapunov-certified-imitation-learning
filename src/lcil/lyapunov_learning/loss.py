@@ -663,11 +663,13 @@ class PolicyRegularizationLoss(BoundedStateSamplingModule):
         num_samples: int = 1024,
         resample_interval: int = 100,
         device: th.device | str = "cpu",
+        init_policy: nn.Module | None = None,
     ) -> None:
         super().__init__(
             state_bounds=state_bounds, num_samples=num_samples, resample_interval=resample_interval, device=device
         )
-        self.init_policy = deepcopy(policy).to(self.device)
+        ref_policy = init_policy if init_policy is not None else policy
+        self.init_policy = deepcopy(ref_policy).to(self.device)
         self.policy = policy
         self._set_init_policy_mode()
 
@@ -705,17 +707,15 @@ class PolicyRegularizationLoss(BoundedStateSamplingModule):
 
 
 class RFactorRegularizationLoss(nn.Module):
-    """Combined R-factor floor and condition bound."""
+    """Condition-number regularization for P = eps I + R^T R."""
 
     def __init__(
         self,
         lyap_model: NeuralLyapunovCandidate,
-        min_eig: float = 0.02,
         max_cond: float = 25.0,
     ) -> None:
         super().__init__()
         self.lyap_model = lyap_model
-        self.min_eig = min_eig
         self.max_cond = max_cond
 
     def forward(self) -> th.Tensor:
@@ -723,10 +723,10 @@ class RFactorRegularizationLoss(nn.Module):
         eigs = th.linalg.eigvalsh(P)
         lam_min, lam_max = eigs[0], eigs[-1]
 
-        floor_penalty = th.square(F.relu(self.min_eig - lam_min) / self.min_eig)
-        cond_penalty = th.square(F.relu(lam_max - self.max_cond * lam_min) / lam_max.detach().clamp_min(1e-6))
-
-        return floor_penalty + cond_penalty
+        return (
+            F.relu(lam_max - self.max_cond * lam_min)
+            / lam_max.detach().clamp_min(1e-6)
+        ).square()
 
 
 
@@ -740,9 +740,11 @@ class LyapunovTrainingLoss(nn.Module):
         dyn_model: nn.Module,
         config: LyapunovTrainingConfig,
         device: th.device | str = "cpu",
+        init_policy_model: nn.Module | None = None,
     ) -> None:
         super().__init__()
         self.policy_model = policy_model
+        self.init_policy_model = init_policy_model
         self.lyap_model = lyap_model
         self.dyn_model = dyn_model
         self.config = config
@@ -813,6 +815,7 @@ class LyapunovTrainingLoss(nn.Module):
                 num_samples=self.config.regularization_num_samples,
                 resample_interval=self.config.regularization_resample_interval,
                 device=self.device,
+                init_policy=self.init_policy_model,
             )
             if (self.config.policy_regularization_weight > 0.0 or self.config.enable_diagnosis) else None
         )
@@ -821,7 +824,6 @@ class LyapunovTrainingLoss(nn.Module):
         self.r_factor_regularization_loss = (
             RFactorRegularizationLoss(
                 lyap_model=self.lyap_model,
-                min_eig=self.config.r_factor_min_eig,
                 max_cond=self.config.r_factor_max_cond,
             )
             if has_learnable_r_factor(self.lyap_model) and (self.config.r_factor_regularization_weight > 0.0 or self.config.enable_diagnosis) else None

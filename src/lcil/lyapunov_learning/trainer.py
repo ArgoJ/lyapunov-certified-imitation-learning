@@ -7,6 +7,7 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 
+from copy import deepcopy
 from typing import Any
 from collections.abc import Sequence
 from numpy.typing import NDArray
@@ -87,7 +88,8 @@ class LyapunovTrainer:
         dyn_model: nn.Module,
         config: LyapunovTrainingConfig,
         rho_monitor: ThresholdMonitor | None = None,
-        device: th.device | str = "cpu"
+        device: th.device | str = "cpu",
+        init_policy_model: nn.Module | None = None,
     ) -> None:
         self.config = config
         self.device = th.device(device)
@@ -98,12 +100,22 @@ class LyapunovTrainer:
         self.policy_model = policy_model.to(self.device)
         self.lyap_model = lyap_model.to(self.device)
         self.dyn_model = dyn_model.to(self.device)
+
+        if init_policy_model is not None:
+            self.init_policy_model = init_policy_model.to(self.device)
+        else:
+            self.init_policy_model = deepcopy(self.policy_model).to(self.device)
+            for param in self.init_policy_model.parameters():
+                param.requires_grad = False
+            self.init_policy_model.eval()
+
         self.loss_module = LyapunovTrainingLoss(
             policy_model=self.policy_model,
             lyap_model=self.lyap_model,
             dyn_model=self.dyn_model,
             config=self.config,
             device=self.device,
+            init_policy_model=self.init_policy_model,
         )
 
         self._policy_start_epoch = self.config.outer_epochs - self.config.policy_epochs if self.config.policy_epochs is not None else float("inf")
@@ -708,6 +720,7 @@ class LyapunovTrainer:
                 config=stage_config,
                 rho_monitor=self.rho_monitor,
                 device=self.device,
+                init_policy_model=self.init_policy_model,
             )
             stage_result = stage_trainer.train(description=f"Lyapunov Learning Stage [{stage_index + 1}/{len(scaled_bounds)}]")
             final_stage_trainer = stage_trainer
@@ -750,6 +763,7 @@ class LyapunovTrainer:
         self.center_train = final_stage_trainer.center_train
         self.results = final_stage_trainer.results
         self.metrics = final_stage_trainer.metrics
+        self.init_policy_model = final_stage_trainer.init_policy_model
 
         return LyapunovTrainingCurriculumResult(
             stages=stage_records,

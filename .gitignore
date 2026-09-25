@@ -229,3 +229,4 @@ tests/mpc_dataset_path.txt
 .continue/
 .agents/
 external/
+scratch/
