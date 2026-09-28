@@ -8,7 +8,7 @@ import torch.nn as nn
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 from pkg_logger import suppress_native_output
 
@@ -31,7 +31,7 @@ __logger__ = logging.getLogger(__name__)
 # HELPER
 # ========================================================
 def _normalize_status(status: str) -> str:
-    return str(status).strip().lower()
+    return status.strip().lower()
 
 def _is_safe_status(status: str) -> bool:
     normalized = _normalize_status(status)
@@ -49,6 +49,12 @@ def _is_unknown_status(status: str) -> bool:
 # ========================================================
 # DATACLASSES & ENUMS
 # ========================================================
+class PGDMode(IntEnum):
+    NOT = 0
+    COMBINED = 1
+    ONLY = 2
+
+
 class EarlyExitLevel(IntEnum):
     NONE = 0
     ON_COUNTEREXAMPLE = 1
@@ -62,6 +68,7 @@ class ABCrownRegionVerification:
     status: str
     verified: bool
     counterexample_found: bool
+    counterexample: th.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +78,7 @@ class ABCrownRegionBatchVerification:
     verified_mask: th.Tensor
     counterexample_mask: th.Tensor
     unknown_mask: th.Tensor
+    counterexamples: list[th.Tensor] = field(default_factory=list)
 
     @property
     def failed_mask(self) -> th.Tensor:
@@ -117,8 +125,11 @@ class BaseABCrownCertifier(ABC):
         self.device = device
 
         self._abcrown_api: _ABCrownAPI | None = None
-        self.abcrown_config: Any = None
-        self.abcrown_leaf_config: Any = None
+        self.abcrown_pgd_config: Any = None
+        self.abcrown_combined_config: Any = None
+        self.abcrown_leaf_combined_config: Any = None
+        self.abcrown_no_pgd_config: Any = None
+        self.abcrown_leaf_no_pgd_config: Any = None
         self.verifier: nn.Module | None = None
         self._cached_clauses: dict[float, Any] = {}
 
@@ -167,13 +178,38 @@ class BaseABCrownCertifier(ABC):
             return f"{float(bab_vals[0][1].detach().cpu().item()):.3f}"
         return "N/A"
 
-    def _build_abcrown_config(self, is_leaf: bool = False) -> Any:
+    @staticmethod
+    def _extract_counterexample(result: Any) -> th.Tensor | None:
+        stats = getattr(result, "stats", {}) or {}
+        ref = getattr(result, "reference", {}) or {}
+        for c in (getattr(result, "c", None), stats.get("attack_examples"), ref.get("attack_examples")):
+            if c is not None:
+                cex = c[0] if isinstance(c, (list, tuple)) and len(c) > 0 else c
+                if isinstance(cex, th.Tensor):
+                    cex = cex.detach().cpu()
+                    if cex.ndim == 2:
+                        margins = stats.get("attack_margins")
+                        if isinstance(margins, th.Tensor) and margins.numel() == cex.shape[0]:
+                            cex = cex[th.argmin(margins)]
+                        else:
+                            cex = cex[0]
+                    return cex.squeeze()
+        return None
+
+    def _build_abcrown_config(
+        self,
+        is_leaf: bool = False,
+        pgd: PGDMode = PGDMode.COMBINED,
+    ) -> Any:
         abcrown_api = self._get_abcrown_api()
+        complete_verifier = "skip" if pgd == PGDMode.ONLY else "input_bab"
+        pgd_order = "skip" if pgd == PGDMode.NOT else "before"
+        enable_incomplete = (pgd == PGDMode.ONLY)
         config_builder = (
             abcrown_api.config_builder_cls.from_defaults()
             .set(general__device=self.device.type)
-            .set(general__complete_verifier="input_bab")
-            .set(general__enable_incomplete_verification=False)
+            .set(general__complete_verifier=complete_verifier)
+            .set(general__enable_incomplete_verification=enable_incomplete)
             .set(solver__batch_size=self.config.batch_size)
             .set(solver__bound_prop_method="crown")
             .set(bab__branching__method="sb")
@@ -182,7 +218,7 @@ class BaseABCrownCertifier(ABC):
             .set(bab__branching__input_split__compare_with_old_bounds=True)
             .set(bab__branching__input_split__adv_check=-1)
             .set(bab__branching__input_split__split_partitions=self.config.abcrown_input_split_partitions)
-            .set(attack__pgd_order="before")
+            .set(attack__pgd_order=pgd_order)
             .set(bab__decision_thresh=-float(self.config.condition_tolerance))
         )
         if self.config.abcrown_timeout is not None:
@@ -198,20 +234,26 @@ class BaseABCrownCertifier(ABC):
         self._cached_clauses.clear()
         if (
             self.verifier is not None
-            and self.abcrown_config is not None
-            and self.abcrown_leaf_config is not None
+            and self.abcrown_combined_config is not None
+            and self.abcrown_leaf_combined_config is not None
+            and self.abcrown_pgd_config is not None
+            and self.abcrown_no_pgd_config is not None
+            and self.abcrown_leaf_no_pgd_config is not None
         ):
             return
 
-        self.abcrown_config = self._build_abcrown_config(is_leaf=False)
-        self.abcrown_leaf_config = self._build_abcrown_config(is_leaf=True)
+        self.abcrown_pgd_config = self._build_abcrown_config(pgd=PGDMode.ONLY)
+        self.abcrown_combined_config = self._build_abcrown_config(is_leaf=False, pgd=PGDMode.COMBINED)
+        self.abcrown_leaf_combined_config = self._build_abcrown_config(is_leaf=True, pgd=PGDMode.COMBINED)
+        self.abcrown_no_pgd_config = self._build_abcrown_config(is_leaf=False, pgd=PGDMode.NOT)
+        self.abcrown_leaf_no_pgd_config = self._build_abcrown_config(is_leaf=True, pgd=PGDMode.NOT)
 
         self.verifier = self._setup_verifier()
         self.verifier.eval()
 
         __logger__.debug(
             "Configured ABCrown region backend with solver_batch_size=%d on device=%s (timeout=%s, max_domains=%s).",
-            int(self.config.batch_size),
+            self.config.batch_size,
             self.device.type,
             (
                 f"{float(self.config.abcrown_timeout):.1f}s"
@@ -219,7 +261,7 @@ class BaseABCrownCertifier(ABC):
                 else "default"
             ),
             (
-                str(int(self.config.abcrown_max_domains))
+                str(self.config.abcrown_max_domains)
                 if self.config.abcrown_max_domains is not None
                 else "default"
             ),
@@ -231,13 +273,14 @@ class BaseABCrownCertifier(ABC):
         rho: float,
         *,
         is_leaf: bool = False,
+        pgd: PGDMode = PGDMode.COMBINED,
     ) -> ABCrownRegionVerification:
         if region.shape != (2, self.config.state_dim):
             raise ValueError(
                 f"region must have shape (2, {self.config.state_dim}); got {tuple(region.shape)}."
             )
 
-        if self.verifier is None or self.abcrown_config is None:
+        if self.verifier is None or self.abcrown_combined_config is None:
             raise RuntimeError("Adaptive ABCrown backend is not initialized.")
 
         abcrown_api = self._get_abcrown_api()
@@ -271,11 +314,20 @@ class BaseABCrownCertifier(ABC):
                 upper=upper,
                 clauses=clauses,
             )
-            solver_config = (
-                self.abcrown_leaf_config
-                if is_leaf and self.abcrown_leaf_config is not None
-                else self.abcrown_config
-            )
+            if pgd == PGDMode.ONLY and self.abcrown_pgd_config is not None:
+                solver_config = self.abcrown_pgd_config
+            elif pgd == PGDMode.NOT and self.abcrown_no_pgd_config is not None:
+                solver_config = (
+                    self.abcrown_leaf_no_pgd_config
+                    if is_leaf and self.abcrown_leaf_no_pgd_config is not None
+                    else self.abcrown_no_pgd_config
+                )
+            else:
+                solver_config = (
+                    self.abcrown_leaf_combined_config
+                    if is_leaf and self.abcrown_leaf_combined_config is not None
+                    else self.abcrown_combined_config
+                )
             solver = abcrown_api.solver_cls(
                 spec=spec,
                 computing_graph=self.verifier,
@@ -288,10 +340,24 @@ class BaseABCrownCertifier(ABC):
         bab_vals = result.stats.get("bab", list())
         bab_violation = f"violation={self._extract_bab_violation(bab_vals)}." if _is_unknown_status(status) else "no violation."
         __logger__.debug("ABCrown solver status: %s after %s with %s", status, elapsed, bab_violation)
+
+        cex = self._extract_counterexample(result) if _is_counterexample_status(status) else None
+        if _is_counterexample_status(status):
+            extra_info = ""
+            if cex is not None and hasattr(self, "lyap_model") and self.lyap_model is not None:
+                try:
+                    v_val = self.lyap_model(cex.unsqueeze(0).to(self.device)).item()
+                    extra_info = f" (V(x) = {v_val:.5f}, rho = {float(rho):.5f})"
+                except Exception:
+                    pass
+            x_str = f" x = {[round(float(v), 5) for v in cex.flatten()]}{extra_info}" if cex is not None else ""
+            __logger__.info("Counterexample found by solver (%s) after %s:%s", status, elapsed, x_str)
+
         return ABCrownRegionVerification(
             status=status,
             verified=_is_safe_status(status),
             counterexample_found=_is_counterexample_status(status),
+            counterexample=cex,
         )
 
     def certify_regions(
@@ -318,6 +384,7 @@ class BaseABCrownCertifier(ABC):
         verified_mask = th.zeros((len(regions),), dtype=th.bool, device=self.device)
         counterexample_mask = th.zeros((len(regions),), dtype=th.bool, device=self.device)
         unknown_mask = th.zeros((len(regions),), dtype=th.bool, device=self.device)
+        counterexamples: list[th.Tensor] = []
 
         if progress is not None:
             task_description = description if description is not None else self.progress_description
@@ -325,14 +392,41 @@ class BaseABCrownCertifier(ABC):
 
 
         try:
+            # PGD Screening
+            if early_exit != EarlyExitLevel.NONE:
+                for idx, region in enumerate(regions):
+                    res = self.verify_region(region, rho, pgd=PGDMode.ONLY)
+                    if res.counterexample_found:
+                        counterexample_mask[idx] = True
+                        if res.counterexample is not None:
+                            counterexamples.append(res.counterexample)
+                        if progress is not None:
+                            progress.step_certify(False, True)
+                        return ABCrownRegionBatchVerification(
+                            verified_mask=verified_mask,
+                            counterexample_mask=counterexample_mask,
+                            unknown_mask=unknown_mask,
+                            counterexamples=counterexamples,
+                        )
+
+            # Formal BaB
+            pgd_mode: PGDMode = PGDMode.NOT if early_exit != EarlyExitLevel.NONE else PGDMode.COMBINED
             for idx, region in enumerate(regions):
-                verification_result = self.verify_region(region, rho, is_leaf=is_leaf)
+                verification_result = self.verify_region(
+                    region,
+                    rho,
+                    is_leaf=is_leaf,
+                    pgd=pgd_mode,
+                )
                 verified_mask[idx] = verification_result.verified
                 counterexample_mask[idx] = verification_result.counterexample_found
                 unknown_mask[idx] = (
                     not verification_result.verified
                     and not verification_result.counterexample_found
                 )
+                if verification_result.counterexample is not None:
+                    counterexamples.append(verification_result.counterexample)
+
                 if progress is not None:
                     progress.step_certify(
                         verification_result.verified,
@@ -351,6 +445,7 @@ class BaseABCrownCertifier(ABC):
             verified_mask=verified_mask,
             counterexample_mask=counterexample_mask,
             unknown_mask=unknown_mask,
+            counterexamples=counterexamples,
         )
 
 

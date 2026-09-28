@@ -7,7 +7,7 @@ from .empirical_certification_tester import (
     CertificationTesterResult,
     CertificationResultTester
 )
-from .abcrown_region_certifier import CompleteABCrownCertifier, CoreABCrownCertifier
+from .abcrown_region_certifier import CompleteABCrownCertifier, CoreABCrownCertifier, PGDMode
 from .core_constraint_inspector import (
     ConstraintInspectionResult,
     CoreConstraintInspectionResult,
@@ -38,6 +38,7 @@ __all__ = [
     "CertificationResultTester",
     "CompleteABCrownCertifier",
     "CoreABCrownCertifier",
+    "PGDMode",
     "ConstraintInspectionResult",
     "CoreConstraintInspectionResult",
     "CoreConstraintInspector",

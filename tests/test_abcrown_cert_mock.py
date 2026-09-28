@@ -110,9 +110,9 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
             certifier,
             "verify_region",
             side_effect=[
-                SimpleNamespace(verified=True, counterexample_found=False),
-                SimpleNamespace(verified=False, counterexample_found=True),
-                SimpleNamespace(verified=True, counterexample_found=False),
+                SimpleNamespace(verified=True, counterexample_found=False, counterexample=None),
+                SimpleNamespace(verified=False, counterexample_found=True, counterexample=None),
+                SimpleNamespace(verified=True, counterexample_found=False, counterexample=None),
             ],
         ) as verify_region_mock:
             batch_result = certifier.certify_regions(regions, rho=0.25, early_exit=True)
@@ -120,7 +120,7 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
         self.assertTrue(
             th.equal(
                 batch_result.verified_mask.cpu(),
-                th.tensor([True, False, False], dtype=th.bool),
+                th.tensor([False, False, False], dtype=th.bool),
             )
         )
         self.assertTrue(
@@ -158,9 +158,9 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
             certifier,
             "verify_region",
             side_effect=[
-                SimpleNamespace(verified=True, counterexample_found=False),
-                SimpleNamespace(verified=False, counterexample_found=True),
-                SimpleNamespace(verified=True, counterexample_found=False),
+                SimpleNamespace(verified=True, counterexample_found=False, counterexample=None),
+                SimpleNamespace(verified=False, counterexample_found=True, counterexample=None),
+                SimpleNamespace(verified=True, counterexample_found=False, counterexample=None),
             ],
         ) as verify_region_mock:
             batch_result = certifier.certify_regions(regions, rho=0.25, early_exit=True)
@@ -181,6 +181,8 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
 
     def test_verify_region_uses_leaf_config_when_is_leaf(self) -> None:
         from dataclasses import replace
+        from lcil.certification.abcrown_region_certifier import PGDMode
+
         certifier = self.make_abcrown_region_certifier(
             state_dim=1,
             cert_bounds=[[-2.0], [2.0]],
@@ -196,10 +198,19 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
 
         with mock.patch.object(certifier, "_get_abcrown_api", return_value=mock_api):
             certifier.verify_region(region, rho=1.0, is_leaf=False)
-            self.assertEqual(mock_solver_cls.call_args.kwargs["config"], certifier.abcrown_config)
+            self.assertEqual(mock_solver_cls.call_args.kwargs["config"], certifier.abcrown_combined_config)
 
             certifier.verify_region(region, rho=1.0, is_leaf=True)
-            self.assertEqual(mock_solver_cls.call_args.kwargs["config"], certifier.abcrown_leaf_config)
+            self.assertEqual(mock_solver_cls.call_args.kwargs["config"], certifier.abcrown_leaf_combined_config)
+
+            certifier.verify_region(region, rho=1.0, pgd=PGDMode.ONLY)
+            self.assertEqual(mock_solver_cls.call_args.kwargs["config"], certifier.abcrown_pgd_config)
+
+            certifier.verify_region(region, rho=1.0, pgd=PGDMode.NOT, is_leaf=False)
+            self.assertEqual(mock_solver_cls.call_args.kwargs["config"], certifier.abcrown_no_pgd_config)
+
+            certifier.verify_region(region, rho=1.0, pgd=PGDMode.NOT, is_leaf=True)
+            self.assertEqual(mock_solver_cls.call_args.kwargs["config"], certifier.abcrown_leaf_no_pgd_config)
 
 
 if __name__ == "__main__":

@@ -106,44 +106,43 @@ def discover_model_dir(
     """
     resolved_results_root = resolve_root(results_root)
 
-    candidates: list[tuple[Path, str]] = []
+    candidates: list[tuple[Path, str, str]] = []
     for path in resolved_results_root.rglob(checkpoint_name):
         if any(_path_is_within_named_dir(path, resolved_results_root, dir_name) for dir_name in excluded_dir_names):
             continue
         if candidate_filter is not None and not candidate_filter(path, resolved_results_root):
             continue
-        # __logger__.info("searching for model %s in %s", checkpoint_name, path)
-        if isinstance(sorting_idx, slice):
-            parents_to_check = path.parents[sorting_idx]
-        else:
+        found_iso_name = None
+        if isinstance(sorting_idx, int):
             try:
-                parents_to_check = [path.parents[sorting_idx]]
+                candidate_parent = path.parents[sorting_idx]
+                found_iso_name = candidate_parent.name
             except IndexError:
                 continue
-
-        found_iso_name = None
-        for parent in parents_to_check:
-            if ISO_PATTERN.match(parent.name):
-                found_iso_name = parent.name
-                break
-
-            if parent == resolved_results_root or resolved_results_root not in parent.parents:
-                break
+        else:
+            for parent in path.parents:
+                if parent == resolved_results_root or resolved_results_root not in parent.parents:
+                    break
+                if ISO_PATTERN.match(parent.name):
+                    found_iso_name = parent.name
+                    break
 
         if found_iso_name is None:
-            if isinstance(sorting_idx, slice):
-                found_iso_name = path.parents[sorting_idx.start or 0].name
-            else:
-                found_iso_name = path.parents[sorting_idx].name
+            found_iso_name = path.parent.name
 
-        candidates.append((path, found_iso_name))
+        try:
+            rel_path_str = str(path.relative_to(resolved_results_root))
+        except ValueError:
+            rel_path_str = str(path)
+
+        candidates.append((path, found_iso_name, rel_path_str))
             
     if not candidates:
         raise FileNotFoundError(
             f"No checkpoint '{checkpoint_name}' found under '{resolved_results_root}'."
         )
         
-    candidates = sorted(candidates, key=lambda x: x[1])
+    candidates = sorted(candidates, key=lambda x: (x[1], x[2]))
     return candidates[n][0].parent
 
 
