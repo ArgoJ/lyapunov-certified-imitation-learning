@@ -110,6 +110,37 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         self.assertGreater(mined_cex.shape[0], 0)
         self.assertTrue(th.all(mined_values <= rho_estimate + 1e-6).item())
 
+    def test_trainer_mining_with_axis_antiphase(self) -> None:
+        class _Unstable2DDyn(th.nn.Module):
+            def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+                return 1.1 * x
+
+        config = LyapunovTrainingConfig(
+            state_dim=2,
+            state_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]], dtype=np.float32),
+            origin_exclusion=[0.05, 0.05],
+            state_buffer_limit=128,
+            cex_descent_steps=2,
+            cex_step_size=0.01,
+            cex_axis_antiphase_samples=64,
+            cex_axis_scale_factor=1.0,
+        )
+        trainer = LyapunovTrainer(
+            policy_model=_ZeroPolicy(),
+            lyap_model=_TrainableQuadraticLyapunov(),
+            dyn_model=_Unstable2DDyn(),
+            config=config,
+        )
+
+        mined_cex, mined_viols = trainer.mine_counterexamples(
+            rho_estimate=0.5,
+        )
+
+        self.assertGreater(mined_cex.shape[0], 0)
+        # All mined counterexamples must be outside the origin exclusion
+        inside_exclusion = th.all(mined_cex.abs() <= th.tensor([0.05, 0.05]), dim=-1)
+        self.assertFalse(inside_exclusion.any().item())
+
     def test_counterexample_mask_rejects_stable_states(self) -> None:
         class _ContractingDyn(th.nn.Module):
             def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:

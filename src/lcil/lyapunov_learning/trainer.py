@@ -43,6 +43,7 @@ from .sampling import (
     sample_boundary_points,
     sample_box_shell,
     sample_box_rejection_states,
+    sample_axis_antiphase_states,
 )
 from .results import (
     MiningStepResult,
@@ -328,10 +329,21 @@ class LyapunovTrainer:
                 ) / max(rho_estimate, 1e-9),
                 device=self.device,
             )
+            if self.config.cex_axis_antiphase_samples:
+                axis_init = sample_axis_antiphase_states(
+                    sample_size=self.config.cex_axis_antiphase_samples,
+                    lb=self.lbx_train,
+                    ub=self.ubx_train,
+                    origin_exclusion=self.config.origin_exclusion,
+                    scale_factor=self.config.cex_axis_scale_factor,
+                    device=self.device,
+                    generator=self.torch_gen,
+                )
+                initial_states = th.cat((initial_states, axis_init), dim=0)
+
         cfg = config or self.cex_config
         return find_counter_examples(
             objective=lambda x: self.loss_module.mining_objective(x, rho_estimate),
-            # Acceptance condition uses with_margin (default False) without softplus
             condition_evaluator=lambda x: self.loss_module.get_counterexample_mask(
                 x, rho_estimate, with_margin=with_margin
             ),

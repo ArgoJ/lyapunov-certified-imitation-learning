@@ -233,3 +233,85 @@ def sample_ellipsoid_boundary(
     ) * (max_radius - min_radius) + min_radius
     z_candidates = directions * radii  # between min_radius and max_radius in random directions
     return z_candidates * half_width + center
+
+
+def sample_axis_antiphase_states(
+    sample_size: int,
+    lb: th.Tensor | Sequence[float],
+    ub: th.Tensor | Sequence[float],
+    origin_exclusion: th.Tensor | Sequence[float] | float = 0.0,
+    scale_factor: float = 1.0,
+    device: th.device | int | str | None = "cpu",
+    generator: th.Generator | None = None,
+) -> th.Tensor:
+    """Sample states on coordinate axes and planes with alternating signs from training bounds.
+
+    Generates sparse, axis-aligned states with Rademacher (opposing) signs
+    and amplitudes scaled from the training bounds (respecting origin_exclusion).
+    This directly targets coordinate cancellation vulnerabilities and axis-aligned decrease
+    violations without requiring system-specific domain knowledge.
+
+    Parameters
+    ----------
+    sample_size : int
+        Number of states to sample.
+    lb : th.Tensor | Sequence[float]
+        Lower bounds of the training domain.
+    ub : th.Tensor | Sequence[float]
+        Upper bounds of the training domain.
+    origin_exclusion : th.Tensor | Sequence[float] | float, optional
+        Per-dimension minimum exclusion magnitude around the origin, by default 0.0.
+    scale_factor : float, optional
+        Scale factor relative to training bounds defining the upper sampling amplitude,
+        by default 1.0.
+    device : th.device | int | str | None, optional
+        Torch device on which to generate states, by default "cpu".
+    generator : th.Generator | None, optional
+        Random number generator for reproducible sampling, by default None.
+
+    Returns
+    -------
+    th.Tensor
+        Sampled states of shape (sample_size, state_dim).
+    """
+    lb_t = th.as_tensor(lb, dtype=th.float32, device=device)
+    ub_t = th.as_tensor(ub, dtype=th.float32, device=device)
+    nx = lb_t.numel()
+
+    if sample_size <= 0:
+        return th.empty((0, nx), dtype=th.float32, device=device)
+
+    half_width = 0.5 * (ub_t - lb_t)
+    max_r = float(scale_factor) * half_width
+
+    excl_t = th.as_tensor(origin_exclusion, dtype=th.float32, device=device)
+    if excl_t.ndim == 0:
+        excl_t = excl_t.expand(nx)
+
+    effective_min = th.where(excl_t > 0.0, excl_t, 1e-4 * max_r)
+    max_r = th.maximum(max_r, effective_min * 1.01)
+
+    # 1. Random Rademacher signs (+1 / -1) covering all 2^nx orthants
+    signs = (th.randint(0, 2, (sample_size, nx), device=device, generator=generator) * 2 - 1).float()
+
+    # 2. Magnitudes scaled logarithmically from effective_min to max_r
+    #    This ensures scale-invariant coverage across all decades from the origin
+    #    exclusion boundary up to the full training bounds.
+    u = th.rand(sample_size, nx, device=device, generator=generator)
+    radii = effective_min * ((max_r / effective_min) ** u)
+
+    # 3. Structured sparsity: sample across 1D axes, 2D planes, and higher-D subspaces
+    if nx <= 2:
+        k_vals = th.randint(1, nx + 1, (sample_size,), device=device, generator=generator)
+    else:
+        probs = th.zeros(nx, device=device)
+        probs[0] = 0.25  # 25% pure 1D axes
+        probs[1] = 0.50  # 50% 2D coordinate interaction planes
+        probs[2:] = 0.25 / (nx - 2)  # 25% 3D / higher-D subspaces
+        k_vals = th.multinomial(probs, sample_size, replacement=True, generator=generator) + 1
+
+    perms = th.argsort(th.rand(sample_size, nx, device=device, generator=generator), dim=-1)
+    masks = perms < k_vals.unsqueeze(-1)
+
+    states = masks.float() * radii * signs
+    return th.clamp(states, min=lb_t, max=ub_t)

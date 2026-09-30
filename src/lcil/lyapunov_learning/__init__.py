@@ -13,7 +13,11 @@ from .counterexample import (
     CounterexampleMiningConfig,
     find_counter_examples,
 )
-from .sampling import sample_uniform_box, sample_box_rejection_states
+from .sampling import (
+    sample_uniform_box,
+    sample_box_rejection_states,
+    sample_axis_antiphase_states,
+)
 
 __all__ = [
     "LyapunovTrainer",
@@ -31,6 +35,7 @@ __all__ = [
     "find_counter_examples",
     "sample_uniform_box",
     "sample_box_rejection_states",
+    "sample_axis_antiphase_states",
     "ThresholdMonitor",
     "TrainingAbortedError",
     "check_kappa",

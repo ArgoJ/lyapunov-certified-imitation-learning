@@ -386,6 +386,18 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         display_alias="cex_age",
         validators=(positive_validator,),
     )
+    cex_axis_antiphase_samples: int | None = config_field(
+        default=None,
+        help="Optional number of axis-aligned and antiphase states sampled during counterexample mining. Deactivated if None.",
+        display_alias="cex_axis_samples",
+        validators=(optional_validator(positive_validator),),
+    )
+    cex_axis_scale_factor: float = config_field(
+        default=1.0,
+        help="Scale factor relative to training bounds defining the upper bound for axis/antiphase counterexample sampling.",
+        display_alias="cex_axis_scale",
+        validators=(positive_validator,),
+    )
 
     # Lirpa Condition Loss
     bins_per_dim: int | Sequence[int] = config_field(

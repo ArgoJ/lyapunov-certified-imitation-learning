@@ -11,6 +11,7 @@ from lcil.lyapunov_learning.sampling import (
     sample_ellipsoid_boundary,
     sample_sobol_box,
     sample_box_rejection_states,
+    sample_axis_antiphase_states,
 )
 
 def plot_sampling_methods(
@@ -124,6 +125,54 @@ class TestSamplingMethods(PlotAssertionsMixin):
                 "rejection_pts": rejection_pts,
             }
         )
+
+    def test_axis_antiphase_sampling(self):
+        device = th.device("cpu")
+        lb = th.tensor([-1.0, -3.0, -0.75, -3.0], device=device)
+        ub = th.tensor([1.0, 3.0, 0.75, 3.0], device=device)
+        exclusion = [0.002, 0.005, 0.001, 0.005]
+        sample_size = 200
+        scale_factor = 1.0
+
+        samples = sample_axis_antiphase_states(
+            sample_size=sample_size,
+            lb=lb,
+            ub=ub,
+            origin_exclusion=exclusion,
+            scale_factor=scale_factor,
+            device=device,
+        )
+
+        self.assertEqual(samples.shape, (sample_size, 4))
+
+        # 1. No sample should be all-zeros (the origin)
+        active_counts = (samples != 0.0).sum(dim=-1)
+        self.assertTrue((active_counts >= 1).all().item())
+
+        # 2. Sparsity: some samples should be on 1D axes (active count 1) or 2D planes (active count 2)
+        self.assertTrue((active_counts == 1).any().item())
+        self.assertTrue((active_counts == 2).any().item())
+
+        # 3. Active dimensions must be >= exclusion and <= bounds
+        excl_t = th.tensor(exclusion, device=device)
+        abs_samples = samples.abs()
+        for i in range(4):
+            active_i = abs_samples[:, i] > 0.0
+            if active_i.any():
+                self.assertTrue((abs_samples[active_i, i] >= excl_t[i] - 1e-7).all().item())
+                self.assertTrue((samples[active_i, i] >= lb[i] - 1e-7).all().item())
+                self.assertTrue((samples[active_i, i] <= ub[i] + 1e-7).all().item())
+
+        # 4. Both positive and negative signs should be represented
+        has_positive = (samples > 0.0).any(dim=0)
+        has_negative = (samples < 0.0).any(dim=0)
+        self.assertTrue(has_positive.all().item())
+        self.assertTrue(has_negative.all().item())
+
+        # 5. Empty sample size edge case
+        empty = sample_axis_antiphase_states(0, lb=lb, ub=ub, origin_exclusion=exclusion, device=device)
+        self.assertEqual(empty.shape, (0, 4))
+
 
 if __name__ == "__main__":
     unittest.main()
