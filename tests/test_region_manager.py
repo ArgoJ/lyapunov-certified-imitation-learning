@@ -363,8 +363,8 @@ class TestRegionManager(unittest.TestCase):
         self.assertEqual(progress._rec_pending, 0)
         self.assertGreaterEqual(progress._rec_pending, 0)
 
-    def test_split_failed_regions_on_certification_frontier_delegates_to_builder(self) -> None:
-        failed_regions = th.tensor(
+    def test_split_unresolved_regions_on_certification_frontier_delegates_to_builder(self) -> None:
+        unresolved_regions = th.tensor(
             [
                 [[0.0, 0.0], [1.0, 1.0]],
             ],
@@ -390,16 +390,16 @@ class TestRegionManager(unittest.TestCase):
         )
         self.builder.set_frontier_split_return(pending_regions, terminal_regions)
 
-        pending, terminal = self.manager.split_failed_regions_on_certification_frontier(
-            failed_regions,
+        pending, terminal = self.manager.split_unresolved_regions_on_certification_frontier(
+            unresolved_regions,
             resolved_regions,
         )
 
         th.testing.assert_close(pending, pending_regions)
         th.testing.assert_close(terminal, terminal_regions)
         self.assertIsNotNone(self.builder.last_split_regions_args)
-        split_failed, split_resolved, split_dims, adjacency_tolerance = self.builder.last_split_regions_args
-        th.testing.assert_close(split_failed, failed_regions)
+        split_unresolved, split_resolved, split_dims, adjacency_tolerance = self.builder.last_split_regions_args
+        th.testing.assert_close(split_unresolved, unresolved_regions)
         th.testing.assert_close(split_resolved, resolved_regions)
         self.assertIsNone(split_dims)
         self.assertEqual(adjacency_tolerance, 1e-6)

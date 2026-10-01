@@ -66,8 +66,8 @@ class _MockBatchVerification:
     unknown_mask: th.Tensor
 
     @property
-    def failed_mask(self) -> th.Tensor:
-        return self.counterexample_mask | self.unknown_mask
+    def unresolved_mask(self) -> th.Tensor:
+        return ~self.verified_mask
 
     @property
     def any_counterexample(self) -> bool:

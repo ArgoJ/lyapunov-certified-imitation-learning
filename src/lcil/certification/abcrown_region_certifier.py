@@ -81,8 +81,8 @@ class ABCrownRegionBatchVerification:
     counterexamples: list[th.Tensor] = field(default_factory=list)
 
     @property
-    def failed_mask(self) -> th.Tensor:
-        return self.counterexample_mask | self.unknown_mask
+    def unresolved_mask(self) -> th.Tensor:
+        return ~self.verified_mask
 
     @property
     def processed_mask(self) -> th.Tensor:

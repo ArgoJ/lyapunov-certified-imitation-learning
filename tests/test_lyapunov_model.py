@@ -5,7 +5,7 @@ import torch as th
 
 from pathlib import Path
 
-from lcil.lyapunov_learning.models import NeuralLyapunovCandidate
+from lcil.lyapunov_learning.models import LyapunovCandidate, NeuralLyapunovCandidate
 from lcil.utils.base_models import MLP
 
 
@@ -205,6 +205,33 @@ class TestNeuralLyapunovCandidateSerialization(unittest.TestCase):
         # Disabling removes the hook handle
         model.set_conditioning_hook(False)
         self.assertIsNone(model._r_factor_hook_handle)
+
+
+class TestLyapunovCandidateProtocol(unittest.TestCase):
+    def test_neural_lyapunov_candidate_is_instance_and_subclass(self) -> None:
+        self.assertTrue(issubclass(NeuralLyapunovCandidate, LyapunovCandidate))
+        model = NeuralLyapunovCandidate(
+            feature_net=SaveableFeatureNet(),
+            state_dim=4,
+        )
+        self.assertIsInstance(model, LyapunovCandidate)
+
+    def test_protocol_methods(self) -> None:
+        model = NeuralLyapunovCandidate(
+            feature_net=SaveableFeatureNet(),
+            state_dim=4,
+        )
+        x = th.randn(3, 4)
+        feature_term = model.get_feature_term(x)
+        linear_term = model.get_linear_term(x)
+        forward_val = model.forward(x)
+        call_val = model(x)
+
+        self.assertEqual(feature_term.shape, (3, 1))
+        self.assertEqual(linear_term.shape, (3, 1))
+        self.assertEqual(forward_val.shape, (3, 1))
+        self.assertTrue(th.allclose(forward_val, feature_term + linear_term))
+        self.assertTrue(th.allclose(call_val, forward_val))
 
 
 if __name__ == "__main__":

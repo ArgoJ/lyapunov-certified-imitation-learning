@@ -588,9 +588,8 @@ class TestRecursiveCertifierMock(CertificationMockedABCrownTestCase):
 
         self.assertIsNotNone(update)
         self.assertEqual(core_certifier.calls, 3)
-        self.assertEqual(len(update.verified_regions), 2)
-        self.assertEqual(len(update.failed_regions), 1)
-        self.assertTrue(th.equal(update.failed_regions, regions[1:2]))
+        self.assertEqual(len(update.unresolved_regions), 1)
+        self.assertTrue(th.equal(update.unresolved_regions, regions[1:2]))
 
 
 if __name__ == "__main__":

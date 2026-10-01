@@ -114,10 +114,10 @@ class CertificationRegionPartition:
 
 @dataclass(frozen=True)
 class VerificationRegionUpdate:
-    """Resolved and failed regions produced by one certification pass."""
+    """Resolved and unresolved regions produced by one certification pass."""
 
     verified_regions: th.Tensor
-    failed_regions: th.Tensor
+    unresolved_regions: th.Tensor
     counterexample_found: bool = False
 
 
@@ -616,10 +616,10 @@ class RegionManager:
             counterexample_mask=counterexample_mask,
             unknown_mask=unknown_mask,
         )
-        failed_mask = counterexample_mask | unknown_mask
+        unresolved_mask = counterexample_mask | unknown_mask
         return VerificationRegionUpdate(
             verified_regions=regions[verified_mask],
-            failed_regions=regions[failed_mask],
+            unresolved_regions=regions[unresolved_mask],
             counterexample_found=bool(counterexample_mask.any().item()),
         )
 
@@ -628,12 +628,12 @@ class RegionManager:
         regions: th.Tensor,
         *,
         verified_mask: th.Tensor,
-        failed_mask: th.Tensor,
+        unresolved_mask: th.Tensor,
         rho: float,
     ) -> VerificationRegionUpdate:
-        """Persist a complete-certification pass and return verified/failed regions."""
+        """Persist a complete-certification pass and return verified/unresolved regions."""
         verified_mask = verified_mask.to(device=self.device, dtype=th.bool)
-        failed_mask = failed_mask.to(device=self.device, dtype=th.bool)
+        unresolved_mask = unresolved_mask.to(device=self.device, dtype=th.bool)
 
         self.update_complete_safe_max_rho(
             regions,
@@ -642,7 +642,7 @@ class RegionManager:
         )
         return VerificationRegionUpdate(
             verified_regions=regions[verified_mask],
-            failed_regions=regions[failed_mask],
+            unresolved_regions=regions[unresolved_mask],
         )
 
     def split_regions(
@@ -759,14 +759,14 @@ class RegionManager:
             adjacency_tolerance=adjacency_tolerance,
         )
 
-    def split_failed_regions_on_certification_frontier(
+    def split_unresolved_regions_on_certification_frontier(
         self,
-        failed_regions: th.Tensor,
+        unresolved_regions: th.Tensor,
         resolved_regions: th.Tensor,
     ) -> tuple[th.Tensor, th.Tensor]:
         """Split unresolved regions along the certification frontier."""
         return self.split_regions_adjacent_to_reference(
-            failed_regions,
+            unresolved_regions,
             resolved_regions,
         )
 

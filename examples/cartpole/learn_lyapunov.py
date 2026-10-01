@@ -112,6 +112,8 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         cex_descent_steps=20,
         state_buffer_limit=32768,
         cex_step_size=0.01,
+        cex_axis_antiphase_samples=4096,
+        cex_axis_scale_factor=1.0,
         enable_diagnosis=True,
     )
 

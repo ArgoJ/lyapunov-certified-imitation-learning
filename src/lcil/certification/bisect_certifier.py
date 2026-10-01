@@ -51,7 +51,7 @@ class RegionCertificationResult:
             uncertified_regions=self.uncertified_regions,
             certified_sublevel_regions=self.certified_sublevel_regions,
             certified_boundary_regions=self.certified_boundary_regions,
-            failed_regions=self.uncertified_regions,
+            unresolved_regions=self.uncertified_regions,
             certified_regions=self.certified_sublevel_regions,
         )
 

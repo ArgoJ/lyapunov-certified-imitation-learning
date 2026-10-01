@@ -6,6 +6,7 @@ from scipy.linalg import solve_discrete_are
 
 from mpc_datagen import mdg_utils
 from lcil.lyapunov_learning import check_kappa
+from lcil.utils import IntegrationMethod
 
 from .sys_cfg import PendulumOnCartConfig
 
@@ -60,10 +61,17 @@ def linearized_inverted_pendulum_on_cart_matrices(
 def compute_discrete_cartpole(
     dt: float,
     sys_cfg: PendulumOnCartConfig | None = None,
+    method: IntegrationMethod | str = IntegrationMethod.EXPLICIT_EULER,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     cfg = PendulumOnCartConfig() if sys_cfg is None else sys_cfg
     a_c, b_c = linearized_inverted_pendulum_on_cart_matrices(cfg=cfg)
-    a_d, b_d = mdg_utils.lin_c2d_rk4(a_c, b_c, float(dt), num_steps=1)
+    method_enum = IntegrationMethod(method) if isinstance(method, str) else method
+    if method_enum == IntegrationMethod.EXPLICIT_EULER:
+        a_d, b_d = mdg_utils.lin_c2d_euler(a_c, b_c, float(dt), num_steps=1)
+    elif method_enum == IntegrationMethod.CLASSICAL_RK4:
+        a_d, b_d = mdg_utils.lin_c2d_rk4(a_c, b_c, float(dt), num_steps=1)
+    else:
+        raise ValueError(f"Unsupported integration method: {method}")
     return a_d, b_d
 
 
@@ -73,10 +81,11 @@ def compute_riccati_value_matrix(
     q: NDArray[np.float64] | None = None,
     r: NDArray[np.float64] | None = None,
     kappa: float | None = None,
+    method: IntegrationMethod | str = IntegrationMethod.EXPLICIT_EULER,
 ) -> NDArray[np.float64]:
     q_matrix = Q if q is None else np.asarray(q, dtype=np.float64)
     r_matrix = R if r is None else np.asarray(r, dtype=np.float64)
-    a_d, b_d = compute_discrete_cartpole(dt=dt, sys_cfg=sys_cfg)
+    a_d, b_d = compute_discrete_cartpole(dt=dt, sys_cfg=sys_cfg, method=method)
     p = solve_discrete_are(a_d, b_d, q_matrix, r_matrix)
     if kappa is not None:
         k_gain = np.linalg.solve(r_matrix + b_d.T @ p @ b_d, b_d.T @ p @ a_d)

@@ -329,17 +329,18 @@ class LyapunovTrainer:
                 ) / max(rho_estimate, 1e-9),
                 device=self.device,
             )
-            if self.config.cex_axis_antiphase_samples:
-                axis_init = sample_axis_antiphase_states(
-                    sample_size=self.config.cex_axis_antiphase_samples,
-                    lb=self.lbx_train,
-                    ub=self.ubx_train,
-                    origin_exclusion=self.config.origin_exclusion,
-                    scale_factor=self.config.cex_axis_scale_factor,
-                    device=self.device,
-                    generator=self.torch_gen,
-                )
-                initial_states = th.cat((initial_states, axis_init), dim=0)
+
+        if self.config.cex_axis_antiphase_samples:
+            axis_init = sample_axis_antiphase_states(
+                sample_size=self.config.cex_axis_antiphase_samples,
+                lb=self.lbx_train,
+                ub=self.ubx_train,
+                origin_exclusion=self.config.origin_exclusion,
+                scale_factor=self.config.cex_axis_scale_factor,
+                device=self.device,
+                generator=self.torch_gen,
+            )
+            initial_states = th.cat((initial_states, axis_init), dim=0)
 
         cfg = config or self.cex_config
         return find_counter_examples(

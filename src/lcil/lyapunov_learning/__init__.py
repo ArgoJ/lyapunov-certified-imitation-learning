@@ -1,7 +1,7 @@
 from .trainer import LyapunovTrainer, LyapunovTrainingResult
 from .config import LyapunovTrainingConfig
 from .utils import ThresholdMonitor, TrainingAbortedError, check_kappa
-from .models import NeuralLyapunovCandidate
+from .models import LyapunovCandidate, NeuralLyapunovCandidate
 from .loss import LyapunovTrainingLoss
 from .policy_wrapper import PolicyWrapper, RepeatCurrentPolicyWrapper, FromRolloutsPolicyWrapper
 from .sublevel import (
@@ -25,6 +25,7 @@ __all__ = [
     "LyapunovTrainingConfig",
     "RhoEstimationConfig",
     "CounterexampleMiningConfig",
+    "LyapunovCandidate",
     "NeuralLyapunovCandidate",
     "LyapunovTrainingLoss",
     "PolicyWrapper",

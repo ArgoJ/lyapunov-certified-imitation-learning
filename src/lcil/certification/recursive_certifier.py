@@ -98,8 +98,8 @@ class _StepCollector:
         """Record results from complete specification verification."""
         if update is not None and result is not None:
             self.add_resolved(update.verified_regions)
-            self.add_unresolved(update.failed_regions)
-            if early_exit == EarlyExitLevel.ON_UNKNOWN and len(update.failed_regions) > 0:
+            self.add_unresolved(update.unresolved_regions)
+            if early_exit == EarlyExitLevel.ON_UNKNOWN and len(update.unresolved_regions) > 0:
                 self.counterexample_found = True
             elif early_exit != EarlyExitLevel.NONE and result.any_counterexample:
                 self.counterexample_found = True
@@ -332,7 +332,7 @@ class RecursiveCertifier:
         update = self.region_manager.apply_complete_certification_result(
             regions,
             verified_mask=result.verified_mask,
-            failed_mask=result.failed_mask,
+            unresolved_mask=result.unresolved_mask,
             rho=rho,
         )
         return result, update
@@ -408,20 +408,20 @@ class RecursiveCertifier:
             core_update = self._run_core_certification(unchecked_bs)
             if core_update is not None:
                 collector.add_resolved(core_update.verified_regions)
-                failed_core = core_update.failed_regions
+                unresolved_core = core_update.unresolved_regions
                 __logger__.info(
-                    "Core Check completed on %d regions: %d safe, %d failed.",
+                    "Core Check completed on %d regions: %d safe, %d unresolved.",
                     len(unchecked_bs),
                     len(core_update.verified_regions),
-                    len(core_update.failed_regions),
+                    len(core_update.unresolved_regions),
                 )
             else:
-                failed_core = self.region_manager.empty_regions()
+                unresolved_core = self.region_manager.empty_regions()
         else:
-            failed_core = unchecked_bs
+            unresolved_core = unchecked_bs
 
         unresolved_core_parts = [
-            failed_core,
+            unresolved_core,
             partition.cached_inside_counterexample_regions,
             partition.cached_inside_unknown_regions,
             partition.boundary_complete_candidate_regions,

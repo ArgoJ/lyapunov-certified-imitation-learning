@@ -3,7 +3,7 @@ import torch.nn as nn
 import logging
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from ..utils.base_models import load_feature_net, save_feature_net
 
@@ -76,7 +76,76 @@ def check_r_factor_kappa(eigs: th.Tensor, kappa: float) -> None:
         )
 
 
-class NeuralLyapunovCandidate(nn.Module):
+@runtime_checkable
+class LyapunovCandidate(Protocol):
+    """Protocol defining the interface for Lyapunov candidate functions.
+
+    A Lyapunov candidate evaluates a scalar value V(x) for given states x.
+    Implementations may also decompose V(x) into feature and linear terms.
+    """
+
+    def __call__(self, x: th.Tensor) -> th.Tensor:
+        """Evaluate the Lyapunov candidate function V(x).
+
+        Parameters
+        ----------
+        x : th.Tensor
+            State tensor of shape (..., state_dim).
+
+        Returns
+        -------
+        th.Tensor
+            Lyapunov candidate values of shape (..., 1).
+        """
+        ...
+
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        """Compute the forward pass of the Lyapunov candidate V(x).
+
+        Parameters
+        ----------
+        x : th.Tensor
+            State tensor of shape (..., state_dim).
+
+        Returns
+        -------
+        th.Tensor
+            Lyapunov candidate values of shape (..., 1).
+        """
+        ...
+
+    def get_feature_term(self, x: th.Tensor) -> th.Tensor:
+        """Compute the feature term of the Lyapunov candidate.
+
+        Parameters
+        ----------
+        x : th.Tensor
+            State tensor of shape (..., state_dim).
+
+        Returns
+        -------
+        th.Tensor
+            Feature term tensor of shape (..., 1).
+        """
+        ...
+
+    def get_linear_term(self, x: th.Tensor) -> th.Tensor:
+        """Compute the linear term of the Lyapunov candidate.
+
+        Parameters
+        ----------
+        x : th.Tensor
+            State tensor of shape (..., state_dim).
+
+        Returns
+        -------
+        th.Tensor
+            Linear term tensor of shape (..., 1).
+        """
+        ...
+
+
+class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
     """Lyapunov candidate from Eq. (9) in the paper.
 
     V(x) = |phi(x) - phi(x*)| + ||(eps I + R^T R)(x - x*)||_1
