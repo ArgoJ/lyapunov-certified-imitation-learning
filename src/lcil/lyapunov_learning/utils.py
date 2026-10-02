@@ -1,10 +1,9 @@
-from __future__ import annotations
-
+import logging
+import numpy as np
 import torch as th
 
-import logging
-
 from numpy.typing import NDArray
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 __logger__ = logging.getLogger(__name__)
@@ -126,3 +125,132 @@ class ThresholdMonitor:
     def reset(self) -> None:
         self.consecutive_low = 0
         self.value_history.clear()
+
+
+def compute_closed_loop_jacobian(
+    dynamics: Callable[[th.Tensor, th.Tensor], th.Tensor],
+    policy: Callable[[th.Tensor], th.Tensor],
+    x_star: th.Tensor | Sequence[float] | None = None,
+    state_dim: int | None = None,
+    device: th.device | str = "cpu",
+) -> th.Tensor:
+    """Compute the Jacobian of the discrete closed-loop system at the equilibrium.
+
+    Evaluates the linearization of x_{k+1} = dynamics(x_k, policy(x_k)) around x*.
+
+    Parameters
+    ----------
+    dynamics : Callable[[th.Tensor, th.Tensor], th.Tensor]
+        Discrete-time dynamics model f(x, u).
+    policy : Callable[[th.Tensor], th.Tensor]
+        Feedback policy model pi(x).
+    x_star : th.Tensor | Sequence[float] | None, optional
+        Equilibrium state around which to linearize. If None, state_dim must be provided
+        and the zero state is used.
+    state_dim : int | None, optional
+        State dimension if x_star is None.
+    device : th.device | str, optional
+        Target torch device, by default "cpu".
+
+    Returns
+    -------
+    th.Tensor
+        Closed-loop Jacobian A_cl of shape (nx, nx).
+    """
+    if x_star is None:
+        if state_dim is None:
+            raise ValueError("Either x_star or state_dim must be provided.")
+        x0 = th.zeros(state_dim, dtype=th.float32, device=device)
+    else:
+        x0 = th.as_tensor(x_star, dtype=th.float32, device=device).reshape(-1)
+
+    def closed_loop(x: th.Tensor) -> th.Tensor:
+        x_batch = x.unsqueeze(0)
+        u_batch = policy(x_batch)
+        next_batch = dynamics(x_batch, u_batch)
+        return next_batch.squeeze(0)
+
+    jacobian = th.autograd.functional.jacobian(closed_loop, x0)
+    return jacobian
+
+
+def compute_antiphase_eigenvectors(
+    matrix: th.Tensor | np.ndarray | Sequence[Sequence[float]] | None = None,
+    *,
+    dynamics: Callable[[th.Tensor, th.Tensor], th.Tensor] | None = None,
+    policy: Callable[[th.Tensor], th.Tensor] | None = None,
+    x_star: th.Tensor | Sequence[float] | None = None,
+    state_dim: int | None = None,
+    antiphase_only: bool = True,
+    device: th.device | str = "cpu",
+) -> th.Tensor:
+    """Extract unit-normalized modal directions (eigenvectors) from a closed-loop system.
+
+    Modes are sorted by descending eigenvalue magnitude (|lambda|), placing the slowest
+    decaying / dominant modes first. For complex conjugate pairs, both the real and imaginary
+    modal directions are extracted.
+
+    Parameters
+    ----------
+    matrix : th.Tensor | np.ndarray | Sequence[Sequence[float]] | None, optional
+        Square transition matrix or Jacobian A of shape (nx, nx). If None, dynamics and policy
+        must be supplied to compute the closed-loop Jacobian.
+    dynamics : Callable[[th.Tensor, th.Tensor], th.Tensor] | None, optional
+        Dynamics model f(x, u) used to compute the Jacobian if matrix is None.
+    policy : Callable[[th.Tensor], th.Tensor] | None, optional
+        Policy model pi(x) used to compute the Jacobian if matrix is None.
+    x_star : th.Tensor | Sequence[float] | None, optional
+        Equilibrium state around which to linearize if matrix is None.
+    state_dim : int | None, optional
+        State dimension if x_star is None and matrix is None.
+    antiphase_only : bool, optional
+        If True, filters for directions with opposing signs (having both significantly positive
+        and negative components). If no mode satisfies this, all extracted modes are returned.
+        Default is True.
+    device : th.device | str, optional
+        Target torch device, by default "cpu".
+
+    Returns
+    -------
+    th.Tensor
+        Extracted unit-normalized directions of shape (num_directions, nx).
+    """
+    if matrix is None:
+        if dynamics is None or policy is None:
+            raise ValueError("Either matrix or both dynamics and policy must be provided.")
+        mat_t = compute_closed_loop_jacobian(dynamics, policy, x_star=x_star, state_dim=state_dim, device=device)
+    else:
+        mat_t = th.as_tensor(matrix, dtype=th.float32, device=device)
+
+    if mat_t.ndim != 2 or mat_t.shape[0] != mat_t.shape[1]:
+        raise ValueError(f"Expected a square matrix, got shape {tuple(mat_t.shape)}.")
+
+    vals, vecs = th.linalg.eig(mat_t)
+    order = th.argsort(th.abs(vals), descending=True)
+
+    unique_dirs: list[th.Tensor] = []
+    for idx in order:
+        v = vecs[:, idx]
+        parts = [th.real(v)]
+        if th.abs(th.imag(vals[idx])) > 1e-6:
+            parts.append(th.imag(v))
+        for p in parts:
+            norm = th.linalg.norm(p)
+            if norm > 1e-7:
+                p_unit = p / norm
+                if not any(th.abs(th.dot(p_unit, u)) > 0.999 for u in unique_dirs):
+                    unique_dirs.append(p_unit)
+
+    if not unique_dirs:
+        return th.eye(mat_t.shape[0], dtype=th.float32, device=device)
+
+    candidates = th.stack(unique_dirs, dim=0)
+    if antiphase_only:
+        has_pos = th.any(candidates > 1e-5, dim=-1)
+        has_neg = th.any(candidates < -1e-5, dim=-1)
+        antiphase_mask = has_pos & has_neg
+        if th.any(antiphase_mask):
+            candidates = candidates[antiphase_mask]
+
+    return candidates
+

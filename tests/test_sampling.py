@@ -12,6 +12,11 @@ from lcil.lyapunov_learning.sampling import (
     sample_sobol_box,
     sample_box_rejection_states,
     sample_axis_antiphase_states,
+    sample_eigenvector_antiphase_states,
+)
+from lcil.lyapunov_learning.utils import (
+    compute_closed_loop_jacobian,
+    compute_antiphase_eigenvectors,
 )
 
 def plot_sampling_methods(
@@ -170,6 +175,87 @@ class TestSamplingMethods(PlotAssertionsMixin):
         empty = sample_axis_antiphase_states(0, lb=lb, ub=ub, device=device)
         self.assertEqual(empty.shape, (0, 4))
 
+    def test_sample_eigenvector_antiphase_states(self) -> None:
+        device = th.device("cpu")
+        lb = th.tensor([-1.0, -3.0, -0.75, -3.0], device=device)
+        ub = th.tensor([1.0, 3.0, 0.75, 3.0], device=device)
+        vec = th.tensor([0.3264, -0.7884, 0.1385, -0.1158], device=device)
+        sample_size = 200
+
+        # 1. Single eigenvector
+        samples = sample_eigenvector_antiphase_states(
+            sample_size=sample_size,
+            lb=lb,
+            ub=ub,
+            eigenvector=vec,
+            scale_factor=1.0,
+            device=device,
+        )
+        self.assertEqual(samples.shape, (sample_size, 4))
+
+        # Check bounds
+        self.assertTrue((samples >= lb - 1e-6).all().item())
+        self.assertTrue((samples <= ub + 1e-6).all().item())
+
+        # Check collinearity on the eigenvector ray: x_i / v_i should be identical for all nonzero dimensions
+        v_unit = vec / th.linalg.norm(vec)
+        ratios = samples / v_unit.unsqueeze(0)
+        # Difference between any two coordinate ratios should be ~0
+        collinear_diff = (ratios[:, 0] - ratios[:, 1]).abs()
+        self.assertTrue((collinear_diff < 1e-4).all().item())
+
+        # Check both positive and negative directions along ray are present
+        has_pos_ray = (ratios[:, 0] > 0.0).any().item()
+        has_neg_ray = (ratios[:, 0] < 0.0).any().item()
+        self.assertTrue(has_pos_ray)
+        self.assertTrue(has_neg_ray)
+
+        # 2. Multiple eigenvectors
+        vecs = th.stack([vec, th.tensor([-0.0697, 0.5277, 0.1109, -0.8393], device=device)], dim=0)
+        samples_multi = sample_eigenvector_antiphase_states(
+            sample_size=sample_size,
+            lb=lb,
+            ub=ub,
+            eigenvector=vecs,
+            device=device,
+        )
+        self.assertEqual(samples_multi.shape, (sample_size, 4))
+        self.assertTrue((samples_multi >= lb - 1e-6).all().item())
+        self.assertTrue((samples_multi <= ub + 1e-6).all().item())
+
+        # 3. Empty sample size
+        empty = sample_eigenvector_antiphase_states(0, lb=lb, ub=ub, eigenvector=vec, device=device)
+        self.assertEqual(empty.shape, (0, 4))
+
+    def test_compute_antiphase_eigenvectors(self) -> None:
+        # 1. 2x2 matrix with known antiphase mode
+        A = th.tensor([[0.9, -0.2], [-0.1, 0.95]], dtype=th.float32)
+        antiphase_vecs = compute_antiphase_eigenvectors(A)
+        self.assertGreater(len(antiphase_vecs), 0)
+        # Vector must be unit norm
+        self.assertAlmostEqual(th.linalg.norm(antiphase_vecs[0]).item(), 1.0, places=5)
+        # Must have opposing signs
+        self.assertTrue((antiphase_vecs[0, 0] * antiphase_vecs[0, 1] < 0).item())
+
+        # 2. From dynamics and policy callables
+        A_dyn = th.tensor([[1.0, 0.1], [0.0, 1.0]])
+        B_dyn = th.tensor([[0.0], [0.1]])
+        K_pol = th.tensor([[-2.0, -1.5]])  # u = K x
+
+        def dyn(x: th.Tensor, u: th.Tensor) -> th.Tensor:
+            return x @ A_dyn.T + u @ B_dyn.T
+
+        def pol(x: th.Tensor) -> th.Tensor:
+            return x @ K_pol.T
+
+        jac = compute_closed_loop_jacobian(dyn, pol, state_dim=2)
+        expected_jac = A_dyn + B_dyn @ K_pol
+        self.assertTrue(th.allclose(jac, expected_jac, atol=1e-5))
+
+        vecs = compute_antiphase_eigenvectors(dynamics=dyn, policy=pol, state_dim=2)
+        self.assertGreater(len(vecs), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
+

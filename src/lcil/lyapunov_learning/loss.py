@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterable
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
 from .config import LyapunovTrainingConfig
-from .models import has_learnable_r_factor, NeuralLyapunovCandidate
+from .models import has_learnable_r_factor, LyapunovCandidate
 from .utils import get_th_lbx_ubx, get_center
 from .sampling import sample_sobol_box
 
@@ -216,7 +216,7 @@ class LyapunovScaleAnchorLoss(BoundedStateSamplingModule):
     
     def __init__(
         self,
-        lyap_model: NeuralLyapunovCandidate,
+        lyap_model: LyapunovCandidate,
         state_bounds: th.Tensor,
         num_samples: int = 1000,
         resample_interval: int = 100,
@@ -447,7 +447,7 @@ class SignedConditionMargin(nn.Module):
     def __init__(
         self,
         policy_model: nn.Module,
-        lyap_model: NeuralLyapunovCandidate,
+        lyap_model: LyapunovCandidate,
         dyn_model: nn.Module,
         config: LyapunovTrainingConfig,
     ) -> None:
@@ -475,7 +475,7 @@ class ConditionLirpaLoss(StateBoundsModule):
     def __init__(
         self,
         policy_model: nn.Module,
-        lyap_model: NeuralLyapunovCandidate,
+        lyap_model: LyapunovCandidate,
         dyn_model: nn.Module,
         config: LyapunovTrainingConfig,
         device: th.device = th.device("cpu"),
@@ -554,23 +554,39 @@ class RoaSurrogateLoss(nn.Module):
 
 
 class EquilibriumLoss(nn.Module):
-    """Compute the origin consistency loss for the Lyapunov candidate."""
+    """Origin consistency and feature Jacobian regularization loss."""
 
-    def __init__(self, model: nn.Module, state_dim: int, device: th.device | str = "cpu") -> None:
+    def __init__(
+        self,
+        model: LyapunovCandidate,
+        state_dim: int,
+        device: th.device | str = "cpu"
+    ) -> None:
         super().__init__()
         self.model = model
         self.device = th.device(device)
         self.register_buffer("origin", th.zeros(1, state_dim, dtype=th.float32, device=self.device))
 
     def forward(self) -> th.Tensor:
-        return self.model(self.origin).pow(2).mean()
+        total_loss = self.model(self.origin).pow(2).mean()
+
+        feature_net = getattr(self.model, "feature_net", None)
+        if callable(feature_net):
+            jac = th.autograd.functional.jacobian(
+                lambda x: feature_net(x.unsqueeze(0)).reshape(-1),
+                self.origin,
+                create_graph=True,
+            )
+            total_loss = total_loss + jac.pow(2).sum()
+
+        return total_loss
 
 
 class FormalPositivityLoss(StateBoundsModule):
     """Compute the positivity loss induced by a lower bound on V."""
     def __init__(
         self, 
-        lyap_model: NeuralLyapunovCandidate, 
+        lyap_model: LyapunovCandidate, 
         train_bounds: th.Tensor, 
         device: th.device | str = "cpu"
     ) -> None:
@@ -711,7 +727,7 @@ class RFactorRegularizationLoss(nn.Module):
 
     def __init__(
         self,
-        lyap_model: NeuralLyapunovCandidate,
+        lyap_model: LyapunovCandidate,
         max_cond: float = 25.0,
     ) -> None:
         super().__init__()
@@ -736,7 +752,7 @@ class LyapunovTrainingLoss(nn.Module):
     def __init__(
         self,
         policy_model: nn.Module,
-        lyap_model: NeuralLyapunovCandidate,
+        lyap_model: LyapunovCandidate,
         dyn_model: nn.Module,
         config: LyapunovTrainingConfig,
         device: th.device | str = "cpu",

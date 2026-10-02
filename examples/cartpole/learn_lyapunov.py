@@ -91,7 +91,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         l1_weight=0.0,
         weight_decay=0.0,
         scale_weight=2.5,
-        equilibrium_weight=0.0,
+        equilibrium_weight=1.0,
         formal_positivity_weight=0.0,
         policy_regularization_weight=10.0,
         r_factor_regularization_weight=1.0,
@@ -113,6 +113,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         state_buffer_limit=32768,
         cex_step_size=0.01,
         cex_axis_antiphase_samples=4096,
+        cex_eigenvector_antiphase_samples=4096,
         cex_axis_scale_factor=1.0,
         enable_diagnosis=True,
     )

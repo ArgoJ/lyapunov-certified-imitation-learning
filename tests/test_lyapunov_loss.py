@@ -222,6 +222,20 @@ class TestLyapunovLossComponents(unittest.TestCase):
         self.assertIsNotNone(lyap.r_factor.grad)
         self.assertGreater(lyap.r_factor.grad.abs().sum().item(), 0.0)
 
+    def test_equilibrium_jacobian_loss_at_origin(self) -> None:
+        feature_net = MLP(layer_dims=[2, 4, 1], activations=["leaky_relu", "identity"])
+        lyap = NeuralLyapunovCandidate(feature_net=feature_net, state_dim=2)
+        linear_layers = [m for m in feature_net.modules() if isinstance(m, th.nn.Linear)]
+        with th.no_grad():
+            linear_layers[-1].weight.fill_(1.0)
+        loss_fn = EquilibriumLoss(model=lyap, state_dim=2)
+        loss = loss_fn()
+        self.assertGreater(loss.item(), 0.0)
+        loss.backward()
+        # Verify gradients flow into feature_net weights
+        self.assertIsNotNone(linear_layers[0].weight.grad)
+        self.assertGreater(linear_layers[0].weight.grad.abs().sum().item(), 0.0)
+
     def test_roa_surrogate_loss(self) -> None:
         cfg = LyapunovTrainingConfig(state_dim=2, state_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]]))
         loss_fn = RoaSurrogateLoss(config=cfg)

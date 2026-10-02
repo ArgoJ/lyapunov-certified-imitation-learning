@@ -1,6 +1,9 @@
-import torch as th
-from typing import Sequence, Callable, Any
+import math
+from typing import Any, Callable, Sequence
+
+import numpy as np
 from numpy.typing import NDArray
+import torch as th
 
 def _bounds_tensor(
     state_bounds: NDArray | Sequence[float] | th.Tensor | Any, 
@@ -308,3 +311,90 @@ def sample_axis_antiphase_states(
 
     states = masks.float() * radii * signs
     return th.clamp(states, min=lb_t, max=ub_t)
+
+
+def sample_eigenvector_antiphase_states(
+    sample_size: int,
+    lb: th.Tensor | Sequence[float],
+    ub: th.Tensor | Sequence[float],
+    eigenvector: th.Tensor | Sequence[float] | Sequence[Sequence[float]] | np.ndarray,
+    scale_factor: float = 1.0,
+    min_radius: float = 1e-4,
+    center: th.Tensor | Sequence[float] | None = None,
+    device: th.device | int | str | None = "cpu",
+    generator: th.Generator | None = None,
+) -> th.Tensor:
+    """Sample states along closed-loop eigenvector ray directions (antiphase modes).
+
+    Generates states distributed along the ray defined by the provided eigenvector,
+    with logarithmic spacing from near the origin out to the domain boundary. Both
+    positive and negative ray directions (+v and -v) are sampled.
+
+    Parameters
+    ----------
+    sample_size : int
+        Number of states to sample.
+    lb : th.Tensor | Sequence[float]
+        Lower bounds of the state domain.
+    ub : th.Tensor | Sequence[float]
+        Upper bounds of the state domain.
+    eigenvector : th.Tensor | Sequence[float] | Sequence[Sequence[float]] | np.ndarray
+        Eigenvector direction(s) of shape (nx,) or (num_vecs, nx).
+    scale_factor : float, optional
+        Scale factor relative to domain boundary defining the upper sampling amplitude,
+        by default 1.0.
+    min_radius : float, optional
+        Fraction of maximum radius defining the lower logarithmic sampling boundary,
+        by default 1e-4.
+    center : th.Tensor | Sequence[float] | None, optional
+        Center of expansion (e.g. equilibrium state x*), by default the origin (0).
+    device : th.device | int | str | None, optional
+        Torch device on which to generate states, by default "cpu".
+    generator : th.Generator | None, optional
+        Random number generator for reproducible sampling, by default None.
+
+    Returns
+    -------
+    th.Tensor
+        Sampled states of shape (sample_size, nx).
+    """
+    lb_t = th.as_tensor(lb, dtype=th.float32, device=device)
+    ub_t = th.as_tensor(ub, dtype=th.float32, device=device)
+    nx = lb_t.numel()
+
+    if sample_size <= 0:
+        return th.empty((0, nx), dtype=th.float32, device=device)
+
+    vecs_t = th.as_tensor(eigenvector, dtype=th.float32, device=device)
+    if vecs_t.ndim == 1:
+        vecs_t = vecs_t.unsqueeze(0)
+
+    norms = th.linalg.norm(vecs_t, dim=-1, keepdim=True)
+    vecs_t = vecs_t / th.where(norms > 1e-8, norms, th.ones_like(norms))
+    num_vecs = vecs_t.shape[0]
+
+    c_t = th.zeros(nx, dtype=th.float32, device=device) if center is None else th.as_tensor(center, dtype=th.float32, device=device)
+    delta_ub = ub_t - c_t
+    delta_lb = lb_t - c_t
+
+    indices = th.randint(0, num_vecs, (sample_size,), device=device, generator=generator)
+    signs = (th.randint(0, 2, (sample_size, 1), device=device, generator=generator) * 2 - 1).float()
+    dirs = signs * vecs_t[indices]
+
+    pos_limits = th.where(dirs > 1e-8, delta_ub / dirs, th.full_like(dirs, float("inf")))
+    neg_limits = th.where(dirs < -1e-8, delta_lb / dirs, th.full_like(dirs, float("inf")))
+    limits = th.minimum(pos_limits, neg_limits)
+    r_boundary = th.amin(limits, dim=-1)
+
+    r_max = float(scale_factor) * r_boundary
+    effective_min = float(min_radius) * r_max
+    effective_min = th.maximum(effective_min, th.full_like(effective_min, 1e-9))
+    r_max = th.maximum(r_max, effective_min * 1.01)
+
+    u = th.rand(sample_size, device=device, generator=generator)
+    radii = effective_min * ((r_max / effective_min) ** u)
+
+    states = c_t + radii.unsqueeze(-1) * dirs
+    return th.clamp(states, min=lb_t, max=ub_t)
+
+

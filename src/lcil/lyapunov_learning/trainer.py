@@ -43,6 +43,7 @@ from .sampling import (
     sample_box_shell,
     sample_box_rejection_states,
     sample_axis_antiphase_states,
+    sample_eigenvector_antiphase_states,
 )
 from .results import (
     MiningStepResult,
@@ -63,6 +64,7 @@ from .utils import (
     get_th_lbx_ubx,
     get_center,
     get_ema,
+    compute_antiphase_eigenvectors,
 )
 from ..utils import (
     GracefulInterruptHandler,
@@ -140,6 +142,7 @@ class LyapunovTrainer:
         self.results: LyapunovTrainingResult | None = None
         self.metrics: LyapunovTrainingMetrics | None = None
         self.tb_writer: SummaryWriter | None = None
+        self._cached_antiphase_eigenvectors: th.Tensor | None = None
 
     @staticmethod
     def _build_scaled_train_bounds(
@@ -334,6 +337,20 @@ class LyapunovTrainer:
             )
             initial_states = th.cat((initial_states, axis_init), dim=0)
 
+        if self.config.cex_eigenvector_antiphase_samples:
+            eigenvectors = self._get_antiphase_eigenvectors()
+            eig_init = sample_eigenvector_antiphase_states(
+                sample_size=self.config.cex_eigenvector_antiphase_samples,
+                lb=self.lbx_train,
+                ub=self.ubx_train,
+                eigenvector=eigenvectors,
+                scale_factor=self.config.cex_axis_scale_factor,
+                center=getattr(self.lyap_model, "x_star", None),
+                device=self.device,
+                generator=self.torch_gen,
+            )
+            initial_states = th.cat((initial_states, eig_init), dim=0)
+
         cfg = config or self.cex_config
         return find_counter_examples(
             objective=lambda x: self.loss_module.mining_objective(x, rho_estimate),
@@ -363,6 +380,19 @@ class LyapunovTrainer:
             return th.cat((random_candidates, injection_states), dim=0)
         
         return random_candidates
+
+    def _get_antiphase_eigenvectors(self) -> th.Tensor:
+        """Compute or retrieve cached antiphase eigenvectors of the closed-loop system."""
+        if self._cached_antiphase_eigenvectors is None or self._curr_policy_requires_grad:
+            x_star = getattr(self.lyap_model, "x_star", None)
+            self._cached_antiphase_eigenvectors = compute_antiphase_eigenvectors(
+                dynamics=self.dyn_model,
+                policy=self.policy_model,
+                x_star=x_star,
+                state_dim=self.config.state_dim,
+                device=self.device,
+            )
+        return self._cached_antiphase_eigenvectors
 
     def _get_boundary_buffer(self):
         buffer_size = self.config.roa_boundary_buffer_size or (4 * self.config.rho_estimation_samples)

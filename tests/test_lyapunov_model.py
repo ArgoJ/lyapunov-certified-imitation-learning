@@ -247,6 +247,23 @@ class TestLyapunovCandidateProtocol(unittest.TestCase):
         self.assertTrue(th.allclose(forward_val, feature_term + linear_term))
         self.assertTrue(th.allclose(call_val, forward_val))
 
+    def test_zero_initialized_last_feature_layer(self) -> None:
+        feature_net = SaveableFeatureNet()
+        p_matrix = th.eye(4, dtype=th.float32)
+        model = NeuralLyapunovCandidate(
+            feature_net=feature_net,
+            state_dim=4,
+            riccati_p=p_matrix,
+        )
+        # Verify the last linear layer weights and bias are zero
+        self.assertTrue(th.all(feature_net.net.weight == 0.0))
+        if feature_net.net.bias is not None:
+            self.assertTrue(th.all(feature_net.net.bias == 0.0))
+
+        # Forward pass feature term must be 0
+        x = th.randn(5, 4)
+        self.assertTrue(th.allclose(model.get_feature_term(x), th.zeros(5, 1)))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

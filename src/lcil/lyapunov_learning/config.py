@@ -394,9 +394,15 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     cex_axis_scale_factor: float = config_field(
         default=1.0,
-        help="Scale factor relative to training bounds defining the upper bound for axis/antiphase counterexample sampling.",
+        help="Scale factor relative to training bounds defining the upper bound for axis/eigenvector antiphase counterexample sampling.",
         display_alias="cex_axis_scale",
         validators=(positive_validator,),
+    )
+    cex_eigenvector_antiphase_samples: int | None = config_field(
+        default=None,
+        help="Optional number of closed-loop eigenvector antiphase states sampled during counterexample mining. Deactivated if None.",
+        display_alias="cex_eig_samples",
+        validators=(optional_validator(positive_validator),),
     )
 
     # Lirpa Condition Loss

@@ -1,6 +1,12 @@
 from .trainer import LyapunovTrainer, LyapunovTrainingResult
 from .config import LyapunovTrainingConfig
-from .utils import ThresholdMonitor, TrainingAbortedError, check_kappa
+from .utils import (
+    ThresholdMonitor,
+    TrainingAbortedError,
+    check_kappa,
+    compute_closed_loop_jacobian,
+    compute_antiphase_eigenvectors,
+)
 from .models import LyapunovCandidate, NeuralLyapunovCandidate
 from .loss import LyapunovTrainingLoss
 from .policy_wrapper import PolicyWrapper, RepeatCurrentPolicyWrapper, FromRolloutsPolicyWrapper
@@ -16,6 +22,7 @@ from .sampling import (
     sample_uniform_box,
     sample_box_rejection_states,
     sample_axis_antiphase_states,
+    sample_eigenvector_antiphase_states,
 )
 
 __all__ = [
@@ -35,7 +42,10 @@ __all__ = [
     "sample_uniform_box",
     "sample_box_rejection_states",
     "sample_axis_antiphase_states",
+    "sample_eigenvector_antiphase_states",
     "ThresholdMonitor",
     "TrainingAbortedError",
     "check_kappa",
+    "compute_closed_loop_jacobian",
+    "compute_antiphase_eigenvectors",
 ]

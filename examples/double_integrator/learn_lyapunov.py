@@ -75,7 +75,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         condition_lirpa_weight=0.1,
         l1_weight=0.00001,
         scale_weight=0.0,
-        equilibrium_weight=0.0,
+        equilibrium_weight=1.0,
         formal_positivity_weight=0.0,
         policy_regularization_weight=0.1,
         r_factor_regularization_weight=100.0,
