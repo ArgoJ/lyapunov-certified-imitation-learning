@@ -5,7 +5,7 @@ import torch as th
 import torch.nn as nn
 
 from dataclasses import dataclass
-from typing import Any, Callable, Sequence
+from typing import Sequence
 from numpy.typing import NDArray
 
 from .config import LyapunovTrainingConfig
@@ -45,7 +45,6 @@ class BoundaryRhoEstimate:
     rho: float
     boundary_quantile: float
     boundary_mean: float
-    cex_cap: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +65,6 @@ class RhoEstimationConfig:
     rho_min: float = 1e-4
     rho_growth_gamma: float = 1.0
     enable_diagnosis: bool = False
-    cex_quantile: float = 0.05
 
     @classmethod
     def from_training_config(
@@ -205,59 +203,3 @@ def estimate_rho_from_boundary(
         terms=term_diagnostics,
     )
     return evaluation, boundary_eval_x
-
-
-def estimate_rho(
-    lyap_model: nn.Module,
-    config: RhoEstimationConfig,
-    condition_evaluator: Callable[[th.Tensor], th.Tensor] | None = None,
-    state_buffer: Any | None = None,
-    device: th.device | int | str | None = None,
-    generator: th.Generator | None = None,
-    cex_quantile: float | None = None,
-) -> tuple[BoundaryRhoEvaluation, th.Tensor]:
-    """Estimate rho using boundary analysis and dynamic counterexample capping."""
-    effective_cex_quantile = cex_quantile if cex_quantile is not None else config.cex_quantile
-
-    eval_result, boundary_x = estimate_rho_from_boundary(
-        lyap_model=lyap_model,
-        config=config,
-        device=device,
-        generator=generator,
-    )
-    rho_boundary = eval_result.rho.rho
-    rho_effective = rho_boundary
-    cex_cap_val = None
-
-    if state_buffer is not None and len(state_buffer) > 0 and condition_evaluator is not None:
-        states_to_check = []
-        if hasattr(state_buffer, "states") and state_buffer.states.numel() > 0:
-            states_to_check.append(state_buffer.states)
-        if hasattr(state_buffer, "cexs") and state_buffer.cexs.numel() > 0:
-            states_to_check.append(state_buffer.cexs)
-
-        if states_to_check:
-            all_buffer_states = th.cat(states_to_check, dim=0)
-            if all_buffer_states.numel() > 0:
-                with th.no_grad():
-                    violations = condition_evaluator(all_buffer_states)
-                    violations = violations.flatten()
-
-                    violating_mask = violations > 1e-6
-
-                    if violating_mask.any():
-                        violating_states = all_buffer_states[violating_mask]
-                        violating_v = lyap_model(violating_states).flatten()
-                        cex_cap_val = float(th.quantile(violating_v, q=float(effective_cex_quantile)).item())
-                        rho_effective = max(float(config.rho_min), min(rho_boundary, cex_cap_val))
-
-    updated_eval = BoundaryRhoEvaluation(
-        rho=BoundaryRhoEstimate(
-            rho=float(rho_effective),
-            boundary_quantile=eval_result.rho.boundary_quantile,
-            boundary_mean=eval_result.rho.boundary_mean,
-            cex_cap=cex_cap_val,
-        ),
-        terms=eval_result.terms,
-    )
-    return updated_eval, boundary_x

@@ -81,6 +81,26 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         # States near the origin (<= 0.2) are retained as valid counterexamples
         self.assertTrue(th.any(th.abs(cex_states) <= 0.2).item())
 
+    def test_find_counter_examples_excludes_origin(self) -> None:
+        cex_config = CounterexampleMiningConfig(
+            train_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
+            origin_exclusion=[0.2],
+            descent_steps=1,
+        )
+        initial_states = th.tensor([[0.05], [0.1], [0.5]], dtype=th.float32)
+
+        cex_states, _ = find_counter_examples(
+            objective=lambda x: x.sum(dim=-1),
+            condition_evaluator=lambda x: (th.ones(x.shape[0]), th.ones(x.shape[0], dtype=th.bool)),
+            config=cex_config,
+            initial_states=initial_states,
+            device="cpu",
+        )
+
+        # States inside origin exclusion (<= 0.2) must be excluded
+        self.assertFalse(th.any(th.abs(cex_states) <= 0.2).item())
+        self.assertTrue(th.all(th.abs(cex_states) > 0.2).item())
+
     def test_trainer_mining_uses_current_rho_estimate(self) -> None:
         config = LyapunovTrainingConfig(
             state_dim=1,
@@ -135,6 +155,9 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         )
 
         self.assertGreater(mined_cex.shape[0], 0)
+        # All mined counterexamples must be outside the origin exclusion
+        inside_exclusion = th.all(mined_cex.abs() <= th.tensor([0.05, 0.05]), dim=-1)
+        self.assertFalse(inside_exclusion.any().item())
         mined_values = trainer.lyap_model(mined_cex).flatten()
         self.assertTrue(th.all(mined_values <= 0.5 + 1e-6).item())
 

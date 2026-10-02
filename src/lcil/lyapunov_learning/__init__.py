@@ -6,7 +6,6 @@ from .loss import LyapunovTrainingLoss
 from .policy_wrapper import PolicyWrapper, RepeatCurrentPolicyWrapper, FromRolloutsPolicyWrapper
 from .sublevel import (
     RhoEstimationConfig,
-    estimate_rho,
     estimate_rho_from_boundary,
 )
 from .counterexample import (
@@ -31,7 +30,6 @@ __all__ = [
     "PolicyWrapper",
     "RepeatCurrentPolicyWrapper",
     "FromRolloutsPolicyWrapper",
-    "estimate_rho",
     "estimate_rho_from_boundary",
     "find_counter_examples",
     "sample_uniform_box",

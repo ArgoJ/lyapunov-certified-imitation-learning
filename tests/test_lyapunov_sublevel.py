@@ -9,13 +9,12 @@ from shared_utils import (
 )
 
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
-from lcil.lyapunov_learning.buffer import BoundaryStateBuffer, CEGISBuffer
+from lcil.lyapunov_learning.buffer import BoundaryStateBuffer
 from lcil.lyapunov_learning.sublevel import (
     BoundaryRhoEstimate,
     BoundaryTermDiagnostics,
     BoundaryRhoEvaluation,
     RhoEstimationConfig,
-    estimate_rho,
     estimate_rho_from_boundary,
     _boundary_term_diagnostics,
 )
@@ -103,86 +102,7 @@ class TestLyapunovSublevel(unittest.TestCase):
         self.assertAlmostEqual(first_max_val, 2.0, places=6)
         self.assertAlmostEqual(second_max_val, 2.0, places=6)
 
-    def test_estimate_rho_caps_with_violating_buffer_states(self) -> None:
-        lyap_model = _QuadraticLyapunov()
-        bounds = np.array([[-2.0, -2.0], [2.0, 2.0]], dtype=np.float32)
-        rho_config = RhoEstimationConfig(
-            train_bounds=bounds,
-            samples=8,
-            descent_steps=0,
-            rho_growth_gamma=1.0,
-            estimate_quantile=0.05,
-            rho_min=1e-4,
-            cex_quantile=0.1,
-        )
 
-        buffer = CEGISBuffer(
-            initial_states=th.tensor([[0.5, 0.5]], dtype=th.float32),
-            state_buffer_limit=16,
-            cex_buffer_limit=8,
-            lb=th.tensor([-2.0, -2.0]),
-            ub=th.tensor([2.0, 2.0]),
-            device=th.device("cpu"),
-        )
-        buffer.register_cex(
-            th.tensor([[0.3, 0.3]], dtype=th.float32),
-            objective=lambda x: -x.sum(dim=-1),
-        )
-
-        def condition_evaluator(x: th.Tensor) -> th.Tensor:
-            viol = th.zeros(x.shape[0], dtype=th.float32)
-            viol[(x[:, 0] > 0.25) & (x[:, 1] > 0.25)] = 1.0
-            return viol
-
-        eval_res, _ = estimate_rho(
-            lyap_model=lyap_model,
-            config=rho_config,
-            condition_evaluator=condition_evaluator,
-            state_buffer=buffer,
-            device="cpu",
-        )
-
-        self.assertIsNotNone(eval_res.rho.cex_cap)
-        self.assertLess(eval_res.rho.rho, 1.0)
-
-    def test_estimate_rho_respects_origin_exclusion(self) -> None:
-        lyap_model = _QuadraticLyapunov()
-        bounds = np.array([[-2.0, -2.0], [2.0, 2.0]], dtype=np.float32)
-        rho_config = RhoEstimationConfig(
-            train_bounds=bounds,
-            samples=8,
-            descent_steps=0,
-            rho_growth_gamma=1.0,
-            estimate_quantile=0.05,
-            rho_min=1e-4,
-            origin_exclusion=0.5,
-        )
-
-        buffer = CEGISBuffer(
-            initial_states=th.tensor([[0.2, 0.2]], dtype=th.float32),
-            state_buffer_limit=16,
-            cex_buffer_limit=8,
-            lb=th.tensor([-2.0, -2.0]),
-            ub=th.tensor([2.0, 2.0]),
-            device=th.device("cpu"),
-        )
-        buffer.register_cex(
-            th.tensor([[0.2, 0.2]], dtype=th.float32),
-            objective=lambda x: -x.sum(dim=-1),
-        )
-
-        def condition_evaluator(x: th.Tensor) -> th.Tensor:
-            return th.ones(x.shape[0], dtype=th.float32)
-
-        eval_res, _ = estimate_rho(
-            lyap_model=lyap_model,
-            config=rho_config,
-            condition_evaluator=condition_evaluator,
-            state_buffer=buffer,
-            device="cpu",
-        )
-
-        self.assertIsNone(eval_res.rho.cex_cap)
 
     def test_boundary_term_diagnostics_nan_fallback(self) -> None:
         lyap_model = _QuadraticLyapunov()

@@ -22,6 +22,8 @@ class CounterexampleMiningConfig:
     train_bounds: NDArray | Sequence[float] | th.Tensor
     step_size: float = 0.05
     descent_steps: int = 10
+    origin_exclusion: float | Sequence[float] | NDArray | None = None
+
 
     @classmethod
     def from_training_config(
@@ -35,6 +37,7 @@ class CounterexampleMiningConfig:
             "train_bounds": bounds,
             "step_size": config.cex_step_size,
             "descent_steps": config.cex_descent_steps,
+            "origin_exclusion": config.origin_exclusion,
         }
         data.update(overrides)
         return cls(**data)
@@ -57,6 +60,11 @@ def find_counter_examples(
     lbx, ubx = bounds[0], bounds[1]
     adv_states = initial_states.clone().to(device=device)
     step = config.step_size * (ubx - lbx).unsqueeze(0)
+    exclusion = (
+        th.as_tensor(config.origin_exclusion, dtype=adv_states.dtype, device=device)
+        if config.origin_exclusion is not None
+        else None
+    )
 
     with th.no_grad():
         best_states = adv_states.clone()
@@ -66,6 +74,9 @@ def find_counter_examples(
             device=device,
         )
         init_violations, init_mask = condition_evaluator(adv_states)
+        if exclusion is not None:
+            init_inside = th.all(th.abs(adv_states) <= exclusion, dim=-1)
+            init_mask = init_mask & (~init_inside)
         init_violations = init_violations.flatten()
         best_violations[init_mask] = init_violations[init_mask]
 
@@ -86,6 +97,10 @@ def find_counter_examples(
             candidate_violations, candidate_mask = condition_evaluator(candidate_states)
             candidate_violations = candidate_violations.flatten()
 
+            if exclusion is not None:
+                candidate_inside = th.all(th.abs(candidate_states) <= exclusion, dim=-1)
+                candidate_mask = candidate_mask & (~candidate_inside)
+
             improved = candidate_mask & (candidate_violations > best_violations)
 
             best_states[improved] = candidate_states[improved]
@@ -94,7 +109,11 @@ def find_counter_examples(
             adv_states = candidate_states
 
     with th.no_grad():
-        counter_mask = best_violations > 0.0
+        if exclusion is not None:
+            inside_exclusion = th.all(th.abs(best_states) <= exclusion, dim=-1)
+            counter_mask = (best_violations > 0.0) & (~inside_exclusion)
+        else:
+            counter_mask = best_violations > 0.0
 
     cex_states = best_states[counter_mask].clone().detach()
     cex_violations = best_violations[counter_mask].clone().detach()

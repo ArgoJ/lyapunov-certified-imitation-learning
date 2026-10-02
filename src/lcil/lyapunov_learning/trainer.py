@@ -31,7 +31,6 @@ from .loss import LyapunovTrainingLoss
 from .sublevel import (
     RhoEstimationConfig,
     BoundaryRhoEvaluation,
-    estimate_rho,
     estimate_rho_from_boundary,
 )
 from .counterexample import (
@@ -288,8 +287,6 @@ class LyapunovTrainer:
         *,
         gamma: float | None = None,
         estimate_quantile: float | None = None,
-        with_margin: bool = False,
-        state_buffer: Any | None = None,
     ) -> tuple[BoundaryRhoEvaluation, th.Tensor]:
         """Estimate rho and boundary points using the current Lyapunov model."""
         cfg = self.rho_config
@@ -300,10 +297,6 @@ class LyapunovTrainer:
         return estimate_rho_from_boundary(
             lyap_model=self.lyap_model,
             config=cfg,
-            # condition_evaluator=lambda x: self.loss_module.condition_violation(
-            #     x, with_margin=with_margin, with_softplus=False
-            # ),
-            # state_buffer=state_buffer,
             device=self.device,
             generator=self.torch_gen,
         )
@@ -455,10 +448,9 @@ class LyapunovTrainer:
     def _evaluate_boundary_and_roa(
         self,
         boundary_buffer: BoundaryStateBuffer,
-        state_buffer: CEGISBuffer | None,
         current_rho_estimate: float | None,
     ) -> BoundaryStepResult:
-        rho_diagnostics, boundary_states = self.estimate_rho(state_buffer=state_buffer)
+        rho_diagnostics, boundary_states = self.estimate_rho()
         boundary_buffer.update(boundary_states, value_fn=self.lyap_model)
         roa_candidates = self._build_roa_candidates(injection_states=boundary_buffer.states)
         
@@ -584,7 +576,7 @@ class LyapunovTrainer:
                     self._update_policy_training_status(outer_iter)
 
                     boundary_result = self._evaluate_boundary_and_roa(
-                        boundary_buffer, cegis_buffer, rho_estimate
+                        boundary_buffer, rho_estimate
                     )
                     rho_estimate = boundary_result.rho_estimate
 
