@@ -297,7 +297,6 @@ def main() -> None:
             eval_rho_diag, _ = trainer.estimate_rho(
                 gamma=1.0, 
                 estimate_quantile=0.0,
-                with_margin=False,
             )
             final_rho = eval_rho_diag.rho.rho
             __logger__.info(
