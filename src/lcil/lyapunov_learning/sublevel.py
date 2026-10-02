@@ -65,7 +65,6 @@ class RhoEstimationConfig:
     estimate_quantile: float = 0.05
     rho_min: float = 1e-4
     rho_growth_gamma: float = 1.0
-    origin_exclusion: float | Sequence[float] | NDArray | None = None
     enable_diagnosis: bool = False
     cex_quantile: float = 0.05
 
@@ -85,7 +84,6 @@ class RhoEstimationConfig:
             "estimate_quantile": config.rho_estimate_quantile,
             "rho_min": config.rho_min,
             "rho_growth_gamma": config.rho_growth_gamma,
-            "origin_exclusion": config.origin_exclusion,
             "enable_diagnosis": config.enable_diagnosis,
         }
         data.update(overrides)
@@ -240,11 +238,6 @@ def estimate_rho(
 
         if states_to_check:
             all_buffer_states = th.cat(states_to_check, dim=0)
-            if config.origin_exclusion is not None:
-                exclusion = th.as_tensor(config.origin_exclusion, dtype=all_buffer_states.dtype, device=all_buffer_states.device)
-                outside_exclusion = ~th.all(th.abs(all_buffer_states) <= exclusion, dim=-1)
-                all_buffer_states = all_buffer_states[outside_exclusion]
-
             if all_buffer_states.numel() > 0:
                 with th.no_grad():
                     violations = condition_evaluator(all_buffer_states)

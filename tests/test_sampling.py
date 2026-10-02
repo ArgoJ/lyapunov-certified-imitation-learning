@@ -138,7 +138,6 @@ class TestSamplingMethods(PlotAssertionsMixin):
             sample_size=sample_size,
             lb=lb,
             ub=ub,
-            origin_exclusion=exclusion,
             scale_factor=scale_factor,
             device=device,
         )
@@ -153,13 +152,11 @@ class TestSamplingMethods(PlotAssertionsMixin):
         self.assertTrue((active_counts == 1).any().item())
         self.assertTrue((active_counts == 2).any().item())
 
-        # 3. Active dimensions must be >= exclusion and <= bounds
-        excl_t = th.tensor(exclusion, device=device)
+        # 3. Active dimensions must be within bounds
         abs_samples = samples.abs()
         for i in range(4):
             active_i = abs_samples[:, i] > 0.0
             if active_i.any():
-                self.assertTrue((abs_samples[active_i, i] >= excl_t[i] - 1e-7).all().item())
                 self.assertTrue((samples[active_i, i] >= lb[i] - 1e-7).all().item())
                 self.assertTrue((samples[active_i, i] <= ub[i] + 1e-7).all().item())
 
@@ -170,7 +167,7 @@ class TestSamplingMethods(PlotAssertionsMixin):
         self.assertTrue(has_negative.all().item())
 
         # 5. Empty sample size edge case
-        empty = sample_axis_antiphase_states(0, lb=lb, ub=ub, origin_exclusion=exclusion, device=device)
+        empty = sample_axis_antiphase_states(0, lb=lb, ub=ub, device=device)
         self.assertEqual(empty.shape, (0, 4))
 
 

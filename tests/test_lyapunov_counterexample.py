@@ -25,13 +25,11 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             state_bounds=bounds,
             cex_step_size=0.02,
             cex_descent_steps=15,
-            origin_exclusion=0.1,
         )
         cex_cfg = CounterexampleMiningConfig.from_training_config(train_cfg, descent_steps=8)
 
         self.assertEqual(cex_cfg.step_size, 0.02)
         self.assertEqual(cex_cfg.descent_steps, 8)
-        self.assertEqual(cex_cfg.origin_exclusion, (0.1,))
         np.testing.assert_allclose(cex_cfg.train_bounds, bounds)
 
     def test_counterexample_mining_respects_current_rho_gate(self) -> None:
@@ -65,11 +63,10 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         self.assertGreater(gated_cex.shape[0], 0)
         self.assertTrue(th.all(gated_values <= rho_estimate + 1e-6).item())
 
-    def test_find_counter_examples_respects_origin_exclusion(self) -> None:
+    def test_find_counter_examples_does_not_exclude_origin(self) -> None:
         cex_config = CounterexampleMiningConfig(
             train_bounds=np.array([[-1.0], [1.0]], dtype=np.float32),
             descent_steps=1,
-            origin_exclusion=0.2,
         )
         initial_states = th.tensor([[0.05], [0.1], [0.5]], dtype=th.float32)
 
@@ -81,7 +78,8 @@ class TestLyapunovCounterexamples(unittest.TestCase):
             device="cpu",
         )
 
-        self.assertTrue(th.all(th.abs(cex_states) > 0.2).item())
+        # States near the origin (<= 0.2) are retained as valid counterexamples
+        self.assertTrue(th.any(th.abs(cex_states) <= 0.2).item())
 
     def test_trainer_mining_uses_current_rho_estimate(self) -> None:
         config = LyapunovTrainingConfig(
@@ -137,9 +135,8 @@ class TestLyapunovCounterexamples(unittest.TestCase):
         )
 
         self.assertGreater(mined_cex.shape[0], 0)
-        # All mined counterexamples must be outside the origin exclusion
-        inside_exclusion = th.all(mined_cex.abs() <= th.tensor([0.05, 0.05]), dim=-1)
-        self.assertFalse(inside_exclusion.any().item())
+        mined_values = trainer.lyap_model(mined_cex).flatten()
+        self.assertTrue(th.all(mined_values <= 0.5 + 1e-6).item())
 
     def test_counterexample_mask_rejects_stable_states(self) -> None:
         class _ContractingDyn(th.nn.Module):

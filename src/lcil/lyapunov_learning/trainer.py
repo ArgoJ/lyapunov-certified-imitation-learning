@@ -297,13 +297,13 @@ class LyapunovTrainer:
             cfg = replace(cfg, rho_growth_gamma=gamma)
         if estimate_quantile is not None:
             cfg = replace(cfg, estimate_quantile=estimate_quantile)
-        return estimate_rho(
+        return estimate_rho_from_boundary(
             lyap_model=self.lyap_model,
             config=cfg,
-            condition_evaluator=lambda x: self.loss_module.condition_violation(
-                x, with_margin=with_margin, with_softplus=False
-            ),
-            state_buffer=state_buffer,
+            # condition_evaluator=lambda x: self.loss_module.condition_violation(
+            #     x, with_margin=with_margin, with_softplus=False
+            # ),
+            # state_buffer=state_buffer,
             device=self.device,
             generator=self.torch_gen,
         )
@@ -335,7 +335,6 @@ class LyapunovTrainer:
                 sample_size=self.config.cex_axis_antiphase_samples,
                 lb=self.lbx_train,
                 ub=self.ubx_train,
-                origin_exclusion=self.config.origin_exclusion,
                 scale_factor=self.config.cex_axis_scale_factor,
                 device=self.device,
                 generator=self.torch_gen,

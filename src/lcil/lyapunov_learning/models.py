@@ -161,7 +161,6 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         riccati_scale: str | float = "none",
         fixed_r_factor: bool = False,
         kappa: float | None = None,
-        enable_conditioning_hook: bool = False,
     ):
         """Initialize the NeuralLyapunovCandidate.
 
@@ -183,13 +182,11 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
             Whether the R factor is fixed, by default False
         kappa : float | None, optional
             Exponential decay rate for the Lyapunov decrease condition, by default None
-        enable_conditioning_hook : bool, optional
-            Whether to register an autograd backward hook to check R-factor conditioning, by default False
         """
         super().__init__()
         self.feature_net = feature_net
         self.state_dim = state_dim
-        self.eps = float(eps)
+        self.eps = 0.0 if fixed_r_factor else float(eps)
         self.kappa: float | None = float(kappa) if kappa is not None else None
         if x_star is None:
             x_star = th.zeros(state_dim, dtype=th.float32)
@@ -197,10 +194,8 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         self.register_buffer("x_star", x_star.reshape(1, state_dim))
         self.register_buffer("eye", th.eye(state_dim, dtype=th.float32), persistent=False)
         self._cached_phi_x_star: th.Tensor | None = None
-        self._warned_cond: bool = False
-        self._warned_kappa: bool = False
         self._set_last_feature_layer(0.5)
-        self._setup_r_factor(riccati_p, riccati_scale, fixed_r_factor, enable_hook=enable_conditioning_hook)
+        self._setup_r_factor(riccati_p, riccati_scale, fixed_r_factor)
 
     def _set_last_feature_layer(self, std: float) -> None:
         """Set the last linear layer of the feature network to have weights initialized
@@ -229,77 +224,49 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         riccati_p: th.Tensor | None,
         riccati_scale: str | float,
         fixed: bool,
-        enable_hook: bool = False,
     ) -> None:
         """Set up the R factor for the Lyapunov candidate."""
         self._cached_pd_matrix: th.Tensor | None = None
         self._cached_pd_version: int = -1
         self._cached_eps: float | None = None
-        self._r_factor_hook_handle = None
-        self._hook_step: int = 0
 
         if fixed:
+            self.eps = 0.0
             self.register_buffer("r_factor", th.eye(self.state_dim))
         else:
             self.r_factor = nn.Parameter(th.eye(self.state_dim))
 
         if riccati_p is not None:
             self.set_riccati_p(riccati_p, scale_mode=riccati_scale)
-        if enable_hook:
-            self.set_conditioning_hook(True)
-
-    def set_conditioning_hook(self, enabled: bool) -> None:
-        """Enable or disable the autograd backward conditioning check hook."""
-        if not isinstance(self.r_factor, nn.Parameter):
-            return
-        if enabled and self._r_factor_hook_handle is None:
-            self._r_factor_hook_handle = self.r_factor.register_post_accumulate_grad_hook(
-                self._check_r_factor_conditioning
-            )
-        elif not enabled and self._r_factor_hook_handle is not None:
-            self._r_factor_hook_handle.remove()
-            self._r_factor_hook_handle = None
-
-    def _check_r_factor_conditioning(self, _param: th.Tensor) -> None:
-        """Run conditioning and kappa checks on εI + RᵀR periodically (warn-once per candidate)."""
-        self._hook_step += 1
-        if self._hook_step % 100 != 1:
-            return
-
-        if self._warned_cond and (self.kappa is None or self._warned_kappa):
-            return
-
-        with th.no_grad():
-            pd = self._pd_matrix()
-            eigs = th.linalg.eigvalsh(pd)
-            if not self._warned_cond:
-                lo, hi = eigs[0].item(), eigs[-1].item()
-                cond = hi / lo if lo > 0.0 else float("inf")
-                if cond > _COND_WARN_THRESHOLD:
-                    check_r_factor_conditioning(eigs)
-                    self._warned_cond = True
-            if self.kappa is not None and not self._warned_kappa:
-                lo, hi = eigs[0].item(), eigs[-1].item()
-                spectral_ratio = lo / hi if hi > 0.0 else 0.0
-                if self.kappa > spectral_ratio:
-                    check_r_factor_kappa(eigs, self.kappa)
-                    self._warned_kappa = True
 
     @th.no_grad()
     def _calculate_r_factor_from_riccati(self, riccati_p: th.Tensor) -> th.Tensor:
-        """Calculate the R factor from the Riccati matrix."""
+        """Calculate the R factor from the Riccati matrix such that εI + RᵀR = P."""
         p_sym = _symmetrize_matrix(riccati_p)
         eigvals, eigvecs = th.linalg.eigh(p_sym)
         scale = max(1.0, float(th.linalg.norm(p_sym, ord=2).item()))
         tol = 1e-6 * scale
-        min_eig = float(eigvals.min().item())
+        min_eig = float(eigvals[0].item())
         if min_eig < -tol:
             raise ValueError(
                 "riccati_p must satisfy P >= 0 so it can seed R^T R. "
                 f"Minimum eigenvalue is {min_eig:.6e}."
             )
-        
-        factor = th.diag(th.sqrt(eigvals.clamp_min(0.0))) @ eigvecs.transpose(0, 1)
+
+        min_eig_clamped = max(0.0, min_eig)
+        if min_eig < self.eps:
+            adjusted_eps = 0.5 * min_eig_clamped
+            __logger__.warning(
+                "Minimum eigenvalue of riccati_p (λ_min=%.6e) is less than eps=%.6e. "
+                "Setting eps to 0.5 * λ_min (%.6e) so that R remains full-rank and trainable.",
+                min_eig,
+                self.eps,
+                adjusted_eps,
+            )
+            self.eps = adjusted_eps
+
+        adjusted_eigvals = (eigvals - self.eps).clamp_min(0.0)
+        factor = th.diag(th.sqrt(adjusted_eigvals)) @ eigvecs.transpose(0, 1)
         return factor
     
     def _pd_matrix(self) -> th.Tensor:
@@ -365,6 +332,7 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         factor = self._calculate_r_factor_from_riccati(p_matrix)
         with th.no_grad():
             self.r_factor.copy_(factor)
+        self._cached_pd_matrix = None
         
         p_scale = max(1.0, float(th.linalg.norm(p_matrix, ord=2).item()))
         self._set_last_feature_layer(0.5 * p_scale)

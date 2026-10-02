@@ -239,7 +239,6 @@ def sample_axis_antiphase_states(
     sample_size: int,
     lb: th.Tensor | Sequence[float],
     ub: th.Tensor | Sequence[float],
-    origin_exclusion: th.Tensor | Sequence[float] | float = 0.0,
     scale_factor: float = 1.0,
     device: th.device | int | str | None = "cpu",
     generator: th.Generator | None = None,
@@ -247,7 +246,7 @@ def sample_axis_antiphase_states(
     """Sample states on coordinate axes and planes with alternating signs from training bounds.
 
     Generates sparse, axis-aligned states with Rademacher (opposing) signs
-    and amplitudes scaled from the training bounds (respecting origin_exclusion).
+    and amplitudes scaled from the training bounds.
     This directly targets coordinate cancellation vulnerabilities and axis-aligned decrease
     violations without requiring system-specific domain knowledge.
 
@@ -259,8 +258,6 @@ def sample_axis_antiphase_states(
         Lower bounds of the training domain.
     ub : th.Tensor | Sequence[float]
         Upper bounds of the training domain.
-    origin_exclusion : th.Tensor | Sequence[float] | float, optional
-        Per-dimension minimum exclusion magnitude around the origin, by default 0.0.
     scale_factor : float, optional
         Scale factor relative to training bounds defining the upper sampling amplitude,
         by default 1.0.
@@ -284,11 +281,7 @@ def sample_axis_antiphase_states(
     half_width = 0.5 * (ub_t - lb_t)
     max_r = float(scale_factor) * half_width
 
-    excl_t = th.as_tensor(origin_exclusion, dtype=th.float32, device=device)
-    if excl_t.ndim == 0:
-        excl_t = excl_t.expand(nx)
-
-    effective_min = th.where(excl_t > 0.0, excl_t, 1e-4 * max_r)
+    effective_min = 1e-4 * max_r
     max_r = th.maximum(max_r, effective_min * 1.01)
 
     # 1. Random Rademacher signs (+1 / -1) covering all 2^nx orthants

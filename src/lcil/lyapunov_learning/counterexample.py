@@ -22,7 +22,6 @@ class CounterexampleMiningConfig:
     train_bounds: NDArray | Sequence[float] | th.Tensor
     step_size: float = 0.05
     descent_steps: int = 10
-    origin_exclusion: float | Sequence[float] | NDArray | None = None
 
     @classmethod
     def from_training_config(
@@ -36,7 +35,6 @@ class CounterexampleMiningConfig:
             "train_bounds": bounds,
             "step_size": config.cex_step_size,
             "descent_steps": config.cex_descent_steps,
-            "origin_exclusion": config.origin_exclusion,
         }
         data.update(overrides)
         return cls(**data)
@@ -96,12 +94,7 @@ def find_counter_examples(
             adv_states = candidate_states
 
     with th.no_grad():
-        if config.origin_exclusion is not None:
-            exclusion = th.as_tensor(config.origin_exclusion, dtype=best_states.dtype, device=device)
-            inside_exclusion = th.all(th.abs(best_states) <= exclusion, dim=-1)
-            counter_mask = (best_violations > 0.0) & (~inside_exclusion)
-        else:
-            counter_mask = best_violations > 0.0
+        counter_mask = best_violations > 0.0
 
     cex_states = best_states[counter_mask].clone().detach()
     cex_violations = best_violations[counter_mask].clone().detach()

@@ -76,7 +76,48 @@ class TestNeuralLyapunovCandidateSerialization(unittest.TestCase):
             riccati_p=p_matrix,
         )
 
-        self.assertTrue(th.allclose(model._pd_matrix(), p_matrix + th.eye(4) * eps, atol=1e-5, rtol=1e-5))
+        self.assertTrue(th.allclose(model._pd_matrix(), p_matrix, atol=1e-5, rtol=1e-5))
+
+    def test_riccati_seed_adjusts_eps_when_lambda_min_less_than_eps(self) -> None:
+        feature_net = SaveableFeatureNet()
+        p_matrix = th.tensor(
+            [
+                [2.0, 0.5],
+                [0.5, 1.0],
+            ],
+            dtype=th.float32,
+        )
+        min_eig = float(th.linalg.eigvalsh(p_matrix)[0].item())
+        initial_eps = min_eig + 1.0
+
+        model = NeuralLyapunovCandidate(
+            feature_net=feature_net,
+            state_dim=2,
+            eps=initial_eps,
+            riccati_p=p_matrix,
+        )
+
+        self.assertAlmostEqual(model.eps, 0.5 * min_eig, places=5)
+        self.assertTrue(th.allclose(model._pd_matrix(), p_matrix, atol=1e-5, rtol=1e-5))
+
+    def test_fixed_r_factor_forces_eps_zero(self) -> None:
+        feature_net = SaveableFeatureNet()
+        p_matrix = th.tensor(
+            [
+                [2.0, 0.5],
+                [0.5, 1.0],
+            ],
+            dtype=th.float32,
+        )
+        model = NeuralLyapunovCandidate(
+            feature_net=feature_net,
+            state_dim=2,
+            eps=0.5,
+            riccati_p=p_matrix,
+            fixed_r_factor=True,
+        )
+        self.assertEqual(model.eps, 0.0)
+        self.assertTrue(th.allclose(model._pd_matrix(), p_matrix, atol=1e-5, rtol=1e-5))
 
     def test_save_load_roundtrip_with_state_dict_feature_net(self) -> None:
         feature_net = WrappedFeatureNet(
@@ -178,33 +219,6 @@ class TestNeuralLyapunovCandidateSerialization(unittest.TestCase):
         )
         self.assertTrue(th.allclose(loaded.feature_net.net.bias, model.feature_net.net.bias))
         self.assertTrue(th.allclose(loaded(x), expected))
-
-    def test_conditioning_hook_lifecycle(self) -> None:
-        model = NeuralLyapunovCandidate(
-            feature_net=SaveableFeatureNet(),
-            state_dim=4,
-            enable_conditioning_hook=False,
-        )
-        self.assertIsNone(model._r_factor_hook_handle)
-
-        # Enabling registers the hook handle
-        model.set_conditioning_hook(True)
-        self.assertIsNotNone(model._r_factor_hook_handle)
-
-        # Re-enabling is idempotent
-        handle = model._r_factor_hook_handle
-        model.set_conditioning_hook(True)
-        self.assertIs(model._r_factor_hook_handle, handle)
-
-        # Backward runs smoothly
-        x = th.randn(2, 4)
-        out = model(x).sum()
-        out.backward()
-        self.assertIsNotNone(model.r_factor.grad)
-
-        # Disabling removes the hook handle
-        model.set_conditioning_hook(False)
-        self.assertIsNone(model._r_factor_hook_handle)
 
 
 class TestLyapunovCandidateProtocol(unittest.TestCase):
