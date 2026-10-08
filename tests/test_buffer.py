@@ -108,7 +108,7 @@ class TestBufferSpatialDiversity(unittest.TestCase):
         idx = get_spatial_diversity_indices(states, values, filter_eps=0.1, lb=lb, ub=ub)
         self.assertEqual(len(idx), 2)
 
-    def test_cegis_buffer_filters_only_new_cexs(self) -> None:
+    def test_cegis_buffer_filters_pool_wide_diversity(self) -> None:
         lb = th.tensor([0.0])
         ub = th.tensor([1.0])
         buf = CEGISBuffer(
@@ -131,15 +131,33 @@ class TestBufferSpatialDiversity(unittest.TestCase):
         self.assertEqual(buf.cex_count, 1)
         self.assertAlmostEqual(buf.cexs[0, 0].item(), 0.08, places=5)
 
-        # Batch 2: new point at 0.06 (also in bin [0.0, 0.2)).
-        # Since ONLY new CEXs are filtered, the existing point 0.08 is NOT removed!
+        # Batch 2: new point at 0.06 (also in bin [0.0, 0.2) with lower score 0.06 < 0.08).
+        # Pool-wide deduplication retains only the stronger violation in the bin (0.08)!
         buf.register_cex(
             th.tensor([[0.06]]),
             objective=lambda x: -x,
         )
+        self.assertEqual(buf.cex_count, 1)
+        self.assertAlmostEqual(buf.cexs[0, 0].item(), 0.08, places=5)
+
+        # Batch 3: new point at 0.09 (in bin [0.0, 0.2) with higher score 0.09 > 0.08).
+        # Pool-wide deduplication updates the bin to the new strongest violation (0.09)!
+        buf.register_cex(
+            th.tensor([[0.09]]),
+            objective=lambda x: -x,
+        )
+        self.assertEqual(buf.cex_count, 1)
+        self.assertAlmostEqual(buf.cexs[0, 0].item(), 0.09, places=5)
+
+        # Batch 4: new point at 0.45 in a DIFFERENT bin [0.4, 0.6)
+        # Retains both points
+        buf.register_cex(
+            th.tensor([[0.45]]),
+            objective=lambda x: -x,
+        )
         self.assertEqual(buf.cex_count, 2)
         retained_vals = {round(x, 2) for x in buf.cexs.flatten().tolist()}
-        self.assertEqual(retained_vals, {0.08, 0.06})
+        self.assertEqual(retained_vals, {0.09, 0.45})
 
     def test_dynamic_state_buffer_keeps_most_violating_counterexamples(self) -> None:
         initial_states = th.zeros((4, 1), dtype=th.float32)

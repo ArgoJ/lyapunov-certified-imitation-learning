@@ -103,6 +103,7 @@ __all__ = [
     "PendulumOnCartConfig",
     "Q",
     "R",
+    "linearized_inverted_pendulum_on_cart_matrices",
     "compute_discrete_cartpole",
     "compute_riccati_value_matrix",
 ]

@@ -6,6 +6,11 @@ from .utils import (
     check_kappa,
     compute_closed_loop_jacobian,
     compute_antiphase_eigenvectors,
+    compute_induced_1norm_gain,
+    optimize_polyhedral_contraction_matrix,
+    compute_polyhedral_value_matrix,
+    scale_riccati_matrix,
+    calculate_r_factor_from_riccati,
 )
 from .models import LyapunovCandidate, NeuralLyapunovCandidate
 from .loss import LyapunovTrainingLoss
@@ -48,4 +53,9 @@ __all__ = [
     "check_kappa",
     "compute_closed_loop_jacobian",
     "compute_antiphase_eigenvectors",
+    "compute_induced_1norm_gain",
+    "optimize_polyhedral_contraction_matrix",
+    "compute_polyhedral_value_matrix",
+    "scale_riccati_matrix",
+    "calculate_r_factor_from_riccati",
 ]

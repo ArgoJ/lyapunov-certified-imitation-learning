@@ -1,3 +1,4 @@
+import numpy as np
 import torch as th
 import torch.nn as nn
 import logging
@@ -9,44 +10,12 @@ from ..utils.base_models import load_feature_net, save_feature_net
 
 __logger__ = logging.getLogger(__name__)
 
-
 _COND_WARN_THRESHOLD: float = 1e4
 
 
 def has_learnable_r_factor(module: nn.Module) -> bool:
     """Check if the Lyapunov model has a learnable R factor attribute."""
     return hasattr(module, "r_factor") and isinstance(module.r_factor, nn.Parameter)
-
-
-def _symmetrize_matrix(matrix: th.Tensor) -> th.Tensor:
-    """Return the symmetric part of a matrix."""
-    return 0.5 * (matrix + matrix.transpose(0, 1))
-
-def _scale_riccati(riccati_p: th.Tensor, scale_mode: str | float) -> th.Tensor:
-    if scale_mode != "none":
-        if scale_mode == "spectral":
-            scale_factor = th.linalg.norm(riccati_p, ord=2).item()
-        elif scale_mode == "frobenius":
-            scale_factor = th.linalg.norm(riccati_p, ord="fro").item()
-        else:
-            try:
-                scale_factor = float(scale_mode)
-            except ValueError:
-                raise ValueError(
-                    f"Invalid riccati_scale mode: {scale_mode}. "
-                    "Must be 'none', 'spectral', 'frobenius', or a numeric value."
-                )
-        riccati_p = riccati_p / scale_factor
-    return riccati_p
-
-def _check_riccati_shape(p_matrix: th.Tensor, state_dim: int) -> None:
-    if p_matrix.shape != (state_dim, state_dim):
-        raise ValueError(
-            "riccati_p must have shape "
-            f"({state_dim}, {state_dim}), got {tuple(p_matrix.shape)}."
-        )
-    if not bool(th.isfinite(p_matrix).all()):
-        raise ValueError("riccati_p must contain only finite values.")
 
 
 def check_r_factor_conditioning(eigs: th.Tensor, threshold: float = _COND_WARN_THRESHOLD) -> float:
@@ -157,8 +126,7 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         state_dim: int,
         eps: float = 1e-3,
         x_star: th.Tensor | None = None,
-        riccati_p: th.Tensor | None = None,
-        riccati_scale: str | float = "none",
+        r_factor: th.Tensor | np.ndarray | None = None,
         fixed_r_factor: bool = False,
         kappa: float | None = None,
     ):
@@ -174,10 +142,8 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
             A small positive constant, by default 1e-3
         x_star : th.Tensor | None, optional
             The equilibrium point, by default None
-        riccati_p : th.Tensor | None, optional
-            The Riccati value matrix, by default None
-        riccati_scale : str | float, optional
-            The scaling mode for the Riccati matrix, by default "none"
+        r_factor : th.Tensor | np.ndarray | None, optional
+            The initial R factor matrix, by default None
         fixed_r_factor : bool, optional
             Whether the R factor is fixed, by default False
         kappa : float | None, optional
@@ -195,7 +161,7 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         self.register_buffer("eye", th.eye(state_dim, dtype=th.float32), persistent=False)
         self._cached_phi_x_star: th.Tensor | None = None
         self._set_last_feature_layer(0.5)
-        self._setup_r_factor(riccati_p, riccati_scale, fixed_r_factor)
+        self._setup_r_factor(r_factor, fixed_r_factor)
 
     def _set_last_feature_layer(self, std: float) -> None:
         """Set the last linear layer of the feature network to have weights initialized
@@ -221,8 +187,7 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
 
     def _setup_r_factor(
         self,
-        riccati_p: th.Tensor | None,
-        riccati_scale: str | float,
+        r_factor: th.Tensor | np.ndarray | None,
         fixed: bool,
     ) -> None:
         """Set up the R factor for the Lyapunov candidate."""
@@ -236,38 +201,8 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         else:
             self.r_factor = nn.Parameter(th.eye(self.state_dim))
 
-        if riccati_p is not None:
-            self.set_riccati_p(riccati_p, scale_mode=riccati_scale)
-
-    @th.no_grad()
-    def _calculate_r_factor_from_riccati(self, riccati_p: th.Tensor) -> th.Tensor:
-        """Calculate the R factor from the Riccati matrix such that εI + RᵀR = P."""
-        p_sym = _symmetrize_matrix(riccati_p)
-        eigvals, eigvecs = th.linalg.eigh(p_sym)
-        scale = max(1.0, float(th.linalg.norm(p_sym, ord=2).item()))
-        tol = 1e-6 * scale
-        min_eig = float(eigvals[0].item())
-        if min_eig < -tol:
-            raise ValueError(
-                "riccati_p must satisfy P >= 0 so it can seed R^T R. "
-                f"Minimum eigenvalue is {min_eig:.6e}."
-            )
-
-        min_eig_clamped = max(0.0, min_eig)
-        if min_eig < self.eps:
-            adjusted_eps = 0.5 * min_eig_clamped
-            __logger__.warning(
-                "Minimum eigenvalue of riccati_p (λ_min=%.6e) is less than eps=%.6e. "
-                "Setting eps to 0.5 * λ_min (%.6e) so that R remains full-rank and trainable.",
-                min_eig,
-                self.eps,
-                adjusted_eps,
-            )
-            self.eps = adjusted_eps
-
-        adjusted_eigvals = (eigvals - self.eps).clamp_min(0.0)
-        factor = th.diag(th.sqrt(adjusted_eigvals)) @ eigvecs.transpose(0, 1)
-        return factor
+        if r_factor is not None:
+            self.set_r_factor(r_factor)
     
     def _pd_matrix(self) -> th.Tensor:
         """Return the positive definite matrix εI + RᵀR with lazy caching."""
@@ -307,38 +242,36 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         self.x_star.copy_(x_star.reshape(1, -1))
         self._cached_phi_x_star = None
 
-    def set_riccati_p(self, riccati_p: th.Tensor, scale_mode: str | float = "none") -> None:
-        """Set the Riccati value matrix to seed the Lyapunov R factor.
+    def set_r_factor(self, r_factor: th.Tensor | np.ndarray) -> None:
+        """Set the R factor matrix for the Lyapunov candidate.
 
         Parameters
         ----------
-        riccati_p : th.Tensor
-            The Riccati value matrix.
-        scale_mode : str | float, optional
-            The scaling mode for the Riccati matrix, by default "none"
-
-        Raises
-        ------
-        ValueError
-            If the Riccati matrix is not positive semi-definite.
+        r_factor : th.Tensor | np.ndarray
+            The R factor matrix of shape (state_dim, state_dim).
         """
-        p_matrix = th.as_tensor(
-            riccati_p,
+        r_mat = th.as_tensor(
+            r_factor,
             dtype=self.r_factor.dtype,
             device=self.r_factor.device,
         )
-        p_matrix = _scale_riccati(p_matrix, scale_mode)
-        _check_riccati_shape(p_matrix, self.state_dim)
-        factor = self._calculate_r_factor_from_riccati(p_matrix)
+        if r_mat.shape != (self.state_dim, self.state_dim):
+            raise ValueError(
+                f"r_factor must have shape ({self.state_dim}, {self.state_dim}), got {tuple(r_mat.shape)}."
+            )
+        if not bool(th.isfinite(r_mat).all()):
+            raise ValueError("r_factor must contain only finite values.")
+
         with th.no_grad():
-            self.r_factor.copy_(factor)
+            self.r_factor.copy_(r_mat)
         self._cached_pd_matrix = None
-        
-        p_scale = max(1.0, float(th.linalg.norm(p_matrix, ord=2).item()))
+
+        pd = self._pd_matrix()
+        p_scale = max(1.0, float(th.linalg.norm(pd, ord=2).item()))
         self._set_last_feature_layer(0.5 * p_scale)
-        __logger__.info("Using Riccati value matrix to seed the Lyapunov R factor: \n%s", p_matrix)
-        __logger__.info("Setting the last layer of the feature net to std: %.3f", 0.5 *p_scale)
-    
+        __logger__.info("Set Lyapunov R factor: \n%s", r_mat)
+        __logger__.info("Setting the last layer of the feature net to std: %.3f", 0.5 * p_scale)
+
     def get_feature_term(self, x: th.Tensor) -> th.Tensor:
         """Compute the feature term |phi(x) - phi(x*)| for the Lyapunov candidate."""
         phi_x = self.feature_net(x)

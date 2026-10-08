@@ -14,6 +14,7 @@ from lcil.lyapunov_learning import (
     LyapunovTrainer,
     ThresholdMonitor,
     FromRolloutsPolicyWrapper,
+    calculate_r_factor_from_riccati,
 )
 from lcil.utils import GridSearchHelper, MLP, IntegrationMethod, config_field, ArgumentParserConfig
 from lcil.utils.lcil_plt.parallel_coodrdinates import parallel_coordinates_plotly
@@ -212,10 +213,13 @@ def main() -> None:
             seed=seed,
         )
         riccati_p = compute_riccati_value_matrix(float(policy_global_config.dt), kappa=train_config.kappa)
+        eps_init = 0.0 if script_config.fix_r_factor else 1e-3
+        r_init, adjusted_eps = calculate_r_factor_from_riccati(riccati_p, eps=eps_init)
         lyap_model = NeuralLyapunovCandidate(
             feature_net=lyap_feature,
             state_dim=policy_global_config.nx,
-            riccati_p=riccati_p,
+            eps=adjusted_eps,
+            r_factor=r_init,
             fixed_r_factor=script_config.fix_r_factor,
             kappa=train_config.kappa,
         )

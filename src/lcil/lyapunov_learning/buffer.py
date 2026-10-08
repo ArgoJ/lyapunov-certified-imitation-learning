@@ -321,12 +321,7 @@ class CEGISBuffer:
         new_cexs: th.Tensor,
         objective: Callable[[th.Tensor], th.Tensor],
     ) -> None:
-        """Registers new counterexamples and retains the strongest violations.
-
-        Only new counterexamples are filtered for spatial diversity before being
-        added to the pool. Existing counterexamples in the pool are not spatially
-        filtered against each other or against new counterexamples.
-        """
+        """Registers new counterexamples and retains the strongest spatially diverse violations pool-wide."""
         self._cex_pool.step_time_and_clean()
 
         if new_cexs.numel() > 0:
@@ -346,15 +341,19 @@ class CEGISBuffer:
         if len(self._cex_pool) == 0:
             return
 
-        if len(self._cex_pool) > self.cex_buffer_limit:
-            with th.no_grad():
-                violation_scores = -objective(self.cexs).flatten()
-            top_indices = th.topk(
-                violation_scores,
-                k=self.cex_buffer_limit,
-                largest=True,
-            ).indices
-            self._cex_pool.filter_by_indices(top_indices)
+        with th.no_grad():
+            violation_scores = -objective(self.cexs).flatten()
+
+        pool_keep_indices = get_spatial_diversity_indices(
+            states=self.cexs,
+            values=violation_scores,
+            filter_eps=self.filter_eps,
+            descending=True,
+            max_elements=self.cex_buffer_limit,
+            lb=self.lb,
+            ub=self.ub,
+        )
+        self._cex_pool.filter_by_indices(pool_keep_indices)
 
     def sample(self, batch_size: int, cex_fraction: float = 0.25) -> th.Tensor:
         """

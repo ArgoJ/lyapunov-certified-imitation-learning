@@ -254,3 +254,266 @@ def compute_antiphase_eigenvectors(
 
     return candidates
 
+
+def compute_induced_1norm_gain(
+    p_matrix: th.Tensor | np.ndarray,
+    a_matrix: th.Tensor | np.ndarray,
+) -> th.Tensor:
+    """Compute the 1-norm of each column of P @ A @ P^{-1}.
+
+    For a Lyapunov candidate whose linear term is ||P x||_1, exponential
+    decrease ||P A x||_1 <= (1 - kappa) ||P x||_1 requires the induced matrix
+    1-norm (the maximum column 1-norm) of P @ A @ P^{-1} to be <= 1 - kappa.
+
+    Parameters
+    ----------
+    p_matrix : th.Tensor | np.ndarray
+        Symmetric positive definite matrix P of shape (nx, nx).
+    a_matrix : th.Tensor | np.ndarray
+        Closed-loop discrete-time transition matrix A of shape (nx, nx).
+
+    Returns
+    -------
+    th.Tensor
+        1D tensor of column 1-norms of shape (nx,).
+    """
+    p = th.as_tensor(p_matrix, dtype=th.float64)
+    a = th.as_tensor(a_matrix, dtype=th.float64, device=p.device)
+    # Solve X @ P = P @ A <=> P.T @ X.T = (P @ A).T
+    x_t = th.linalg.solve(p.T, (p @ a).T)
+    x = x_t.T
+    return x.abs().sum(dim=0)
+
+
+def optimize_polyhedral_contraction_matrix(
+    a_matrix: th.Tensor | np.ndarray,
+    p_initial: th.Tensor | np.ndarray | None = None,
+    *,
+    kappa: float = 0.001,
+    max_cond: float = 150.0,
+    steps: int = 800,
+    restarts: int = 3,
+    beta: float = 300.0,
+    target_gain: float | None = None,
+    seed: int = 0,
+) -> tuple[np.ndarray, float]:
+    """Find a symmetric positive definite matrix P such that ||P A P^{-1}||_1 < 1 - kappa.
+
+    Parameters
+    ----------
+    a_matrix : th.Tensor | np.ndarray
+        Closed-loop transition matrix or Jacobian A of shape (nx, nx).
+    p_initial : th.Tensor | np.ndarray | None, optional
+        Initial SPD matrix seed (e.g., Riccati/ARE solution).
+    kappa : float, optional
+        Required decay rate, by default 0.001.
+    max_cond : float, optional
+        Condition number limit above which a penalty is applied, by default 150.0.
+    steps : int, optional
+        Optimization steps per restart, by default 800.
+    restarts : int, optional
+        Number of restarts, by default 3.
+    beta : float, optional
+        Temperature for smooth logsumexp approximation, by default 300.0.
+    target_gain : float | None, optional
+        Target maximum column gain for early stopping. Defaults to 1.0 - kappa - 0.01.
+    seed : int, optional
+        Random seed for reproducibility, by default 0.
+
+    Returns
+    -------
+    tuple[np.ndarray, float]
+        The optimized SPD matrix P (normalized such that ||P||_2 = 1.0) as a numpy array,
+        and its induced 1-norm gain max_j ||(P A P^{-1})_{:, j}||_1.
+    """
+    a = th.as_tensor(a_matrix, dtype=th.float64)
+    n = a.shape[0]
+    eps = 1e-4
+    if target_gain is None:
+        target_gain = 1.0 - kappa - 0.01
+
+    if p_initial is not None:
+        p0 = th.as_tensor(p_initial, dtype=th.float64)
+        p0 = 0.5 * (p0 + p0.T)
+        p0 = p0 / th.linalg.matrix_norm(p0, 2)
+        initial_gain = compute_induced_1norm_gain(p0, a).max().item()
+        try:
+            l0 = th.linalg.cholesky(p0).T
+        except Exception:
+            l0 = th.eye(n, dtype=th.float64)
+    else:
+        p0 = th.eye(n, dtype=th.float64)
+        l0 = th.eye(n, dtype=th.float64)
+        initial_gain = compute_induced_1norm_gain(p0, a).max().item()
+
+    if initial_gain <= target_gain:
+        return p0.detach().cpu().numpy(), initial_gain
+
+    best_gain = initial_gain
+    best_p = p0.detach().clone()
+    g = th.Generator().manual_seed(seed)
+
+    for k in range(restarts):
+        if k == 0:
+            r = l0.clone()
+        elif k == 1:
+            r = th.eye(n, dtype=th.float64)
+        else:
+            r = l0 + 0.2 * th.randn(n, n, generator=g, dtype=th.float64) * l0.abs().mean()
+        r = r.requires_grad_(True)
+        opt = th.optim.Adam([r], lr=2e-2)
+
+        for _ in range(steps):
+            p = eps * th.eye(n, dtype=th.float64) + r.T @ r
+            p = p / th.linalg.matrix_norm(p, 2)
+            cs = compute_induced_1norm_gain(p, a)
+            ev = th.linalg.eigvalsh(p)
+            cond = ev[-1] / th.clamp(ev[0], min=1e-8)
+            cond_pen = th.relu(th.log(cond) - np.log(max_cond)) ** 2
+            loss = th.logsumexp(beta * cs, 0) / beta + 10.0 * cond_pen
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+
+        with th.no_grad():
+            p = eps * th.eye(n, dtype=th.float64) + r.T @ r
+            p = p / th.linalg.matrix_norm(p, 2)
+            gm = compute_induced_1norm_gain(p, a).max().item()
+        if gm < best_gain:
+            best_gain = gm
+            best_p = p.detach().clone()
+        if best_gain <= target_gain:
+            break
+
+    return best_p.detach().cpu().numpy(), best_gain
+
+
+def scale_riccati_matrix(
+    riccati_p: th.Tensor | np.ndarray,
+    scale_mode: str | float = "none",
+) -> th.Tensor:
+    """Scale a Riccati matrix by spectral norm, Frobenius norm, or a custom factor.
+
+    Parameters
+    ----------
+    riccati_p : th.Tensor | np.ndarray
+        Matrix P to scale.
+    scale_mode : str | float, optional
+        Scaling mode ('none', 'spectral', 'frobenius', or a numeric divisor), by default "none".
+
+    Returns
+    -------
+    th.Tensor
+        Scaled matrix P as a torch tensor.
+    """
+    p = th.as_tensor(riccati_p)
+    if scale_mode != "none":
+        if scale_mode == "spectral":
+            scale_factor = th.linalg.norm(p, ord=2).item()
+        elif scale_mode == "frobenius":
+            scale_factor = th.linalg.norm(p, ord="fro").item()
+        else:
+            try:
+                scale_factor = float(scale_mode)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid riccati_scale mode: {scale_mode}. "
+                    "Must be 'none', 'spectral', 'frobenius', or a numeric value."
+                )
+        p = p / scale_factor
+    return p
+
+
+def compute_polyhedral_value_matrix(
+    a_closed_loop: th.Tensor | np.ndarray,
+    p_initial: th.Tensor | np.ndarray | None = None,
+    *,
+    kappa: float = 0.001,
+    max_cond: float = 150.0,
+    scale_mode: str | float = "none",
+) -> np.ndarray:
+    """Compute an SPD matrix P such that ||P A_cl P^{-1}||_1 < 1 - kappa.
+
+    Parameters
+    ----------
+    a_closed_loop : th.Tensor | np.ndarray
+        Closed-loop transition matrix or Jacobian A_cl around the origin.
+    p_initial : th.Tensor | np.ndarray | None, optional
+        Initial SPD matrix seed (e.g. from DARE/Riccati).
+    kappa : float, optional
+        Required decay rate, by default 0.001.
+    max_cond : float, optional
+        Maximum allowed condition number, by default 150.0.
+    scale_mode : str | float, optional
+        Scaling mode for the resulting matrix ('none', 'spectral', 'frobenius'),
+        by default "none".
+
+    Returns
+    -------
+    np.ndarray
+        Optimized SPD matrix P satisfying ||P A_cl P^{-1}||_1 < 1 - kappa.
+    """
+    p_opt, _ = optimize_polyhedral_contraction_matrix(
+        a_matrix=a_closed_loop,
+        p_initial=p_initial,
+        kappa=kappa,
+        max_cond=max_cond,
+    )
+    if scale_mode != "none":
+        p_opt_th = scale_riccati_matrix(th.as_tensor(p_opt), scale_mode=scale_mode)
+        p_opt = p_opt_th.detach().cpu().numpy()
+    return p_opt
+
+
+def calculate_r_factor_from_riccati(
+    riccati_p: th.Tensor | np.ndarray,
+    eps: float = 0.0,
+) -> tuple[th.Tensor, float]:
+    """Calculate the factor R from a Riccati/SPD matrix such that eps * I + R^T R = P.
+
+    Parameters
+    ----------
+    riccati_p : th.Tensor | np.ndarray
+        The Riccati/SPD value matrix P.
+    eps : float, optional
+        A small positive constant eps for the candidate linear term, by default 0.0.
+
+    Returns
+    -------
+    tuple[th.Tensor, float]
+        The factor R of shape (nx, nx) and the (potentially adjusted) epsilon value.
+
+    Raises
+    ------
+    ValueError
+        If riccati_p is not positive semi-definite.
+    """
+    p = th.as_tensor(riccati_p)
+    p_sym = 0.5 * (p + p.transpose(-1, -2))
+    eigvals, eigvecs = th.linalg.eigh(p_sym)
+    scale = max(1.0, float(th.linalg.norm(p_sym, ord=2).item()))
+    tol = 1e-6 * scale
+    min_eig = float(eigvals[0].item())
+    if min_eig < -tol:
+        raise ValueError(
+            "riccati_p must satisfy P >= 0 so it can seed R^T R. "
+            f"Minimum eigenvalue is {min_eig:.6e}."
+        )
+
+    min_eig_clamped = max(0.0, min_eig)
+    adjusted_eps = float(eps)
+    if min_eig < adjusted_eps:
+        adjusted_eps = 0.5 * min_eig_clamped
+        __logger__.warning(
+            "Minimum eigenvalue of riccati_p (λ_min=%.6e) is less than eps=%.6e. "
+            "Setting eps to 0.5 * λ_min (%.6e) so that R remains full-rank and trainable.",
+            min_eig,
+            eps,
+            adjusted_eps,
+        )
+
+    adjusted_eigvals = (eigvals - adjusted_eps).clamp_min(0.0)
+    factor = th.diag(th.sqrt(adjusted_eigvals)) @ eigvecs.transpose(-1, -2)
+    return factor, adjusted_eps
+
+

@@ -15,6 +15,10 @@ from lcil.lyapunov_learning import (
     LyapunovTrainingConfig,
     NeuralLyapunovCandidate,
     ThresholdMonitor,
+    compute_closed_loop_jacobian,
+    compute_polyhedral_value_matrix,
+    scale_riccati_matrix,
+    calculate_r_factor_from_riccati,
 ) 
 from lcil.utils import ArgumentParserConfig, GridSearchHelper, MLP, config_field, IntegrationMethod
 from lcil.utils.lcil_plt.parallel_coodrdinates import parallel_coordinates_plotly
@@ -43,7 +47,13 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     hidden_size: int = config_field(default=24, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
     layers: int = config_field(default=3, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
     use_angle_wrapper: bool = config_field(default=False, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
-    fix_r_factor: bool = config_field(default=False, help="Whether to fix the R factor in the Lyapunov candidate to 1.0.")
+    fix_r_factor: bool = config_field(default=True, help="Whether to fix the R factor in the Lyapunov candidate.")
+    seed_matrix_mode: str = config_field(
+        default="polyhedral",
+        help="How to compute the seed matrix for R. "
+             "'polyhedral' = optimize P to minimize induced 1-norm gain ||P A_cl P^-1||_1, "
+             "'riccati' = standard discrete ARE Riccati matrix.",
+    )
     riccati_scale: str | float = config_field(
         default="spectral",
         help="How to scale the Riccati P matrix before seeding R. "
@@ -75,7 +85,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         learning_rate=1e-4,
         outer_epochs=250,
         steps_per_epoch=50,
-        policy_epochs=150,
+        policy_epochs=None,
         policy_lr_factor=0.01,
         policy_update_interval=3,
         kappa=0.001,
@@ -95,7 +105,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         formal_positivity_weight=0.0,
         policy_regularization_weight=10.0,
         r_factor_regularization_weight=1.0,
-        r_factor_lr_factor=0.1,
+        r_factor_lr_factor=1.0,
         r_factor_max_cond=600.0,
         condition_margin=0.01,
 
@@ -108,12 +118,12 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         rho_resample_margin=1.3,
         cex_every=2,
         cex_max_age=2,
-        cex_fraction_max=0.6,
+        cex_fraction_max=0.4,
         cex_descent_steps=20,
         state_buffer_limit=32768,
         cex_step_size=0.01,
-        cex_axis_antiphase_samples=4096,
-        cex_eigenvector_antiphase_samples=4096,
+        cex_axis_antiphase_samples=1024,
+        cex_eigenvector_antiphase_samples=256,
         cex_axis_scale_factor=1.0,
         enable_diagnosis=True,
     )
@@ -181,7 +191,6 @@ def main() -> None:
         mpc_cfg.constraints.lbx,
         mpc_cfg.constraints.ubx,
     ])
-    riccati_p = compute_riccati_value_matrix(float(mpc_cfg.dt))
 
     __logger__.info("Starting grid search over %d configurations...", len(sweep))
     for run_idx, run in enumerate(sweep):
@@ -197,7 +206,6 @@ def main() -> None:
                 mpc_cfg.constraints.lbx,
                 mpc_cfg.constraints.ubx,
             ])
-            riccati_p = compute_riccati_value_matrix(float(mpc_cfg.dt))
 
         train_bounds = _scale_state_bounds(
             state_bounds,
@@ -225,13 +233,28 @@ def main() -> None:
             seed=seed,
         )
         riccati_p = compute_riccati_value_matrix(float(mpc_cfg.dt), kappa=train_config.kappa)
+        if script_config.seed_matrix_mode == "polyhedral":
+            a_cl = compute_closed_loop_jacobian(
+                dyn_model, policy_model, state_dim=mpc_cfg.nx, device=device
+            ).detach().cpu().numpy()
+            seed_p = compute_polyhedral_value_matrix(
+                a_closed_loop=a_cl,
+                p_initial=riccati_p,
+                kappa=train_config.kappa,
+                scale_mode=script_config.riccati_scale,
+            )
+        else:
+            seed_p = scale_riccati_matrix(riccati_p, scale_mode=script_config.riccati_scale)
+
+        eps_init = 0.0 if script_config.fix_r_factor else script_config.eps
+        r_init, adjusted_eps = calculate_r_factor_from_riccati(seed_p, eps=eps_init)
+
         lyap_model = NeuralLyapunovCandidate(
             feature_net=(CartpoleAngleWrapper(feature_net=lyap_feature) 
                 if script_config.use_angle_wrapper else lyap_feature),
             state_dim=mpc_cfg.nx,
-            eps=script_config.eps,
-            riccati_p=riccati_p,
-            riccati_scale=script_config.riccati_scale,
+            eps=adjusted_eps,
+            r_factor=r_init,
             fixed_r_factor=script_config.fix_r_factor,
             kappa=train_config.kappa,
         )
