@@ -297,5 +297,51 @@ class TestLyapunovCandidateProtocol(unittest.TestCase):
         self.assertTrue(th.allclose(p, reconstructed, atol=1e-5))
 
 
+class TestNeuralLyapunovCandidateFixedCache(unittest.TestCase):
+    def test_prepare_fixed_caches_and_preserves_forward(self) -> None:
+        feature_net = SaveableFeatureNet()
+        model = NeuralLyapunovCandidate(
+            feature_net=feature_net,
+            state_dim=4,
+            eps=0.01,
+            x_star=th.tensor([0.1, 0.2, -0.1, 0.0]),
+        )
+        sample = th.randn(5, 4)
+        expected = model(sample)
+
+        self.assertFalse(model._is_fixed)
+        self.assertIsNone(model._cached_phi_x_star)
+
+        model.prepare_fixed()
+        self.assertTrue(model._is_fixed)
+        self.assertIsNotNone(model._cached_phi_x_star)
+        self.assertIsNotNone(model._cached_pd_matrix)
+
+        fixed_out = model(sample)
+        self.assertTrue(th.allclose(fixed_out, expected, atol=1e-6))
+
+        # Train mode resets fixed state
+        model.train(True)
+        self.assertFalse(model._is_fixed)
+        self.assertIsNone(model._cached_phi_x_star)
+        self.assertIsNone(model._cached_pd_matrix)
+
+    def test_set_x_star_updates_fixed_cache(self) -> None:
+        feature_net = SaveableFeatureNet()
+        model = NeuralLyapunovCandidate(
+            feature_net=feature_net,
+            state_dim=4,
+            eps=0.01,
+            x_star=th.zeros(4),
+        )
+        model.prepare_fixed()
+        old_phi = model._cached_phi_x_star.clone()
+
+        new_x_star = th.tensor([1.0, 2.0, 3.0, 4.0])
+        model.set_x_star(new_x_star)
+        self.assertTrue(model._is_fixed)
+        self.assertFalse(th.allclose(model._cached_phi_x_star, old_phi))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -159,7 +159,9 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
 
         self.register_buffer("x_star", x_star.reshape(1, state_dim))
         self.register_buffer("eye", th.eye(state_dim, dtype=th.float32), persistent=False)
-        self._cached_phi_x_star: th.Tensor | None = None
+        self.register_buffer("_cached_phi_x_star", None, persistent=False)
+        self.register_buffer("_cached_pd_matrix", None, persistent=False)
+        self._is_fixed: bool = False
         self._set_last_feature_layer(0.5)
         self._setup_r_factor(r_factor, fixed_r_factor)
 
@@ -191,9 +193,7 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         fixed: bool,
     ) -> None:
         """Set up the R factor for the Lyapunov candidate."""
-        self._cached_pd_matrix: th.Tensor | None = None
-        self._cached_pd_version: int = -1
-        self._cached_eps: float | None = None
+        self._cached_pd_matrix = None
 
         if fixed:
             self.eps = 0.0
@@ -205,42 +205,46 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
             self.set_r_factor(r_factor)
     
     def _pd_matrix(self) -> th.Tensor:
-        """Return the positive definite matrix εI + RᵀR with lazy caching."""
-        needs_grad = (
-            isinstance(self.r_factor, nn.Parameter) 
-            and self.r_factor.requires_grad 
-            and th.is_grad_enabled()
-        )
-        current_version = self.r_factor._version
+        """Return the positive definite matrix εI + RᵀR with caching."""
+        if (self._is_fixed or not th.is_grad_enabled()) and self._cached_pd_matrix is not None:
+            return self._cached_pd_matrix
 
-        # Cache Hit Check
-        if not needs_grad and self._cached_pd_matrix is not None:
-            if (
-                self._cached_pd_version == current_version 
-                and self._cached_eps == self.eps
-                and self._cached_pd_matrix.device == self.r_factor.device
-                and self._cached_pd_matrix.dtype == self.r_factor.dtype
-            ):
-                return self._cached_pd_matrix
-
-        # Compute Matrix
         if self.eps > 0.0:
-            pd = th.addmm(self.eps * self.eye, self.r_factor.transpose(0, 1), self.r_factor)
+            pd = th.addmm(self.eye, self.r_factor.t(), self.r_factor, beta=self.eps)
         else:
-            pd = self.r_factor.transpose(0, 1) @ self.r_factor
+            pd = self.r_factor.t() @ self.r_factor
 
-        # Update Cache
-        if not needs_grad:
+        if not th.is_grad_enabled():
             self._cached_pd_matrix = pd.detach()
-            self._cached_pd_version = current_version
-            self._cached_eps = self.eps
 
         return pd
+
+    def prepare_fixed(self) -> None:
+        """Precompute and cache fixed components for verification and inference."""
+        with th.no_grad():
+            self._cached_phi_x_star = self.feature_net(self.x_star).squeeze(0).detach()
+            self._cached_pd_matrix = self._pd_matrix().detach()
+        self._is_fixed = True
+
+    def reset_fixed(self) -> None:
+        """Reset fixed caching, allowing dynamic recomputation."""
+        self._is_fixed = False
+        self._cached_phi_x_star = None
+        self._cached_pd_matrix = None
+
+    def train(self, mode: bool = True) -> "NeuralLyapunovCandidate":
+        """Set training mode and invalidate fixed caches if switching to training."""
+        if mode and self._is_fixed:
+            self.reset_fixed()
+        return super().train(mode)
 
     def set_x_star(self, x_star: th.Tensor) -> None:
         """Set the equilibrium point x* for the Lyapunov candidate."""
         self.x_star.copy_(x_star.reshape(1, -1))
         self._cached_phi_x_star = None
+        if self._is_fixed:
+            with th.no_grad():
+                self._cached_phi_x_star = self.feature_net(self.x_star).squeeze(0).detach()
 
     def set_r_factor(self, r_factor: th.Tensor | np.ndarray) -> None:
         """Set the R factor matrix for the Lyapunov candidate.
@@ -267,15 +271,17 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         self._cached_pd_matrix = None
 
         pd = self._pd_matrix()
-        p_scale = max(1.0, float(th.linalg.norm(pd, ord=2).item()))
+        p_scale = max(1.0, float(th.linalg.matrix_norm(pd, ord=2).item()))
         self._set_last_feature_layer(0.5 * p_scale)
         __logger__.info("Set Lyapunov R factor: \n%s", r_mat)
         __logger__.info("Setting the last layer of the feature net to std: %.3f", 0.5 * p_scale)
+        if self._is_fixed:
+            self.prepare_fixed()
 
     def get_feature_term(self, x: th.Tensor) -> th.Tensor:
         """Compute the feature term |phi(x) - phi(x*)| for the Lyapunov candidate."""
         phi_x = self.feature_net(x)
-        if not th.is_grad_enabled() and self._cached_phi_x_star is not None:
+        if (self._is_fixed or not th.is_grad_enabled()) and self._cached_phi_x_star is not None:
             phi_x_star = self._cached_phi_x_star
         else:
             phi_x_star = self.feature_net(self.x_star).squeeze(0)
@@ -289,7 +295,7 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
 
     def get_linear_term(self, x: th.Tensor) -> th.Tensor:
         """Compute the linear term |x - x*| for the Lyapunov candidate."""
-        delta = x - self.x_star.squeeze(0)
+        delta = x - self.x_star
         pd_matrix = self._pd_matrix()
         linear_term = th.abs(delta @ pd_matrix).sum(dim=1, keepdim=True)
         return linear_term

@@ -43,6 +43,13 @@ class LyapunovCoreVerifier(nn.Module):
         remove_dropout(self.lyap)
         remove_dropout(self.dyn)
 
+        prepare_policy = getattr(self.policy, "prepare_fixed", None)
+        if callable(prepare_policy):
+            prepare_policy()
+        prepare_lyap = getattr(self.lyap, "prepare_fixed", None)
+        if callable(prepare_lyap):
+            prepare_lyap()
+
     def _closed_loop_terms(
         self,
         x: th.Tensor,

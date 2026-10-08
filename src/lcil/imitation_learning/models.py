@@ -128,15 +128,47 @@ class BoundedPolicy(nn.Module):
         self.register_buffer("_u_max", u_max_tensor)
         self.register_buffer("_u_ref", u_ref_tensor)
         self.register_buffer("_x_ref", x_ref_tensor)
+        self.register_buffer("_cached_u_offset", None, persistent=False)
+        self._is_fixed: bool = False
+
+    def _reference_offset(self) -> th.Tensor | None:
+        """Return the reference offset u_ref - feature_net(x_ref) with caching."""
+        if self._x_ref is None and self._u_ref is None:
+            return None
+        if (self._is_fixed or not th.is_grad_enabled()) and self._cached_u_offset is not None:
+            return self._cached_u_offset
+
+        offset = self._u_ref
+        if self._x_ref is not None:
+            pi = self.feature_net(self._x_ref)
+            offset = -pi if offset is None else offset - pi
+
+        if not th.is_grad_enabled() and offset is not None:
+            self.register_buffer("_cached_u_offset", offset.detach(), persistent=False)
+        return offset
+
+    def prepare_fixed(self) -> None:
+        """Precompute and cache fixed reference offset for verification and inference."""
+        with th.no_grad():
+            self._reference_offset()
+        self._is_fixed = True
+
+    def reset_fixed(self) -> None:
+        """Reset fixed caching, allowing dynamic computation."""
+        self._is_fixed = False
+        self._cached_u_offset = None
+
+    def train(self, mode: bool = True) -> "BoundedPolicy":
+        """Set training mode and invalidate fixed caches if switching to training."""
+        if mode and self._is_fixed:
+            self.reset_fixed()
+        return super().train(mode)
 
     def forward_raw(self, x: th.Tensor) -> th.Tensor:
         """Return the unconstrained (unclamped) policy output."""
         u = self.feature_net(x)
-        if self._x_ref is not None:
-            u = u - self.feature_net(self._x_ref)
-        if self._u_ref is not None:
-            u = u + self._u_ref
-        return u
+        offset = self._reference_offset()
+        return u if offset is None else u + offset
     
     def forward(self, x: th.Tensor) -> th.Tensor:
         """Evaluate the policy and clamp to control bounds [u_min, u_max]."""
@@ -387,6 +419,14 @@ class TransformerPolicy(nn.Module):
         if self._u_max is None:
             return th.clamp(raw_u, min=self._u_min)
         return th.clamp(raw_u, min=self._u_min, max=self._u_max)
+
+    def prepare_fixed(self) -> None:
+        """No-op for transformer policy interface compatibility."""
+        pass
+
+    def reset_fixed(self) -> None:
+        """No-op for transformer policy interface compatibility."""
+        pass
 
     def save(
         self,

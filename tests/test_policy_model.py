@@ -134,5 +134,33 @@ class TestPolicySerialization(unittest.TestCase):
         th.testing.assert_close(loaded.forward_raw(sample), expected)
 
 
+class TestBoundedPolicyFixedCache(unittest.TestCase):
+    def test_prepare_fixed_caches_and_preserves_forward(self) -> None:
+        model = BoundedPolicy(
+            feature_net=_build_mlp_feature_net([2, 16, 1], ["relu", "identity"]),
+            u_min=-1.0,
+            u_max=1.0,
+            u_ref=[0.5],
+            x_ref=[1.0, -0.5],
+        )
+        sample = th.randn(5, 2)
+        expected = model.forward_raw(sample)
+
+        self.assertFalse(model._is_fixed)
+        self.assertIsNone(model._cached_u_offset)
+
+        model.prepare_fixed()
+        self.assertTrue(model._is_fixed)
+        self.assertIsNotNone(model._cached_u_offset)
+
+        fixed_out = model.forward_raw(sample)
+        th.testing.assert_close(fixed_out, expected)
+
+        # Train mode resets fixed state
+        model.train(True)
+        self.assertFalse(model._is_fixed)
+        self.assertIsNone(model._cached_u_offset)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
