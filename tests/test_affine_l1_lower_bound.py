@@ -7,7 +7,10 @@ from lcil.certification.lirpa_lyapunov_bounds import (
     LiRPALyapunovRegionBounds,
     affine_l1_lower_bound,
 )
-from lcil.lyapunov_learning.models import NeuralLyapunovCandidate
+from lcil.lyapunov_learning.models import (
+    NeuralLinearLyapunovCandidate,
+    NeuralQuadraticLyapunovCandidate,
+)
 from lcil.utils.base_models import MLP
 
 
@@ -105,11 +108,27 @@ class TestAffineL1Integration(unittest.TestCase):
         th.manual_seed(1)
         self.nx = 4
         feature_net = MLP(layer_dims=[self.nx, 16, 1], activations=["tanh", "identity"])
-        self.lyap_model = NeuralLyapunovCandidate(
+        self.lyap_model = NeuralLinearLyapunovCandidate(
             feature_net=feature_net,
             state_dim=self.nx,
             eps=1e-3,
         ).eval()
+
+    def test_quadratic_candidate_does_not_extract_affine_l1_term(self) -> None:
+        feature_net = MLP(layer_dims=[self.nx, 16, 1], activations=["tanh", "identity"])
+        quad_model = NeuralQuadraticLyapunovCandidate(
+            feature_net=feature_net,
+            state_dim=self.nx,
+            eps=1e-3,
+        ).eval()
+        bounder = LiRPALyapunovRegionBounds(
+            lyap_model=quad_model,
+            state_dim=self.nx,
+            batch_size=8,
+            default_bound_method="crown",
+            use_affine_l1_lower_bound=True,
+        )
+        self.assertIsNone(bounder._affine_l1_term)
 
     def test_extracts_term_and_tightens_outside_region(self) -> None:
         bounder = LiRPALyapunovRegionBounds(

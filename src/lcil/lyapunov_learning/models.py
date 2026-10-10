@@ -1,3 +1,5 @@
+import abc
+import math
 import numpy as np
 import torch as th
 import torch.nn as nn
@@ -32,17 +34,44 @@ def check_r_factor_conditioning(eigs: th.Tensor, threshold: float = _COND_WARN_T
     return cond
 
 
-def check_r_factor_kappa(eigs: th.Tensor, kappa: float) -> None:
-    """Warn if configured decay rate kappa is incompatible with eigenvalues of εI + RᵀR."""
-    lo, hi = eigs[0].item(), eigs[-1].item()
-    spectral_ratio = lo / hi if hi > 0.0 else 0.0
-    if kappa > spectral_ratio:
+def check_r_factor_kappa(
+    model: "NeuralResidualLyapunovCandidate",
+    kappa: float,
+) -> float:
+    """Warn if kappa exceeds the comparison ratio of the PD base term.
+
+    The PD term satisfies ``α ||δ||^p <= V_pd(δ) <= β ||δ||^p`` with
+
+    - L1: ``α = 1 / ||P⁻¹||_1``, ``β = ||P||_1`` (induced 1-norm, p = 1),
+    - quadratic: ``α = λ_min(P)``, ``β = λ_max(P)`` (2-norm, p = 2),
+
+    i.e. ``α / β = 1 / cond(P)`` in the norm matching the term type.
+
+    Parameters
+    ----------
+    model : NeuralResidualLyapunovCandidate
+        The residual Lyapunov model.
+    kappa : float
+        Configured exponential decay rate.
+
+    Returns
+    -------
+    float
+        The ratio ``α / β`` (0 if P is singular).
+    """
+    p_matrix = model.get_pd_matrix().detach()
+    order = 1 if isinstance(model, NeuralLinearLyapunovCandidate) else 2
+    cond = float(th.linalg.cond(p_matrix, p=order).item())
+    ratio = 1.0 / cond if math.isfinite(cond) and cond > 0.0 else 0.0
+    if kappa > ratio:
+        term_name = "L1" if order == 1 else "quadratic"
         __logger__.warning(
-            "Configured decay rate kappa=%.4e exceeds the spectral lower bound "
-            "λ_min/λ_max = %.4e (λ_min=%.2e, λ_max=%.2e). The Lyapunov decrease "
-            "condition may be impossible or difficult to satisfy.",
-            kappa, spectral_ratio, lo, hi,
+            "Configured decay rate kappa=%.4e exceeds 1/cond_%d(P) = %.4e of the %s "
+            "PD term. The Lyapunov decrease condition may be impossible or "
+            "difficult to satisfy.",
+            kappa, order, ratio, term_name,
         )
+    return ratio
 
 
 @runtime_checkable
@@ -50,7 +79,7 @@ class LyapunovCandidate(Protocol):
     """Protocol defining the interface for Lyapunov candidate functions.
 
     A Lyapunov candidate evaluates a scalar value V(x) for given states x.
-    Implementations may also decompose V(x) into feature and linear terms.
+    Implementations may also decompose V(x) into feature and PSD terms.
     """
 
     def __call__(self, x: th.Tensor) -> th.Tensor:
@@ -98,8 +127,8 @@ class LyapunovCandidate(Protocol):
         """
         ...
 
-    def get_linear_term(self, x: th.Tensor) -> th.Tensor:
-        """Compute the linear term of the Lyapunov candidate.
+    def get_pd_term(self, x: th.Tensor) -> th.Tensor:
+        """Compute the positive definite base term of the Lyapunov candidate.
 
         Parameters
         ----------
@@ -109,15 +138,25 @@ class LyapunovCandidate(Protocol):
         Returns
         -------
         th.Tensor
-            Linear term tensor of shape (..., 1).
+            PD term tensor of shape (..., 1).
+        """
+        ...
+
+    def get_pd_matrix(self) -> th.Tensor:
+        """Return the positive definite matrix P of the Lyapunov candidate.
+
+        Returns
+        -------
+        th.Tensor
+            Positive definite matrix tensor of shape (state_dim, state_dim).
         """
         ...
 
 
-class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
-    """Lyapunov candidate from Eq. (9) in the paper.
+class NeuralResidualLyapunovCandidate(nn.Module, LyapunovCandidate, abc.ABC):
+    """Abstract base class for residual neural Lyapunov candidates from Eq. (9) in the paper.
 
-    V(x) = |phi(x) - phi(x*)| + ||(eps I + R^T R)(x - x*)||_1
+    V(x) = |phi(x) - phi(x*)| + V_pd(x - x*), where with P = eps I + R^T R.
     """
 
     def __init__(
@@ -129,8 +168,8 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         r_factor: th.Tensor | np.ndarray | None = None,
         fixed_r_factor: bool = False,
         kappa: float | None = None,
-    ):
-        """Initialize the NeuralLyapunovCandidate.
+    ) -> None:
+        """Initialize the NeuralResidualLyapunovCandidate.
 
         Parameters
         ----------
@@ -160,7 +199,7 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         self.register_buffer("x_star", x_star.reshape(1, state_dim))
         self.register_buffer("eye", th.eye(state_dim, dtype=th.float32), persistent=False)
         self.register_buffer("_cached_phi_x_star", None, persistent=False)
-        self.register_buffer("_cached_pd_matrix", None, persistent=False)
+        self.register_buffer("_cached_pd_weight", None, persistent=False)
         self._is_fixed: bool = False
         self._set_last_feature_layer(0.5)
         self._setup_r_factor(r_factor, fixed_r_factor)
@@ -193,7 +232,7 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         fixed: bool,
     ) -> None:
         """Set up the R factor for the Lyapunov candidate."""
-        self._cached_pd_matrix = None
+        self._cached_pd_weight = None
 
         if fixed:
             self.eps = 0.0
@@ -204,35 +243,25 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         if r_factor is not None:
             self.set_r_factor(r_factor)
     
-    def _pd_matrix(self) -> th.Tensor:
-        """Return the positive definite matrix εI + RᵀR with caching."""
-        if (self._is_fixed or not th.is_grad_enabled()) and self._cached_pd_matrix is not None:
-            return self._cached_pd_matrix
-
-        if self.eps > 0.0:
-            pd = th.addmm(self.eye, self.r_factor.t(), self.r_factor, beta=self.eps)
-        else:
-            pd = self.r_factor.t() @ self.r_factor
-
-        if not th.is_grad_enabled():
-            self._cached_pd_matrix = pd.detach()
-
-        return pd
+    @abc.abstractmethod
+    def _pd_weight(self) -> th.Tensor:
+        """Return the positive definite weight matrix with caching."""
+        ...
 
     def prepare_fixed(self) -> None:
         """Precompute and cache fixed components for verification and inference."""
         with th.no_grad():
             self._cached_phi_x_star = self.feature_net(self.x_star).squeeze(0).detach()
-            self._cached_pd_matrix = self._pd_matrix().detach()
+            self._cached_pd_weight = self._pd_weight().detach()
         self._is_fixed = True
 
     def reset_fixed(self) -> None:
         """Reset fixed caching, allowing dynamic recomputation."""
         self._is_fixed = False
         self._cached_phi_x_star = None
-        self._cached_pd_matrix = None
+        self._cached_pd_weight = None
 
-    def train(self, mode: bool = True) -> "NeuralLyapunovCandidate":
+    def train(self, mode: bool = True) -> "NeuralResidualLyapunovCandidate":
         """Set training mode and invalidate fixed caches if switching to training."""
         if mode and self._is_fixed:
             self.reset_fixed()
@@ -268,10 +297,10 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
 
         with th.no_grad():
             self.r_factor.copy_(r_mat)
-        self._cached_pd_matrix = None
+        self._cached_pd_weight = None
 
-        pd = self._pd_matrix()
-        p_scale = max(1.0, float(th.linalg.matrix_norm(pd, ord=2).item()))
+        weight = self._pd_weight()
+        p_scale = max(1.0, float(th.linalg.matrix_norm(weight, ord=2).item()))
         self._set_last_feature_layer(0.5 * p_scale)
         __logger__.info("Set Lyapunov R factor: \n%s", r_mat)
         __logger__.info("Setting the last layer of the feature net to std: %.3f", 0.5 * p_scale)
@@ -293,17 +322,25 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         feature_term = th.abs(phi_x - phi_x_star).sum(dim=1, keepdim=True)
         return feature_term
 
-    def get_linear_term(self, x: th.Tensor) -> th.Tensor:
-        """Compute the linear term |x - x*| for the Lyapunov candidate."""
-        delta = x - self.x_star
-        pd_matrix = self._pd_matrix()
-        linear_term = th.abs(delta @ pd_matrix).sum(dim=1, keepdim=True)
-        return linear_term
+    @abc.abstractmethod
+    def get_pd_term(self, x: th.Tensor) -> th.Tensor:
+        """Compute the positive definite base term of the Lyapunov candidate."""
+        ...
+
+    def get_pd_matrix(self) -> th.Tensor:
+        """Return the symmetric positive definite matrix P = εI + RᵀR.
+
+        Returns
+        -------
+        th.Tensor
+            Positive definite matrix tensor of shape (state_dim, state_dim).
+        """
+        if self.eps > 0.0:
+            return th.addmm(self.eye, self.r_factor.t(), self.r_factor, beta=self.eps)
+        return self.r_factor.t() @ self.r_factor
 
     def forward(self, x: th.Tensor) -> th.Tensor:
-        feature_term = self.get_feature_term(x)
-        linear_term = self.get_linear_term(x)
-        return feature_term + linear_term
+        return self.get_feature_term(x) + self.get_pd_term(x)
 
     def save(self, path: str | Path) -> None:
         """Save the model and its feature network to a checkpoint file."""
@@ -322,6 +359,7 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
             "eps": self.eps,
             "fixed_r_factor": not isinstance(self.r_factor, nn.Parameter),
             "kappa": self.kappa,
+            "candidate_type": self.__class__.__name__,
         }
         th.save(model_payload, checkpoint_path)
 
@@ -334,7 +372,7 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         feature_net_cls: type[nn.Module] | None = None,
         feature_net_args: tuple[Any, ...] | None = None,
         feature_net_kwargs: dict[str, Any] | None = None,
-    ) -> "NeuralLyapunovCandidate":
+    ) -> "NeuralResidualLyapunovCandidate":
         checkpoint_path = Path(path)
         if not checkpoint_path.is_file():
             raise FileNotFoundError(f"No checkpoint found at '{checkpoint_path}'.")
@@ -346,6 +384,8 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         feature_net_path = checkpoint_path.with_name(payload["feature_net_path"])
         fixed_r_factor = payload.get("fixed_r_factor", False)
         kappa = payload.get("kappa", None)
+        candidate_type = payload.get("candidate_type")
+
         feature_net = load_feature_net(
             feature_net_path,
             map_location=map_location,
@@ -354,8 +394,16 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
             feature_net_args=feature_net_args,
             feature_net_kwargs=feature_net_kwargs,
         )
-        
-        model = cls(
+
+        if cls is NeuralResidualLyapunovCandidate:
+            if candidate_type == "NeuralQuadraticLyapunovCandidate":
+                target_cls: type[NeuralResidualLyapunovCandidate] = NeuralQuadraticLyapunovCandidate
+            else:
+                target_cls = NeuralLinearLyapunovCandidate
+        else:
+            target_cls = cls
+
+        model = target_cls(
             feature_net=feature_net,
             state_dim=state_dim,
             eps=eps,
@@ -365,3 +413,57 @@ class NeuralLyapunovCandidate(nn.Module, LyapunovCandidate):
         model.load_state_dict(payload["state_dict"], strict=strict)
         model.eval()
         return model
+
+
+class NeuralLinearLyapunovCandidate(NeuralResidualLyapunovCandidate):
+    """Neural Lyapunov candidate with an L1 base term: V_pd(δ) = ||P δ||_1."""
+
+    def _pd_weight(self) -> th.Tensor:
+        """Return the positive definite matrix P = εI + RᵀR with caching."""
+        if (self._is_fixed or not th.is_grad_enabled()) and self._cached_pd_weight is not None:
+            return self._cached_pd_weight
+
+        if self.eps > 0.0:
+            weight = th.addmm(self.eye, self.r_factor.t(), self.r_factor, beta=self.eps)
+        else:
+            weight = self.r_factor.t() @ self.r_factor
+
+        self._cached_pd_weight = None if th.is_grad_enabled() else weight.detach()
+        return weight
+
+    def get_pd_term(self, x: th.Tensor) -> th.Tensor:
+        """Compute the L1 base term ||P δ||_1 with δ = x - x*."""
+        delta = x - self.x_star.squeeze(0)
+        z = delta @ self._pd_weight()
+        return z.abs().sum(dim=1, keepdim=True)
+
+    def get_pd_matrix(self) -> th.Tensor:
+        """Return the symmetric positive definite matrix P = εI + RᵀR."""
+        return self._pd_weight()
+
+
+class NeuralQuadraticLyapunovCandidate(NeuralResidualLyapunovCandidate):
+    """Neural Lyapunov candidate with a quadratic base term: V_pd(δ) = δᵀ P δ."""
+
+    def _pd_weight(self) -> th.Tensor:
+        """Return the weight matrix W such that ||δ W||² = δᵀ P δ with caching."""
+        if (self._is_fixed or not th.is_grad_enabled()) and self._cached_pd_weight is not None:
+            return self._cached_pd_weight
+
+        if self.eps > 0.0:
+            weight = th.cat((self.r_factor.t(), math.sqrt(self.eps) * self.eye), dim=1)
+        else:
+            weight = self.r_factor.t()
+
+        self._cached_pd_weight = None if th.is_grad_enabled() else weight.detach()
+        return weight
+
+    def get_pd_term(self, x: th.Tensor) -> th.Tensor:
+        """Compute the quadratic base term δᵀ P δ = ||δ W||² with δ = x - x*.
+
+        The quadratic form is evaluated as a sum of single squares ||δ W||², which
+        yields tighter (CROWN) bounds than a bilinear form δᵀPδ.
+        """
+        delta = x - self.x_star.squeeze(0)
+        z = delta @ self._pd_weight()
+        return z.pow(2).sum(dim=1, keepdim=True)

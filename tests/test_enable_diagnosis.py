@@ -104,4 +104,4 @@ def test_rho_diagnostics_enable_diagnosis():
 
     # When enable_diagnosis=False, term diagnostics returns NaN without computing
     assert np.isnan(eval_no_diag.terms.feature_term_quantile)
-    assert np.isnan(eval_no_diag.terms.linear_term_quantile)
+    assert np.isnan(eval_no_diag.terms.pd_term_quantile)

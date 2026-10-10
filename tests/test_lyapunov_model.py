@@ -5,7 +5,12 @@ import torch as th
 
 from pathlib import Path
 
-from lcil.lyapunov_learning.models import LyapunovCandidate, NeuralLyapunovCandidate
+from lcil.lyapunov_learning.models import (
+    LyapunovCandidate,
+    NeuralResidualLyapunovCandidate,
+    NeuralLinearLyapunovCandidate,
+    NeuralQuadraticLyapunovCandidate,
+)
 from lcil.lyapunov_learning.utils import calculate_r_factor_from_riccati
 from lcil.utils.base_models import MLP
 
@@ -56,8 +61,8 @@ class SaveableFeatureNet(th.nn.Module):
         return model
 
 
-class TestNeuralLyapunovCandidateSerialization(unittest.TestCase):
-    def test_r_factor_initializes_pd_matrix(self) -> None:
+class TestNeuralLinearLyapunovCandidateSerialization(unittest.TestCase):
+    def test_r_factor_initializes_pd_weight(self) -> None:
         feature_net = SaveableFeatureNet()
         p_matrix = th.tensor(
             [
@@ -70,14 +75,14 @@ class TestNeuralLyapunovCandidateSerialization(unittest.TestCase):
         )
         eps = 1e-3
         r_factor, _ = calculate_r_factor_from_riccati(p_matrix, eps=eps)
-        model = NeuralLyapunovCandidate(
+        model = NeuralLinearLyapunovCandidate(
             feature_net=feature_net,
             state_dim=4,
             eps=eps,
             r_factor=r_factor,
         )
 
-        self.assertTrue(th.allclose(model._pd_matrix(), p_matrix, atol=1e-5, rtol=1e-5))
+        self.assertTrue(th.allclose(model._pd_weight(), p_matrix, atol=1e-5, rtol=1e-5))
 
     def test_calculate_r_factor_adjusts_eps_when_lambda_min_less_than_eps(self) -> None:
         p_matrix = th.tensor(
@@ -105,7 +110,7 @@ class TestNeuralLyapunovCandidateSerialization(unittest.TestCase):
             dtype=th.float32,
         )
         r_factor, _ = calculate_r_factor_from_riccati(p_matrix, eps=0.0)
-        model = NeuralLyapunovCandidate(
+        model = NeuralLinearLyapunovCandidate(
             feature_net=feature_net,
             state_dim=2,
             eps=0.5,
@@ -113,13 +118,13 @@ class TestNeuralLyapunovCandidateSerialization(unittest.TestCase):
             fixed_r_factor=True,
         )
         self.assertEqual(model.eps, 0.0)
-        self.assertTrue(th.allclose(model._pd_matrix(), p_matrix, atol=1e-5, rtol=1e-5))
+        self.assertTrue(th.allclose(model._pd_weight(), p_matrix, atol=1e-5, rtol=1e-5))
 
     def test_save_load_roundtrip_with_state_dict_feature_net(self) -> None:
         feature_net = WrappedFeatureNet(
             feature_net=MLP([5, 8, 1], ["tanh", "identity"]),
         )
-        model = NeuralLyapunovCandidate(
+        model = NeuralLinearLyapunovCandidate(
             feature_net=feature_net,
             state_dim=4,
             eps=5e-3,
@@ -151,7 +156,7 @@ class TestNeuralLyapunovCandidateSerialization(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             checkpoint_path = Path(tmp_dir) / "lyapunov_model.pt"
             model.save(checkpoint_path)
-            loaded = NeuralLyapunovCandidate.load(
+            loaded = NeuralLinearLyapunovCandidate.load(
                 checkpoint_path,
                 feature_net_cls=WrappedFeatureNet,
                 feature_net_kwargs={
@@ -167,7 +172,7 @@ class TestNeuralLyapunovCandidateSerialization(unittest.TestCase):
         self.assertTrue(th.allclose(loaded(x), expected))
 
     def test_save_load_roundtrip_with_saveable_feature_net(self) -> None:
-        model = NeuralLyapunovCandidate(
+        model = NeuralLinearLyapunovCandidate(
             feature_net=SaveableFeatureNet(),
             state_dim=4,
             eps=1e-2,
@@ -203,7 +208,7 @@ class TestNeuralLyapunovCandidateSerialization(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             checkpoint_path = Path(tmp_dir) / "lyapunov_model.pt"
             model.save(checkpoint_path)
-            loaded = NeuralLyapunovCandidate.load(checkpoint_path)
+            loaded = NeuralLinearLyapunovCandidate.load(checkpoint_path)
 
         self.assertIsInstance(loaded.feature_net, SaveableFeatureNet)
         self.assertAlmostEqual(loaded.eps, model.eps)
@@ -218,35 +223,115 @@ class TestNeuralLyapunovCandidateSerialization(unittest.TestCase):
 
 
 class TestLyapunovCandidateProtocol(unittest.TestCase):
-    def test_neural_lyapunov_candidate_is_instance_and_subclass(self) -> None:
-        self.assertTrue(issubclass(NeuralLyapunovCandidate, LyapunovCandidate))
-        model = NeuralLyapunovCandidate(
+    def test_class_hierarchy_and_abstractness(self) -> None:
+        self.assertTrue(issubclass(NeuralResidualLyapunovCandidate, LyapunovCandidate))
+        self.assertTrue(issubclass(NeuralLinearLyapunovCandidate, NeuralResidualLyapunovCandidate))
+        self.assertTrue(issubclass(NeuralQuadraticLyapunovCandidate, NeuralResidualLyapunovCandidate))
+
+        with self.assertRaises(TypeError):
+            NeuralResidualLyapunovCandidate(  # type: ignore[abstract]
+                feature_net=SaveableFeatureNet(),
+                state_dim=4,
+            )
+
+    def test_concrete_candidates_are_instances_and_subclasses(self) -> None:
+        self.assertTrue(issubclass(NeuralLinearLyapunovCandidate, LyapunovCandidate))
+        self.assertTrue(issubclass(NeuralQuadraticLyapunovCandidate, LyapunovCandidate))
+        model_lin = NeuralLinearLyapunovCandidate(
             feature_net=SaveableFeatureNet(),
             state_dim=4,
         )
-        self.assertIsInstance(model, LyapunovCandidate)
+        self.assertIsInstance(model_lin, LyapunovCandidate)
+        self.assertIsInstance(model_lin, NeuralResidualLyapunovCandidate)
+        self.assertIsInstance(model_lin, NeuralLinearLyapunovCandidate)
+
+        model_quad = NeuralQuadraticLyapunovCandidate(
+            feature_net=SaveableFeatureNet(),
+            state_dim=4,
+        )
+        self.assertIsInstance(model_quad, LyapunovCandidate)
+        self.assertIsInstance(model_quad, NeuralResidualLyapunovCandidate)
+        self.assertIsInstance(model_quad, NeuralQuadraticLyapunovCandidate)
 
     def test_protocol_methods(self) -> None:
-        model = NeuralLyapunovCandidate(
+        model = NeuralLinearLyapunovCandidate(
             feature_net=SaveableFeatureNet(),
             state_dim=4,
         )
         x = th.randn(3, 4)
         feature_term = model.get_feature_term(x)
-        linear_term = model.get_linear_term(x)
+        pd_term = model.get_pd_term(x)
         forward_val = model.forward(x)
         call_val = model(x)
 
         self.assertEqual(feature_term.shape, (3, 1))
-        self.assertEqual(linear_term.shape, (3, 1))
+        self.assertEqual(pd_term.shape, (3, 1))
         self.assertEqual(forward_val.shape, (3, 1))
-        self.assertTrue(th.allclose(forward_val, feature_term + linear_term))
+        self.assertTrue(th.allclose(forward_val, feature_term + pd_term))
         self.assertTrue(th.allclose(call_val, forward_val))
+
+        pd_matrix = model.get_pd_matrix()
+        self.assertEqual(pd_matrix.shape, (4, 4))
+        self.assertTrue(bool((th.linalg.eigvalsh(pd_matrix) > 0).all()))
+
+    def test_get_pd_matrix_l1_and_quadratic(self) -> None:
+        p_matrix = th.tensor(
+            [
+                [2.0, 0.3, 0.0, 0.0],
+                [0.3, 1.8, 0.2, 0.0],
+                [0.0, 0.2, 1.6, 0.1],
+                [0.0, 0.0, 0.1, 1.4],
+            ],
+            dtype=th.float32,
+        )
+        eps = 1e-3
+        r_factor, _ = calculate_r_factor_from_riccati(p_matrix, eps=eps)
+
+        model_l1 = NeuralLinearLyapunovCandidate(
+            feature_net=SaveableFeatureNet(),
+            state_dim=4,
+            eps=eps,
+            r_factor=r_factor,
+        )
+        self.assertTrue(th.allclose(model_l1.get_pd_matrix(), p_matrix, atol=1e-5, rtol=1e-5))
+        self.assertTrue(th.allclose(model_l1.get_pd_matrix(), model_l1._pd_weight(), atol=1e-5, rtol=1e-5))
+
+        model_quad = NeuralQuadraticLyapunovCandidate(
+            feature_net=SaveableFeatureNet(),
+            state_dim=4,
+            eps=eps,
+            r_factor=r_factor,
+        )
+        self.assertTrue(th.allclose(model_quad.get_pd_matrix(), p_matrix, atol=1e-5, rtol=1e-5))
+        w = model_quad._pd_weight()
+        self.assertTrue(th.allclose(model_quad.get_pd_matrix(), w @ w.t(), atol=1e-5, rtol=1e-5))
+
+    def test_save_load_subclasses_via_base_load(self) -> None:
+        feature_net = SaveableFeatureNet()
+        quad_model = NeuralQuadraticLyapunovCandidate(
+            feature_net=feature_net,
+            state_dim=4,
+        )
+        linear_model = NeuralLinearLyapunovCandidate(
+            feature_net=feature_net,
+            state_dim=4,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            quad_path = Path(tmp_dir) / "quad.pt"
+            quad_model.save(quad_path)
+            loaded_quad = NeuralResidualLyapunovCandidate.load(quad_path)
+            self.assertIsInstance(loaded_quad, NeuralQuadraticLyapunovCandidate)
+
+            linear_path = Path(tmp_dir) / "linear.pt"
+            linear_model.save(linear_path)
+            loaded_linear = NeuralResidualLyapunovCandidate.load(linear_path)
+            self.assertIsInstance(loaded_linear, NeuralLinearLyapunovCandidate)
 
     def test_initialized_last_feature_layer(self) -> None:
         feature_net = SaveableFeatureNet()
         r_matrix = th.eye(4, dtype=th.float32)
-        model = NeuralLyapunovCandidate(
+        model = NeuralLinearLyapunovCandidate(
             feature_net=feature_net,
             state_dim=4,
             r_factor=r_matrix,
@@ -279,13 +364,13 @@ class TestLyapunovCandidateProtocol(unittest.TestCase):
             kappa=0.01,
         )
         r_opt, _ = calculate_r_factor_from_riccati(p_opt, eps=0.0)
-        model = NeuralLyapunovCandidate(
+        model = NeuralLinearLyapunovCandidate(
             feature_net=feature_net,
             state_dim=4,
             r_factor=r_opt,
             fixed_r_factor=True,
         )
-        gain = compute_induced_1norm_gain(model._pd_matrix(), A).max().item()
+        gain = compute_induced_1norm_gain(model._pd_weight(), A).max().item()
         self.assertLess(gain, 1.0 - 0.01)
 
     def test_calculate_r_factor_from_riccati(self) -> None:
@@ -297,10 +382,10 @@ class TestLyapunovCandidateProtocol(unittest.TestCase):
         self.assertTrue(th.allclose(p, reconstructed, atol=1e-5))
 
 
-class TestNeuralLyapunovCandidateFixedCache(unittest.TestCase):
+class TestNeuralResidualLyapunovCandidateFixedCache(unittest.TestCase):
     def test_prepare_fixed_caches_and_preserves_forward(self) -> None:
         feature_net = SaveableFeatureNet()
-        model = NeuralLyapunovCandidate(
+        model = NeuralLinearLyapunovCandidate(
             feature_net=feature_net,
             state_dim=4,
             eps=0.01,
@@ -315,7 +400,7 @@ class TestNeuralLyapunovCandidateFixedCache(unittest.TestCase):
         model.prepare_fixed()
         self.assertTrue(model._is_fixed)
         self.assertIsNotNone(model._cached_phi_x_star)
-        self.assertIsNotNone(model._cached_pd_matrix)
+        self.assertIsNotNone(model._cached_pd_weight)
 
         fixed_out = model(sample)
         self.assertTrue(th.allclose(fixed_out, expected, atol=1e-6))
@@ -324,11 +409,11 @@ class TestNeuralLyapunovCandidateFixedCache(unittest.TestCase):
         model.train(True)
         self.assertFalse(model._is_fixed)
         self.assertIsNone(model._cached_phi_x_star)
-        self.assertIsNone(model._cached_pd_matrix)
+        self.assertIsNone(model._cached_pd_weight)
 
     def test_set_x_star_updates_fixed_cache(self) -> None:
         feature_net = SaveableFeatureNet()
-        model = NeuralLyapunovCandidate(
+        model = NeuralLinearLyapunovCandidate(
             feature_net=feature_net,
             state_dim=4,
             eps=0.01,

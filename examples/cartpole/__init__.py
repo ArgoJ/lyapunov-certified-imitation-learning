@@ -5,7 +5,7 @@ from typing import TypeVar
 from torch import nn
 
 from lcil.imitation_learning import BoundedPolicy, TransformerPolicy
-from lcil.lyapunov_learning import NeuralLyapunovCandidate
+from lcil.lyapunov_learning import NeuralResidualLyapunovCandidate
 from lcil.utils import load_mpc_config_for_run
 
 from .acados_ocp import get_ocp_solver, get_ocp, get_batch_ocp_solver, get_model
@@ -115,9 +115,9 @@ def load_lyapunov_model(
     path: Path | str | None,
     device: th.device | str,
     model_name: str = LYAPUNOV_MODEL_FILENAME,
-) -> NeuralLyapunovCandidate:
+) -> NeuralResidualLyapunovCandidate:
     model_loader = _GenericModelLoader(model_name)
-    return model_loader[NeuralLyapunovCandidate](path, device, CARTPOLE_RESULTS_DIR)
+    return model_loader[NeuralResidualLyapunovCandidate](path, device, CARTPOLE_RESULTS_DIR)
 
 
 def default_dataset_path(data_root: Path | str | None = None):

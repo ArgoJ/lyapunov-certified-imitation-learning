@@ -12,7 +12,12 @@ from .utils import (
     scale_riccati_matrix,
     calculate_r_factor_from_riccati,
 )
-from .models import LyapunovCandidate, NeuralLyapunovCandidate
+from .models import (
+    LyapunovCandidate,
+    NeuralResidualLyapunovCandidate,
+    NeuralLinearLyapunovCandidate,
+    NeuralQuadraticLyapunovCandidate,
+)
 from .loss import LyapunovTrainingLoss
 from .policy_wrapper import PolicyWrapper, RepeatCurrentPolicyWrapper, FromRolloutsPolicyWrapper
 from .sublevel import (
@@ -37,7 +42,9 @@ __all__ = [
     "RhoEstimationConfig",
     "CounterexampleMiningConfig",
     "LyapunovCandidate",
-    "NeuralLyapunovCandidate",
+    "NeuralResidualLyapunovCandidate",
+    "NeuralLinearLyapunovCandidate",
+    "NeuralQuadraticLyapunovCandidate",
     "LyapunovTrainingLoss",
     "PolicyWrapper",
     "RepeatCurrentPolicyWrapper",

@@ -93,6 +93,7 @@ class TestBisectCertifierIntegration(_BisectModuleLoaderMixin, PlotAssertionsMix
         dyn_model: nn.Module | None = None,
         kappa: float = 0.1,
         rho_min: float = 1e-6,
+        origin_exclusion: float | tuple[float, ...] = 0.1,
     ):
         config = cls.LyapunovCertificationConfig(
             state_dim=3,
@@ -100,7 +101,7 @@ class TestBisectCertifierIntegration(_BisectModuleLoaderMixin, PlotAssertionsMix
             kappa=kappa,
             rho_min=rho_min,
             bins_per_dim=4,
-            origin_exclusion=0.0,
+            origin_exclusion=origin_exclusion,
             max_scale_steps=6,
             max_bisection_steps=6,
             lirpa_method="alpha-crown",
@@ -194,10 +195,12 @@ class TestBisectCertifierIntegration(_BisectModuleLoaderMixin, PlotAssertionsMix
             rho_min=0.9,
         )
 
-        result = certifier.certify(rho_estimate=1.0)
+        result = certifier.certify(rho_estimate=1.0, collect_details_on_failed=True)
 
+        self.assertIsNotNone(result)
+        self.assertFalse(result.global_success)
+        self.assertTrue(result.partial_success)
         self.assertIsInstance(float(result.rho), float)
-        self.assertGreaterEqual(result.rho, certifier.config.rho_min)
         self.assertGreater(result.certified_sublevel_regions.shape[0], 0)
         self.assertGreater(result.uncertified_regions.shape[0], 0)
         certified_centers = result.certified_sublevel_regions.mean(axis=1)

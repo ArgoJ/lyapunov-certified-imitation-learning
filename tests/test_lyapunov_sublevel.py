@@ -110,9 +110,9 @@ class TestLyapunovSublevel(unittest.TestCase):
         diag = _boundary_term_diagnostics(lyap_model, boundary_x, quantile=0.5)
 
         self.assertTrue(np.isnan(diag.feature_term_quantile))
-        self.assertTrue(np.isnan(diag.linear_term_quantile))
+        self.assertTrue(np.isnan(diag.pd_term_quantile))
         self.assertTrue(np.isnan(diag.feature_term_mean))
-        self.assertTrue(np.isnan(diag.linear_term_mean))
+        self.assertTrue(np.isnan(diag.pd_term_mean))
 
 
 if __name__ == "__main__":

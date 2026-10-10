@@ -39,9 +39,9 @@ def tb_writer_add_metrics(
     tb_writer.add_scalar(rho_str + "BoundaryQuantile", metrics.rho_boundary_quantile[outer_iter], tb_step)
     tb_writer.add_scalar(rho_str + "BoundaryMean", metrics.rho_boundary_mean[outer_iter], tb_step)
     tb_writer.add_scalar(rho_str + "FeatureTermQuantile", metrics.rho_feature_term_quantile[outer_iter], tb_step)
-    tb_writer.add_scalar(rho_str + "LinearTermQuantile", metrics.rho_linear_term_quantile[outer_iter], tb_step)
+    tb_writer.add_scalar(rho_str + "PDTermQuantile", metrics.rho_pd_term_quantile[outer_iter], tb_step)
     tb_writer.add_scalar(rho_str + "FeatureTermMeanShare", metrics.rho_feature_term_mean_share[outer_iter], tb_step)
-    tb_writer.add_scalar(rho_str + "LinearTermMeanShare", metrics.rho_linear_term_mean_share[outer_iter], tb_step)
+    tb_writer.add_scalar(rho_str + "PDTermMeanShare", metrics.rho_pd_term_mean_share[outer_iter], tb_step)
     tb_writer.add_scalar(
         cex_str + "NumMinedCounterexamples",
         metrics.num_mined_counterexamples[outer_iter],

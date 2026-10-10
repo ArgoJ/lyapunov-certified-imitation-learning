@@ -53,7 +53,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     policy_lr_factor : float
         Learning rate factor for policy optimization when policy_epochs is not None.
     r_factor_lr_factor : float
-        Learning rate factor for the quadratic R factor in NeuralLyapunovCandidate.
+        Learning rate factor for the quadratic R factor in NeuralResidualLyapunovCandidate.
     seed : int | None
         Random seed for reproducibility.
     kappa : float
@@ -207,7 +207,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
     )
     r_factor_lr_factor: float = config_field(
         default=0.1,
-        help="Learning rate factor for the quadratic R factor in NeuralLyapunovCandidate.",
+        help="Learning rate factor for the quadratic R factor in NeuralResidualLyapunovCandidate.",
         display_alias="r_lr_factor",
         validators=(positive_validator,),
     )

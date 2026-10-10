@@ -17,7 +17,7 @@ from lcil.lyapunov_learning.loss import (
     RoaSurrogateLoss,
     margin_violation,
 )
-from lcil.lyapunov_learning.models import NeuralLyapunovCandidate
+from lcil.lyapunov_learning.models import NeuralLinearLyapunovCandidate
 from lcil.utils.base_models import MLP
 from shared_utils import (
     _IdentityDynamics,
@@ -42,7 +42,7 @@ class _MockRFactorModel(nn.Module):
         super().__init__()
         self.r_factor = nn.Parameter(th.eye(n))
 
-    def _pd_matrix(self) -> th.Tensor:
+    def get_pd_matrix(self) -> th.Tensor:
         return self.r_factor.transpose(0, 1) @ self.r_factor
 
 
@@ -168,7 +168,7 @@ class TestLyapunovLossComponents(unittest.TestCase):
             FormalPositivityLoss(lyap_model=None, train_bounds=bounds)
 
         feature_net = MLP(layer_dims=[2, 4, 1], activations=["relu", "identity"])
-        lyap = NeuralLyapunovCandidate(feature_net=feature_net, state_dim=2)
+        lyap = NeuralLinearLyapunovCandidate(feature_net=feature_net, state_dim=2)
         pos_loss_fn = FormalPositivityLoss(lyap_model=lyap, train_bounds=bounds)
         lb = pos_loss_fn.compute_lyapunov_lower_bound()
         lb.sum().backward()
@@ -178,7 +178,7 @@ class TestLyapunovLossComponents(unittest.TestCase):
     def test_condition_lirpa_loss(self) -> None:
         policy = _PlainPolicy()
         feature_net = MLP(layer_dims=[2, 4, 1], activations=["relu", "identity"])
-        lyap = NeuralLyapunovCandidate(feature_net=feature_net, state_dim=2)
+        lyap = NeuralLinearLyapunovCandidate(feature_net=feature_net, state_dim=2)
         class _AddDyn(nn.Module):
             def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
                 return x + u
@@ -213,7 +213,7 @@ class TestLyapunovLossComponents(unittest.TestCase):
 
     def test_equilibrium_loss(self) -> None:
         feature_net = MLP(layer_dims=[2, 4, 1], activations=["relu", "identity"])
-        lyap = NeuralLyapunovCandidate(feature_net=feature_net, state_dim=2)
+        lyap = NeuralLinearLyapunovCandidate(feature_net=feature_net, state_dim=2)
         lyap.set_x_star(th.tensor([0.5, -0.5]))
         loss_fn = EquilibriumLoss(model=lyap, state_dim=2)
         loss = loss_fn()
@@ -224,7 +224,7 @@ class TestLyapunovLossComponents(unittest.TestCase):
 
     def test_equilibrium_jacobian_loss_at_origin(self) -> None:
         feature_net = MLP(layer_dims=[2, 4, 1], activations=["leaky_relu", "identity"])
-        lyap = NeuralLyapunovCandidate(feature_net=feature_net, state_dim=2)
+        lyap = NeuralLinearLyapunovCandidate(feature_net=feature_net, state_dim=2)
         linear_layers = [m for m in feature_net.modules() if isinstance(m, th.nn.Linear)]
         with th.no_grad():
             linear_layers[-1].weight.fill_(1.0)
@@ -249,7 +249,7 @@ class TestLyapunovLossComponents(unittest.TestCase):
     def test_condition_violation_with_and_without_margin(self) -> None:
         policy = _PlainPolicy()
         feature_net = MLP(layer_dims=[2, 4, 1], activations=["relu", "identity"])
-        lyap = NeuralLyapunovCandidate(feature_net=feature_net, state_dim=2)
+        lyap = NeuralLinearLyapunovCandidate(feature_net=feature_net, state_dim=2)
 
         # Dynamic model that contracts slightly: x_next = 0.99 * x
         class _ContractingDyn(nn.Module):

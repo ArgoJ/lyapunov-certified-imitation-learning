@@ -16,7 +16,7 @@ from mpc_datagen import MPCConfig
 
 from lcil.imitation_learning import BoundedPolicy, TransformerPolicy
 from lcil.certification.models import LyapunovCoreVerifier
-from lcil.lyapunov_learning import NeuralLyapunovCandidate
+from lcil.lyapunov_learning import NeuralLinearLyapunovCandidate
 from lcil.utils.base_models import MLP
 from lcil.utils.base_config import ArgumentParserConfig, config_field
 
@@ -439,7 +439,7 @@ def _build_fresh_policy_model(
 def _build_fresh_lyapunov_model(
     script_config: DiagnoseABCrownScriptConfig,
     device: th.device,
-) -> NeuralLyapunovCandidate:
+) -> NeuralLinearLyapunovCandidate:
     state_dim = int(script_config.state_dim)
     lyapunov_eps = float(script_config.lyapunov_eps)
     hidden_sizes = tuple(int(size) for size in script_config.lyapunov_hidden_sizes)
@@ -451,7 +451,7 @@ def _build_fresh_lyapunov_model(
         dropout=float(script_config.lyapunov_dropout),
         normalization=str(script_config.lyapunov_normalization),
     )
-    lyap_model = NeuralLyapunovCandidate(
+    lyap_model = NeuralLinearLyapunovCandidate(
         feature_net=feature_net,
         state_dim=state_dim,
         eps=lyapunov_eps,

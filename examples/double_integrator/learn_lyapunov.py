@@ -10,7 +10,7 @@ from torch import nn
 
 from lcil.lyapunov_learning import (
     LyapunovTrainingConfig,
-    NeuralLyapunovCandidate,
+    NeuralLinearLyapunovCandidate,
     LyapunovTrainer,
     ThresholdMonitor,
     FromRolloutsPolicyWrapper,
@@ -215,7 +215,7 @@ def main() -> None:
         riccati_p = compute_riccati_value_matrix(float(policy_global_config.dt), kappa=train_config.kappa)
         eps_init = 0.0 if script_config.fix_r_factor else 1e-3
         r_init, adjusted_eps = calculate_r_factor_from_riccati(riccati_p, eps=eps_init)
-        lyap_model = NeuralLyapunovCandidate(
+        lyap_model = NeuralLinearLyapunovCandidate(
             feature_net=lyap_feature,
             state_dim=policy_global_config.nx,
             eps=adjusted_eps,

@@ -111,11 +111,11 @@ class LyapunovTrainingMetrics:
     rho_boundary_quantile: NDArray
     rho_boundary_mean: NDArray
     rho_feature_term_quantile: NDArray
-    rho_linear_term_quantile: NDArray
+    rho_pd_term_quantile: NDArray
     rho_feature_term_mean: NDArray
-    rho_linear_term_mean: NDArray
+    rho_pd_term_mean: NDArray
     rho_feature_term_mean_share: NDArray
-    rho_linear_term_mean_share: NDArray
+    rho_pd_term_mean_share: NDArray
     buffer_size: NDArray
     num_mined_counterexamples: NDArray
     loss: NDArray
@@ -160,11 +160,11 @@ class LyapunovTrainingMetrics:
             rho_boundary_quantile=outer_nan_array.copy(),
             rho_boundary_mean=outer_nan_array.copy(),
             rho_feature_term_quantile=outer_nan_array.copy(),
-            rho_linear_term_quantile=outer_nan_array.copy(),
+            rho_pd_term_quantile=outer_nan_array.copy(),
             rho_feature_term_mean=outer_nan_array.copy(),
-            rho_linear_term_mean=outer_nan_array.copy(),
+            rho_pd_term_mean=outer_nan_array.copy(),
             rho_feature_term_mean_share=outer_nan_array.copy(),
-            rho_linear_term_mean_share=outer_nan_array.copy(),
+            rho_pd_term_mean_share=outer_nan_array.copy(),
             buffer_size=outer_nan_array.copy(),
             num_mined_counterexamples=outer_nan_array.copy(),
             loss=inner_nan_array.copy(),
@@ -262,11 +262,11 @@ class LyapunovTrainingMetrics:
         self.rho_boundary_quantile[outer_iter] = boundary_eval.rho.boundary_quantile
         self.rho_boundary_mean[outer_iter] = boundary_eval.rho.boundary_mean
         self.rho_feature_term_quantile[outer_iter] = boundary_eval.terms.feature_term_quantile
-        self.rho_linear_term_quantile[outer_iter] = boundary_eval.terms.linear_term_quantile
+        self.rho_pd_term_quantile[outer_iter] = boundary_eval.terms.pd_term_quantile
         self.rho_feature_term_mean[outer_iter] = boundary_eval.terms.feature_term_mean
-        self.rho_linear_term_mean[outer_iter] = boundary_eval.terms.linear_term_mean
+        self.rho_pd_term_mean[outer_iter] = boundary_eval.terms.pd_term_mean
         self.rho_feature_term_mean_share[outer_iter] = boundary_eval.terms.feature_term_mean_share
-        self.rho_linear_term_mean_share[outer_iter] = boundary_eval.terms.linear_term_mean_share
+        self.rho_pd_term_mean_share[outer_iter] = boundary_eval.terms.pd_term_mean_share
 
     def save(self, path: os.PathLike) -> None:
         metrics_path = Path(path)
@@ -277,11 +277,11 @@ class LyapunovTrainingMetrics:
             rho_boundary_quantile=self.rho_boundary_quantile,
             rho_boundary_mean=self.rho_boundary_mean,
             rho_feature_term_quantile=self.rho_feature_term_quantile,
-            rho_linear_term_quantile=self.rho_linear_term_quantile,
+            rho_pd_term_quantile=self.rho_pd_term_quantile,
             rho_feature_term_mean=self.rho_feature_term_mean,
-            rho_linear_term_mean=self.rho_linear_term_mean,
+            rho_pd_term_mean=self.rho_pd_term_mean,
             rho_feature_term_mean_share=self.rho_feature_term_mean_share,
-            rho_linear_term_mean_share=self.rho_linear_term_mean_share,
+            rho_pd_term_mean_share=self.rho_pd_term_mean_share,
             buffer_size=self.buffer_size,
             num_mined_counterexamples=self.num_mined_counterexamples,
             loss=self.loss,

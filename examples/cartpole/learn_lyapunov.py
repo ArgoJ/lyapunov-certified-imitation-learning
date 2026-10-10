@@ -13,7 +13,7 @@ from lcil.imitation_learning.models import BoundedPolicy, TransformerPolicy
 from lcil.lyapunov_learning import (
     LyapunovTrainer,
     LyapunovTrainingConfig,
-    NeuralLyapunovCandidate,
+    NeuralLinearLyapunovCandidate,
     ThresholdMonitor,
     compute_closed_loop_jacobian,
     compute_polyhedral_value_matrix,
@@ -64,7 +64,7 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
         default_factory=lambda: list(_DEFAULT_TRAIN_BOUND_FACTORS),
         help="Per-dimension scaling applied to policy state bounds before Lyapunov training.",
     )
-    eps: float = config_field(default=0.0, help="Epsilon added to the Riccati matrix P inside NeuralLyapunovCandidate.")
+    eps: float = config_field(default=0.0, help="Epsilon added to the Riccati matrix P inside NeuralResidualLyapunovCandidate.")
     curriculum_scales: list[float] = config_field(
         default_factory=lambda: [0.3, 0.5, 1.0],
         help=("Curriculum scales applied to the final training bounds."),
@@ -249,7 +249,7 @@ def main() -> None:
         eps_init = 0.0 if script_config.fix_r_factor else script_config.eps
         r_init, adjusted_eps = calculate_r_factor_from_riccati(seed_p, eps=eps_init)
 
-        lyap_model = NeuralLyapunovCandidate(
+        lyap_model = NeuralLinearLyapunovCandidate(
             feature_net=(CartpoleAngleWrapper(feature_net=lyap_feature) 
                 if script_config.use_angle_wrapper else lyap_feature),
             state_dim=mpc_cfg.nx,

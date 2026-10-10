@@ -86,10 +86,13 @@ A continuous function $V: \mathcal{X} \to \mathbb{R}_{\ge 0}$ is a valid discret
 1. **Positive Definiteness**: $V(x^*) = 0$ and $V(x) > 0 \quad \forall x \in \mathcal{X} \setminus \{x^*\}$.
 2. **Exponential Decrease**: $V(f(x, \pi(x))) - (1 - \kappa) V(x) \le 0 \quad \forall x \in \mathcal{S}_\rho$, with decay parameter $\kappa \in (0, 1]$.
 
-#### Lyapunov Architecture (`NeuralLyapunovCandidate`)
-To structurally guarantee positive definiteness without requiring verification of positivity:
+#### Lyapunov Architecture (`NeuralResidualLyapunovCandidate`)
+To structurally guarantee positive definiteness without requiring verification of positivity, candidates inherit from `NeuralResidualLyapunovCandidate`:
 
-$$V_\phi(x) = |g_\phi(x) - g_\phi(x^*)| + \|(\varepsilon I + R_\phi^T R_\phi)(x - x^*)\|_1$$
+- **Linear candidate** (`NeuralLinearLyapunovCandidate`):
+  $$V_\phi(x) = |g_\phi(x) - g_\phi(x^*)| + \|(\varepsilon I + R_\phi^T R_\phi)(x - x^*)\|_1$$
+- **Quadratic candidate** (`NeuralQuadraticLyapunovCandidate`):
+  $$V_\phi(x) = |g_\phi(x) - g_\phi(x^*)| + (x - x^*)^T (\varepsilon I + R_\phi^T R_\phi)(x - x^*)$$
 
 - $g_\phi(x): \mathbb{R}^{n_x} \to \mathbb{R}$ is an inner neural network.
 - $R_\phi \in \mathbb{R}^{n_x \times n_x}$ is a learnable or fixed transformation matrix.
@@ -277,7 +280,7 @@ pip install -e ".[dev]"
     - [`loss.py`](src/lcil/imitation_learning/loss.py) — `ScaledMSELoss`, `DynamicsAwareLoss`, `StateWeightedMSELoss`
     - [`trainer.py`](src/lcil/imitation_learning/trainer.py) — Imitation learning training loop & dataloaders
   - [`lyapunov_learning/`](src/lcil/lyapunov_learning/) — Neural Lyapunov functions, loss terms, and CEGIS buffer
-    - [`models.py`](src/lcil/lyapunov_learning/models.py) — `NeuralLyapunovCandidate` with DARE Riccati seeding
+    - [`models.py`](src/lcil/lyapunov_learning/models.py) — `NeuralResidualLyapunovCandidate` with DARE Riccati seeding
     - [`loss.py`](src/lcil/lyapunov_learning/loss.py) — `LyapunovTrainingLoss`, `ConditionLirpaLoss`, ROA loss
     - [`counterexample.py`](src/lcil/lyapunov_learning/counterexample.py) — Adversarial sampling & falsification
     - [`trainer.py`](src/lcil/lyapunov_learning/trainer.py) — Counterexample-guided training loop

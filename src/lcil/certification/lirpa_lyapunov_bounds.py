@@ -18,9 +18,7 @@ def _extract_affine_l1_term(lyap_model: nn.Module) -> tuple[th.Tensor, th.Tensor
     The neural Lyapunov candidate has the structure
     ``V(x) = |phi(x) - phi(x*)| + ||M (x - x*)||_1`` with ``M = eps I + R^T R``.
     Because the feature term is non-negative, ``||M (x - x*)||_1`` is itself a
-    sound lower bound on ``V(x)``. This helper duck-types on the candidate so it
-    works for any model that exposes ``_pd_matrix()`` (or ``r_factor``/``eps``)
-    together with an ``x_star`` buffer, and returns ``None`` otherwise.
+    sound lower bound on ``V(x)`` for linear (L1) candidates.
 
     Parameters
     ----------
@@ -31,15 +29,19 @@ def _extract_affine_l1_term(lyap_model: nn.Module) -> tuple[th.Tensor, th.Tensor
     -------
     tuple[th.Tensor, th.Tensor] | None
         ``(M, x_star)`` with ``M`` of shape ``(nx, nx)`` and ``x_star`` of shape
-        ``(nx,)``, or ``None`` when the model does not expose the affine term.
+        ``(nx,)``, or ``None`` when the model does not expose the affine L1 term.
     """
-    pd_matrix_fn = getattr(lyap_model, "_pd_matrix", None)
+    from ..lyapunov_learning.models import NeuralLinearLyapunovCandidate
+
+    if not isinstance(lyap_model, NeuralLinearLyapunovCandidate):
+        return None
+
     x_star = getattr(lyap_model, "x_star", None)
-    if not callable(pd_matrix_fn) or x_star is None:
+    if x_star is None:
         return None
 
     with th.no_grad():
-        pd_matrix = pd_matrix_fn()
+        pd_matrix = lyap_model.get_pd_matrix()
         if pd_matrix.ndim != 2 or pd_matrix.shape[0] != pd_matrix.shape[1]:
             return None
         x_star_vec = x_star.detach().reshape(-1)

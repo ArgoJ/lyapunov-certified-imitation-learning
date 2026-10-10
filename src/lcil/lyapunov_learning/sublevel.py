@@ -21,22 +21,22 @@ __logger__ = logging.getLogger(__name__)
 @dataclass(frozen=True, slots=True)
 class BoundaryTermDiagnostics:
     feature_term_quantile: float
-    linear_term_quantile: float
+    pd_term_quantile: float
     feature_term_mean: float
-    linear_term_mean: float
+    pd_term_mean: float
     feature_term_mean_share: float
-    linear_term_mean_share: float
+    pd_term_mean_share: float
 
     @classmethod
     def nan(cls) -> "BoundaryTermDiagnostics":
         nan = float("nan")
         return cls(
             feature_term_quantile=nan,
-            linear_term_quantile=nan,
+            pd_term_quantile=nan,
             feature_term_mean=nan,
-            linear_term_mean=nan,
+            pd_term_mean=nan,
             feature_term_mean_share=nan,
-            linear_term_mean_share=nan,
+            pd_term_mean_share=nan,
         )
 
 
@@ -95,37 +95,37 @@ def _boundary_term_diagnostics(
 ) -> BoundaryTermDiagnostics:
     if not all(
         hasattr(lyap_model, attr)
-        for attr in ("feature_net", "x_star", "_pd_matrix", "get_feature_term", "get_linear_term")
+        for attr in ("feature_net", "x_star", "_pd_weight", "get_feature_term", "get_pd_term")
     ):
         return BoundaryTermDiagnostics.nan()
 
-    pd_matrix_fn = getattr(lyap_model, "_pd_matrix")
+    pd_weight_fn = getattr(lyap_model, "_pd_weight")
     get_feature_term_fn = getattr(lyap_model, "get_feature_term")
-    get_linear_term_fn = getattr(lyap_model, "get_linear_term")
-    if not callable(pd_matrix_fn) or not callable(get_feature_term_fn) or not callable(get_linear_term_fn):
+    get_pd_term_fn = getattr(lyap_model, "get_pd_term")
+    if not callable(pd_weight_fn) or not callable(get_feature_term_fn) or not callable(get_pd_term_fn):
         return BoundaryTermDiagnostics.nan()
 
     feature_term = get_feature_term_fn(boundary_x)
-    linear_term = get_linear_term_fn(boundary_x)
+    pd_term = get_pd_term_fn(boundary_x)
 
     feature_term_mean = float(feature_term.mean().item())
-    linear_term_mean = float(linear_term.mean().item())
-    total_mean = feature_term_mean + linear_term_mean
+    pd_term_mean = float(pd_term.mean().item())
+    total_mean = feature_term_mean + pd_term_mean
 
     if total_mean <= 0.0:
         feature_term_mean_share = float("nan")
-        linear_term_mean_share = float("nan")
+        pd_term_mean_share = float("nan")
     else:
         feature_term_mean_share = feature_term_mean / total_mean
-        linear_term_mean_share = linear_term_mean / total_mean
+        pd_term_mean_share = pd_term_mean / total_mean
 
     return BoundaryTermDiagnostics(
         feature_term_quantile=float(th.quantile(feature_term, q=quantile).item()),
-        linear_term_quantile=float(th.quantile(linear_term, q=quantile).item()),
+        pd_term_quantile=float(th.quantile(pd_term, q=quantile).item()),
         feature_term_mean=feature_term_mean,
-        linear_term_mean=linear_term_mean,
+        pd_term_mean=pd_term_mean,
         feature_term_mean_share=feature_term_mean_share,
-        linear_term_mean_share=linear_term_mean_share,
+        pd_term_mean_share=pd_term_mean_share,
     )
 
 

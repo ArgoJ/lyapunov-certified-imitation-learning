@@ -137,11 +137,11 @@ class TestLyapunovTrainer(unittest.TestCase):
             ),
             terms=BoundaryTermDiagnostics(
                 feature_term_quantile=0.0,
-                linear_term_quantile=0.5,
+                pd_term_quantile=0.5,
                 feature_term_mean=0.0,
-                linear_term_mean=0.5,
+                pd_term_mean=0.5,
                 feature_term_mean_share=0.0,
-                linear_term_mean_share=1.0,
+                pd_term_mean_share=1.0,
             ),
         )
 

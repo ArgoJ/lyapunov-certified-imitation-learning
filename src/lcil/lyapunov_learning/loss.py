@@ -735,7 +735,7 @@ class RFactorRegularizationLoss(nn.Module):
         self.max_cond = max_cond
 
     def forward(self) -> th.Tensor:
-        P = self.lyap_model._pd_matrix()
+        P = self.lyap_model.get_pd_matrix()
         eigs = th.linalg.eigvalsh(P)
         lam_min = eigs[0].clamp_min(1e-12)
         lam_max = eigs[-1].clamp_min(1e-12)

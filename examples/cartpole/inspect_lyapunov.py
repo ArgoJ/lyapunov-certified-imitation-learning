@@ -71,7 +71,7 @@ def evaluate_states(
     reference = next(itertools.chain(lyapunov.parameters(), lyapunov.buffers()))
     chunks: dict[str, list[NDArray]] = {key: [] for key in ("v", "v_next", "next_states")}
     terms = {name: getattr(lyapunov, method, None) for name, method in
-             (("feature", "get_feature_term"), ("linear", "get_linear_term"))}
+             (("feature", "get_feature_term"), ("psd", "get_psd_term"))}
     terms = {name: method for name, method in terms.items() if callable(method)}
     for name in terms:
         chunks[name] = []
@@ -207,7 +207,7 @@ def _summary(states: NDArray, values: dict[str, NDArray], rho: float | None,
                    "decrease_residual": float(values["decrease"][index]),
                    "inside_origin_exclusion": bool(inside_hole[index])}
         witness.update({name: float(values[name][index]) for name in
-                        ("feature", "feature_next", "linear", "linear_next") if name in values})
+                        ("feature", "feature_next", "psd", "psd_next") if name in values})
     return {"sample_count": len(states), "inside_sublevel": int(relevant.sum()),
             "outside_bounds": int((~values["inside_bounds"]).sum()),
             "decrease_violations": int(violating.sum()),
@@ -318,7 +318,7 @@ def main(argv: list[str] | None = None) -> None:
     jacobian = th.autograd.functional.jacobian(closed_loop, origin_tensor).cpu().numpy()
     feature_jacobian = th.autograd.functional.jacobian(
         lambda x: lyapunov.feature_net(x.unsqueeze(0)).reshape(-1), origin_tensor).cpu().numpy()
-    norm_matrix = np.vstack((lyapunov._pd_matrix().cpu().numpy(), feature_jacobian))
+    norm_matrix = np.vstack((lyapunov._pd_weight().cpu().numpy(), feature_jacobian))
     direction, gain = polyhedral_expansion(jacobian, norm_matrix)
     radii = np.geomspace(*args.radii, args.radius_points)
     ray_states = origin + radii[:, None] * direction
