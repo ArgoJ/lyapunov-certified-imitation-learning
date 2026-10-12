@@ -22,9 +22,11 @@ import numpy as np
 import torch as th
 from matplotlib.axes import Axes
 from numpy.typing import NDArray
+import scipy.linalg
 from scipy.optimize import linprog
 from torch import nn
 
+from lcil.lyapunov_learning import NeuralQuadraticLyapunovCandidate
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
 from lcil.utils import IntegrationMethod, load_mpc_config_json
 
@@ -71,7 +73,7 @@ def evaluate_states(
     reference = next(itertools.chain(lyapunov.parameters(), lyapunov.buffers()))
     chunks: dict[str, list[NDArray]] = {key: [] for key in ("v", "v_next", "next_states")}
     terms = {name: getattr(lyapunov, method, None) for name, method in
-             (("feature", "get_feature_term"), ("psd", "get_psd_term"))}
+             (("feature", "get_feature_term"), ("psd", "get_pd_term"))}
     terms = {name: method for name, method in terms.items() if callable(method)}
     for name in terms:
         chunks[name] = []
@@ -146,6 +148,41 @@ def polyhedral_expansion(
     gain = np.abs(norm_matrix @ closed_loop @ best_direction).sum()
     gain /= np.abs(norm_matrix @ best_direction).sum()
     return best_direction, float(gain)
+
+
+def quadratic_expansion(
+    closed_loop: NDArray[np.float64],
+    p_matrix: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], float]:
+    """Find the largest 1-step expansion of a linear map in the quadratic norm x^T P x.
+
+    Parameters
+    ----------
+    closed_loop : ndarray of shape (nx, nx)
+        Jacobian of the discrete closed-loop map A_cl.
+    p_matrix : ndarray of shape (nx, nx)
+        Symmetric positive-definite matrix P.
+
+    Returns
+    -------
+    direction : ndarray of shape (nx,)
+        The worst-case unit direction maximizing x^T A_cl^T P A_cl x / (x^T P x).
+    gain : float
+        The maximum contraction/expansion factor lambda_max(P^-1 A_cl^T P A_cl).
+    """
+    p_sym = 0.5 * (p_matrix + p_matrix.T)
+    m = closed_loop.T @ p_sym @ closed_loop
+    m_sym = 0.5 * (m + m.T)
+    eigvals, eigvecs = scipy.linalg.eigh(m_sym, p_sym)
+    max_idx = int(np.argmax(eigvals))
+    gain = float(eigvals[max_idx])
+    direction = np.real(eigvecs[:, max_idx])
+    norm = np.linalg.norm(direction)
+    if norm == 0.0:
+        direction = np.eye(len(direction))[0]
+    else:
+        direction = direction / norm
+    return direction, gain
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -316,11 +353,17 @@ def main(argv: list[str] | None = None) -> None:
         return dynamics(x.unsqueeze(0), policy(x.unsqueeze(0))).squeeze(0)
 
     jacobian = th.autograd.functional.jacobian(closed_loop, origin_tensor).cpu().numpy()
-    feature_jacobian = th.autograd.functional.jacobian(
-        lambda x: lyapunov.feature_net(x.unsqueeze(0)).reshape(-1), origin_tensor).cpu().numpy()
-    norm_matrix = np.vstack((lyapunov._pd_weight().cpu().numpy(), feature_jacobian))
-    direction, gain = polyhedral_expansion(jacobian, norm_matrix)
-    radii = np.geomspace(*args.radii, args.radius_points)
+    if isinstance(lyapunov, NeuralQuadraticLyapunovCandidate):
+        p_matrix = lyapunov.get_pd_matrix().detach().cpu().numpy()
+        direction, gain = quadratic_expansion(jacobian, p_matrix)
+    else:
+        feature_jacobian = th.autograd.functional.jacobian(
+            lambda x: lyapunov.feature_net(x.unsqueeze(0)).reshape(-1), origin_tensor).cpu().numpy()
+        if feature_jacobian.ndim == 1:
+            feature_jacobian = feature_jacobian.reshape(1, -1)
+        norm_matrix = np.vstack((lyapunov._pd_weight().detach().cpu().numpy(), feature_jacobian))
+        direction, gain = polyhedral_expansion(jacobian, norm_matrix)
+    radii = np.geomspace(args.radii[0], args.radii[1], args.radius_points)
     ray_states = origin + radii[:, None] * direction
     ray_values = evaluate(ray_states)
     rng = np.random.default_rng(args.seed)

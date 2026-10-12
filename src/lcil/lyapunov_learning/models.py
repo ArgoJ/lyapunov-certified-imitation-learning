@@ -307,8 +307,8 @@ class NeuralResidualLyapunovCandidate(nn.Module, LyapunovCandidate, abc.ABC):
         if self._is_fixed:
             self.prepare_fixed()
 
-    def get_feature_term(self, x: th.Tensor) -> th.Tensor:
-        """Compute the feature term |phi(x) - phi(x*)| for the Lyapunov candidate."""
+    def _feature_diff(self, x: th.Tensor) -> th.Tensor:
+        """Compute the centered feature tensor phi(x) - phi(x*)."""
         phi_x = self.feature_net(x)
         if (self._is_fixed or not th.is_grad_enabled()) and self._cached_phi_x_star is not None:
             phi_x_star = self._cached_phi_x_star
@@ -319,8 +319,12 @@ class NeuralResidualLyapunovCandidate(nn.Module, LyapunovCandidate, abc.ABC):
             else:
                 self._cached_phi_x_star = None
 
-        feature_term = th.abs(phi_x - phi_x_star).sum(dim=1, keepdim=True)
-        return feature_term
+        return phi_x - phi_x_star
+
+    @abc.abstractmethod
+    def get_feature_term(self, x: th.Tensor) -> th.Tensor:
+        """Compute the feature term of the Lyapunov candidate."""
+        ...
 
     @abc.abstractmethod
     def get_pd_term(self, x: th.Tensor) -> th.Tensor:
@@ -416,7 +420,7 @@ class NeuralResidualLyapunovCandidate(nn.Module, LyapunovCandidate, abc.ABC):
 
 
 class NeuralLinearLyapunovCandidate(NeuralResidualLyapunovCandidate):
-    """Neural Lyapunov candidate with an L1 base term: V_pd(δ) = ||P δ||_1."""
+    """Neural Lyapunov candidate with an L1 base term: V(x) = ||phi(x) - phi(x*)||_1 + ||P δ||_1."""
 
     def _pd_weight(self) -> th.Tensor:
         """Return the positive definite matrix P = εI + RᵀR with caching."""
@@ -431,6 +435,10 @@ class NeuralLinearLyapunovCandidate(NeuralResidualLyapunovCandidate):
         self._cached_pd_weight = None if th.is_grad_enabled() else weight.detach()
         return weight
 
+    def get_feature_term(self, x: th.Tensor) -> th.Tensor:
+        """Compute the L1 feature term ||phi(x) - phi(x*)||_1."""
+        return self._feature_diff(x).abs().sum(dim=1, keepdim=True)
+
     def get_pd_term(self, x: th.Tensor) -> th.Tensor:
         """Compute the L1 base term ||P δ||_1 with δ = x - x*."""
         delta = x - self.x_star.squeeze(0)
@@ -443,26 +451,32 @@ class NeuralLinearLyapunovCandidate(NeuralResidualLyapunovCandidate):
 
 
 class NeuralQuadraticLyapunovCandidate(NeuralResidualLyapunovCandidate):
-    """Neural Lyapunov candidate with a quadratic base term: V_pd(δ) = δᵀ P δ."""
+    """Neural Lyapunov candidate with a quadratic base term: V(x) = ||phi(x) - phi(x*)||^2 + δᵀ P δ."""
 
     def _pd_weight(self) -> th.Tensor:
-        """Return the weight matrix W such that ||δ W||² = δᵀ P δ with caching."""
+        """Return the lower-triangular Cholesky factor L such that ||δ L||² = δᵀ P δ with caching."""
         if (self._is_fixed or not th.is_grad_enabled()) and self._cached_pd_weight is not None:
             return self._cached_pd_weight
 
+        p_matrix = self.get_pd_matrix()
         if self.eps > 0.0:
-            weight = th.cat((self.r_factor.t(), math.sqrt(self.eps) * self.eye), dim=1)
+            weight = th.linalg.cholesky(p_matrix)
         else:
-            weight = self.r_factor.t()
+            weight = th.linalg.cholesky(p_matrix + 1e-7 * self.eye)
 
         self._cached_pd_weight = None if th.is_grad_enabled() else weight.detach()
         return weight
 
-    def get_pd_term(self, x: th.Tensor) -> th.Tensor:
-        """Compute the quadratic base term δᵀ P δ = ||δ W||² with δ = x - x*.
+    def get_feature_term(self, x: th.Tensor) -> th.Tensor:
+        """Compute the quadratic feature term ||phi(x) - phi(x*)||^2 as a sum of squares."""
+        return self._feature_diff(x).pow(2).sum(dim=1, keepdim=True)
 
-        The quadratic form is evaluated as a sum of single squares ||δ W||², which
-        yields tighter (CROWN) bounds than a bilinear form δᵀPδ.
+    def get_pd_term(self, x: th.Tensor) -> th.Tensor:
+        """Compute the quadratic base term δᵀ P δ = ||δ L||² with δ = x - x*.
+
+        The quadratic form is evaluated as a sum of single squares ||δ L||² using the
+        Cholesky factor L (P = L Lᵀ), which yields tight (CROWN) bounds without
+        McCormick relaxations of bilinear forms.
         """
         delta = x - self.x_star.squeeze(0)
         z = delta @ self._pd_weight()

@@ -157,6 +157,13 @@ class RecursiveCertifier:
         self.lyap_model = lyap_model.to(self.device).eval()
         self.dyn_model = dyn_model.to(self.device).eval()
 
+        prepare_policy = getattr(self.policy_model, "prepare_fixed", None)
+        if callable(prepare_policy):
+            prepare_policy()
+        prepare_lyap = getattr(self.lyap_model, "prepare_fixed", None)
+        if callable(prepare_lyap):
+            prepare_lyap()
+
         self.bounds = self._resolve_bounds(config.cert_bounds, device)
 
         self.bounder: LiRPALyapunovRegionBounds | None = None

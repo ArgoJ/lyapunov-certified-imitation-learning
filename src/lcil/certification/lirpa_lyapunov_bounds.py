@@ -172,6 +172,9 @@ class LiRPALyapunovRegionBounds:
         self.default_bound_method = default_bound_method.strip().lower()
         self.suppress_native_output = bool(suppress_native_output)
         self.lyap_model = lyap_model.to(self.device).eval()
+        prepare_lyap = getattr(self.lyap_model, "prepare_fixed", None)
+        if callable(prepare_lyap):
+            prepare_lyap()
         self.bounded_model = self._build_bounded_model()
 
         self.use_affine_l1_lower_bound = bool(use_affine_l1_lower_bound)

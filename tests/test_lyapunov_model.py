@@ -274,6 +274,28 @@ class TestLyapunovCandidateProtocol(unittest.TestCase):
         self.assertEqual(pd_matrix.shape, (4, 4))
         self.assertTrue(bool((th.linalg.eigvalsh(pd_matrix) > 0).all()))
 
+    def test_feature_term_formulations(self) -> None:
+        feature_net = SaveableFeatureNet()
+        linear_model = NeuralLinearLyapunovCandidate(
+            feature_net=feature_net,
+            state_dim=4,
+        )
+        quad_model = NeuralQuadraticLyapunovCandidate(
+            feature_net=feature_net,
+            state_dim=4,
+        )
+        x = th.randn(5, 4)
+        x_star = th.zeros(1, 4)
+        phi_x = feature_net(x)
+        phi_star = feature_net(x_star).squeeze(0)
+        diff = phi_x - phi_star
+
+        expected_linear = diff.abs().sum(dim=1, keepdim=True)
+        expected_quad = diff.pow(2).sum(dim=1, keepdim=True)
+
+        self.assertTrue(th.allclose(linear_model.get_feature_term(x), expected_linear))
+        self.assertTrue(th.allclose(quad_model.get_feature_term(x), expected_quad))
+
     def test_get_pd_matrix_l1_and_quadratic(self) -> None:
         p_matrix = th.tensor(
             [
@@ -302,9 +324,16 @@ class TestLyapunovCandidateProtocol(unittest.TestCase):
             eps=eps,
             r_factor=r_factor,
         )
-        self.assertTrue(th.allclose(model_quad.get_pd_matrix(), p_matrix, atol=1e-5, rtol=1e-5))
         w = model_quad._pd_weight()
+        self.assertEqual(w.shape, (4, 4))
+        self.assertTrue(th.allclose(th.triu(w, diagonal=1), th.zeros(4, 4)))
         self.assertTrue(th.allclose(model_quad.get_pd_matrix(), w @ w.t(), atol=1e-5, rtol=1e-5))
+
+        # Check equivalence of get_pd_term with analytical quadratic form
+        x_sample = th.randn(5, 4)
+        pd_val = model_quad.get_pd_term(x_sample)
+        expected_pd = (x_sample @ p_matrix * x_sample).sum(dim=1, keepdim=True)
+        self.assertTrue(th.allclose(pd_val, expected_pd, atol=1e-5, rtol=1e-5))
 
     def test_save_load_subclasses_via_base_load(self) -> None:
         feature_net = SaveableFeatureNet()

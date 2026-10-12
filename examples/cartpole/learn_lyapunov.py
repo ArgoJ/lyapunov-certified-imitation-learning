@@ -14,6 +14,7 @@ from lcil.lyapunov_learning import (
     LyapunovTrainer,
     LyapunovTrainingConfig,
     NeuralLinearLyapunovCandidate,
+    NeuralQuadraticLyapunovCandidate,
     ThresholdMonitor,
     compute_closed_loop_jacobian,
     compute_polyhedral_value_matrix,
@@ -47,13 +48,12 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     hidden_size: int = config_field(default=24, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
     layers: int = config_field(default=3, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
     use_angle_wrapper: bool = config_field(default=False, help="Whether to use the CartpoleAngleWrapper around the Lyapunov feature net.")
-    fix_r_factor: bool = config_field(default=True, help="Whether to fix the R factor in the Lyapunov candidate.")
-    seed_matrix_mode: str = config_field(
-        default="polyhedral",
-        help="How to compute the seed matrix for R. "
-             "'polyhedral' = optimize P to minimize induced 1-norm gain ||P A_cl P^-1||_1, "
-             "'riccati' = standard discrete ARE Riccati matrix.",
+    candidate_type: str = config_field(
+        default="quadratic",
+        help="Type of residual Lyapunov candidate: 'quadratic' (ellipsoidal delta^T P delta) or 'linear' (polyhedral ||P delta||_1).",
+        display_alias="candidate",
     )
+    fix_r_factor: bool = config_field(default=True, help="Whether to fix the R factor in the Lyapunov candidate.")
     riccati_scale: str | float = config_field(
         default="spectral",
         help="How to scale the Riccati P matrix before seeding R. "
@@ -137,7 +137,7 @@ def parse_cli_args() -> GridSearchHelper[tuple[LyapunovLearningScriptConfig, Lya
     script_defaults = _build_script_defaults()
     script_defaults.add_to_argparse(
         parser,
-        nargs_fields={"activation", "hidden_size", "layers"},
+        nargs_fields={"activation", "hidden_size", "layers", "candidate_type"},
     )
 
     training_defaults = _build_training_defaults()
@@ -232,8 +232,19 @@ def main() -> None:
             normalization="none",
             seed=seed,
         )
+        candidate_type = script_config.candidate_type.strip().lower()
+        if candidate_type == "quadratic":
+            candidate_cls = NeuralQuadraticLyapunovCandidate
+        elif candidate_type == "linear":
+            candidate_cls = NeuralLinearLyapunovCandidate
+        else:
+            raise ValueError(
+                f"Unknown candidate_type '{script_config.candidate_type}'. "
+                "Expected 'quadratic' or 'linear'."
+            )
+
         riccati_p = compute_riccati_value_matrix(float(mpc_cfg.dt), kappa=train_config.kappa)
-        if script_config.seed_matrix_mode == "polyhedral":
+        if candidate_type == "linear":
             a_cl = compute_closed_loop_jacobian(
                 dyn_model, policy_model, state_dim=mpc_cfg.nx, device=device
             ).detach().cpu().numpy()
@@ -249,7 +260,7 @@ def main() -> None:
         eps_init = 0.0 if script_config.fix_r_factor else script_config.eps
         r_init, adjusted_eps = calculate_r_factor_from_riccati(seed_p, eps=eps_init)
 
-        lyap_model = NeuralLinearLyapunovCandidate(
+        lyap_model = candidate_cls(
             feature_net=(CartpoleAngleWrapper(feature_net=lyap_feature) 
                 if script_config.use_angle_wrapper else lyap_feature),
             state_dim=mpc_cfg.nx,
