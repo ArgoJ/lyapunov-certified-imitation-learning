@@ -73,6 +73,7 @@ class _StepCollector:
         self.unresolved_parts: list[th.Tensor] = []
         self.irrelevant: th.Tensor = region_manager.empty_regions()
         self.counterexample_found: bool = False
+        self.min_counterexample_v: float | None = None
 
     def add_resolved(self, regions: th.Tensor, update_progress: bool = True) -> None:
         if len(regions) > 0:
