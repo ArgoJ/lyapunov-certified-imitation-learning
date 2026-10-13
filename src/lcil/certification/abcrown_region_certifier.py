@@ -69,6 +69,7 @@ class ABCrownRegionVerification:
     verified: bool
     counterexample_found: bool
     counterexample: th.Tensor | None = None
+    counterexample_v: float | None = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,11 @@ class ABCrownRegionBatchVerification:
     counterexample_mask: th.Tensor
     unknown_mask: th.Tensor
     counterexamples: list[th.Tensor] = field(default_factory=list)
+    counterexample_v_values: list[float] = field(default_factory=list)
+
+    @property
+    def min_counterexample_v(self) -> float | None:
+        return min(self.counterexample_v_values) if self.counterexample_v_values else None
 
     @property
     def unresolved_mask(self) -> th.Tensor:
@@ -342,12 +348,13 @@ class BaseABCrownCertifier(ABC):
         __logger__.debug("ABCrown solver status: %s after %s with %s", status, elapsed, bab_violation)
 
         cex = self._extract_counterexample(result) if _is_counterexample_status(status) else None
+        cex_v = None
         if _is_counterexample_status(status):
             extra_info = ""
             if cex is not None and hasattr(self, "lyap_model") and self.lyap_model is not None:
                 try:
-                    v_val = self.lyap_model(cex.unsqueeze(0).to(self.device)).item()
-                    extra_info = f" (V(x) = {v_val:.5f}, rho = {float(rho):.5f})"
+                    cex_v = float(self.lyap_model(cex.unsqueeze(0).to(self.device)).item())
+                    extra_info = f" (V(x) = {cex_v:.5f}, rho = {float(rho):.5f})"
                 except Exception:
                     pass
             x_str = f" x = {[round(float(v), 5) for v in cex.flatten()]}{extra_info}" if cex is not None else ""
@@ -358,6 +365,7 @@ class BaseABCrownCertifier(ABC):
             verified=_is_safe_status(status),
             counterexample_found=_is_counterexample_status(status),
             counterexample=cex,
+            counterexample_v=cex_v,
         )
 
     def certify_regions(
@@ -385,6 +393,7 @@ class BaseABCrownCertifier(ABC):
         counterexample_mask = th.zeros((len(regions),), dtype=th.bool, device=self.device)
         unknown_mask = th.zeros((len(regions),), dtype=th.bool, device=self.device)
         counterexamples: list[th.Tensor] = []
+        counterexample_v_values: list[float] = []
 
         if progress is not None:
             task_description = description if description is not None else self.progress_description
@@ -400,6 +409,8 @@ class BaseABCrownCertifier(ABC):
                         counterexample_mask[idx] = True
                         if res.counterexample is not None:
                             counterexamples.append(res.counterexample)
+                        if res.counterexample_v is not None:
+                            counterexample_v_values.append(res.counterexample_v)
                         if progress is not None:
                             progress.step_certify(False, True)
                         return ABCrownRegionBatchVerification(
@@ -407,6 +418,7 @@ class BaseABCrownCertifier(ABC):
                             counterexample_mask=counterexample_mask,
                             unknown_mask=unknown_mask,
                             counterexamples=counterexamples,
+                            counterexample_v_values=counterexample_v_values,
                         )
 
             # Formal BaB
@@ -426,6 +438,8 @@ class BaseABCrownCertifier(ABC):
                 )
                 if verification_result.counterexample is not None:
                     counterexamples.append(verification_result.counterexample)
+                if verification_result.counterexample_v is not None:
+                    counterexample_v_values.append(verification_result.counterexample_v)
 
                 if progress is not None:
                     progress.step_certify(
@@ -446,6 +460,7 @@ class BaseABCrownCertifier(ABC):
             counterexample_mask=counterexample_mask,
             unknown_mask=unknown_mask,
             counterexamples=counterexamples,
+            counterexample_v_values=counterexample_v_values,
         )
 
 

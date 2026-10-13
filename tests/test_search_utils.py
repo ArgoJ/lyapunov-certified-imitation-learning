@@ -164,6 +164,58 @@ class TestSearchUtils(unittest.TestCase):
                 max_bisection_steps=5,
             )
 
+    def test_scale_rho_down_early_abort_when_max_val_below_min_val(self) -> None:
+        eval_fn = lambda x: False
+        # max_val = 0.005 is below min_val = 0.01
+        stop, lo, up = scale_rho_down(
+            lo=None,
+            up=1.0,
+            eval_fn=eval_fn,
+            min_val=0.01,
+            scaling=2.0,
+            max_val_fn=lambda: 0.005,
+        )
+        self.assertTrue(stop)
+        self.assertIsNone(lo)
+
+    def test_scale_rho_down_jumps_upper_bound_when_max_val_valid(self) -> None:
+        eval_fn = lambda x: False
+        # up=1.0, scaling=2.0 -> trial=0.5. But max_val = 0.2 < 0.5.
+        stop, lo, up = scale_rho_down(
+            lo=None,
+            up=1.0,
+            eval_fn=eval_fn,
+            min_val=0.01,
+            scaling=2.0,
+            max_val_fn=lambda: 0.2,
+        )
+        self.assertFalse(stop)
+        self.assertIsNone(lo)
+        self.assertAlmostEqual(up, 0.2, delta=1e-5)
+
+    def test_search_and_bisect_value_aborts_immediately_on_max_val_below_min_val(self) -> None:
+        call_count = 0
+
+        def eval_fn(x: float) -> bool:
+            nonlocal call_count
+            call_count += 1
+            return False
+
+        # initial_estimate=1.0. max_val = 0.0005 is below min_val = 0.001
+        result = search_and_bisect_value(
+            initial_estimate=1.0,
+            eval_fn=eval_fn,
+            min_val=0.001,
+            scaling_factor=2.0,
+            bisection_tol=1e-3,
+            max_scale_steps=5,
+            max_bisection_steps=5,
+            max_val_fn=lambda: 0.0005,
+        )
+        self.assertEqual(result, 0.0)
+        # Should abort immediately after evaluating initial_val (1 call only!)
+        self.assertEqual(call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

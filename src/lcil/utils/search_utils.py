@@ -12,7 +12,7 @@ __logger__ = logging.getLogger(__name__)
 def iterative_rho_search(
     total: int,
     desc: str,
-    initial_values: tuple[float, float],
+    initial_values: tuple[float | None, float],
     step_fn: Callable,
     eval_fn: Callable[[float], bool],
     progress: Progress | None = None,
@@ -25,7 +25,7 @@ def iterative_rho_search(
         Maximum number of iterations.
     desc : str
         Progress-bar description.
-    initial_values : tuple[float, float]
+    initial_values : tuple[float | None, float]
         Initial ``(val_lo, val_up)`` values.
     step_fn : Callable
         Function mapping ``(val_lo, val_up, eval_fn)`` to ``(stop, val_lo, val_up)``.
@@ -91,7 +91,9 @@ def scale_rho_down(
     up: float, 
     eval_fn: Callable[[float], bool], 
     min_val: float, 
-    scaling: float
+    scaling: float,
+    *,
+    max_val_fn: Callable[[], float | None] | None = None,
 ) -> tuple[bool, float | None, float]:
     """Scales down ``up`` until the new trial is either certified 
     or it is below min_val, in which case we stop and return the last certified val as lower bound.
@@ -99,6 +101,18 @@ def scale_rho_down(
     trial = max(min_val, up / scaling)
     if eval_fn(trial):
         return True, trial, up
+
+    if max_val_fn is not None:
+        max_val = max_val_fn()
+        if max_val is not None:
+            if max_val <= min_val:
+                __logger__.info(
+                    "Observed upper bound %.6e is <= min_val (%.6e). Aborting search.",
+                    max_val,
+                    min_val,
+                )
+                return True, None, trial
+            trial = min(trial, max_val)
 
     if trial <= min_val:
         return True, None, trial
@@ -134,6 +148,7 @@ def search_and_bisect_value(
     max_bisection_steps: int,
     value_name: str = "val",
     progress: Progress | None = None,
+    max_val_fn: Callable[[], float | None] | None = None,
 ) -> float:
     """Orchestrates scaling and bisection to find the maximum certifiable value."""
     if initial_estimate <= 0:
@@ -171,11 +186,29 @@ def search_and_bisect_value(
 
     # Scale down
     else:
+        if max_val_fn is not None:
+            max_val = max_val_fn()
+            if max_val is not None:
+                if max_val <= min_val:
+                    __logger__.info(
+                        "Initial evaluation failed with upper bound %.6e <= min_%s (%.6e). Aborting.",
+                        max_val,
+                        value_name,
+                        min_val,
+                    )
+                    return 0.0
+                initial_val = min(initial_val, max_val)
+
         val_lo, val_up = iterative_rho_search(
             total=max_scale_steps,
             desc=f"Scale down {value_name}",
             initial_values=(None, initial_val),
-            step_fn=partial(scale_rho_down, min_val=min_val, scaling=scaling_factor),
+            step_fn=partial(
+                scale_rho_down,
+                min_val=min_val,
+                scaling=scaling_factor,
+                max_val_fn=max_val_fn,
+            ),
             eval_fn=eval_fn,
             progress=progress,
         )
@@ -190,7 +223,7 @@ def search_and_bisect_value(
             return 0.0
 
     # Bisect
-    if val_up - val_lo >= bisection_tol:
+    if val_lo is not None and val_up - val_lo >= bisection_tol:
         val_lo, val_up = iterative_rho_search(
             total=max_bisection_steps,
             desc=f"Bisect {value_name}",
@@ -200,4 +233,4 @@ def search_and_bisect_value(
             progress=progress,
         )
 
-    return val_lo
+    return val_lo if val_lo is not None else 0.0

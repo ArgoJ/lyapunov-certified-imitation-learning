@@ -31,6 +31,7 @@ class RecursiveCertificationResult:
     unresolved: th.Tensor
     irrelevant: th.Tensor
     counterexample_found: bool = False
+    min_counterexample_v: float | None = None
 
     @property
     def global_success(self) -> bool:
@@ -55,6 +56,7 @@ class _RecursiveLoopResult:
     unresolved_non_leaves: list[th.Tensor] = field(default_factory=list)
     all_irrelevant: list[th.Tensor] = field(default_factory=list)
     counterexample_found: bool = False
+    min_counterexample_v: float | None = None
 
     @property
     def all_unresolved(self) -> list[th.Tensor]:
@@ -103,6 +105,10 @@ class _StepCollector:
                 self.counterexample_found = True
             elif early_exit != EarlyExitLevel.NONE and result.any_counterexample:
                 self.counterexample_found = True
+            cex_v = getattr(result, "min_counterexample_v", None)
+            if cex_v is not None:
+                if self.min_counterexample_v is None or cex_v < self.min_counterexample_v:
+                    self.min_counterexample_v = cex_v
 
     def build_result(self) -> RecursiveCertificationResult:
         return RecursiveCertificationResult(
@@ -110,6 +116,7 @@ class _StepCollector:
             unresolved=self.rm.pack_regions(self.unresolved_parts),
             irrelevant=self.irrelevant,
             counterexample_found=self.counterexample_found,
+            min_counterexample_v=self.min_counterexample_v,
         )
 
 
@@ -465,6 +472,7 @@ class RecursiveCertifier:
         unresolved_non_leaves: list[th.Tensor] = []
         all_irrelevant: list[th.Tensor] = []
         counterexample_found = False
+        min_cex_v: float | None = None
 
         if len(pending_bs) == 0:
             return _RecursiveLoopResult()
@@ -500,6 +508,9 @@ class RecursiveCertifier:
                         all_irrelevant.append(step_result.irrelevant)
                     if step_result.counterexample_found:
                         counterexample_found = True
+                    if step_result.min_counterexample_v is not None:
+                        if min_cex_v is None or step_result.min_counterexample_v < min_cex_v:
+                            min_cex_v = step_result.min_counterexample_v
 
                     if early_exit != EarlyExitLevel.NONE and step_result.counterexample_found:
                         if len(step_result.unresolved) > 0:
@@ -532,6 +543,7 @@ class RecursiveCertifier:
             unresolved_non_leaves=unresolved_non_leaves,
             all_irrelevant=all_irrelevant,
             counterexample_found=counterexample_found,
+            min_counterexample_v=min_cex_v,
         )
 
     def _pack_result(
@@ -540,6 +552,7 @@ class RecursiveCertifier:
         unresolved: Sequence[th.Tensor],
         irrelevant: Sequence[th.Tensor],
         counterexample_found: bool = False,
+        min_counterexample_v: float | None = None,
     ) -> RecursiveCertificationResult:
         """Pack lists of region tensors into a RecursiveCertificationResult."""
         return RecursiveCertificationResult(
@@ -547,6 +560,7 @@ class RecursiveCertifier:
             unresolved=self.region_manager.pack_regions(unresolved),
             irrelevant=self.region_manager.pack_regions(irrelevant),
             counterexample_found=counterexample_found,
+            min_counterexample_v=min_counterexample_v,
         )
 
     def _certify_recursive_regions(
@@ -589,4 +603,5 @@ class RecursiveCertifier:
             loop_res.all_unresolved,
             loop_res.all_irrelevant,
             loop_res.counterexample_found,
+            min_counterexample_v=loop_res.min_counterexample_v,
         )

@@ -107,6 +107,7 @@ class BisectCertifier(RecursiveCertifier):
             progress_level=progress_level,
         )
         self.save_dir: Path | None = Path(save_dir).resolve() if save_dir is not None else None
+        self.last_counterexample_v: float | None = None
 
     # =========================================
     # CERTIFICATION SEARCH
@@ -134,6 +135,7 @@ class BisectCertifier(RecursiveCertifier):
             rho=rho,
             early_exit=EarlyExitLevel.ON_COUNTEREXAMPLE,
         )
+        self.last_counterexample_v = result.min_counterexample_v
 
         if self.save_dir is not None:
             cert_result = self._create_result(rho, result)
@@ -151,6 +153,7 @@ class BisectCertifier(RecursiveCertifier):
         __logger__.info("Starting Lyapunov certification.")
         
         self.cache_region_bounds()
+        self.last_counterexample_v = None
 
         with self.progress:
             best_rho = search_and_bisect_value(
@@ -163,6 +166,7 @@ class BisectCertifier(RecursiveCertifier):
                 max_bisection_steps=self.config.max_bisection_steps,
                 value_name="rho",
                 progress=self.progress,
+                max_val_fn=lambda: self.last_counterexample_v,
             )
 
         if best_rho > 0.0:
