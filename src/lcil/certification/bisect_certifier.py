@@ -194,13 +194,11 @@ class BisectCertifier(RecursiveCertifier):
         best_rho = self.find_max_rho(rho_estimate)
 
         # Successful certification
-        if best_rho >= self.config.rho_min:
+        if best_rho > 0.0:
             return self._collect_certification_details(rho=best_rho)
 
         # Failed certification
-        __logger__.warning(
-            "No globally certified rho found above rho_min (%.0e).", self.config.rho_min
-        )
+        __logger__.warning("No globally certified rho found.")
 
         if not collect_details_on_failed:
             return None

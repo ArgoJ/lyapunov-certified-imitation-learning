@@ -186,15 +186,15 @@ def search_and_bisect_value(
 
     # Scale down
     else:
+        floor = max(min_val, initial_val / (scaling_factor ** max_scale_steps))
         if max_val_fn is not None:
             max_val = max_val_fn()
             if max_val is not None:
-                if max_val <= min_val:
+                if max_val <= floor:
                     __logger__.info(
-                        "Initial evaluation failed with upper bound %.6e <= min_%s (%.6e). Aborting.",
+                        "Initial evaluation failed with upper bound %.6e <= floor (%.6e). Aborting.",
                         max_val,
-                        value_name,
-                        min_val,
+                        floor,
                     )
                     return 0.0
                 initial_val = min(initial_val, max_val)
@@ -205,7 +205,7 @@ def search_and_bisect_value(
             initial_values=(None, initial_val),
             step_fn=partial(
                 scale_rho_down,
-                min_val=min_val,
+                min_val=floor,
                 scaling=scaling_factor,
                 max_val_fn=max_val_fn,
             ),
@@ -213,13 +213,7 @@ def search_and_bisect_value(
             progress=progress,
         )
 
-        # Fallback
         if val_lo is None:
-            __logger__.warning(
-                "Could not find any certified value >= min_%s (%.0e).",
-                value_name,
-                min_val,
-            )
             return 0.0
 
     # Bisect

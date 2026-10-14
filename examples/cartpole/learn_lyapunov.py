@@ -17,8 +17,8 @@ from lcil.lyapunov_learning import (
     NeuralQuadraticLyapunovCandidate,
     ThresholdMonitor,
     compute_closed_loop_jacobian,
+    compute_closed_loop_lyapunov_matrix,
     compute_polyhedral_value_matrix,
-    scale_riccati_matrix,
     calculate_r_factor_from_riccati,
 ) 
 from lcil.utils import ArgumentParserConfig, GridSearchHelper, MLP, config_field, IntegrationMethod
@@ -27,7 +27,7 @@ from lcil.utils.lcil_plt.parallel_coodrdinates import parallel_coordinates_plotl
 from . import (
     CartpoleAngleWrapper,
     CartpoleDynamics,
-    compute_riccati_value_matrix,
+    Q,
     discover_latest_policy_dir,
     load_mpc_config,
     load_policy_model,
@@ -243,19 +243,32 @@ def main() -> None:
                 "Expected 'quadratic' or 'linear'."
             )
 
-        riccati_p = compute_riccati_value_matrix(float(mpc_cfg.dt), kappa=train_config.kappa)
+        a_cl = compute_closed_loop_jacobian(
+            dyn_model, policy_model, state_dim=mpc_cfg.nx, device=device
+        ).detach().cpu().numpy()
+
+        q_matrix = (
+            mpc_cfg.cost.W[:mpc_cfg.nx, :mpc_cfg.nx]
+            if hasattr(mpc_cfg, "cost") and hasattr(mpc_cfg.cost, "W")
+            else Q
+        )
+        closed_loop_p = compute_closed_loop_lyapunov_matrix(
+            a_closed_loop=a_cl,
+            q_matrix=q_matrix,
+            kappa=train_config.kappa,
+            scale_mode=script_config.riccati_scale,
+        )
+
         if candidate_type == "linear":
-            a_cl = compute_closed_loop_jacobian(
-                dyn_model, policy_model, state_dim=mpc_cfg.nx, device=device
-            ).detach().cpu().numpy()
             seed_p = compute_polyhedral_value_matrix(
                 a_closed_loop=a_cl,
-                p_initial=riccati_p,
+                p_initial=closed_loop_p,
                 kappa=train_config.kappa,
                 scale_mode=script_config.riccati_scale,
             )
         else:
-            seed_p = scale_riccati_matrix(riccati_p, scale_mode=script_config.riccati_scale)
+            seed_p = closed_loop_p
+            __logger__.info("Seeded quadratic Lyapunov matrix P from closed-loop Jacobian A_cl.")
 
         eps_init = 0.0 if script_config.fix_r_factor else script_config.eps
         r_init, adjusted_eps = calculate_r_factor_from_riccati(seed_p, eps=eps_init)

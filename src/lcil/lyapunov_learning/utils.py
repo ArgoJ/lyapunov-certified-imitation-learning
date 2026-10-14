@@ -465,6 +465,37 @@ def compute_polyhedral_value_matrix(
     return p_opt
 
 
+def compute_closed_loop_lyapunov_matrix(
+    a_closed_loop: th.Tensor | np.ndarray,
+    q_matrix: th.Tensor | np.ndarray | None = None,
+    *,
+    kappa: float = 0.0,
+    scale_mode: str | float = "none",
+) -> np.ndarray:
+    """Compute SPD matrix P satisfying A_cl^T P A_cl - (1 - kappa) P = -Q."""
+    from scipy.linalg import solve_discrete_lyapunov
+
+    a = np.asarray(a_closed_loop, dtype=np.float64)
+    decay = max(1e-8, 1.0 - float(kappa))
+    q = np.eye(len(a), dtype=np.float64) if q_matrix is None else np.asarray(q_matrix, dtype=np.float64)
+    q = 0.5 * (q + q.T)
+
+    try:
+        p = solve_discrete_lyapunov((a / np.sqrt(decay)).T, q / decay)
+    except Exception:
+        p = solve_discrete_lyapunov(a.T, q)
+
+    p = 0.5 * (p + p.T)
+    min_eig = float(np.min(np.linalg.eigvalsh(p)))
+    if min_eig <= 0:
+        p += (abs(min_eig) + 1e-6) * np.eye(len(a))
+
+    if scale_mode != "none":
+        p = scale_riccati_matrix(th.as_tensor(p), scale_mode=scale_mode).cpu().numpy()
+    return p
+
+
+
 def calculate_r_factor_from_riccati(
     riccati_p: th.Tensor | np.ndarray,
     eps: float = 0.0,

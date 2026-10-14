@@ -9,6 +9,7 @@ from .utils import (
     compute_induced_1norm_gain,
     optimize_polyhedral_contraction_matrix,
     compute_polyhedral_value_matrix,
+    compute_closed_loop_lyapunov_matrix,
     scale_riccati_matrix,
     calculate_r_factor_from_riccati,
 )
@@ -63,6 +64,7 @@ __all__ = [
     "compute_induced_1norm_gain",
     "optimize_polyhedral_contraction_matrix",
     "compute_polyhedral_value_matrix",
+    "compute_closed_loop_lyapunov_matrix",
     "scale_riccati_matrix",
     "calculate_r_factor_from_riccati",
 ]

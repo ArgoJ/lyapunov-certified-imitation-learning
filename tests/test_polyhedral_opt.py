@@ -96,3 +96,28 @@ def test_calculate_r_factor_from_riccati():
     reconstructed = eps * th.eye(2) + r.T @ r
     assert th.allclose(P, reconstructed, atol=1e-5)
 
+
+def test_compute_closed_loop_lyapunov_matrix():
+    from lcil.lyapunov_learning import compute_closed_loop_lyapunov_matrix
+
+    # Stable 2D system
+    A = np.array([[0.7, 0.2], [-0.1, 0.6]], dtype=np.float64)
+    kappa = 0.01
+
+    # Default Q = I, unscaled
+    P = compute_closed_loop_lyapunov_matrix(A, kappa=kappa, scale_mode="none")
+    assert isinstance(P, np.ndarray)
+    assert np.allclose(P, P.T)
+    assert np.all(np.linalg.eigvalsh(P) > 0.0)
+
+    # Lyapunov difference A^T P A - (1 - kappa) P must be negative definite
+    diff = A.T @ P @ A - (1.0 - kappa) * P
+    assert np.all(np.linalg.eigvalsh(diff) < 0.0)
+
+    # Test spectral scaling
+    P_spec = compute_closed_loop_lyapunov_matrix(A, kappa=kappa, scale_mode="spectral")
+    assert np.isclose(np.linalg.norm(P_spec, 2), 1.0)
+    diff_spec = A.T @ P_spec @ A - (1.0 - kappa) * P_spec
+    assert np.all(np.linalg.eigvalsh(diff_spec) < 0.0)
+
+
