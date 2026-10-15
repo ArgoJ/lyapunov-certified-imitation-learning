@@ -20,7 +20,7 @@ __logger__ = logging.getLogger(__name__)
 
 def _resolve_bound_shape(
     bound: float | list[float] | th.Tensor | None,
-    output_dim: int,
+    output_dim: int | None,
     name: str,
 ) -> th.Tensor | None:
     if bound is None:
@@ -31,7 +31,7 @@ def _resolve_bound_shape(
         return bound_tensor
 
     flat_bound = bound_tensor.flatten()
-    if flat_bound.numel() != output_dim:
+    if output_dim is not None and flat_bound.numel() != output_dim:
         raise ValueError(
             f"{name} must be a scalar or have {output_dim} elements, got {flat_bound.numel()}."
         )
@@ -82,8 +82,36 @@ def _load_feature_net_and_payload(
 
 
 
-class BoundedPolicy(nn.Module):
-    """MLP policy model for imitation learning."""
+class BaseBoundedPolicy(nn.Module):
+    """Base class providing actuator control bounds [u_min, u_max] and clamping."""
+
+    def __init__(
+        self, 
+        u_min: float | list[float] | th.Tensor | None = None,
+        u_max: float | list[float] | th.Tensor | None = None,
+        output_dim: int | None = None,
+    ) -> None:
+        super().__init__()
+        if output_dim is None:
+            b = u_min if u_min is not None else u_max
+            if b is not None and not isinstance(b, (int, float)):
+                t = th.as_tensor(b)
+                if t.ndim > 0:
+                    output_dim = t.numel()
+        self.output_dim = output_dim
+        self.register_buffer("_u_min", _resolve_bound_shape(u_min, self.output_dim, "u_min"))
+        self.register_buffer("_u_max", _resolve_bound_shape(u_max, self.output_dim, "u_max"))
+        
+    def clamp_u(self, u: th.Tensor) -> th.Tensor:
+        """Clamp control action to bounds [u_min, u_max]."""
+        if self._u_min is None and self._u_max is None:
+            return u
+        return th.clamp(u, min=self._u_min, max=self._u_max)
+
+
+
+class BoundedPolicy(BaseBoundedPolicy):
+    """MLP policy model for imitation learning with control bounds."""
 
     def __init__(
         self,
@@ -113,23 +141,13 @@ class BoundedPolicy(nn.Module):
             Reference state(s). If provided, policy inputs are shifted by this reference.
             Can be a scalar or per-state-dimension references.
         """
-        super().__init__()
-        self.feature_net = feature_net
-
         output_dim = _resolve_feature_net_dim(feature_net, "output_dim", -1)
-        u_min_tensor = _resolve_bound_shape(bound=u_min, output_dim=output_dim, name="u_min")
-        u_max_tensor = _resolve_bound_shape(bound=u_max, output_dim=output_dim, name="u_max")
-        u_ref_tensor = _resolve_bound_shape(bound=u_ref, output_dim=output_dim, name="u_ref")
-        if x_ref is not None:
-            input_dim = _resolve_feature_net_dim(feature_net, "input_dim", 0)
-            x_ref_tensor = _resolve_bound_shape(bound=x_ref, output_dim=input_dim, name="x_ref")
-        else:
-            x_ref_tensor = None
+        super().__init__(u_min, u_max, output_dim)
 
-        self.register_buffer("_u_min", u_min_tensor)
-        self.register_buffer("_u_max", u_max_tensor)
-        self.register_buffer("_u_ref", u_ref_tensor)
-        self.register_buffer("_x_ref", x_ref_tensor)
+        self.feature_net = feature_net
+        input_dim = _resolve_feature_net_dim(feature_net, "input_dim", 0) if x_ref is not None else None
+        self.register_buffer("_u_ref", _resolve_bound_shape(bound=u_ref, output_dim=output_dim, name="u_ref"))
+        self.register_buffer("_x_ref", _resolve_bound_shape(bound=x_ref, output_dim=input_dim, name="x_ref"))
         self.register_buffer("_cached_u_offset", None, persistent=False)
         self._is_fixed: bool = False
 
@@ -173,15 +191,7 @@ class BoundedPolicy(nn.Module):
         return u if offset is None else u + offset
     
     def forward(self, x: th.Tensor) -> th.Tensor:
-        """Evaluate the policy and clamp to control bounds [u_min, u_max]."""
-        raw_u = self.forward_raw(x)
-        if self._u_min is None and self._u_max is None:
-            return raw_u
-        if self._u_min is None:
-            return th.clamp(raw_u, max=self._u_max)
-        if self._u_max is None:
-            return th.clamp(raw_u, min=self._u_min)
-        return th.clamp(raw_u, min=self._u_min, max=self._u_max)
+        return self.clamp_u(self.forward_raw(x))
 
     def save(self, path: str | Path) -> None:
         checkpoint_path = Path(path)
@@ -231,8 +241,8 @@ class BoundedPolicy(nn.Module):
 
 
 
-class LQRController(nn.Module):
-    """Discrete-time linear quadratic regulator (LQR) policy: u = -K x.
+class LQRController(BaseBoundedPolicy):
+    """Discrete-time linear quadratic regulator (LQR) policy: u = clamp(-K x).
 
     Parameters
     ----------
@@ -248,6 +258,10 @@ class LQRController(nn.Module):
     Q : th.Tensor | None, optional
         State cost weight matrix of shape (nx, nx). Used to compute `P` via DARE
         when `P` is not supplied.
+    u_min : float or list[float] or torch.Tensor or None, optional
+        Lower control bound(s). If provided, control actions are clamped from below.
+    u_max : float or list[float] or torch.Tensor or None, optional
+        Upper control bound(s). If provided, control actions are clamped from above.
     """
 
     def __init__(
@@ -257,17 +271,26 @@ class LQRController(nn.Module):
         R: th.Tensor,
         P: th.Tensor | None = None,
         Q: th.Tensor | None = None,
+        u_min: float | list[float] | th.Tensor | None = None,
+        u_max: float | list[float] | th.Tensor | None = None,
     ) -> None:
-        super().__init__()
+        nu = B.shape[1] if B.ndim == 2 else 1
+        super().__init__(u_min=u_min, u_max=u_max, output_dim=nu)
+
         if P is None:
             if Q is None:
                 raise ValueError("Either `P` or `Q` must be provided to LQRController.")
             P = self.solve_dare(A, B, Q, R)
 
+        P_64 = th.as_tensor(P, dtype=th.float64)
+        P_sym_64 = 0.5 * (P_64 + P_64.T)
+        L_64 = th.linalg.cholesky(P_sym_64)
+
         self.register_buffer("A", th.as_tensor(A, dtype=th.float32))
         self.register_buffer("B", th.as_tensor(B, dtype=th.float32))
         self.register_buffer("R", th.as_tensor(R, dtype=th.float32))
-        self.register_buffer("P", th.as_tensor(P, dtype=th.float32))
+        self.register_buffer("P", P_sym_64.to(dtype=th.float32))
+        self.register_buffer("L", L_64.to(dtype=th.float32))
         if Q is not None:
             self.register_buffer("Q", th.as_tensor(Q, dtype=th.float32))
         self.register_buffer("K", self.compute_gain())
@@ -295,27 +318,66 @@ class LQRController(nn.Module):
         return K_64.to(dtype=th.float32)
 
     def forward(self, x: th.Tensor) -> th.Tensor:
-        return -(x @ self.K.T)
+        return self.clamp_u(-(x @ self.K.T))
 
 
 
-class LQRExclusionPolicy(nn.Module):
+class BlendedLQRPolicy(BaseBoundedPolicy):
+    """Blends local LQR near the origin with a neural policy outside.
+
+    Parameters
+    ----------
+    policy : BoundedPolicy
+        Global learned neural policy.
+    lqr : LQRController
+        Local LQR controller active near the origin.
+    c0 : float
+        Upper Lyapunov sublevel bound for pure LQR (V <= c0 -> alpha = 0).
+    c1 : float
+        Lower Lyapunov sublevel bound for pure policy (V >= c1 -> alpha = 1).
+        Must satisfy 0 < c0 < c1.
+    """
+
     def __init__(
         self,
         policy: BoundedPolicy,
         lqr: LQRController,
-        c_1: float,
-        c_0: float,
+        c0: float,
+        c1: float,
     ) -> None:
-        super().__init__()
+        if not (0.0 < c0 < c1):
+            raise ValueError(f"Expected 0 < c0 < c1, got c0={c0}, c1={c1}.")
+
+        super().__init__(
+            u_min=getattr(policy, "_u_min", None),
+            u_max=getattr(policy, "_u_max", None),
+            output_dim=policy.output_dim,
+        )
+
         self.policy = policy
         self.lqr = lqr
-        self.register_buffer("c_1", th.tensor(c_1))
-        self.register_buffer("c_0", th.tensor(c_0))
+        self.register_buffer("c0", th.as_tensor(c0, dtype=th.float32))
+        self.register_buffer("c1", th.as_tensor(c1, dtype=th.float32))
+        self.register_buffer("inv_diff", th.as_tensor(1.0 / (c1 - c0), dtype=th.float32))
+
+    def compute_alpha(self, x: th.Tensor) -> th.Tensor:
+        """Compute blending weight alpha in [0, 1].
+
+        alpha = 0 for V <= c0 (pure LQR)
+        alpha = 1 for V >= c1 (pure NN policy)
+        alpha in (0, 1) linearly interpolated for c0 < V < c1
+        Evaluated as sum of squares via Cholesky factor L for tight CROWN bounds.
+        """
+        v_lqr = (x @ self.lqr.L).pow(2).sum(dim=-1, keepdim=True)
+        return th.clamp((v_lqr - self.c0) * self.inv_diff, 0.0, 1.0)
+
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        alpha = self.compute_alpha(x)
+        return self.clamp_u((1.0 - alpha) * self.lqr(x) + alpha * self.policy(x))
 
 
 
-class TransformerPolicy(nn.Module):
+class TransformerPolicy(BaseBoundedPolicy):
     """Transformer-based policy model for imitation learning."""
 
     def __init__(
@@ -370,7 +432,7 @@ class TransformerPolicy(nn.Module):
         u_max : float or list[float] or torch.Tensor or None, optional
             Upper control bound(s). If provided, policy outputs are clamped from above.
         """
-        super().__init__()
+        super().__init__(u_min=u_min, u_max=u_max, output_dim=output_dim)
 
         if input_dim <= 0:
             raise ValueError("input_dim must be positive.")
@@ -425,13 +487,7 @@ class TransformerPolicy(nn.Module):
             norm=nn.LayerNorm(self.d_model),
         )
         self.output_projection = nn.Linear(self.d_model, self.output_dim)
-
         self._init_weights()
-
-        u_min_tensor = _resolve_bound_shape(bound=u_min, output_dim=self.output_dim, name="u_min")
-        u_max_tensor = _resolve_bound_shape(bound=u_max, output_dim=self.output_dim, name="u_max")
-        self.register_buffer("_u_min", u_min_tensor)
-        self.register_buffer("_u_max", u_max_tensor)
 
     def _init_weights(self) -> None:
         """Apply lightweight initialization for learnable projections and norms."""
@@ -498,14 +554,7 @@ class TransformerPolicy(nn.Module):
 
     def forward(self, x: th.Tensor) -> th.Tensor:
         """Evaluate the policy and clamp to control bounds [u_min, u_max]."""
-        raw_u = self.forward_raw(x)
-        if self._u_min is None and self._u_max is None:
-            return raw_u
-        if self._u_min is None:
-            return th.clamp(raw_u, max=self._u_max)
-        if self._u_max is None:
-            return th.clamp(raw_u, min=self._u_min)
-        return th.clamp(raw_u, min=self._u_min, max=self._u_max)
+        return self.clamp_u(self.forward_raw(x))
 
     def prepare_fixed(self) -> None:
         """No-op for transformer policy interface compatibility."""

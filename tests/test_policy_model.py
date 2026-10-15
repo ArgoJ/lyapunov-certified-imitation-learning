@@ -5,7 +5,7 @@ from pathlib import Path
 import torch as th
 import torch.nn as nn
 
-from lcil.imitation_learning import BoundedPolicy
+from lcil.imitation_learning import BlendedLQRPolicy, BoundedPolicy, LQRController
 from lcil.utils import MLP
 
 
@@ -160,6 +160,90 @@ class TestBoundedPolicyFixedCache(unittest.TestCase):
         model.train(True)
         self.assertFalse(model._is_fixed)
         self.assertIsNone(model._cached_u_offset)
+
+
+class TestLQRController(unittest.TestCase):
+    def setUp(self) -> None:
+        dt = 0.1
+        self.A = th.tensor([[1.0, dt], [0.0, 1.0]])
+        self.B = th.tensor([[0.0], [dt]])
+        self.Q = th.tensor([[10.0, 0.0], [0.0, 1.0]])
+        self.R = th.tensor([[0.5]])
+
+    def test_lqr_dare_solve_and_gain(self) -> None:
+        lqr = LQRController(self.A, self.B, self.R, Q=self.Q)
+        self.assertEqual(lqr.K.dtype, th.float32)
+        self.assertEqual(lqr.P.dtype, th.float32)
+        self.assertEqual(lqr.K.shape, (1, 2))
+        self.assertEqual(lqr.P.shape, (2, 2))
+
+        # Explicit P matches computed P
+        lqr_explicit = LQRController(self.A, self.B, self.R, P=lqr.P)
+        self.assertTrue(th.allclose(lqr.K, lqr_explicit.K))
+
+        # Cholesky factor satisfies L @ L.T == P
+        self.assertEqual(lqr.L.shape, (2, 2))
+        self.assertTrue(th.allclose(lqr.L @ lqr.L.T, lqr.P, atol=1e-5))
+
+    def test_lqr_requires_p_or_q(self) -> None:
+        with self.assertRaises(ValueError):
+            LQRController(self.A, self.B, self.R)
+
+    def test_lqr_forward_shapes(self) -> None:
+        lqr = LQRController(self.A, self.B, self.R, Q=self.Q)
+        x_1d = th.randn(2)
+        x_2d = th.randn(10, 2)
+        self.assertEqual(lqr(x_1d).shape, (1,))
+        self.assertEqual(lqr(x_2d).shape, (10, 1))
+
+    def test_lqr_control_bounds(self) -> None:
+        lqr = LQRController(self.A, self.B, self.R, Q=self.Q, u_min=-1.0, u_max=1.0)
+        x_extreme = th.tensor([[100.0, 100.0], [-100.0, -100.0]])
+        u = lqr(x_extreme)
+        self.assertTrue(th.allclose(u[0], th.tensor([-1.0])))
+        self.assertTrue(th.allclose(u[1], th.tensor([1.0])))
+
+
+class TestBlendedLQRPolicy(unittest.TestCase):
+    def setUp(self) -> None:
+        dt = 0.1
+        A = th.tensor([[1.0, dt], [0.0, 1.0]])
+        B = th.tensor([[0.0], [dt]])
+        Q = th.tensor([[10.0, 0.0], [0.0, 1.0]])
+        R = th.tensor([[0.5]])
+        self.lqr = LQRController(A, B, R, Q=Q)
+        self.nn_policy = BoundedPolicy(
+            feature_net=_build_mlp_feature_net([2, 16, 1], ["relu", "identity"]),
+            u_min=-3.0,
+            u_max=3.0,
+        )
+
+    def test_blended_validation_c0_c1(self) -> None:
+        # Must satisfy 0 < c0 < c1
+        with self.assertRaises(ValueError):
+            BlendedLQRPolicy(self.nn_policy, self.lqr, c0=0.5, c1=0.2)
+        with self.assertRaises(ValueError):
+            BlendedLQRPolicy(self.nn_policy, self.lqr, c0=-0.1, c1=0.5)
+
+    def test_blended_alpha_and_output(self) -> None:
+        c0, c1 = 0.1, 0.8
+        blended = BlendedLQRPolicy(self.nn_policy, self.lqr, c0=c0, c1=c1)
+
+        # Origin: V = 0 <= c0 -> pure LQR
+        x_origin = th.zeros(1, 2)
+        self.assertEqual(blended.compute_alpha(x_origin).item(), 0.0)
+        self.assertTrue(th.allclose(blended(x_origin), self.lqr(x_origin)))
+
+        # Far outside: V >= c1 -> pure NN policy
+        x_far = th.tensor([[5.0, 5.0]])
+        self.assertEqual(blended.compute_alpha(x_far).item(), 1.0)
+        self.assertTrue(th.allclose(blended(x_far), self.nn_policy(x_far)))
+
+        # Batch forward shape
+        x_batch = th.randn(20, 2)
+        u_batch = blended(x_batch)
+        self.assertEqual(u_batch.shape, (20, 1))
+        self.assertTrue(th.all(u_batch >= -3.0) and th.all(u_batch <= 3.0))
 
 
 if __name__ == "__main__":
