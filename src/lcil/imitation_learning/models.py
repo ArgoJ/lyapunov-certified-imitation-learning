@@ -1,6 +1,8 @@
 import torch as th
 import torch.nn as nn
 import logging
+import numpy as np
+from scipy.linalg import solve_discrete_are
 
 from pathlib import Path
 from typing import Any, Literal
@@ -226,6 +228,91 @@ class BoundedPolicy(nn.Module):
         model.load_state_dict(state_dict, strict=strict)
         __logger__.debug(f"Loaded {cls.__name__} from {path}")
         return model
+
+
+
+class LQRController(nn.Module):
+    """Discrete-time linear quadratic regulator (LQR) policy: u = -K x.
+
+    Parameters
+    ----------
+    A : th.Tensor
+        Discrete-time state transition matrix of shape (nx, nx).
+    B : th.Tensor
+        Discrete-time control input matrix of shape (nx, nu).
+    R : th.Tensor
+        Control cost weight matrix of shape (nu, nu).
+    P : th.Tensor | None, optional
+        Riccati value matrix of shape (nx, nx). If not provided, `Q` must be given
+        to solve the discrete algebraic Riccati equation (DARE) via `scipy.linalg.solve_discrete_are`.
+    Q : th.Tensor | None, optional
+        State cost weight matrix of shape (nx, nx). Used to compute `P` via DARE
+        when `P` is not supplied.
+    """
+
+    def __init__(
+        self,
+        A: th.Tensor,
+        B: th.Tensor,
+        R: th.Tensor,
+        P: th.Tensor | None = None,
+        Q: th.Tensor | None = None,
+    ) -> None:
+        super().__init__()
+        if P is None:
+            if Q is None:
+                raise ValueError("Either `P` or `Q` must be provided to LQRController.")
+            P = self.solve_dare(A, B, Q, R)
+
+        self.register_buffer("A", th.as_tensor(A, dtype=th.float32))
+        self.register_buffer("B", th.as_tensor(B, dtype=th.float32))
+        self.register_buffer("R", th.as_tensor(R, dtype=th.float32))
+        self.register_buffer("P", th.as_tensor(P, dtype=th.float32))
+        if Q is not None:
+            self.register_buffer("Q", th.as_tensor(Q, dtype=th.float32))
+        self.register_buffer("K", self.compute_gain())
+
+    @staticmethod
+    def solve_dare(A: th.Tensor, B: th.Tensor, Q: th.Tensor, R: th.Tensor) -> th.Tensor:
+        """Solve Discrete Algebraic Riccati Equation (DARE) using scipy.linalg."""
+        a_np = A.detach().cpu().numpy().astype(np.float64)
+        b_np = B.detach().cpu().numpy().astype(np.float64)
+        q_np = Q.detach().cpu().numpy().astype(np.float64)
+        r_np = R.detach().cpu().numpy().astype(np.float64)
+        p_np = solve_discrete_are(a_np, b_np, q_np, r_np)
+        return th.as_tensor(p_np, dtype=th.float32, device=A.device)
+
+    def compute_gain(self) -> th.Tensor:
+        """Compute discrete-time LQR gain K = (R + B^T P B)^(-1) B^T P A using float64."""
+        A_64 = self.A.to(dtype=th.float64)
+        B_64 = self.B.to(dtype=th.float64)
+        R_64 = self.R.to(dtype=th.float64)
+        P_64 = self.P.to(dtype=th.float64)
+
+        M = R_64 + B_64.T @ P_64 @ B_64
+        rhs = B_64.T @ P_64 @ A_64
+        K_64 = th.linalg.solve(M, rhs)
+        return K_64.to(dtype=th.float32)
+
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        return -(x @ self.K.T)
+
+
+
+class LQRExclusionPolicy(nn.Module):
+    def __init__(
+        self,
+        policy: BoundedPolicy,
+        lqr: LQRController,
+        c_1: float,
+        c_0: float,
+    ) -> None:
+        super().__init__()
+        self.policy = policy
+        self.lqr = lqr
+        self.register_buffer("c_1", th.tensor(c_1))
+        self.register_buffer("c_0", th.tensor(c_0))
+
 
 
 class TransformerPolicy(nn.Module):
