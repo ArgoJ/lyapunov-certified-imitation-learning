@@ -291,7 +291,7 @@ class TestLyapunovCandidateProtocol(unittest.TestCase):
         diff = phi_x - phi_star
 
         expected_linear = diff.abs().sum(dim=1, keepdim=True)
-        expected_quad = diff.pow(2).sum(dim=1, keepdim=True)
+        expected_quad = diff.abs().sum(dim=1, keepdim=True)
 
         self.assertTrue(th.allclose(linear_model.get_feature_term(x), expected_linear))
         self.assertTrue(th.allclose(quad_model.get_feature_term(x), expected_quad))

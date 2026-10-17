@@ -184,23 +184,31 @@ class BaseABCrownCertifier(ABC):
             return f"{float(bab_vals[0][1].detach().cpu().item()):.3f}"
         return "N/A"
 
-    @staticmethod
-    def _extract_counterexample(result: Any) -> th.Tensor | None:
-        stats = getattr(result, "stats", {}) or {}
-        ref = getattr(result, "reference", {}) or {}
-        for c in (getattr(result, "c", None), stats.get("attack_examples"), ref.get("attack_examples")):
-            if c is not None:
-                cex = c[0] if isinstance(c, (list, tuple)) and len(c) > 0 else c
-                if isinstance(cex, th.Tensor):
-                    cex = cex.detach().cpu()
-                    if cex.ndim == 2:
-                        margins = stats.get("attack_margins")
-                        if isinstance(margins, th.Tensor) and margins.numel() == cex.shape[0]:
-                            cex = cex[th.argmin(margins)]
-                        else:
-                            cex = cex[0]
-                    return cex.squeeze()
-        return None
+    def _extract_cex_candidates(self, result: Any) -> list[th.Tensor]:
+        """Extract raw candidate counterexample tensors from solver result."""
+        sources = [result.c] if hasattr(result, "c") else []
+        stats = result.stats if hasattr(result, "stats") and result.stats else {}
+        if "attack_examples" in stats:
+            sources.append(stats["attack_examples"])
+
+        candidates: list[th.Tensor] = []
+        for src in sources:
+            if src is None:
+                continue
+            for t in src if isinstance(src, (list, tuple)) else [src]:
+                if isinstance(t, th.Tensor):
+                    candidates.extend(t.detach().cpu().reshape(-1, self.config.state_dim))
+        return candidates
+
+    def _extract_counterexample(
+        self,
+        result: Any,
+        solver: Any = None,
+    ) -> tuple[th.Tensor | None, float | None]:
+        """Extract a counterexample tensor and optional Lyapunov value."""
+        del solver
+        candidates = self._extract_cex_candidates(result)
+        return (candidates[0].squeeze(), None) if candidates else (None, None)
 
     def _build_abcrown_config(
         self,
@@ -347,16 +355,13 @@ class BaseABCrownCertifier(ABC):
         bab_violation = f"violation={self._extract_bab_violation(bab_vals)}." if _is_unknown_status(status) else "no violation."
         __logger__.debug("ABCrown solver status: %s after %s with %s", status, elapsed, bab_violation)
 
-        cex = self._extract_counterexample(result) if _is_counterexample_status(status) else None
-        cex_v = None
+        cex, cex_v = (
+            self._extract_counterexample(result, solver=solver)
+            if _is_counterexample_status(status)
+            else (None, None)
+        )
         if _is_counterexample_status(status):
-            extra_info = ""
-            if cex is not None and hasattr(self, "lyap_model") and self.lyap_model is not None:
-                try:
-                    cex_v = float(self.lyap_model(cex.unsqueeze(0).to(self.device)).item())
-                    extra_info = f" (V(x) = {cex_v:.5f}, rho = {float(rho):.5f})"
-                except Exception:
-                    pass
+            extra_info = f" (V(x) = {cex_v:.5f}, rho = {float(rho):.5f})" if cex_v is not None else ""
             x_str = f" x = {[round(float(v), 5) for v in cex.flatten()]}{extra_info}" if cex is not None else ""
             __logger__.info("Counterexample found by solver (%s) after %s:%s", status, elapsed, x_str)
 
@@ -409,8 +414,9 @@ class BaseABCrownCertifier(ABC):
                         counterexample_mask[idx] = True
                         if res.counterexample is not None:
                             counterexamples.append(res.counterexample)
-                        if res.counterexample_v is not None:
-                            counterexample_v_values.append(res.counterexample_v)
+                        cex_v = getattr(res, "counterexample_v", None)
+                        if cex_v is not None:
+                            counterexample_v_values.append(cex_v)
                         if progress is not None:
                             progress.step_certify(False, True)
                         return ABCrownRegionBatchVerification(
@@ -438,8 +444,9 @@ class BaseABCrownCertifier(ABC):
                 )
                 if verification_result.counterexample is not None:
                     counterexamples.append(verification_result.counterexample)
-                if verification_result.counterexample_v is not None:
-                    counterexample_v_values.append(verification_result.counterexample_v)
+                cex_v = getattr(verification_result, "counterexample_v", None)
+                if cex_v is not None:
+                    counterexample_v_values.append(cex_v)
 
                 if progress is not None:
                     progress.step_certify(
@@ -497,6 +504,42 @@ class BaseLyapunovCoreABCrownCertifier(BaseABCrownCertifier):
 
     def _output_dim(self) -> int:
         return 2 + self.config.state_dim
+
+    def _extract_counterexample(
+        self,
+        result: Any,
+        solver: Any = None,
+    ) -> tuple[th.Tensor | None, float | None]:
+        candidates = self._extract_cex_candidates(result)
+        if not candidates:
+            return None, None
+
+        assert self.verifier is not None
+
+        valid_cexs: list[tuple[float, th.Tensor]] = []
+        with th.no_grad():
+            for cand in candidates:
+                cand_dev = cand.unsqueeze(0).to(self.device)
+                out = self.verifier(cand_dev).squeeze(0)
+                is_viol = False
+                if solver is not None and hasattr(solver, "_spec_violation"):
+                    try:
+                        is_viol, _ = solver._spec_violation(cand.to(self.device), out)
+                    except Exception:
+                        pass
+                else:
+                    is_viol = True
+
+                if is_viol:
+                    v_val = float(self.lyap_model(cand_dev).item())
+                    valid_cexs.append((v_val, cand))
+
+        if not valid_cexs:
+            return None, None
+
+        valid_cexs.sort(key=lambda x: x[0])
+        best_v, best_cand = valid_cexs[0]
+        return best_cand.squeeze(), best_v
 
 
 class CompleteABCrownCertifier(BaseLyapunovCoreABCrownCertifier):
@@ -568,6 +611,16 @@ class PositivityABCrownCertifier(BaseABCrownCertifier):
             y,
             lyap_output_index=0,
         )
+
+    def _extract_counterexample(
+        self,
+        result: Any,
+        solver: Any = None,
+    ) -> tuple[th.Tensor | None, float | None]:
+        cand, _ = super()._extract_counterexample(result, solver=solver)
+        if cand is None:
+            return None, None
+        return cand, float(self.lyap_model(cand.unsqueeze(0).to(self.device)).item())
 
 
 class DecreaseABCrownCertifier(BaseLyapunovCoreABCrownCertifier):

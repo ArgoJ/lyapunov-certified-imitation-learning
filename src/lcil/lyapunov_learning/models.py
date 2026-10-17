@@ -451,7 +451,7 @@ class NeuralLinearLyapunovCandidate(NeuralResidualLyapunovCandidate):
 
 
 class NeuralQuadraticLyapunovCandidate(NeuralResidualLyapunovCandidate):
-    """Neural Lyapunov candidate with a quadratic base term: V(x) = ||phi(x) - phi(x*)||^2 + δᵀ P δ."""
+    """Neural Lyapunov candidate with a quadratic base term and L1 feature term: V(x) = ||phi(x) - phi(x*)||_1 + δᵀ P δ."""
 
     def _pd_weight(self) -> th.Tensor:
         """Return the lower-triangular Cholesky factor L such that ||δ L||² = δᵀ P δ with caching."""
@@ -468,8 +468,8 @@ class NeuralQuadraticLyapunovCandidate(NeuralResidualLyapunovCandidate):
         return weight
 
     def get_feature_term(self, x: th.Tensor) -> th.Tensor:
-        """Compute the quadratic feature term ||phi(x) - phi(x*)||^2 as a sum of squares."""
-        return self._feature_diff(x).pow(2).sum(dim=1, keepdim=True)
+        """Compute the L1 feature term ||phi(x) - phi(x*)||_1."""
+        return self._feature_diff(x).abs().sum(dim=1, keepdim=True)
 
     def get_pd_term(self, x: th.Tensor) -> th.Tensor:
         """Compute the quadratic base term δᵀ P δ = ||δ L||² with δ = x - x*.

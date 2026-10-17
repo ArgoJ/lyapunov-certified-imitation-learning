@@ -212,6 +212,46 @@ class TestABCrownRegionCertifierMock(CertificationMockedABCrownTestCase):
             certifier.verify_region(region, rho=1.0, pgd=PGDMode.NOT, is_leaf=True)
             self.assertEqual(mock_solver_cls.call_args.kwargs["config"], certifier.abcrown_leaf_no_pgd_config)
 
+    def test_extract_counterexample_selects_valid_violation_with_min_v(self) -> None:
+        certifier = self.make_abcrown_region_certifier(state_dim=1)
+        mock_solver = mock.MagicMock()
+
+        def fake_spec_violation(cand, out):
+            del out
+            val = float(cand.squeeze().item())
+            if val == 2.0:
+                return True, -0.5
+            if val == 3.0:
+                return True, -0.8
+            return False, 0.5
+
+        mock_solver._spec_violation = fake_spec_violation
+
+        # cand 1.0 is not a violation (V=1.0)
+        # cand 3.0 is a violation with higher V (V=9.0)
+        # cand 2.0 is a violation with lower V (V=4.0) -> should be selected
+        result = SimpleNamespace(
+            c=None,
+            stats={"attack_examples": th.tensor([[1.0], [3.0], [2.0]], dtype=th.float32)},
+        )
+        cex, cex_v = certifier._extract_counterexample(result, solver=mock_solver)
+        self.assertIsNotNone(cex)
+        self.assertAlmostEqual(float(cex.squeeze().item()), 2.0)
+        self.assertAlmostEqual(float(cex_v), 4.0)
+
+    def test_extract_counterexample_returns_none_when_no_candidate_violates(self) -> None:
+        certifier = self.make_abcrown_region_certifier(state_dim=1)
+        mock_solver = mock.MagicMock()
+        mock_solver._spec_violation.return_value = (False, 0.5)
+
+        result = SimpleNamespace(
+            c=None,
+            stats={"attack_examples": th.tensor([[1.0], [2.0]], dtype=th.float32)},
+        )
+        cex, cex_v = certifier._extract_counterexample(result, solver=mock_solver)
+        self.assertIsNone(cex)
+        self.assertIsNone(cex_v)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
