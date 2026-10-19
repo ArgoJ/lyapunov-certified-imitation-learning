@@ -3,7 +3,8 @@ import os
 import numpy as np
 
 from numpy.typing import NDArray
-from scipy.linalg import solve_discrete_are, block_diag
+from scipy.linalg import block_diag
+from lcil.utils import solve_discrete_are
 from casadi import SX
 
 from mpc_datagen import add_temp_folder, mdg_utils
@@ -118,7 +119,7 @@ def get_ocp(
     ocp.p_global_values = np.zeros((1,))
 
     if P is None and terminal_mode == "regional":
-        P = solve_discrete_are(A_d, B_d, Q, R)
+        P = solve_discrete_are(A_d, B_d, Q, R, as_tensor=False)
 
     # Solver options
     ocp.solver_options.N_horizon = N

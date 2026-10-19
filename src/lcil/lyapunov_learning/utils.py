@@ -5,6 +5,7 @@ import torch as th
 from numpy.typing import NDArray
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from lcil.utils import symmetrize
 
 __logger__ = logging.getLogger(__name__)
 
@@ -334,7 +335,7 @@ def optimize_polyhedral_contraction_matrix(
 
     if p_initial is not None:
         p0 = th.as_tensor(p_initial, dtype=th.float64)
-        p0 = 0.5 * (p0 + p0.T)
+        p0 = symmetrize(p0)
         p0 = p0 / th.linalg.matrix_norm(p0, 2)
         initial_gain = compute_induced_1norm_gain(p0, a).max().item()
         try:
@@ -478,14 +479,14 @@ def compute_closed_loop_lyapunov_matrix(
     a = np.asarray(a_closed_loop, dtype=np.float64)
     decay = max(1e-8, 1.0 - float(kappa))
     q = np.eye(len(a), dtype=np.float64) if q_matrix is None else np.asarray(q_matrix, dtype=np.float64)
-    q = 0.5 * (q + q.T)
+    q = symmetrize(q)
 
     try:
         p = solve_discrete_lyapunov((a / np.sqrt(decay)).T, q / decay)
     except Exception:
         p = solve_discrete_lyapunov(a.T, q)
 
-    p = 0.5 * (p + p.T)
+    p = symmetrize(p)
     min_eig = float(np.min(np.linalg.eigvalsh(p)))
     if min_eig <= 0:
         p += (abs(min_eig) + 1e-6) * np.eye(len(a))
@@ -520,7 +521,7 @@ def calculate_r_factor_from_riccati(
         If riccati_p is not positive semi-definite.
     """
     p = th.as_tensor(riccati_p)
-    p_sym = 0.5 * (p + p.transpose(-1, -2))
+    p_sym = symmetrize(p)
     eigvals, eigvecs = th.linalg.eigh(p_sym)
     scale = max(1.0, float(th.linalg.norm(p_sym, ord=2).item()))
     tol = 1e-6 * scale

@@ -27,6 +27,8 @@ from typing import Any
 import h5py
 import numpy as np
 
+from lcil.utils import symmetrize
+
 from .constants import RESULTS_DIR
 
 
@@ -185,7 +187,7 @@ def display_item(name: str, item: Any, attr_name: str | None = None) -> None:
             if data.ndim == 2 and data.shape[0] == data.shape[1] and np.issubdtype(data.dtype, np.number):
                 try:
                     eigs = np.linalg.eigvals(data)
-                    sym_eigs = np.linalg.eigvalsh(0.5 * (data + data.T))
+                    sym_eigs = np.linalg.eigvalsh(symmetrize(data))
                     print("\nMatrix Properties:")
                     print(f"  Symmetric Eigenvalues: {sym_eigs}")
                     cond = sym_eigs[-1] / sym_eigs[0] if sym_eigs[0] > 0 else float("inf")

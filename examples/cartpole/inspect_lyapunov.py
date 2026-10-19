@@ -28,6 +28,7 @@ from torch import nn
 
 from lcil.lyapunov_learning import NeuralQuadraticLyapunovCandidate
 from lcil.lyapunov_learning.config import LyapunovTrainingConfig
+from lcil.utils import symmetrize
 from lcil.utils import IntegrationMethod, load_mpc_config_json
 
 from . import CartpoleDynamics, load_lyapunov_model, load_policy_model
@@ -170,9 +171,9 @@ def quadratic_expansion(
     gain : float
         The maximum contraction/expansion factor lambda_max(P^-1 A_cl^T P A_cl).
     """
-    p_sym = 0.5 * (p_matrix + p_matrix.T)
+    p_sym = symmetrize(p_matrix)
     m = closed_loop.T @ p_sym @ closed_loop
-    m_sym = 0.5 * (m + m.T)
+    m_sym = symmetrize(m)
     eigvals, eigvecs = scipy.linalg.eigh(m_sym, p_sym)
     max_idx = int(np.argmax(eigvals))
     gain = float(eigvals[max_idx])

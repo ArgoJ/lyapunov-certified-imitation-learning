@@ -3,7 +3,11 @@ from dataclasses import dataclass
 import numpy as np
 import torch as th
 import torch.nn as nn
-from scipy.linalg import solve_discrete_are
+from lcil.utils import (
+    compute_lqr_gain,
+    RiccatiQuadraticLyapunov,
+    solve_discrete_are,
+)
 
 
 @dataclass
@@ -73,8 +77,8 @@ def riccati_gain_and_value_matrix(
     if r is None:
         r = np.array([[0.25]], dtype=np.float64)
 
-    p = solve_discrete_are(ad, bd, q, r)
-    k = np.linalg.solve(r + bd.T @ p @ bd, bd.T @ p @ ad)
+    p = solve_discrete_are(ad, bd, q, r, as_tensor=False)
+    k = compute_lqr_gain(ad, bd, p, r, as_tensor=False)
     return k, p
 
 
@@ -100,15 +104,3 @@ class DoubleIntegratorDynamics(nn.Module):
 
     def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
         return x @ self.ad.transpose(0, 1) + u @ self.bd.transpose(0, 1)
-
-
-class RiccatiQuadraticLyapunov(nn.Module):
-    """Quadratic Lyapunov model induced by the LQR value matrix."""
-
-    def __init__(self, p_matrix: np.ndarray):
-        super().__init__()
-        p_sym = 0.5 * (p_matrix + p_matrix.T)
-        self.register_buffer("p_matrix", th.as_tensor(p_sym, dtype=th.float32))
-
-    def forward(self, x: th.Tensor) -> th.Tensor:
-        return ((x @ self.p_matrix) * x).sum(dim=1, keepdim=True)

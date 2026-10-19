@@ -2,7 +2,12 @@ import torch as th
 import torch.nn as nn
 import logging
 import numpy as np
-from scipy.linalg import solve_discrete_are
+from ..utils import (
+    cholesky_factor,
+    compute_lqr_gain,
+    solve_discrete_are,
+    symmetrize,
+)
 
 from pathlib import Path
 from typing import Any, Literal
@@ -282,15 +287,14 @@ class LQRController(BaseBoundedPolicy):
                 raise ValueError("Either `P` or `Q` must be provided to LQRController.")
             P = self.solve_dare(A, B, Q, R)
 
-        P_64 = th.as_tensor(P, dtype=th.float64)
-        P_sym_64 = 0.5 * (P_64 + P_64.T)
-        L_64 = th.linalg.cholesky(P_sym_64)
+        P_sym = symmetrize(th.as_tensor(P, dtype=th.float32, device=A.device))
+        L = cholesky_factor(P, as_tensor=True, dtype=th.float32, device=A.device)
 
         self.register_buffer("A", th.as_tensor(A, dtype=th.float32))
         self.register_buffer("B", th.as_tensor(B, dtype=th.float32))
         self.register_buffer("R", th.as_tensor(R, dtype=th.float32))
-        self.register_buffer("P", P_sym_64.to(dtype=th.float32))
-        self.register_buffer("L", L_64.to(dtype=th.float32))
+        self.register_buffer("P", P_sym)
+        self.register_buffer("L", L)
         if Q is not None:
             self.register_buffer("Q", th.as_tensor(Q, dtype=th.float32))
         self.register_buffer("K", self.compute_gain())
@@ -298,24 +302,11 @@ class LQRController(BaseBoundedPolicy):
     @staticmethod
     def solve_dare(A: th.Tensor, B: th.Tensor, Q: th.Tensor, R: th.Tensor) -> th.Tensor:
         """Solve Discrete Algebraic Riccati Equation (DARE) using scipy.linalg."""
-        a_np = A.detach().cpu().numpy().astype(np.float64)
-        b_np = B.detach().cpu().numpy().astype(np.float64)
-        q_np = Q.detach().cpu().numpy().astype(np.float64)
-        r_np = R.detach().cpu().numpy().astype(np.float64)
-        p_np = solve_discrete_are(a_np, b_np, q_np, r_np)
-        return th.as_tensor(p_np, dtype=th.float32, device=A.device)
+        return solve_discrete_are(A, B, Q, R, as_tensor=True, dtype=th.float32, device=A.device)
 
     def compute_gain(self) -> th.Tensor:
         """Compute discrete-time LQR gain K = (R + B^T P B)^(-1) B^T P A using float64."""
-        A_64 = self.A.to(dtype=th.float64)
-        B_64 = self.B.to(dtype=th.float64)
-        R_64 = self.R.to(dtype=th.float64)
-        P_64 = self.P.to(dtype=th.float64)
-
-        M = R_64 + B_64.T @ P_64 @ B_64
-        rhs = B_64.T @ P_64 @ A_64
-        K_64 = th.linalg.solve(M, rhs)
-        return K_64.to(dtype=th.float32)
+        return compute_lqr_gain(self.A, self.B, self.P, self.R, as_tensor=True, dtype=th.float32, device=self.A.device)
 
     def forward(self, x: th.Tensor) -> th.Tensor:
         return self.clamp_u(-(x @ self.K.T))

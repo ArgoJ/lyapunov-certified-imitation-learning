@@ -2,8 +2,8 @@ import numpy as np
 import torch as th
 
 from numpy.typing import NDArray
-from scipy.linalg import solve_discrete_are
 from lcil.lyapunov_learning import check_kappa
+from lcil.utils import compute_lqr_gain, solve_discrete_are
 
 
 A_c = np.array([[0.0, 1.0],
@@ -25,9 +25,9 @@ def compute_discrete_double_integrator(dt: float) -> tuple[NDArray, NDArray]:
 
 def compute_riccati_value_matrix(dt: float, kappa: float | None = None) -> NDArray:
     a_d, b_d = compute_discrete_double_integrator(dt)
-    p = solve_discrete_are(a_d, b_d, Q, R)
+    p = solve_discrete_are(a_d, b_d, Q, R, as_tensor=False)
     if kappa is not None:
-        k_gain = np.linalg.solve(R + b_d.T @ p @ b_d, b_d.T @ p @ a_d)
+        k_gain = compute_lqr_gain(a_d, b_d, p, R, as_tensor=False)
         check_kappa(
             kappa=kappa,
             riccati_p=th.as_tensor(p),

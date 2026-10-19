@@ -3,7 +3,8 @@ import casadi as ca
 import os
 
 from numpy.typing import NDArray
-from scipy.linalg import solve_discrete_are, block_diag
+from scipy.linalg import block_diag
+from lcil.utils import solve_discrete_are
 from mpc_datagen import mdg_utils, add_temp_folder
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver, AcadosOcpBatchSolver
 
@@ -139,7 +140,7 @@ def get_ocp(
 
     A_c, B_c = linearized_inverted_pendulum_on_cart_matrices(cfg=sys_cfg)
     A_d, B_d = mdg_utils.lin_c2d_rk4(A_c, B_c, dt, num_steps=1)
-    P = solve_discrete_are(A_d, B_d, Q, R)
+    P = solve_discrete_are(A_d, B_d, Q, R, as_tensor=False)
 
     # Solver options
     ocp.solver_options.N_horizon = N
