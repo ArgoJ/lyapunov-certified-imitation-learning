@@ -5,8 +5,12 @@ from __future__ import annotations
 import itertools
 import torch as th
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
+
+from ..imitation_learning.models import BlendedLQRPolicy, BoundedPolicy, LQRController
+from ..utils.base_models import Linearize
+from ..utils.control import extract_p_matrix, quad_form
 
 
 
@@ -45,8 +49,6 @@ def compute_blended_lqr_c0_c1(
             f"factor must be greater than 1.0 so that c1 > c0, got {factor}."
         )
 
-    from ..utils import extract_p_matrix
-
     p_sym = extract_p_matrix(P, as_tensor=True, dtype=th.float64)
     n = p_sym.shape[0]
 
@@ -65,7 +67,50 @@ def compute_blended_lqr_c0_c1(
         signs = th.tensor([[1.0] + list(c) for c in combos], dtype=th.float64, device=p_sym.device)
 
     vertices = signs * r.unsqueeze(0)
-    c0 = float((vertices @ p_sym * vertices).sum(dim=-1).max().item())
+    c0 = float(quad_form(vertices, p_sym).max().item())
     c1 = float(factor * c0)
 
     return c0, c1
+
+
+def build_blended_lqr_policy(
+    policy_model: BoundedPolicy,
+    dyn_model: Callable[[th.Tensor, th.Tensor], th.Tensor],
+    mpc_config: Any,
+    origin_exclusion: Sequence[float] | float,
+    factor: float = 4.0,
+    device: th.device | str | None = None,
+) -> BlendedLQRPolicy:
+    """Construct a BlendedLQRPolicy by linearizing ``dyn_model`` and extracting LQR weights from ``mpc_config``."""
+    nx, nu = int(mpc_config.nx), int(mpc_config.nu)
+    dev = th.device(device) if device is not None else next(policy_model.parameters()).device
+
+    yref = getattr(mpc_config.cost, "yref", None)
+    if yref is not None:
+        yref_t = th.as_tensor(yref, dtype=th.float32, device=dev)
+        x0, u0 = yref_t[:nx], yref_t[nx : nx + nu]
+    else:
+        x0 = th.zeros(nx, dtype=th.float32, device=dev)
+        u0 = th.zeros(nu, dtype=th.float32, device=dev)
+    A, B, _, _ = Linearize(dyn_model)(x0, u0)
+
+    W = th.as_tensor(mpc_config.cost.W, dtype=th.float32, device=dev)
+    Q, R = W[:nx, :nx], W[nx : nx + nu, nx : nx + nu]
+
+    lqr = LQRController(
+        A=A,
+        B=B,
+        R=R,
+        Q=Q,
+        u_min=policy_model._u_min,
+        u_max=policy_model._u_max,
+    ).to(dev)
+
+    excl = (
+        (float(origin_exclusion),) * nx
+        if isinstance(origin_exclusion, (int, float))
+        else origin_exclusion
+    )
+    c0, c1 = compute_blended_lqr_c0_c1(excl, lqr, factor=factor)
+
+    return BlendedLQRPolicy(policy=policy_model, lqr=lqr, c0=c0, c1=c1).to(dev).eval()

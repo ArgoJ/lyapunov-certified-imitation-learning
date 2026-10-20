@@ -29,7 +29,7 @@ from .metrics import (
     estimate_level_set_measure_ray_shooting,
     estimate_mpc_dataset_level_set_measure,
 )
-from .utils import compute_blended_lqr_c0_c1
+from .utils import build_blended_lqr_policy, compute_blended_lqr_c0_c1
 
 __all__ = [
     "RegionCertificationResult",
@@ -56,4 +56,5 @@ __all__ = [
     "estimate_level_set_measure_ray_shooting",
     "estimate_mpc_dataset_level_set_measure",
     "compute_blended_lqr_c0_c1",
+    "build_blended_lqr_policy",
 ]

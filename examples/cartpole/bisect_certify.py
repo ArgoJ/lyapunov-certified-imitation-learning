@@ -10,7 +10,11 @@ import numpy as np
 import torch as th
 from mpc_datagen import mdg_plt
 
-from lcil.certification import BisectCertifier, LyapunovCertificationConfig
+from lcil.certification import (
+    BisectCertifier,
+    LyapunovCertificationConfig,
+    build_blended_lqr_policy,
+)
 from lcil.lyapunov_learning import LyapunovTrainingConfig, LyapunovTrainingResult
 from lcil.utils import ArgumentParserConfig, config_field, lcil_plt, IntegrationMethod
 from lcil.utils.lcil_plt import parallel_coordinates_plotly
@@ -49,6 +53,14 @@ class BisectCertifyScriptConfig(ArgumentParserConfig):
     collect_details_on_failed: bool = config_field(
         default=False,
         help="Collect and visualize diagnostic details (uncertified regions) even when global certification fails.",
+    )
+    use_blended_policy: bool = config_field(
+        default=True,
+        help="Whether to wrap the policy in a BlendedLQRPolicy around the origin exclusion box.",
+    )
+    blended_lqr_factor: float = config_field(
+        default=4.0,
+        help="Multiplier for outer threshold c1 = factor * c0 of BlendedLQRPolicy.",
     )
 
 
@@ -175,6 +187,16 @@ def main() -> None:
             abcrown_compatible_ops=True,
         ).to(device)
         dyn_model.eval()
+
+        if script_config.use_blended_policy:
+            policy_model = build_blended_lqr_policy(
+                policy_model=policy_model,
+                dyn_model=dyn_model,
+                origin_exclusion=certification_config.origin_exclusion,
+                mpc_config=mpc_cfg,
+                factor=script_config.blended_lqr_factor,
+                device=device,
+            )
 
         results_path = lyapunov_dir / TRAINING_RESULTS_FILENAME
         training_results = LyapunovTrainingResult.load(results_path)
