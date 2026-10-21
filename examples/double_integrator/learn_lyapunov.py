@@ -11,9 +11,13 @@ from torch import nn
 from lcil.lyapunov_learning import (
     LyapunovTrainingConfig,
     NeuralLinearLyapunovCandidate,
+    NeuralQuadraticLyapunovCandidate,
     LyapunovTrainer,
     ThresholdMonitor,
     FromRolloutsPolicyWrapper,
+    compute_closed_loop_jacobian,
+    compute_closed_loop_lyapunov_matrix,
+    compute_polyhedral_value_matrix,
     calculate_r_factor_from_riccati,
 )
 from lcil.utils import GridSearchHelper, MLP, IntegrationMethod, config_field, ArgumentParserConfig
@@ -22,9 +26,9 @@ from mpc_datagen import MPCDataset, MPCConfig, mdg_plt
 
 from . import (
     DoubleIntegratorDynamics,
+    Q,
     load_mpc_config,
     load_policy_model,
-    compute_riccati_value_matrix,
     build_lyapunov_func,
     discover_latest_policy_dir,
 )
@@ -46,7 +50,19 @@ class LyapunovLearningScriptConfig(ArgumentParserConfig):
     activation: str = config_field(default="relu", help="Activation function for Lyapunov feature net.", display_alias="act")
     hidden_size: int = config_field(default=32, help="Number of neurons in each hidden layer of the Lyapunov feature net.", display_alias="n_hidden")
     layers: int = config_field(default=2, help="Number of hidden layers in the Lyapunov feature net.", display_alias="n_layers")
-    fix_r_factor: bool = config_field(default=False, help="Whether to fix the R factor in the Lyapunov candidate to 1.0.")
+    candidate_type: str = config_field(
+        default="quadratic",
+        help="Type of residual Lyapunov candidate: 'quadratic' (ellipsoidal delta^T P delta) or 'linear' (polyhedral ||P delta||_1).",
+        display_alias="candidate",
+    )
+    fix_r_factor: bool = config_field(default=True, help="Whether to fix the R factor in the Lyapunov candidate.")
+    riccati_scale: str | float = config_field(
+        default="spectral",
+        help="How to scale the Riccati P matrix before seeding R. "
+             "'none' = use raw P, 'spectral' = divide by spectral norm, "
+             "'frobenius' = divide by Frobenius norm, or a float for a custom divisor.",
+    )
+    eps: float = config_field(default=0.0, help="Epsilon added to the Riccati matrix P inside NeuralResidualLyapunovCandidate.")
 
 def _build_script_defaults() -> LyapunovLearningScriptConfig:
     default_policy_dir = discover_latest_policy_dir()
@@ -59,35 +75,48 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         state_dim=2,
         state_bounds=np.array([[-10.0, -10.0], [10.0, 10.0]], dtype=float),
         batch_size=2048,
-        learning_rate=0.0005,
-        outer_epochs=500,
-        steps_per_epoch=10,
-        policy_epochs=400,
-        policy_lr_factor=0.5,
+        learning_rate=0.001,
+        outer_epochs=2000,
+        steps_per_epoch=20,
+        policy_epochs=200,
+        policy_lr_factor=0.05,
+        policy_update_interval=2,
         kappa=0.01,
         seed=1674653,
-        regularization_num_samples=2048,
-        regularization_resample_interval=100,
+        regularization_num_samples=4096,
+        regularization_resample_interval=20,
         origin_exclusion=[0.05, 0.15],
         bins_per_dim=50,
 
-        condition_weight=10.0,
-        roa_weight=0.05,
-        condition_lirpa_weight=0.1,
-        l1_weight=0.00001,
+        condition_weight=100.0,
+        roa_weight=5.0,
+        condition_lirpa_weight=15.0,
+        l1_weight=0.0,
+        weight_decay=0.0,
         scale_weight=0.0,
-        equilibrium_weight=1.0,
+        equilibrium_weight=0.0,
         formal_positivity_weight=0.0,
-        policy_regularization_weight=0.1,
+        policy_regularization_weight=1.0,
         r_factor_regularization_weight=100.0,
+        condition_margin=0.005,
 
-        roa_candidate_size=2048,
-        rho_estimation_samples=2048,
-        rho_growth_gamma=1.1,
-        cex_every=10,
+        roa_candidate_size=4096,
+        rho_estimation_samples=8192,
+        rho_estimate_quantile=0.005,
+        rho_descent_steps=10,
+        rho_growth_gamma=1.2,
+        rho_ema_decay=0.9,
+        rho_resample_margin=1.3,
+        cex_every=2,
+        cex_max_age=3,
+        cex_fraction_max=0.4,
         cex_descent_steps=20,
-        state_buffer_limit=8192,
-        cex_step_size=0.001,
+        state_buffer_limit=16384,
+        cex_step_size=0.005,
+        cex_axis_antiphase_samples=512,
+        cex_eigenvector_antiphase_samples=256,
+        cex_axis_scale_factor=1.0,
+        enable_diagnosis=True,
     )
 
 
@@ -100,7 +129,7 @@ def parse_cli_args() -> GridSearchHelper[tuple[LyapunovLearningScriptConfig, Lya
     script_defaults = _build_script_defaults()
     script_defaults.add_to_argparse(
         parser,
-        nargs_fields={"activation", "hidden_size", "layers"}
+        nargs_fields={"activation", "hidden_size", "layers", "candidate_type"}
     )
     training_defaults = _build_training_defaults()
     training_defaults.add_to_argparse(
@@ -179,7 +208,6 @@ def main() -> None:
 
     policy_model, rollout_dataset, policy_global_config = load_policy_and_dataset(init_policy_dir, device)
     state_bounds = np.vstack([policy_global_config.constraints.lbx, policy_global_config.constraints.ubx])
-    riccati_p = compute_riccati_value_matrix(float(policy_global_config.dt))
 
     __logger__.info(f"Starting grid search over {len(sweep)} configurations...")
     for run_idx, run in enumerate(sweep):
@@ -191,7 +219,6 @@ def main() -> None:
             __logger__.info(f"Loading policy model from {policy_dir} for this run...")
             policy_model, rollout_dataset, policy_global_config = load_policy_and_dataset(policy_dir, device)
             state_bounds = np.vstack([policy_global_config.constraints.lbx, policy_global_config.constraints.ubx])
-            riccati_p = compute_riccati_value_matrix(float(policy_global_config.dt))
 
         base_path = run.output_dir.resolve()
         dyn_model = DoubleIntegratorDynamics(
@@ -212,10 +239,47 @@ def main() -> None:
             normalization='none',
             seed=seed,
         )
-        riccati_p = compute_riccati_value_matrix(float(policy_global_config.dt), kappa=train_config.kappa)
-        eps_init = 0.0 if script_config.fix_r_factor else 1e-3
-        r_init, adjusted_eps = calculate_r_factor_from_riccati(riccati_p, eps=eps_init)
-        lyap_model = NeuralLinearLyapunovCandidate(
+        candidate_type = script_config.candidate_type.strip().lower()
+        if candidate_type == "quadratic":
+            candidate_cls = NeuralQuadraticLyapunovCandidate
+        elif candidate_type == "linear":
+            candidate_cls = NeuralLinearLyapunovCandidate
+        else:
+            raise ValueError(
+                f"Unknown candidate_type '{script_config.candidate_type}'. "
+                "Expected 'quadratic' or 'linear'."
+            )
+
+        a_cl = compute_closed_loop_jacobian(
+            dyn_model, policy_model, state_dim=policy_global_config.nx, device=device
+        ).detach().cpu().numpy()
+
+        q_matrix = (
+            policy_global_config.cost.W[:policy_global_config.nx, :policy_global_config.nx]
+            if hasattr(policy_global_config, "cost") and hasattr(policy_global_config.cost, "W")
+            else Q
+        )
+        closed_loop_p = compute_closed_loop_lyapunov_matrix(
+            a_closed_loop=a_cl,
+            q_matrix=q_matrix,
+            kappa=train_config.kappa,
+            scale_mode=script_config.riccati_scale,
+        )
+
+        if candidate_type == "linear":
+            seed_p = compute_polyhedral_value_matrix(
+                a_closed_loop=a_cl,
+                p_initial=closed_loop_p,
+                kappa=train_config.kappa,
+                scale_mode=script_config.riccati_scale,
+            )
+        else:
+            seed_p = closed_loop_p
+            __logger__.info("Seeded quadratic Lyapunov matrix P from closed-loop Jacobian A_cl.")
+
+        eps_init = 0.0 if script_config.fix_r_factor else script_config.eps
+        r_init, adjusted_eps = calculate_r_factor_from_riccati(seed_p, eps=eps_init)
+        lyap_model = candidate_cls(
             feature_net=lyap_feature,
             state_dim=policy_global_config.nx,
             eps=adjusted_eps,

@@ -17,7 +17,10 @@ from lcil.lyapunov_learning.loss import (
     RoaSurrogateLoss,
     margin_violation,
 )
-from lcil.lyapunov_learning.models import NeuralLinearLyapunovCandidate
+from lcil.lyapunov_learning.models import (
+    NeuralLinearLyapunovCandidate,
+    NeuralQuadraticLyapunovCandidate,
+)
 from lcil.utils.base_models import MLP
 from shared_utils import (
     _IdentityDynamics,
@@ -210,6 +213,47 @@ class TestLyapunovLossComponents(unittest.TestCase):
         self.assertGreater(lyap.r_factor.grad.abs().sum().item(), 0.0)
         self.assertIsNotNone(policy.fc.weight.grad)
         self.assertGreater(policy.fc.weight.grad.abs().sum().item(), 0.0)
+
+    def test_condition_lirpa_and_positivity_loss_with_quadratic_candidate(self) -> None:
+        bounds = th.tensor([[-1.0, -1.0], [1.0, 1.0]])
+
+        class _AddDyn(nn.Module):
+            def forward(self, x: th.Tensor, u: th.Tensor) -> th.Tensor:
+                return x + u
+
+        cfg = LyapunovTrainingConfig(
+            state_dim=2,
+            state_bounds=np.array([[-1.0, -1.0], [1.0, 1.0]]),
+            use_relative_decrease=False,
+        )
+        regions = th.tensor([[[-0.5, -0.5], [0.5, 0.5]]])
+
+        for fixed_r in (True, False):
+            policy = _PlainPolicy()
+            feature_net = MLP(layer_dims=[2, 4, 1], activations=["relu", "identity"])
+            lyap = NeuralQuadraticLyapunovCandidate(
+                feature_net=feature_net,
+                state_dim=2,
+                fixed_r_factor=fixed_r,
+            )
+
+            pos_loss_fn = FormalPositivityLoss(lyap_model=lyap, train_bounds=bounds)
+            lb = pos_loss_fn.compute_lyapunov_lower_bound()
+            self.assertEqual(lb.shape, (1, 1))
+
+            loss_fn = ConditionLirpaLoss(
+                policy_model=policy,
+                lyap_model=lyap,
+                dyn_model=_AddDyn(),
+                config=cfg,
+            )
+            out = loss_fn(regions)
+            self.assertGreater(out.item(), 0.0)
+            out.backward()
+            self.assertIsNotNone(policy.fc.weight.grad)
+            if not fixed_r:
+                self.assertIsNotNone(lyap.r_factor.grad)
+                self.assertGreater(lyap.r_factor.grad.abs().sum().item(), 0.0)
 
     def test_equilibrium_loss(self) -> None:
         feature_net = MLP(layer_dims=[2, 4, 1], activations=["relu", "identity"])

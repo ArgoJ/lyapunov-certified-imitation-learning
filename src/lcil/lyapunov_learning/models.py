@@ -242,6 +242,9 @@ class NeuralResidualLyapunovCandidate(nn.Module, LyapunovCandidate, abc.ABC):
 
         if r_factor is not None:
             self.set_r_factor(r_factor)
+        elif fixed:
+            with th.no_grad():
+                self._cached_pd_weight = self._pd_weight().detach()
     
     @abc.abstractmethod
     def _pd_weight(self) -> th.Tensor:
@@ -251,6 +254,8 @@ class NeuralResidualLyapunovCandidate(nn.Module, LyapunovCandidate, abc.ABC):
     def prepare_fixed(self) -> None:
         """Precompute and cache fixed components for verification and inference."""
         with th.no_grad():
+            self._cached_phi_x_star = None
+            self._cached_pd_weight = None
             self._cached_phi_x_star = self.feature_net(self.x_star).squeeze(0).detach()
             self._cached_pd_weight = self._pd_weight().detach()
         self._is_fixed = True
@@ -259,7 +264,8 @@ class NeuralResidualLyapunovCandidate(nn.Module, LyapunovCandidate, abc.ABC):
         """Reset fixed caching, allowing dynamic recomputation."""
         self._is_fixed = False
         self._cached_phi_x_star = None
-        self._cached_pd_weight = None
+        if self.r_factor.requires_grad:
+            self._cached_pd_weight = None
 
     def train(self, mode: bool = True) -> "NeuralResidualLyapunovCandidate":
         """Set training mode and invalidate fixed caches if switching to training."""
@@ -297,9 +303,10 @@ class NeuralResidualLyapunovCandidate(nn.Module, LyapunovCandidate, abc.ABC):
 
         with th.no_grad():
             self.r_factor.copy_(r_mat)
-        self._cached_pd_weight = None
-
-        weight = self._pd_weight()
+            self._cached_pd_weight = None
+            weight = self._pd_weight()
+            if self.r_factor.requires_grad and not self._is_fixed:
+                self._cached_pd_weight = None
         p_scale = max(1.0, float(th.linalg.matrix_norm(weight, ord=2).item()))
         self._set_last_feature_layer(0.5 * p_scale)
         __logger__.info("Set Lyapunov R factor: \n%s", r_mat)
@@ -310,14 +317,12 @@ class NeuralResidualLyapunovCandidate(nn.Module, LyapunovCandidate, abc.ABC):
     def _feature_diff(self, x: th.Tensor) -> th.Tensor:
         """Compute the centered feature tensor phi(x) - phi(x*)."""
         phi_x = self.feature_net(x)
-        if (self._is_fixed or not th.is_grad_enabled()) and self._cached_phi_x_star is not None:
+        can_cache = self._is_fixed or (not th.is_grad_enabled() and not th.jit.is_tracing())
+        if can_cache and self._cached_phi_x_star is not None:
             phi_x_star = self._cached_phi_x_star
         else:
             phi_x_star = self.feature_net(self.x_star).squeeze(0)
-            if not th.is_grad_enabled():
-                self._cached_phi_x_star = phi_x_star.detach()
-            else:
-                self._cached_phi_x_star = None
+            self._cached_phi_x_star = phi_x_star.detach() if can_cache else None
 
         return phi_x - phi_x_star
 
@@ -415,6 +420,11 @@ class NeuralResidualLyapunovCandidate(nn.Module, LyapunovCandidate, abc.ABC):
             kappa=kappa,
         ).to(map_location)
         model.load_state_dict(payload["state_dict"], strict=strict)
+        model._cached_phi_x_star = None
+        model._cached_pd_weight = None
+        if not model.r_factor.requires_grad:
+            with th.no_grad():
+                model._cached_pd_weight = model._pd_weight().detach()
         model.eval()
         return model
 
@@ -424,7 +434,12 @@ class NeuralLinearLyapunovCandidate(NeuralResidualLyapunovCandidate):
 
     def _pd_weight(self) -> th.Tensor:
         """Return the positive definite matrix P = εI + RᵀR with caching."""
-        if (self._is_fixed or not th.is_grad_enabled()) and self._cached_pd_weight is not None:
+        can_cache = (
+            self._is_fixed
+            or not self.r_factor.requires_grad
+            or (not th.is_grad_enabled() and not th.jit.is_tracing())
+        )
+        if can_cache and self._cached_pd_weight is not None:
             return self._cached_pd_weight
 
         if self.eps > 0.0:
@@ -432,7 +447,7 @@ class NeuralLinearLyapunovCandidate(NeuralResidualLyapunovCandidate):
         else:
             weight = self.r_factor.t() @ self.r_factor
 
-        self._cached_pd_weight = None if th.is_grad_enabled() else weight.detach()
+        self._cached_pd_weight = weight.detach() if can_cache else None
         return weight
 
     def get_feature_term(self, x: th.Tensor) -> th.Tensor:
@@ -455,7 +470,12 @@ class NeuralQuadraticLyapunovCandidate(NeuralResidualLyapunovCandidate):
 
     def _pd_weight(self) -> th.Tensor:
         """Return the lower-triangular Cholesky factor L such that ||δ L||² = δᵀ P δ with caching."""
-        if (self._is_fixed or not th.is_grad_enabled()) and self._cached_pd_weight is not None:
+        can_cache = (
+            self._is_fixed
+            or not self.r_factor.requires_grad
+            or (not th.is_grad_enabled() and not th.jit.is_tracing())
+        )
+        if can_cache and self._cached_pd_weight is not None:
             return self._cached_pd_weight
 
         p_matrix = self.get_pd_matrix()
@@ -464,7 +484,7 @@ class NeuralQuadraticLyapunovCandidate(NeuralResidualLyapunovCandidate):
         else:
             weight = th.linalg.cholesky(p_matrix + 1e-7 * self.eye)
 
-        self._cached_pd_weight = None if th.is_grad_enabled() else weight.detach()
+        self._cached_pd_weight = weight.detach() if can_cache else None
         return weight
 
     def get_feature_term(self, x: th.Tensor) -> th.Tensor:
@@ -476,8 +496,19 @@ class NeuralQuadraticLyapunovCandidate(NeuralResidualLyapunovCandidate):
 
         The quadratic form is evaluated as a sum of single squares ||δ L||² using the
         Cholesky factor L (P = L Lᵀ), which yields tight (CROWN) bounds without
-        McCormick relaxations of bilinear forms.
+        McCormick relaxations of bilinear forms. When tracing with an uncached or
+        learnable R factor, the equivalent sum of squares ||δ Rᵀ||² + ε ||δ||² is
+        used so ``torch.linalg.cholesky`` is never emitted into the traced graph.
         """
         delta = x - self.x_star.squeeze(0)
+        if th.jit.is_tracing() and (
+            (not self._is_fixed and self.r_factor.requires_grad)
+            or self._cached_pd_weight is None
+        ):
+            z = delta @ self.r_factor.t()
+            pd_term = z.pow(2).sum(dim=1, keepdim=True)
+            if self.eps > 0.0:
+                pd_term = pd_term + self.eps * delta.pow(2).sum(dim=1, keepdim=True)
+            return pd_term
         z = delta @ self._pd_weight()
         return z.pow(2).sum(dim=1, keepdim=True)

@@ -160,7 +160,8 @@ class BoundedPolicy(BaseBoundedPolicy):
         """Return the reference offset u_ref - feature_net(x_ref) with caching."""
         if self._x_ref is None and self._u_ref is None:
             return None
-        if (self._is_fixed or not th.is_grad_enabled()) and self._cached_u_offset is not None:
+        can_cache = self._is_fixed or (not th.is_grad_enabled() and not th.jit.is_tracing())
+        if can_cache and self._cached_u_offset is not None:
             return self._cached_u_offset
 
         offset = self._u_ref
@@ -168,12 +169,12 @@ class BoundedPolicy(BaseBoundedPolicy):
             pi = self.feature_net(self._x_ref)
             offset = -pi if offset is None else offset - pi
 
-        if not th.is_grad_enabled() and offset is not None:
-            self.register_buffer("_cached_u_offset", offset.detach(), persistent=False)
+        self._cached_u_offset = offset.detach() if (can_cache and offset is not None) else None
         return offset
 
     def prepare_fixed(self) -> None:
         """Precompute and cache fixed reference offset for verification and inference."""
+        self._cached_u_offset = None
         with th.no_grad():
             self._reference_offset()
         self._is_fixed = True
