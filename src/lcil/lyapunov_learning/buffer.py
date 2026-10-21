@@ -13,6 +13,45 @@ __logger__ = logging.getLogger(__name__)
 def normalize_states(states: th.Tensor, lb: th.Tensor, ub: th.Tensor) -> th.Tensor:
     """Normalizes the states by bounds"""
     return ((states - lb) / (ub - lb).clamp_min(1e-6))
+
+
+def compute_adaptive_filter_eps(
+    state_dim: int,
+    buffer_limit: int = 10000,
+    target_coverage_factor: float = 0.5,
+    min_eps: float = 1e-4,
+    max_eps: float = 0.05,
+) -> float:
+    """Compute an adaptive spatial diversity epsilon based on dimension and buffer capacity.
+
+    Ensures that the spatial voxel grid has sufficient resolution in lower dimensions
+    (preventing buffer starvation where at most (1/eps)^d states can be kept) while
+    remaining well-conditioned and not overly fine in higher dimensions.
+
+    Parameters
+    ----------
+    state_dim : int
+        Dimension of the state space.
+    buffer_limit : int, optional
+        Target maximum capacity of the counterexample buffer, by default 10000.
+    target_coverage_factor : float, optional
+        Effective fraction of the domain range per dimension expected to be populated
+        by counterexamples (e.g. within the sublevel set), by default 0.5.
+    min_eps : float, optional
+        Lower bound for filter_eps, by default 1e-4.
+    max_eps : float, optional
+        Upper bound for filter_eps, by default 0.05.
+
+    Returns
+    -------
+    float
+        Adaptive epsilon for spatial voxel hashing.
+    """
+    if buffer_limit <= 0 or state_dim <= 0:
+        return max_eps
+    adaptive = target_coverage_factor * (float(buffer_limit) ** (-1.0 / float(state_dim)))
+    return float(max(min_eps, min(max_eps, adaptive)))
+
     
 
 @th.no_grad()
@@ -192,7 +231,7 @@ class CEGISBuffer:
         min_cex_fraction: float = 0.0,
         max_cex_fraction: float = 1.0,
         generator: th.Generator | None = None,
-        filter_eps: float = 0.05,
+        filter_eps: float | None = None,
         max_cex_age: int = 5,
         device: th.device | str = "cpu",
     ):
@@ -216,8 +255,10 @@ class CEGISBuffer:
             Maximum fraction of counterexample states in sampled batches, by default 1.0
         generator : th.Generator | None, optional
             Random number generator for sampling, by default None
-        filter_eps : float, optional
-            Minimum distance between retained states for spatial diversity, by default 0.05
+        filter_eps : float | None, optional
+            Minimum relative distance between retained states for spatial diversity.
+            If None, computed adaptively based on state_dim and cex_buffer_limit,
+            by default None.
         max_cex_age : int, optional
             Maximum age for counterexamples in the buffer before they are automatically removed, by default 5
         device : th.device | str, optional
@@ -247,7 +288,14 @@ class CEGISBuffer:
         self.min_cex_fraction = min_cex_fraction
         self.max_cex_fraction = max_cex_fraction
         self.generator = generator
-        self.filter_eps = filter_eps
+
+        if filter_eps is None:
+            self.filter_eps = compute_adaptive_filter_eps(
+                state_dim=initial_states.shape[1],
+                buffer_limit=cex_buffer_limit,
+            )
+        else:
+            self.filter_eps = float(filter_eps)
 
         self._cex_pool = AgedTensorPool(
             initial_states.shape[1], 

@@ -134,6 +134,9 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         Maximum size of the training buffer for regular samples.
     cex_buffer_limit : int
         Maximum size of the training buffer for counterexamples.
+    cex_filter_eps : float | None
+        Spatial diversity epsilon for counterexample deduplication in the buffer.
+        If None, computed adaptively based on state dimension and buffer capacity.
     rho_gate_sharpness : float
         Steepness of the sigmoid gate used to soft-weight samples by their
         distance to the ρ-sublevel boundary. Higher values approximate a hard
@@ -344,6 +347,12 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="Maximum size of the counterexample buffer.",
         display_alias="cex_buff",
         validators=(positive_validator,),
+    )
+    cex_filter_eps: float | None = config_field(
+        default=None,
+        help="Spatial diversity epsilon for counterexample deduplication. If None, adaptively computed based on state dimension and buffer capacity.",
+        display_alias="cex_filter_eps",
+        validators=(optional_validator(non_negative_validator),),
     )
     cex_step_size: float = config_field(
         default=0.05,

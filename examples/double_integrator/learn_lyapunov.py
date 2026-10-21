@@ -81,7 +81,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         policy_epochs=200,
         policy_lr_factor=0.05,
         policy_update_interval=2,
-        kappa=0.01,
+        kappa=0.001,
         seed=1674653,
         regularization_num_samples=4096,
         regularization_resample_interval=20,
@@ -113,6 +113,7 @@ def _build_training_defaults() -> LyapunovTrainingConfig:
         cex_descent_steps=20,
         state_buffer_limit=16384,
         cex_step_size=0.005,
+        cex_filter_eps=None,
         cex_axis_antiphase_samples=512,
         cex_eigenvector_antiphase_samples=256,
         cex_axis_scale_factor=1.0,
@@ -141,6 +142,7 @@ def parse_cli_args() -> GridSearchHelper[tuple[LyapunovLearningScriptConfig, Lya
             "rho_growth_gamma",
             "rho_estimate_quantile",
             "policy_epochs",
+            "cex_filter_eps",
         }
     )
     

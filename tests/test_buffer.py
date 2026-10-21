@@ -4,6 +4,7 @@ import torch as th
 from lcil.lyapunov_learning.buffer import (
     BoundaryStateBuffer,
     CEGISBuffer,
+    compute_adaptive_filter_eps,
     get_spatial_diversity_indices,
 )
 
@@ -249,6 +250,55 @@ class TestBufferSpatialDiversity(unittest.TestCase):
         self.assertEqual(batch.shape, (4, 1))
         self.assertEqual(int((batch_values == 10.0).sum().item()), 1)
         self.assertTrue(th.all((batch_values == 10.0) | (batch_values == 1.0) | (batch_values == 2.0)).item())
+
+    def test_compute_adaptive_filter_eps(self) -> None:
+        # d = 2, buffer_limit = 10000 -> 0.5 * 10000^(-0.5) = 0.5 / 100 = 0.005
+        eps_2d = compute_adaptive_filter_eps(state_dim=2, buffer_limit=10000)
+        self.assertAlmostEqual(eps_2d, 0.005, places=5)
+
+        # d = 2, buffer_limit = 16384 -> 0.5 / 128 = 0.00390625
+        eps_2d_16k = compute_adaptive_filter_eps(state_dim=2, buffer_limit=16384)
+        self.assertAlmostEqual(eps_2d_16k, 0.5 / 128.0, places=5)
+
+        # d = 4, buffer_limit = 10000 -> 0.5 * 10 = 0.05
+        eps_4d = compute_adaptive_filter_eps(state_dim=4, buffer_limit=10000)
+        self.assertAlmostEqual(eps_4d, 0.05, places=5)
+
+        # High dimension should be clamped to max_eps (default 0.05)
+        eps_high = compute_adaptive_filter_eps(state_dim=10, buffer_limit=10000)
+        self.assertAlmostEqual(eps_high, 0.05, places=5)
+
+        # Invalid bounds/dimension fallback
+        self.assertEqual(compute_adaptive_filter_eps(state_dim=0, buffer_limit=10000), 0.05)
+        self.assertEqual(compute_adaptive_filter_eps(state_dim=2, buffer_limit=0), 0.05)
+
+    def test_cegis_buffer_adaptive_filter_eps_initialization(self) -> None:
+        lb = th.tensor([-10.0, -10.0])
+        ub = th.tensor([10.0, 10.0])
+        initial_states = th.zeros((4, 2), dtype=th.float32)
+
+        # Default filter_eps=None -> computes adaptively
+        state_buffer = CEGISBuffer(
+            lb=lb,
+            ub=ub,
+            initial_states=initial_states,
+            state_buffer_limit=1000,
+            cex_buffer_limit=10000,
+            device=th.device("cpu"),
+        )
+        self.assertAlmostEqual(state_buffer.filter_eps, 0.005, places=5)
+
+        # Explicit filter_eps overrides adaptive
+        explicit_buffer = CEGISBuffer(
+            lb=lb,
+            ub=ub,
+            initial_states=initial_states,
+            state_buffer_limit=1000,
+            cex_buffer_limit=10000,
+            filter_eps=0.02,
+            device=th.device("cpu"),
+        )
+        self.assertEqual(explicit_buffer.filter_eps, 0.02)
 
 
 if __name__ == "__main__":

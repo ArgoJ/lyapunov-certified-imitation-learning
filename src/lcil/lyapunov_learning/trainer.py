@@ -430,6 +430,7 @@ class LyapunovTrainer:
             min_cex_fraction=self.config.cex_fraction_min,
             max_cex_fraction=self.config.cex_fraction_max,
             max_cex_age=self.config.cex_max_age,
+            filter_eps=self.config.cex_filter_eps,
             generator=self.torch_gen,
             device=self.device,
         )
@@ -445,6 +446,13 @@ class LyapunovTrainer:
         cegis_buffer = self._get_cegis_buffer()
         boundary_buffer = self._get_boundary_buffer()
         lirpa_regions = self.region_builder.build_regions()
+        __logger__.info(
+            "CEGIS buffer initialized: state_buffer_limit=%d, cex_buffer_limit=%d, filter_eps=%.6f%s",
+            self.config.state_buffer_limit,
+            self.config.cex_buffer_limit,
+            cegis_buffer.filter_eps,
+            " (adaptive)" if self.config.cex_filter_eps is None else "",
+        )
         return metrics, cegis_buffer, boundary_buffer, lirpa_regions
 
     def _build_progress_bar(self) -> Progress:
