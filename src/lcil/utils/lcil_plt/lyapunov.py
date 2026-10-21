@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import logging
+import math
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch as th
 
 from pathlib import Path
 from numpy.typing import NDArray
@@ -9,12 +14,15 @@ from typing import Callable, TYPE_CHECKING, Sequence
 from mpc_datagen import MPCDataset, mdg_plt
 
 from .utils import (
+    add_certification_overlays,
     add_regions,
+    build_grid_2d,
     collapse_projected_regions,
-    limits_from_regions,
-    partition_annotation,
-    regions_to_np,
     create_origin_exclusion_region,
+    extract_certification_regions,
+    infer_num_states_from_regions,
+    limits_from_regions,
+    resolve_state_pairs_and_labels,
 )
 
 if TYPE_CHECKING:
@@ -61,42 +69,28 @@ def lyapunov_cert_regions(
     html_path : Path | str, optional
         If provided, saves the plot to the specified HTML file.
     """
-    cert_regs_np = regions_to_np(certification_result.certified_sublevel_regions)
-    uncert_regs_np = regions_to_np(certification_result.uncertified_regions)
-    outside_sublevel_regs_np = regions_to_np(certification_result.outside_sublevel_regions)
+    cert_regs_np, uncert_regs_np, outside_sublevel_regs_np = (
+        extract_certification_regions(certification_result)
+    )
 
     has_dataset = dataset is not None and len(dataset) > 0
     if has_dataset:
         num_states = int(dataset[0].trajectory.states.shape[1])
     else:
-        region_dims = []
-        if cert_regs_np.shape[0] > 0:
-            region_dims.append(int(cert_regs_np.shape[2]))
-        if uncert_regs_np.shape[0] > 0:
-            region_dims.append(int(uncert_regs_np.shape[2]))
-        if outside_sublevel_regs_np.shape[0] > 0:
-            region_dims.append(int(outside_sublevel_regs_np.shape[2]))
+        num_states = infer_num_states_from_regions(
+            cert_regs_np,
+            uncert_regs_np,
+            outside_sublevel_regs_np,
+            state_indices=state_indices,
+        )
 
-        if len(region_dims) == 0 and state_indices is None:
-            raise ValueError(
-                "Without dataset or non-empty regions, state_indices must be provided."
-            )
+    state_indices, labels_full, pair_indices = resolve_state_pairs_and_labels(
+        num_states, state_indices, state_labels
+    )
 
-        max_state_idx = max(state_indices) if state_indices is not None else -1
-        num_states = max(region_dims + [max_state_idx + 1])
+    z_overlay = 0.0 if plot_3d else None
 
-    state_indices = mdg_plt.utils._resolve_indices(state_indices, num_states)
-    if state_labels is not None and len(state_labels) == len(state_indices):
-        labels_full = [f"State {i}" for i in range(num_states)]
-        for label_idx, state_idx in enumerate(state_indices):
-            labels_full[state_idx] = state_labels[label_idx]
-    else:
-        labels_full = mdg_plt.utils._resolve_labels(state_labels, num_states)
-    pair_indices = mdg_plt.utils._state_index_pairs(state_indices)
-
-    regions_by_pair: dict[tuple[int, int], tuple[NDArray, NDArray, NDArray]] = {}
-    pair_limits: dict[tuple[int, int], list[tuple[float, float]]] = {}
-
+    figures: list[mdg_plt.PairPlotResult] = []
     for pair in pair_indices:
         cert_pair, uncert_pair, ctex_pair = collapse_projected_regions(
             cert_regs_np,
@@ -104,34 +98,23 @@ def lyapunov_cert_regions(
             outside_sublevel_regs_np,
             indices=list(pair),
         )
-        regions_by_pair[pair] = (cert_pair, uncert_pair, ctex_pair)
 
-        if limits is not None:
-            pair_limits[pair] = limits
-            continue
+        pair_limits = limits
+        if pair_limits is None:
+            pair_limits = limits_from_regions(
+                cert_pair,
+                uncert_pair,
+                ctex_pair,
+                pad_ratio=0.1,
+                default_pad=1.0,
+            ) or [(-1.0, 1.0), (-1.0, 1.0)]
 
-        inferred_limits = limits_from_regions(
-            cert_pair,
-            uncert_pair,
-            ctex_pair,
-            pad_ratio=0.1,
-            default_pad=1.0,
-        )
-        if inferred_limits is None:
-            inferred_limits = [(-1.0, 1.0), (-1.0, 1.0)]
-
-        pair_limits[pair] = inferred_limits
-
-    z_overlay = 0.0 if plot_3d else None
-
-    figures: list[mdg_plt.PairPlotResult] = []
-    for pair in pair_indices:
         fig_pair = mdg_plt.lyapunov(
             lyapunov_func=lyapunov_func,
             dataset=dataset,
             state_indices=list(pair),
             state_labels=labels_full,
-            limits=pair_limits[pair],
+            limits=pair_limits,
             resolution=resolution,
             plot_3d=plot_3d,
             use_dataset_v=has_dataset,
@@ -139,51 +122,16 @@ def lyapunov_cert_regions(
 
         if fig_pair is NotImplementedError:
             raise ValueError("Expected lyapunov to return figures.")
-        
-        fig = fig_pair[0].figure
-        cert_pair, uncert_pair, ctex_pair = regions_by_pair[pair]
-        add_regions(
-            cert_pair,
-            fig,
-            color="#209209",
-            z_level=z_overlay,
-            name="Certified",
-            fill=False,
-        )
-        add_regions(
-            uncert_pair,
-            fig,
-            color="#c53131",
-            z_level=z_overlay,
-            name="Uncertified",
-            dash="dash",
-            fill=False,
-        )
-        add_regions(
-            ctex_pair,
-            fig,
-            color="#808080",
-            z_level=z_overlay,
-            name="Outside Sublevel",
-            fill=False,
-            alpha=0.5,
-        )
 
-        if z_overlay is None:
-            fig.add_annotation(
-                x=0.01,
-                y=0.99,
-                xref="paper",
-                yref="paper",
-                xanchor="left",
-                yanchor="top",
-                align="left",
-                showarrow=False,
-                bgcolor="rgba(255,255,255,0.80)",
-                bordercolor="rgba(0,0,0,0.20)",
-                borderwidth=1,
-                text=partition_annotation(cert_pair, uncert_pair, ctex_pair),
-            )
+        add_certification_overlays(
+            fig_pair[0].figure,
+            cert_pair,
+            uncert_pair,
+            ctex_pair,
+            z_level=z_overlay,
+            fill=False,
+            uncert_dash="dash",
+        )
         figures.append(fig_pair[0])
 
     if html_path is not None:
@@ -273,3 +221,122 @@ def lyapunov_with_exclusion(
         return None
 
     return results
+
+
+@th.no_grad()
+def lyapunov_contour_matplot(
+    lyap_model: th.nn.Module | Callable[[th.Tensor], th.Tensor],
+    state_bounds: NDArray,
+    rho_estimate: float | None = None,
+    state_indices: list[int] | None = None,
+    state_labels: Sequence[str] | None = None,
+    resolution: int = 40,
+    device: th.device | str | None = None,
+) -> plt.Figure:
+    """Plot 2D contour slices of an n-dimensional Lyapunov function and its ROA level set.
+
+    For systems with more than two state dimensions, one subplot per 2D state pair
+    is generated while setting all remaining state dimensions to zero.
+
+    Parameters
+    ----------
+    lyap_model : th.nn.Module or Callable[[th.Tensor], th.Tensor]
+        Lyapunov model mapping state tensors of shape ``(N, nx)`` to values of shape
+        ``(N, 1)`` or ``(N,)``.
+    state_bounds : NDArray
+        State bounds of shape ``(2, nx)`` with ``[lower_bounds, upper_bounds]``.
+    rho_estimate : float, optional
+        Current ROA sublevel estimate ``rho``. If provided and within the plotted
+        value range, the contour ``V(x) = rho`` is drawn.
+    state_indices : list[int], optional
+        State indices to consider. If ``None``, all state dimensions are used and
+        all pairwise combinations are plotted.
+    state_labels : Sequence[str], optional
+        Labels for the state dimensions.
+    resolution : int, optional
+        Grid resolution per axis. Default is 40.
+    device : th.device or str, optional
+        Device on which to evaluate ``lyap_model``. Inferred from model parameters
+        or buffers if ``None``.
+
+    Returns
+    -------
+    plt.Figure
+        Matplotlib figure containing the 2D contour plot(s).
+    """
+    bounds = np.asarray(state_bounds, dtype=np.float32)
+    if bounds.ndim != 2 or bounds.shape[0] != 2:
+        raise ValueError(f"Expected state_bounds with shape (2, nx), got {bounds.shape}.")
+
+    num_states = int(bounds.shape[1])
+    state_indices, labels_full, pair_indices = resolve_state_pairs_and_labels(
+        num_states, state_indices, state_labels
+    )
+
+    if device is None:
+        if isinstance(lyap_model, th.nn.Module):
+            param = next(lyap_model.parameters(), None)
+            buf = next(lyap_model.buffers(), None)
+            device = (
+                param.device
+                if param is not None
+                else (buf.device if buf is not None else th.device("cpu"))
+            )
+        else:
+            device = th.device("cpu")
+
+    n_pairs = len(pair_indices)
+    ncols = min(3, max(1, n_pairs))
+    nrows = max(1, math.ceil(n_pairs / ncols))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(4.8 * ncols, 4.0 * nrows),
+        squeeze=False,
+        dpi=100,
+    )
+    axes_flat = axes.ravel()
+
+    lb, ub = bounds[0], bounds[1]
+
+    for pair_idx, (dim_i, dim_j) in enumerate(pair_indices):
+        ax = axes_flat[pair_idx]
+        Xi, Xj, grid_states = build_grid_2d(bounds, dim_i, dim_j, resolution)
+
+        x_tensor = th.as_tensor(grid_states, dtype=th.float32, device=device)
+        v_vals = lyap_model(x_tensor).squeeze(-1).detach().cpu().numpy()
+        V = v_vals.reshape(resolution, resolution)
+
+        cf = ax.contourf(Xi, Xj, V, levels=20, cmap="viridis")
+        ax.contour(Xi, Xj, V, levels=20, colors="white", linewidths=0.4, alpha=0.4)
+        fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.04, label=r"$V(x)$")
+
+        if rho_estimate is not None and np.isfinite(rho_estimate):
+            v_min, v_max = float(np.min(V)), float(np.max(V))
+            if v_min < float(rho_estimate) < v_max:
+                ax.contour(
+                    Xi,
+                    Xj,
+                    V,
+                    levels=[float(rho_estimate)],
+                    colors="crimson",
+                    linewidths=2.0,
+                    linestyles="--",
+                )
+
+        ax.plot(0.0, 0.0, marker="+", color="white", markersize=7, markeredgewidth=1.5)
+        ax.set_xlim(float(lb[dim_i]), float(ub[dim_i]))
+        ax.set_ylim(float(lb[dim_j]), float(ub[dim_j]))
+        ax.set_xlabel(mdg_plt.utils._to_latex(labels_full[dim_i]))
+        ax.set_ylabel(mdg_plt.utils._to_latex(labels_full[dim_j]))
+        title = f"({labels_full[dim_i]}, {labels_full[dim_j]})"
+        if rho_estimate is not None and np.isfinite(rho_estimate):
+            title += f" | $\\rho = {float(rho_estimate):.3f}$"
+        ax.set_title(title)
+
+    for unused_idx in range(n_pairs, len(axes_flat)):
+        axes_flat[unused_idx].set_visible(False)
+
+    fig.tight_layout()
+    return fig
+

@@ -56,6 +56,7 @@ from .results import (
 from .tensorboard import (
     tb_writer_build,
     tb_writer_close,
+    tb_writer_add_lyapunov_contour,
     tb_writer_add_metrics,
     tb_writer_add_parallel_coordinates,
 )
@@ -546,18 +547,26 @@ class LyapunovTrainer:
 
     def _fill_tb_writer(self, outer_iter: int, mining_result: MiningStepResult):
         tb_writer_add_metrics(self.tb_writer, self.metrics)
-        if self._is_mining_step(outer_iter) and \
-                mining_result.mined_cex_states.numel() > 0:
-            tb_writer_add_parallel_coordinates(
+        if self._is_mining_step(outer_iter):
+            tb_writer_add_lyapunov_contour(
                 self.tb_writer,
-                tag="Counterexamples",
-                states=mining_result.mined_cex_states,
-                state_bounds=self.config.train_bounds,
-                origin_exclusion=self.config.origin_exclusion,
+                tag="Lyapunov/Contour",
                 global_step=outer_iter + 1,
-                max_lines=512,
-                cond_violations=mining_result.mined_cex_violations,
+                lyap_model=self.lyap_model,
+                state_bounds=self.config.train_bounds,
+                rho_estimate=float(self.metrics.rho_estimate[outer_iter]),
             )
+            if mining_result.mined_cex_states.numel() > 0:
+                tb_writer_add_parallel_coordinates(
+                    self.tb_writer,
+                    tag="Counterexamples",
+                    states=mining_result.mined_cex_states,
+                    state_bounds=self.config.train_bounds,
+                    origin_exclusion=self.config.origin_exclusion,
+                    global_step=outer_iter + 1,
+                    max_lines=512,
+                    cond_violations=mining_result.mined_cex_violations,
+                )
 
     def _finalize_training(
         self, 

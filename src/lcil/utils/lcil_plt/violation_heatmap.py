@@ -17,6 +17,7 @@ from typing import Sequence
 from numpy.typing import NDArray
 
 from mpc_datagen import mdg_plt
+from .utils import build_grid_2d
 
 __logger__ = logging.getLogger(__name__)
 
@@ -27,26 +28,8 @@ def _build_grid_2d(
     dim_j: int,
     resolution: int,
 ) -> tuple[NDArray, NDArray, NDArray]:
-    """Build a 2D grid for dimensions (dim_i, dim_j), fixing all others at zero.
-
-    Returns
-    -------
-    xi, xj : NDArray
-        Meshgrid arrays for the two selected dimensions.
-    grid_states : NDArray
-        Full state-space grid of shape (resolution^2, state_dim).
-    """
-    state_dim = bounds.shape[1]
-    lb, ub = bounds[0], bounds[1]
-
-    xi = np.linspace(lb[dim_i], ub[dim_i], resolution)
-    xj = np.linspace(lb[dim_j], ub[dim_j], resolution)
-    Xi, Xj = np.meshgrid(xi, xj, indexing="ij")
-
-    grid_states = np.zeros((resolution * resolution, state_dim), dtype=np.float32)
-    grid_states[:, dim_i] = Xi.ravel()
-    grid_states[:, dim_j] = Xj.ravel()
-    return Xi, Xj, grid_states
+    """Build a 2D grid for dimensions (dim_i, dim_j), fixing all others at zero."""
+    return build_grid_2d(bounds, dim_i, dim_j, resolution, indexing="ij")
 
 
 @th.no_grad()

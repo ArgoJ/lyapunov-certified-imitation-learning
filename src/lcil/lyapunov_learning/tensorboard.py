@@ -7,6 +7,7 @@ from typing import Sequence
 from torch.utils.tensorboard import SummaryWriter
 
 from .results import LyapunovTrainingMetrics
+from ..utils.lcil_plt.lyapunov import lyapunov_contour_matplot
 from ..utils.lcil_plt.parallel_coodrdinates import parallel_coordinates_matplot
 
 
@@ -111,6 +112,36 @@ def tb_writer_add_parallel_coordinates(
         origin_exclusion=origin_exclusion,
         max_lines=max_lines,
         cond_violation=violations_np,
+    )
+    tb_writer.add_figure(tag, fig, global_step=global_step, close=True)
+
+
+def tb_writer_add_lyapunov_contour(
+    tb_writer: SummaryWriter | None,
+    *,
+    tag: str,
+    global_step: int,
+    lyap_model: th.nn.Module,
+    state_bounds: th.Tensor | NDArray,
+    rho_estimate: float | None = None,
+    state_indices: list[int] | None = None,
+    state_labels: Sequence[str] | None = None,
+    resolution: int = 40,
+) -> None:
+    if tb_writer is None:
+        return
+
+    bounds_np = safe_th2np(state_bounds)
+    if bounds_np is None or bounds_np.shape[-1] < 2:
+        return
+
+    fig = lyapunov_contour_matplot(
+        lyap_model=lyap_model,
+        state_bounds=bounds_np,
+        rho_estimate=rho_estimate,
+        state_indices=state_indices,
+        state_labels=state_labels,
+        resolution=resolution,
     )
     tb_writer.add_figure(tag, fig, global_step=global_step, close=True)
 

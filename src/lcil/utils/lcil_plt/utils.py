@@ -4,8 +4,12 @@ import numpy as np
 import logging
 import plotly.graph_objects as go
 
+from mpc_datagen import mdg_plt
 from numpy.typing import NDArray
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
+
+if TYPE_CHECKING:
+    from ...certification.bisect_certifier import RegionCertificationResult
 
 
 __logger__ = logging.getLogger(__name__)
@@ -336,4 +340,144 @@ def add_regions(
                 name=name,
                 showlegend=name is not None,
             )
+        )
+
+
+def resolve_state_pairs_and_labels(
+    num_states: int,
+    state_indices: list[int] | None = None,
+    state_labels: Sequence[str] | None = None,
+) -> tuple[list[int], list[str], list[tuple[int, int]]]:
+    """Resolve state indices, full state labels, and 2D state index pairs."""
+    resolved_indices = mdg_plt.utils._resolve_indices(state_indices, num_states)
+    if state_labels is not None and len(state_labels) == len(resolved_indices):
+        labels_full = [f"State {i}" for i in range(num_states)]
+        for label_idx, state_idx in enumerate(resolved_indices):
+            labels_full[state_idx] = state_labels[label_idx]
+    else:
+        labels_full = mdg_plt.utils._resolve_labels(
+            list(state_labels) if state_labels is not None else None,
+            num_states,
+        )
+    pair_indices = mdg_plt.utils._state_index_pairs(resolved_indices)
+    return resolved_indices, labels_full, pair_indices
+
+
+def build_grid_2d(
+    bounds: NDArray,
+    dim_i: int,
+    dim_j: int,
+    resolution: int,
+    indexing: str = "xy",
+) -> tuple[NDArray, NDArray, NDArray]:
+    """Build a 2D meshgrid for dimensions ``(dim_i, dim_j)``, fixing all others at zero.
+
+    Returns
+    -------
+    Xi, Xj : NDArray
+        Meshgrid arrays for the two selected dimensions of shape ``(resolution, resolution)``.
+    grid_states : NDArray
+        Full state-space grid of shape ``(resolution * resolution, state_dim)``.
+    """
+    state_dim = int(bounds.shape[1])
+    lb, ub = bounds[0], bounds[1]
+
+    xi = np.linspace(float(lb[dim_i]), float(ub[dim_i]), resolution, dtype=np.float32)
+    xj = np.linspace(float(lb[dim_j]), float(ub[dim_j]), resolution, dtype=np.float32)
+    Xi, Xj = np.meshgrid(xi, xj, indexing=indexing)
+
+    grid_states = np.zeros((resolution * resolution, state_dim), dtype=np.float32)
+    grid_states[:, dim_i] = Xi.ravel()
+    grid_states[:, dim_j] = Xj.ravel()
+    return Xi, Xj, grid_states
+
+
+def extract_certification_regions(
+    certification_result: "RegionCertificationResult",
+) -> tuple[NDArray, NDArray, NDArray]:
+    """Convert certified, uncertified, and outside-sublevel regions to numpy arrays."""
+    return (
+        regions_to_np(certification_result.certified_sublevel_regions),
+        regions_to_np(certification_result.uncertified_regions),
+        regions_to_np(certification_result.outside_sublevel_regions),
+    )
+
+
+def infer_num_states_from_regions(
+    cert_regs: NDArray,
+    uncert_regs: NDArray,
+    ctex_regs: NDArray,
+    state_indices: list[int] | None = None,
+) -> int:
+    """Infer state dimension from region arrays and optional state indices."""
+    region_dims = [
+        int(regs.shape[2])
+        for regs in (cert_regs, uncert_regs, ctex_regs)
+        if regs.shape[0] > 0
+    ]
+    if len(region_dims) == 0 and state_indices is None:
+        raise ValueError(
+            "Without dataset or non-empty regions, state_indices must be provided."
+        )
+    max_state_idx = max(state_indices) if state_indices is not None else -1
+    return max(region_dims + [max_state_idx + 1])
+
+
+def add_certification_overlays(
+    fig: go.Figure,
+    cert_pair: NDArray,
+    uncert_pair: NDArray,
+    ctex_pair: NDArray,
+    *,
+    z_level: float | None = None,
+    fill: bool = False,
+    uncert_dash: str = "solid",
+    cert_color: str = "#209209",
+    uncert_color: str = "#c53131",
+    ctex_color: str = "#808080",
+    latex_labels: bool = False,
+) -> None:
+    """Add certified, uncertified, and outside-sublevel region traces plus annotation."""
+    fmt = mdg_plt.utils._to_latex if latex_labels else (lambda s: s)
+    add_regions(
+        cert_pair,
+        fig,
+        color=cert_color,
+        z_level=z_level,
+        name=fmt("Certified"),
+        fill=fill,
+    )
+    add_regions(
+        uncert_pair,
+        fig,
+        color=uncert_color,
+        z_level=z_level,
+        name=fmt("Uncertified"),
+        dash=uncert_dash,
+        fill=fill,
+    )
+    add_regions(
+        ctex_pair,
+        fig,
+        color=ctex_color,
+        z_level=z_level,
+        name=fmt("Outside Sublevel"),
+        fill=fill,
+        alpha=0.5,
+    )
+
+    if z_level is None:
+        fig.add_annotation(
+            x=0.01,
+            y=0.99,
+            xref="paper",
+            yref="paper",
+            xanchor="left",
+            yanchor="top",
+            align="left",
+            showarrow=False,
+            bgcolor="rgba(255,255,255,0.80)",
+            bordercolor="rgba(0,0,0,0.20)",
+            borderwidth=1,
+            text=fmt(partition_annotation(cert_pair, uncert_pair, ctex_pair)),
         )

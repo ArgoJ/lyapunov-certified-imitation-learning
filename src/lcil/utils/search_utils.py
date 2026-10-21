@@ -5,6 +5,7 @@ from typing import Callable
 from rich.progress import Progress
 
 from .helpers import none_to_float
+from .interrupt_handler import GracefulInterruptHandler
 
 __logger__ = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ def iterative_rho_search(
     step_fn: Callable,
     eval_fn: Callable[[float], bool],
     progress: Progress | None = None,
+    interrupt_handler: GracefulInterruptHandler | None = None,
 ) -> tuple[float | None, float]:
     """Run iterative value updates until stopping criterion is met.
 
@@ -57,15 +59,17 @@ def iterative_rho_search(
         update_progress(trial)
         return eval_fn(trial)
 
+    handler = interrupt_handler or GracefulInterruptHandler(logger=__logger__)
     try:
-        update_progress(0.0)
-        for _ in range(total):
-            try:
-                stop, val_lo, val_up = step_fn(val_lo, val_up, tracked_eval)
-                if stop:
-                    break
-            finally:
-                update_progress(val_up, advance=1)
+        with handler:
+            update_progress(0.0)
+            for _ in range(total):
+                try:
+                    stop, val_lo, val_up = step_fn(val_lo, val_up, tracked_eval)
+                    if stop:
+                        break
+                finally:
+                    update_progress(val_up, advance=1)
     finally:
         if is_progress and task is not None:
             progress.remove_task(task)
@@ -165,7 +169,16 @@ def search_and_bisect_value(
     else:
         initial_val = float(initial_estimate)
 
-    initial_ok = eval_fn(initial_val)
+    interrupt_handler = GracefulInterruptHandler(logger=__logger__)
+    initial_ok = False
+    with interrupt_handler:
+        initial_ok = eval_fn(initial_val)
+    if interrupt_handler.aborted:
+        __logger__.info(
+            "Search for %s interrupted during initial evaluation.",
+            value_name,
+        )
+        return 0.0
 
     # Scale up
     if initial_ok:
@@ -176,8 +189,9 @@ def search_and_bisect_value(
             step_fn=partial(scale_rho_up, scaling=scaling_factor),
             eval_fn=eval_fn,
             progress=progress,
+            interrupt_handler=interrupt_handler,
         )
-        if val_lo == val_up:
+        if not interrupt_handler.aborted and val_lo == val_up:
             __logger__.warning(
                 "Maximum scaling steps (%d) reached without finding an upper bound. " \
                 "Consider increasing max_scale_steps or initial_estimate.",
@@ -211,13 +225,19 @@ def search_and_bisect_value(
             ),
             eval_fn=eval_fn,
             progress=progress,
+            interrupt_handler=interrupt_handler,
         )
 
         if val_lo is None:
+            if interrupt_handler.aborted:
+                __logger__.info(
+                    "Search for %s interrupted by user before certifying a lower bound.",
+                    value_name,
+                )
             return 0.0
 
     # Bisect
-    if val_lo is not None and val_up - val_lo >= bisection_tol:
+    if not interrupt_handler.aborted and val_lo is not None and val_up - val_lo >= bisection_tol:
         val_lo, val_up = iterative_rho_search(
             total=max_bisection_steps,
             desc=f"Bisect {value_name}",
@@ -225,6 +245,15 @@ def search_and_bisect_value(
             step_fn=partial(bisect_rho, bisection_tol=bisection_tol),
             eval_fn=eval_fn,
             progress=progress,
+            interrupt_handler=interrupt_handler,
         )
 
-    return val_lo if val_lo is not None else 0.0
+    best_val = val_lo if val_lo is not None else 0.0
+    if interrupt_handler.aborted:
+        __logger__.info(
+            "Search for %s interrupted by user. Returning best certified %s: %.6f",
+            value_name,
+            value_name,
+            best_val,
+        )
+    return best_val

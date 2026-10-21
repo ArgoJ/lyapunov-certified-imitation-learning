@@ -11,11 +11,12 @@ from typing import TYPE_CHECKING, Sequence
 
 from mpc_datagen import mdg_plt
 from .utils import (
-    add_regions,
+    add_certification_overlays,
     collapse_projected_regions,
+    extract_certification_regions,
+    infer_num_states_from_regions,
     limits_from_regions,
-    partition_annotation,
-    regions_to_np,
+    resolve_state_pairs_and_labels,
 )
 
 if TYPE_CHECKING:
@@ -51,37 +52,20 @@ def certified_regions_2d(
     html_path : Path | str, optional
         If provided, saves the plot to the specified HTML file.
     """
-    cert_regs_np = regions_to_np(certification_result.certified_sublevel_regions)
-    uncert_regs_np = regions_to_np(certification_result.uncertified_regions)
-    ctex_regs_np = regions_to_np(certification_result.outside_sublevel_regions)
+    cert_regs_np, uncert_regs_np, ctex_regs_np = extract_certification_regions(
+        certification_result
+    )
 
     if cert_regs_np.shape[0] == 0 and uncert_regs_np.shape[0] == 0 and ctex_regs_np.shape[0] == 0:
         __logger__.warning("No regions provided for plotting.")
         return
 
-    region_dims = []
-    if cert_regs_np.shape[0] > 0:
-        region_dims.append(int(cert_regs_np.shape[2]))
-    if uncert_regs_np.shape[0] > 0:
-        region_dims.append(int(uncert_regs_np.shape[2]))
-    if ctex_regs_np.shape[0] > 0:
-        region_dims.append(int(ctex_regs_np.shape[2]))
-    if len(region_dims) == 0:
-        raise ValueError("Could not infer state dimension from empty regions.")
-
-    max_state_idx = max(state_indices) if state_indices is not None else -1
-    num_states = max(region_dims + [max_state_idx + 1])
-
-    state_indices = mdg_plt.utils._resolve_indices(state_indices, num_states)
-
-    if state_labels is not None and len(state_labels) == len(state_indices):
-        labels_full = [f"State {i}" for i in range(num_states)]
-        for label_idx, state_idx in enumerate(state_indices):
-            labels_full[state_idx] = state_labels[label_idx]
-    else:
-        labels_full = mdg_plt.utils._resolve_labels(state_labels, num_states)
-
-    pair_indices = mdg_plt.utils._state_index_pairs(state_indices)
+    num_states = infer_num_states_from_regions(
+        cert_regs_np, uncert_regs_np, ctex_regs_np, state_indices=state_indices
+    )
+    state_indices, labels_full, pair_indices = resolve_state_pairs_and_labels(
+        num_states, state_indices, state_labels
+    )
 
     figures: list[mdg_plt.PairPlotResult] = []
     for pair in pair_indices:
@@ -110,27 +94,15 @@ def certified_regions_2d(
 
         fig = go.Figure()
 
-        add_regions(
+        add_certification_overlays(
+            fig,
             cert_pair,
-            fig,
-            "#2ca02c",
-            mdg_plt.utils._to_latex("Certified"),
-            fill=True,
-        )
-        add_regions(
             uncert_pair,
-            fig,
-            "#d62728",
-            mdg_plt.utils._to_latex("Uncertified"),
-            fill=True,
-        )
-        add_regions(
             ctex_pair,
-            fig,
-            "#808080",
-            mdg_plt.utils._to_latex("Outside Sublevel"),
             fill=True,
-            alpha=0.5,
+            cert_color="#2ca02c",
+            uncert_color="#d62728",
+            latex_labels=True,
         )
 
         fig.update_layout(
@@ -141,20 +113,6 @@ def certified_regions_2d(
             yaxis_title=mdg_plt.utils._to_latex(labels_pair[1]),
             xaxis=dict(range=[pair_bounds[0][0], pair_bounds[0][1]]),
             yaxis=dict(range=[pair_bounds[1][0], pair_bounds[1][1]]),
-        )
-        fig.add_annotation(
-            x=0.01,
-            y=0.99,
-            xref="paper",
-            yref="paper",
-            xanchor="left",
-            yanchor="top",
-            align="left",
-            showarrow=False,
-            bgcolor="rgba(255,255,255,0.80)",
-            bordercolor="rgba(0,0,0,0.20)",
-            borderwidth=1,
-            text=mdg_plt.utils._to_latex(partition_annotation(cert_pair, uncert_pair, ctex_pair)),
         )
         figures.append(mdg_plt.PairPlotResult(
             idx_x=pair[0],

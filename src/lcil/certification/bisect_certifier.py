@@ -14,6 +14,7 @@ from .recursive_certifier import RecursiveCertifier, RecursiveCertificationResul
 from .abcrown_region_certifier import EarlyExitLevel
 from .progress import ProgressLevel
 from .config import LyapunovCertificationConfig
+from ..utils.interrupt_handler import GracefulInterruptHandler
 from ..utils.search_utils import search_and_bisect_value
 from ..utils.constants import *
 
@@ -108,6 +109,7 @@ class BisectCertifier(RecursiveCertifier):
         )
         self.save_dir: Path | None = Path(save_dir).resolve() if save_dir is not None else None
         self.last_counterexample_v: float | None = None
+        self._last_certified_recursive_result: tuple[float, RecursiveCertificationResult] | None = None
 
     # =========================================
     # CERTIFICATION SEARCH
@@ -136,6 +138,8 @@ class BisectCertifier(RecursiveCertifier):
             early_exit=EarlyExitLevel.ON_COUNTEREXAMPLE,
         )
         self.last_counterexample_v = result.min_counterexample_v
+        if result.global_success and isinstance(result, RecursiveCertificationResult):
+            self._last_certified_recursive_result = (float(rho), result)
 
         if self.save_dir is not None:
             cert_result = self._create_result(rho, result)
@@ -154,6 +158,7 @@ class BisectCertifier(RecursiveCertifier):
         
         self.cache_region_bounds()
         self.last_counterexample_v = None
+        self._last_certified_recursive_result = None
 
         with self.progress:
             best_rho = search_and_bisect_value(
@@ -179,9 +184,22 @@ class BisectCertifier(RecursiveCertifier):
     # =========================================
     def _collect_certification_details(self, rho: float) -> RegionCertificationResult:
         """Collect region-wise certification details for a fixed ``rho``."""
-        recursive_result = self._certify_recursive_regions(
-            rho=rho, force_display=True
-        )
+        if (
+            self._last_certified_recursive_result is not None
+            and self._last_certified_recursive_result[0] == float(rho)
+        ):
+            recursive_result = self._last_certified_recursive_result[1]
+        else:
+            with GracefulInterruptHandler(logger=__logger__) as interrupt_handler:
+                recursive_result = self._certify_recursive_regions(
+                    rho=rho, force_display=True
+                )
+            if interrupt_handler.aborted:
+                __logger__.warning(
+                    "Detail collection at rho=%.6f interrupted by user.", rho
+                )
+                return None
+
         self.details = self._create_result(rho, recursive_result)
         return self.details
 

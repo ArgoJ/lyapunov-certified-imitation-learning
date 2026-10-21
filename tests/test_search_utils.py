@@ -216,6 +216,31 @@ class TestSearchUtils(unittest.TestCase):
         # Should abort immediately after evaluating initial_val (1 call only!)
         self.assertEqual(call_count, 1)
 
+    def test_search_and_bisect_value_returns_best_lo_on_keyboard_interrupt(self) -> None:
+        call_count = 0
+
+        def eval_fn(x: float) -> bool:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 4:
+                raise KeyboardInterrupt()
+            return x <= 3.65
+
+        result = search_and_bisect_value(
+            initial_estimate=1.0,
+            eval_fn=eval_fn,
+            min_val=0.01,
+            scaling_factor=2.0,
+            bisection_tol=1e-4,
+            max_scale_steps=10,
+            max_bisection_steps=20,
+        )
+        # Call 1: x=1.0 (ok) -> lo=1.0, up=1.0
+        # Call 2: x=2.0 (ok) -> lo=2.0, up=2.0
+        # Call 3: x=4.0 (fail) -> lo=2.0, up=4.0 (scale up stops)
+        # Call 4: bisect mid=3.0 raises KeyboardInterrupt -> returns lo=2.0
+        self.assertEqual(result, 2.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
