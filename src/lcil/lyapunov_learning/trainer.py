@@ -363,7 +363,7 @@ class LyapunovTrainer:
             device=self.device,
         )
 
-    def _build_roa_candidates(self, injection_states: th.Tensor) -> th.Tensor:
+    def _build_roa_candidates(self, injection_states: th.Tensor | None = None) -> th.Tensor:
         """Create diverse candidate states near the boundary of the asymmetric B."""
         half_width = 0.5 * (self.ubx_train - self.lbx_train)
         random_candidates = sample_box_shell(
@@ -491,7 +491,7 @@ class LyapunovTrainer:
     ) -> BoundaryStepResult:
         rho_diagnostics, boundary_states = self.estimate_rho()
         boundary_buffer.update(boundary_states, value_fn=self.lyap_model)
-        roa_candidates = self._build_roa_candidates(injection_states=boundary_buffer.states)
+        roa_candidates = self._build_roa_candidates()
         
         new_rho_estimate = get_ema(current_rho_estimate, rho_diagnostics.rho.rho, self.config.rho_ema_decay)
         return BoundaryStepResult(new_rho_estimate, roa_candidates, rho_diagnostics)

@@ -67,6 +67,7 @@ class LevelSetMetricsWriter:
         state_dim: int,
         device: th.device,
         method: Literal["ray_shooting", "monte_carlo"] | None = None,
+        model_name: str | None = None,
     ) -> LevelSetEstimate:
         use_method = method or self.method
         metrics_path = cert_dir / LEVEL_SET_FILENAME
@@ -79,8 +80,15 @@ class LevelSetMetricsWriter:
         )
         estimate.save(metrics_path)
 
+        if model_name is None:
+            try:
+                rel = cert_dir.parent.resolve().relative_to(self.output_root.resolve())
+                model_name = str(rel) if str(rel) not in (".", "") else cert_dir.parent.name
+            except ValueError:
+                model_name = cert_dir.parent.name
+
         add_entry(
-            f"{cert_dir.parent.name},{estimate.measure:.6f}",
+            f"{model_name},{estimate.measure:.6f}",
             output_root=self.output_root,
             summary_name=self.summary_name,
         )
@@ -101,6 +109,7 @@ def save_level_set_metrics(
     method: Literal["ray_shooting", "monte_carlo"] = "ray_shooting",
     output_root: Path | str | None = None,
     summary_name: str | None = None,
+    model_name: str | None = None,
 ) -> LevelSetEstimate:
     """Convenience function to compute and save level set estimate and append to summary CSV."""
     root = output_root if output_root is not None else cert_dir.parents[1]
@@ -112,4 +121,5 @@ def save_level_set_metrics(
             state_dim=state_dim,
             device=device,
             method=method,
+            model_name=model_name,
         )

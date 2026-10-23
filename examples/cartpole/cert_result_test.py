@@ -207,6 +207,14 @@ def main() -> None:
                 rollout_steps=int(script_config.rollout_steps),
                 device=device,
             )
+            model_name = None
+            if script_config.apply_all_lyapunov_dirs:
+                try:
+                    rel = lyapunov_dir.resolve().relative_to(output_root.resolve())
+                    model_name = str(rel) if str(rel) not in (".", "") else lyapunov_dir.name
+                except ValueError:
+                    model_name = f"{lyapunov_dir.parent.name}/{lyapunov_dir.name}"
+
             metrics_writer.record(
                 cert_dir=cert_path,
                 cert_result=cert_result,
@@ -214,6 +222,7 @@ def main() -> None:
                 state_dim=int(mpc_cfg.nx),
                 device=device,
                 method=script_config.method,
+                model_name=model_name,
             )
             _save_lyapunov_plot(
                 cert_dir=cert_path,

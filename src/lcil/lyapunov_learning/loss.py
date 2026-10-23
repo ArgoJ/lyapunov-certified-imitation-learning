@@ -354,8 +354,8 @@ class RhoGatedConditionLoss(nn.Module):
         self.relative_eps = float(config.relative_condition_eps)
         self.invariance_weight = float(config.invariance_weight)
         self.gate_sharpness = float(config.rho_gate_sharpness)
-        self.softplus_beta = float(getattr(config, "softplus_beta", 10.0))
-        self.margin = float(getattr(config, "margin", getattr(config, "condition_margin", 0.0)))
+        self.softplus_beta = float(config.softplus_beta)
+        self.margin = float(config.condition_margin)
         
         self.decrease_violation = RelativeLyapunovDecreaseViolation(
             kappa=config.kappa,
