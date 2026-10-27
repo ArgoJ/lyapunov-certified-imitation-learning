@@ -86,7 +86,7 @@ def main() -> None:
         dynamics_loss=DynamicsAwareLoss(
             dynamics=DoubleIntegratorDynamics(
                 dt=dataset_cfg.dt,
-                method=IntegrationMethod.CLASSICAL_RK4), 
+                method=IntegrationMethod.EXPLICIT_EULER), 
             x_min=th.tensor(dataset_cfg.constraints.lbx), 
             x_max=th.tensor(dataset_cfg.constraints.ubx)),
         lambda_dyn=5.0,

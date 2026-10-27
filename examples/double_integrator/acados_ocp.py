@@ -104,12 +104,14 @@ def get_ocp(
     nx = A_c.shape[0]
     nu = B_c.shape[1]
 
-    A_d, B_d = mdg_utils.lin_c2d_rk4(A_c, B_c, dt, num_steps=1)
+    A_d, B_d = mdg_utils.lin_c2d_euler(A_c, B_c, dt, num_steps=1)
 
     ocp = AcadosOcp()
     if dynamics_type == "continuous":
         ocp.model = get_model(A_c, B_c, dynamics_type="continuous")
         ocp.solver_options.integrator_type = 'ERK'
+        ocp.solver_options.sim_method_num_stages = 1
+        ocp.solver_options.sim_method_num_steps = 1
     elif dynamics_type == "discrete":
         ocp.model = get_model(A_d, B_d, dynamics_type="discrete")
         ocp.solver_options.integrator_type = 'DISCRETE'
