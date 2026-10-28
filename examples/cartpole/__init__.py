@@ -4,7 +4,12 @@ from pathlib import Path
 from typing import TypeVar
 from torch import nn
 
-from lcil.imitation_learning import BoundedPolicy, TransformerPolicy
+from lcil.imitation_learning import (
+    BlendedLQRPolicy,
+    BoundedPolicy,
+    LQRController,
+    TransformerPolicy,
+)
 from lcil.lyapunov_learning import NeuralResidualLyapunovCandidate
 from lcil.utils import load_mpc_config_for_run
 
@@ -83,6 +88,10 @@ def _resolve_policy_model_cls(model_path: Path) -> type[nn.Module]:
             return TransformerPolicy
         case "CartpoleAngleWrapper":
             return CartpoleAngleWrapper
+        case "BlendedLQRPolicy":
+            return BlendedLQRPolicy
+        case "LQRController":
+            return LQRController
 
     raise ValueError(
         f"Could not infer policy model type from checkpoint '{model_path}'. "

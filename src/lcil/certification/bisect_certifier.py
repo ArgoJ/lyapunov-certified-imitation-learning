@@ -249,5 +249,10 @@ class BisectCertifier(RecursiveCertifier):
             details_path = save_path / CERTIFICATION_DETAILS_FILENAME
             self.details.save(details_path)
 
+        if hasattr(self.policy_model, "save") and callable(self.policy_model.save):
+            policy_save_path = save_path / CERTIFIED_POLICY_MODEL_FILENAME
+            self.policy_model.save(policy_save_path)
+            __logger__.info("Saved certified policy model to %s", policy_save_path)
+
         __logger__.info("Saved certification details to %s", save_path)
         return details_path

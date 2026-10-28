@@ -312,6 +312,44 @@ class LQRController(BaseBoundedPolicy):
     def forward(self, x: th.Tensor) -> th.Tensor:
         return self.clamp_u(-(x @ self.K.T))
 
+    def save(self, path: str | Path) -> None:
+        checkpoint_path = Path(path)
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        th.save(
+            {
+                "policy_type": self.__class__.__name__,
+                "state_dict": self.state_dict(),
+            },
+            checkpoint_path,
+        )
+
+    @classmethod
+    def load(
+        cls,
+        path: str | Path,
+        map_location: th.device | str = "cpu",
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> "LQRController":
+        checkpoint_path = Path(path)
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(f"No checkpoint found at '{checkpoint_path}'.")
+        payload = th.load(checkpoint_path, map_location=map_location, weights_only=True)
+        if not isinstance(payload, dict) or "state_dict" not in payload:
+            raise TypeError("Unsupported checkpoint format. Expected dict with 'state_dict'.")
+
+        sd = payload["state_dict"]
+        model = cls(
+            A=sd["A"],
+            B=sd["B"],
+            R=sd["R"],
+            P=sd.get("P", None),
+            Q=sd.get("Q", None),
+            u_min=sd.get("_u_min", None),
+            u_max=sd.get("_u_max", None),
+        )
+        model.load_state_dict(sd, strict=strict)
+        return model.to(map_location).eval()
 
 
 class BlendedLQRPolicy(BaseBoundedPolicy):
@@ -366,6 +404,43 @@ class BlendedLQRPolicy(BaseBoundedPolicy):
     def forward(self, x: th.Tensor) -> th.Tensor:
         alpha = self.compute_alpha(x)
         return self.clamp_u((1.0 - alpha) * self.lqr(x) + alpha * self.policy(x))
+
+    def save(self, path: str | Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.policy.save(path.with_name(f"{path.stem}_inner.pt"))
+        self.lqr.save(path.with_name(f"{path.stem}_lqr.pt"))
+        th.save(
+            {
+                "policy_type": "BlendedLQRPolicy",
+                "c0": float(self.c0.item()),
+                "c1": float(self.c1.item()),
+                "inner_cls": self.policy.__class__.__name__,
+                "state_dict": self.state_dict(),
+            },
+            path,
+        )
+
+    @classmethod
+    def load(
+        cls,
+        path: str | Path,
+        map_location: th.device | str = "cpu",
+        strict: bool = True,
+        **kwargs: Any,
+    ) -> "BlendedLQRPolicy":
+        path = Path(path)
+        payload = th.load(path, map_location=map_location, weights_only=True)
+        inner_name = payload.get("inner_cls", "BoundedPolicy")
+        inner_cls = globals().get(inner_name)
+        if inner_cls is None and inner_name == "CartpoleAngleWrapper":
+            from examples.cartpole.model import CartpoleAngleWrapper
+            inner_cls = CartpoleAngleWrapper
+        inner = (inner_cls or BoundedPolicy).load(path.with_name(f"{path.stem}_inner.pt"), map_location=map_location)
+        lqr = LQRController.load(path.with_name(f"{path.stem}_lqr.pt"), map_location=map_location, strict=strict)
+        model = cls(policy=inner, lqr=lqr, c0=payload["c0"], c1=payload["c1"])
+        model.load_state_dict(payload["state_dict"], strict=strict)
+        return model.to(map_location).eval()
 
 
 

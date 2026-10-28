@@ -43,5 +43,12 @@ def load_mpc_config_json(path: str | PathLike[str]) -> MPCConfig:
 def load_mpc_config_for_run(path: str | PathLike[str]) -> MPCConfig:
     """Load the MPC config JSON stored alongside a saved training run or from a direct file path."""
     resolved_path = Path(path)
-    config_path = resolved_path if resolved_path.is_file() else resolved_path / MPC_CONFIG_FILENAME
-    return load_mpc_config_json(config_path)
+    if resolved_path.is_file():
+        return load_mpc_config_json(resolved_path)
+    for candidate in [resolved_path, *resolved_path.parents]:
+        config_path = candidate / MPC_CONFIG_FILENAME
+        if config_path.is_file():
+            return load_mpc_config_json(config_path)
+    raise FileNotFoundError(
+        f"Could not find '{MPC_CONFIG_FILENAME}' in '{resolved_path}' or any parent directory."
+    )

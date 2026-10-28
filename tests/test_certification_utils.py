@@ -294,6 +294,63 @@ class TestCertificationUtils(PlotAssertionsMixin, unittest.TestCase):
         u_origin = blended(x_origin)
         self.assertTrue(th.allclose(u_origin, th.zeros(1, 1), atol=1e-6))
 
+    def test_lqr_controller_save_load(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        dt = 0.1
+        A = th.tensor([[1.0, dt], [0.0, 1.0]])
+        B = th.tensor([[0.0], [dt]])
+        Q = th.tensor([[10.0, 0.0], [0.0, 1.0]])
+        R = th.tensor([[0.5]])
+        lqr = LQRController(A, B, R, Q=Q, u_min=-2.0, u_max=2.0)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_path = Path(tmpdir) / "lqr_controller.pt"
+            lqr.save(save_path)
+            self.assertTrue(save_path.is_file())
+
+            loaded = LQRController.load(save_path)
+            self.assertIsInstance(loaded, LQRController)
+
+            x = th.randn(5, 2)
+            self.assertTrue(th.allclose(lqr(x), loaded(x), atol=1e-6))
+            self.assertTrue(th.allclose(lqr.K, loaded.K, atol=1e-6))
+            self.assertTrue(th.allclose(lqr.P, loaded.P, atol=1e-6))
+
+    def test_blended_lqr_policy_save_load(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        dt = 0.1
+        A = th.tensor([[1.0, dt], [0.0, 1.0]])
+        B = th.tensor([[0.0], [dt]])
+        Q = th.tensor([[10.0, 0.0], [0.0, 1.0]])
+        R = th.tensor([[0.5]])
+        lqr = LQRController(A, B, R, Q=Q, u_min=-1.0, u_max=1.0)
+        nn_policy = BoundedPolicy(
+            feature_net=MLP(layer_dims=[2, 8, 1], activations=["relu", "identity"]),
+            u_min=-1.0,
+            u_max=1.0,
+        )
+        c0, c1 = 0.05, 0.25
+        blended = BlendedLQRPolicy(nn_policy, lqr, c0=c0, c1=c1)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_path = Path(tmpdir) / "blended_policy.pt"
+            blended.save(save_path)
+            self.assertTrue(save_path.is_file())
+            self.assertTrue((Path(tmpdir) / "blended_policy_inner.pt").is_file())
+            self.assertTrue((Path(tmpdir) / "blended_policy_lqr.pt").is_file())
+
+            loaded = BlendedLQRPolicy.load(save_path)
+            self.assertIsInstance(loaded, BlendedLQRPolicy)
+            self.assertAlmostEqual(float(loaded.c0.item()), c0, places=5)
+            self.assertAlmostEqual(float(loaded.c1.item()), c1, places=5)
+
+            x = th.randn(20, 2)
+            self.assertTrue(th.allclose(blended(x), loaded(x), atol=1e-6))
+
 
 if __name__ == "__main__":
     unittest.main()

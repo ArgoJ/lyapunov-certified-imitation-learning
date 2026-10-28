@@ -6,6 +6,7 @@ TRAINING_METRICS_FILENAME = "training_metrics.npz"
 # Policy
 MPC_CONFIG_FILENAME = "mpc_config.json"
 POLICY_MODEL_FILENAME = "policy_model.pt"
+CERTIFIED_POLICY_MODEL_FILENAME = "certified_policy.pt"
 POLICY_ROLLOUT_FILENAME = "policy_rollouts.hdf5"
 
 # Lyapunov

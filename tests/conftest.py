@@ -1,5 +1,9 @@
+import os
 import sys
 from pathlib import Path
+
+# Disable PyTorch JIT to prevent Python 3.11 rc1 segfault in auto_LiRPA
+os.environ.setdefault("PYTORCH_JIT", "0")
 
 # Ensure root and src directories are in sys.path for pytest
 ROOT_DIR = Path(__file__).resolve().parent.parent

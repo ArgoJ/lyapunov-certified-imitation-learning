@@ -151,6 +151,13 @@ def main() -> None:
                 __logger__.error("Skipping due to missing file:\n%s", e)
                 continue
 
+            certified_policy_path = cert_path / CERTIFIED_POLICY_MODEL_FILENAME
+            if certified_policy_path.is_file():
+                policy_path = certified_policy_path
+                __logger__.info("Using certified policy model from %s", policy_path)
+            else:
+                __logger__.info("Certified policy model not found at %s. Falling back to %s", certified_policy_path, policy_path)
+
             certification_config = LyapunovCertificationConfig.load(certification_config_path)
             cert_result = RegionCertificationResult.load(cert_result_path)
 
