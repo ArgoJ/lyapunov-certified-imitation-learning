@@ -194,7 +194,7 @@ class LyapunovTrainingConfig(JsonDataclass, ArgumentParserConfig):
         help="Number of final outer epochs jointly optimizing policy and lyapunov parameters, " \
             "starting at outer_epochs - policy_epochs. If None, the policy is never updated.",
         display_alias="policy_epochs",
-        validators=(optional_validator(positive_validator),)
+        validators=(optional_validator(non_negative_validator),)
     )
     policy_lr_factor: float = config_field(
         default=0.01,
