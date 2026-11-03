@@ -3,6 +3,7 @@ import torch as th
 import numpy as np
 import logging
 
+from copy import deepcopy
 from dataclasses import replace, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -208,7 +209,7 @@ def main() -> None:
     actual_output_root = Path(init_policy_dir) / LYAPUNOV_DIRNAME
     sweep.set_output_root(actual_output_root)
 
-    policy_model, rollout_dataset, policy_global_config = load_policy_and_dataset(init_policy_dir, device)
+    base_policy_model, rollout_dataset, policy_global_config = load_policy_and_dataset(init_policy_dir, device)
     state_bounds = np.vstack([policy_global_config.constraints.lbx, policy_global_config.constraints.ubx])
 
     __logger__.info(f"Starting grid search over {len(sweep)} configurations...")
@@ -219,8 +220,11 @@ def main() -> None:
         policy_dir = script_config.policy_dir
         if policy_dir != init_policy_dir:
             __logger__.info(f"Loading policy model from {policy_dir} for this run...")
-            policy_model, rollout_dataset, policy_global_config = load_policy_and_dataset(policy_dir, device)
+            base_policy_model, rollout_dataset, policy_global_config = load_policy_and_dataset(policy_dir, device)
+            init_policy_dir = policy_dir
             state_bounds = np.vstack([policy_global_config.constraints.lbx, policy_global_config.constraints.ubx])
+
+        policy_model = deepcopy(base_policy_model)
 
         base_path = run.output_dir.resolve()
         dyn_model = DoubleIntegratorDynamics(

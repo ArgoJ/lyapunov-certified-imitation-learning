@@ -121,9 +121,13 @@ class LyapunovTrainer:
             init_policy_model=self.init_policy_model,
         )
 
-        self._policy_start_epoch = self.config.outer_epochs - self.config.policy_epochs if self.config.policy_epochs is not None else float("inf")
+        self._policy_start_epoch = (
+            self.config.outer_epochs - self.config.policy_epochs
+            if (self.config.policy_epochs is not None and self.config.policy_epochs > 0)
+            else float("inf")
+        )
         self._curr_policy_train_status = False
-        self._curr_policy_requires_grad = False
+        self._curr_policy_requires_grad: bool | None = None
         self._set_train_modes()
         self.optimizer = self._build_optimizer()
         
@@ -384,7 +388,7 @@ class LyapunovTrainer:
 
     def _get_antiphase_eigenvectors(self) -> th.Tensor:
         """Compute or retrieve cached antiphase eigenvectors of the closed-loop system."""
-        if self._cached_antiphase_eigenvectors is None or self._curr_policy_requires_grad:
+        if self._cached_antiphase_eigenvectors is None or self._curr_policy_train_status:
             x_star = getattr(self.lyap_model, "x_star", None)
             self._cached_antiphase_eigenvectors = compute_antiphase_eigenvectors(
                 dynamics=self.dyn_model,

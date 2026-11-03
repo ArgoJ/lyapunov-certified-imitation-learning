@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -185,7 +186,7 @@ def main() -> None:
     actual_output_root = init_policy_dir / LYAPUNOV_DIRNAME
     sweep.set_output_root(actual_output_root)
 
-    policy_model, rollout_dataset = _load_policy_and_rollout_dataset(init_policy_dir, device)
+    base_policy_model, rollout_dataset = _load_policy_and_rollout_dataset(init_policy_dir, device)
     mpc_cfg = load_mpc_config(init_policy_dir)
     state_bounds = np.vstack([
         mpc_cfg.constraints.lbx,
@@ -200,12 +201,15 @@ def main() -> None:
         current_policy_dir = Path(script_config.policy_dir).resolve()
         if current_policy_dir != init_policy_dir:
             __logger__.info("Loading policy model from %s for this run...", current_policy_dir)
-            policy_model, rollout_dataset = _load_policy_and_rollout_dataset(current_policy_dir, device)
+            base_policy_model, rollout_dataset = _load_policy_and_rollout_dataset(current_policy_dir, device)
+            init_policy_dir = current_policy_dir
             mpc_cfg = load_mpc_config(current_policy_dir)
             state_bounds = np.vstack([
                 mpc_cfg.constraints.lbx,
                 mpc_cfg.constraints.ubx,
             ])
+
+        policy_model = deepcopy(base_policy_model)
 
         train_bounds = _scale_state_bounds(
             state_bounds,
